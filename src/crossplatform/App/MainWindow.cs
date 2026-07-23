@@ -301,6 +301,13 @@ public sealed class MainWindow : Window
         _revisions.AddCommitCommand("Revert this commit…", RevertThisCommit);
         _revisions.AddCommitCommand("Archive this commit…", hash => _ = ArchiveThisCommitAsync(hash));
 
+        // History-rewriting commit edits on the current branch. Each is guarded by a
+        // dirty-tree refusal + a confirm dialog, and rebase-backed paths abort cleanly
+        // on failure so the repository is never left mid-rebase (see CommitEditService).
+        _revisions.AddCommitCommand("Reword commit…", hash => _ = RewordCommitAsync(hash));
+        _revisions.AddCommitCommand("Squash with previous…", hash => _ = SquashOrFixupAsync(hash, squash: true));
+        _revisions.AddCommitCommand("Fixup with previous…", hash => _ = SquashOrFixupAsync(hash, squash: false));
+
         // Compare actions. The grid is single-select, so we mirror the original's
         // two-commit compare with a remembered BASE + "Compare to BASE" pair, plus
         // a direct commit-vs-working-tree compare. Results drive the shared DiffView.
@@ -417,6 +424,164 @@ public sealed class MainWindow : Window
         {
             string shortHash = hash.Length > 8 ? hash[..8] : hash;
             _statusBar.SetText($"Archived {shortHash} → {path}");
+        }
+    }
+
+    // ---- commit editing (reword / squash / fixup) ----------------------------------
+
+    // Shared safety gate for every history-rewriting edit: refuses when the working
+    // tree is dirty (with a clear message) and otherwise asks the user to confirm the
+    // rewrite. Returns true only when it is safe to proceed.
+    private async Task<bool> GuardRewriteAsync(string label)
+    {
+        CommitEditService svc = new();
+        bool dirty;
+        try
+        {
+            dirty = await Task.Run(() => svc.IsWorkingTreeDirty(_repoPath!));
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"{label} failed: {ex.Message}");
+            return false;
+        }
+
+        if (dirty)
+        {
+            _statusBar.SetText($"{label} refused: you have uncommitted changes. Commit or stash them first.");
+            return false;
+        }
+
+        return await ConfirmAsync("This rewrites history on the current branch. Continue?");
+    }
+
+    // Runs a commit-edit operation off the UI thread, then refreshes the grid and
+    // surfaces success or the first line of git's output on failure. The service
+    // already aborts a stuck rebase, so this never leaves a half-rebase behind.
+    private async Task RunEditAsync(string label, Func<CommitEditResult> op)
+    {
+        _statusBar.SetText($"{label}…");
+        CommitEditResult result;
+        try
+        {
+            result = await Task.Run(op);
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"{label} failed: {ex.Message}");
+            return;
+        }
+
+        RefreshAll();
+        if (result.Success)
+        {
+            _statusBar.SetText($"{label} done.");
+        }
+        else
+        {
+            string firstLine = result.Output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
+            _statusBar.SetText($"{label} failed: {firstLine}");
+        }
+    }
+
+    // Rewords the selected commit. HEAD is a plain `git commit --amend -m`; an older
+    // commit uses a scripted non-interactive reword rebase. Prefills the current
+    // message in a multi-line prompt.
+    private async Task RewordCommitAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        if (!await GuardRewriteAsync("Reword"))
+        {
+            return;
+        }
+
+        CommitEditService svc = new();
+        bool isHead;
+        string current;
+        try
+        {
+            isHead = await Task.Run(() => svc.IsHead(_repoPath!, hash));
+            current = await Task.Run(() => svc.GetCommitMessage(_repoPath!, hash));
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"Reword failed: {ex.Message}");
+            return;
+        }
+
+        string? message = await PromptAsync("Reword commit", "New commit message:", current.Trim(), multiline: true);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        await RunEditAsync("Reword",
+            () => isHead ? svc.AmendHead(_repoPath!, message) : svc.Reword(_repoPath!, hash, message));
+    }
+
+    // Squashes (prompting for a combined message) or fixes up (discarding the message)
+    // the selected commit into its parent. Refuses on the root commit, which has no
+    // previous commit to combine with.
+    private async Task SquashOrFixupAsync(string hash, bool squash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        string label = squash ? "Squash" : "Fixup";
+        CommitEditService svc = new();
+
+        bool hasParent;
+        try
+        {
+            hasParent = await Task.Run(() => svc.HasParent(_repoPath!, hash));
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"{label} failed: {ex.Message}");
+            return;
+        }
+
+        if (!hasParent)
+        {
+            _statusBar.SetText($"{label} not possible: the root commit has no previous commit to combine with.");
+            return;
+        }
+
+        if (!await GuardRewriteAsync(label))
+        {
+            return;
+        }
+
+        if (squash)
+        {
+            string combined;
+            try
+            {
+                combined = await Task.Run(() => svc.GetCombinedMessage(_repoPath!, hash));
+            }
+            catch (Exception ex)
+            {
+                _statusBar.SetText($"Squash failed: {ex.Message}");
+                return;
+            }
+
+            string? message = await PromptAsync("Squash with previous", "Combined commit message:", combined.Trim(), multiline: true);
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return;
+            }
+
+            await RunEditAsync("Squash", () => svc.Squash(_repoPath!, hash, message));
+        }
+        else
+        {
+            await RunEditAsync("Fixup", () => svc.Fixup(_repoPath!, hash));
         }
     }
 
@@ -848,10 +1013,17 @@ public sealed class MainWindow : Window
         return result;
     }
 
-    // Single-line text prompt; returns null on cancel.
-    private async Task<string?> PromptAsync(string title, string label)
+    // Text prompt; returns null on cancel. Optionally prefills an initial value and,
+    // for multi-line input (e.g. commit messages), grows into a wrapping text area.
+    private async Task<string?> PromptAsync(string title, string label, string? initial = null, bool multiline = false)
     {
-        TextBox input = new() { Watermark = label };
+        TextBox input = new() { Watermark = label, Text = initial };
+        if (multiline)
+        {
+            input.AcceptsReturn = true;
+            input.TextWrapping = TextWrapping.Wrap;
+            input.MinHeight = 120;
+        }
         Button ok = new() { Content = "OK", MinWidth = 80 };
         Button cancel = new() { Content = "Cancel", MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
         Window dlg = new()
