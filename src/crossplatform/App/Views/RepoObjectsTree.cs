@@ -23,6 +23,7 @@ public sealed class RepoObjectsTree : UserControl
 {
     private readonly BranchTagService _branchTagService = new();
     private readonly StashOpsService _stashService = new();
+    private readonly SubmoduleService _submoduleService = new();
 
     private readonly TreeView _tree;
 
@@ -99,7 +100,8 @@ public sealed class RepoObjectsTree : UserControl
             {
                 BranchTagListing refs = _branchTagService.LoadRefs(repo);
                 IReadOnlyList<StashRow> stashes = _stashService.ListStashes(repo);
-                snapshot = new RepoSnapshot(refs, stashes);
+                IReadOnlyList<SubmoduleRow> submodules = _submoduleService.ListSubmodules(repo);
+                snapshot = new RepoSnapshot(refs, stashes, submodules);
             }
             catch (Exception ex)
             {
@@ -132,6 +134,7 @@ public sealed class RepoObjectsTree : UserControl
 
         IReadOnlyList<BranchTagRow> tags = snapshot.Refs.Tags;
         IReadOnlyList<StashRow> stashes = snapshot.Stashes;
+        IReadOnlyList<SubmoduleRow> submodules = snapshot.Submodules;
 
         List<TreeViewItem> roots = [];
 
@@ -188,6 +191,27 @@ public sealed class RepoObjectsTree : UserControl
         }
 
         roots.Add(stashesNode);
+
+        // Submodules. The root node carries "Update all"; each leaf carries
+        // "Update" for its own path. No "Open" action is wired: opening a
+        // submodule as the active repository requires MainWindow, which is out
+        // of scope for this control.
+        TreeViewItem submodulesNode = Category("Submodules", "SubmodulesManage", submodules.Count);
+        submodulesNode.ContextMenu = SubmoduleRootMenu();
+        foreach (SubmoduleRow row in submodules)
+        {
+            string label = row.Status switch
+            {
+                SubmoduleState.NotInitialized => $"{row.Display} (not initialized)",
+                SubmoduleState.OutOfDate => $"{row.Display} (out of date)",
+                _ => row.Display,
+            };
+            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false);
+            leaf.ContextMenu = SubmoduleMenu(row);
+            submodulesNode.Items.Add(leaf);
+        }
+
+        roots.Add(submodulesNode);
 
         branchesNode.IsExpanded = true;
         _tree.ItemsSource = roots;
@@ -284,6 +308,20 @@ public sealed class RepoObjectsTree : UserControl
         menu.Items.Add(MenuItem("Pop", null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Drop", null, () => _ = DoDropStashAsync(row)));
+        return menu;
+    }
+
+    private ContextMenu SubmoduleMenu(SubmoduleRow row)
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Update", "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
+        return menu;
+    }
+
+    private ContextMenu SubmoduleRootMenu()
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Update all", "SubmodulesSync", () => RunSubmodule(() => _submoduleService.UpdateAll(_repoPath!))));
         return menu;
     }
 
@@ -458,6 +496,38 @@ public sealed class RepoObjectsTree : UserControl
         });
     }
 
+    private void RunSubmodule(Func<SubmoduleOpResult> work)
+    {
+        if (_repoPath is not { Length: > 0 } || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        _ = Task.Run(() =>
+        {
+            bool success;
+            try
+            {
+                success = work().Success;
+            }
+            catch
+            {
+                success = false;
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _busy = false;
+                if (success)
+                {
+                    OperationCompleted?.Invoke();
+                    Refresh();
+                }
+            });
+        });
+    }
+
     // Minimal modal yes/no confirmation; allows the action when no owner window
     // is available (e.g. headless).
     private async Task<bool> ConfirmAsync(string message)
@@ -546,5 +616,5 @@ public sealed class RepoObjectsTree : UserControl
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;
 
-    private sealed record RepoSnapshot(BranchTagListing Refs, IReadOnlyList<StashRow> Stashes);
+    private sealed record RepoSnapshot(BranchTagListing Refs, IReadOnlyList<StashRow> Stashes, IReadOnlyList<SubmoduleRow> Submodules);
 }
