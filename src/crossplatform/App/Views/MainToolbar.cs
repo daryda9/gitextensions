@@ -37,14 +37,20 @@ public sealed class MainToolbar : UserControl
         IBrush toolbar = Brush("App.Toolbar", "#333337");
         IBrush border = Brush("App.Border", "#3F3F46");
         IBrush hover = Brush("App.PanelAlt", "#2D2D30");
+        IBrush pressed = Brush("App.Panel", "#252526");
 
         Background = toolbar;
+
+        // A subtle 1px bottom rule separates the toolbar from the content below.
+        BorderBrush = border;
+        BorderThickness = new Thickness(0, 0, 0, 1);
 
         StackPanel bar = new()
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(4, 3),
+            Spacing = 2,
+            Margin = new Thickness(6, 3),
         };
 
         bar.Children.Add(MakeButton("RepoOpen", "Open", "Open repository", () => OpenRepoRequested?.Invoke()));
@@ -77,12 +83,20 @@ public sealed class MainToolbar : UserControl
         Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn").Class(":pointerover")
             .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
         {
-            Setters = { new Setter(ContentPresenter.BackgroundProperty, hover) },
+            Setters =
+            {
+                new Setter(ContentPresenter.BackgroundProperty, hover),
+                new Setter(ContentPresenter.BorderBrushProperty, border),
+            },
         });
         Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn").Class(":pressed")
             .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
         {
-            Setters = { new Setter(ContentPresenter.BackgroundProperty, hover) },
+            Setters =
+            {
+                new Setter(ContentPresenter.BackgroundProperty, pressed),
+                new Setter(ContentPresenter.BorderBrushProperty, border),
+            },
         });
 
         Content = bar;
@@ -117,9 +131,10 @@ public sealed class MainToolbar : UserControl
         {
             Content = content,
             Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(6, 4),
-            Margin = new Thickness(1, 0),
+            // A 1px (resting-transparent) border keeps layout stable while the
+            // hover/pressed styles paint a visible edge in the same space.
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -132,7 +147,8 @@ public sealed class MainToolbar : UserControl
     private static Control Separator(IBrush brush) => new Border
     {
         Width = 1,
-        Margin = new Thickness(4, 4),
+        // Extra horizontal margin gives each button group some breathing room.
+        Margin = new Thickness(6, 4),
         Background = brush,
     };
 
