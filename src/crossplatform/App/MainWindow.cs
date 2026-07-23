@@ -20,7 +20,7 @@ public sealed class MainWindow : Window
 
         _pathBox = new TextBox
         {
-            Text = Directory.GetCurrentDirectory(),
+            Text = App.InitialRepoPath ?? Directory.GetCurrentDirectory(),
             Watermark = "Path to a git repository",
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -65,15 +65,42 @@ public sealed class MainWindow : Window
         Opened += (_, _) => LoadRepository(_pathBox.Text ?? string.Empty);
     }
 
+    // Accept a subdirectory: walk up until a git working dir is found.
+    private static string? FindRepositoryRoot(string path)
+    {
+        try
+        {
+            DirectoryInfo? dir = new(path);
+            while (dir is not null)
+            {
+                if (GitService.IsGitRepository(dir.FullName))
+                {
+                    return dir.FullName;
+                }
+
+                dir = dir.Parent;
+            }
+        }
+        catch
+        {
+            // fall through
+        }
+
+        return null;
+    }
+
     private void LoadRepository(string path)
     {
         _commits.ItemsSource = null;
 
-        if (!GitService.IsGitRepository(path))
+        string? repo = FindRepositoryRoot(path);
+        if (repo is null)
         {
             _status.Text = $"Not a git repository: {path}";
             return;
         }
+
+        path = repo;
 
         _status.Text = "Loading…";
 

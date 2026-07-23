@@ -33,6 +33,16 @@ internal static class Program
             return;
         }
 
+        // First argument that is an existing directory becomes the initial repo.
+        foreach (string a in args)
+        {
+            if (Directory.Exists(a))
+            {
+                App.InitialRepoPath = Path.GetFullPath(a);
+                break;
+            }
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

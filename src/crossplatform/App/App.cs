@@ -6,6 +6,9 @@ namespace GitExtensions.Avalonia;
 
 public class App : Application
 {
+    /// <summary>Repository path to open on startup; set from the command line.</summary>
+    public static string? InitialRepoPath { get; set; }
+
     public override void Initialize()
     {
         Styles.Add(new FluentTheme());
