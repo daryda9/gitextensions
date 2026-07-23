@@ -48,20 +48,42 @@ public sealed class MainWindow : Window
 
     private readonly StashOpsService _stashOps = new();
 
+    private readonly UiStateService _uiStateService = new();
+    private readonly UiState _uiState;
+
+    // Splitter-driven definitions we persist/restore (assigned in the ctor).
+    private readonly ColumnDefinition _treeCol;
+    private readonly RowDefinition _revRow;
+    private readonly RowDefinition _bottomRow;
+    private readonly RowDefinition _detailRow;
+    private readonly RowDefinition _diffRow;
+
     private string? _repoPath;
     private string? _lastSelectedHash;
 
     public MainWindow()
     {
+        // Load persisted UI state first, and apply the remembered theme before
+        // any App.* brushes are read below, so the window opens in that theme.
+        _uiState = _uiStateService.Load();
+        Theming.ThemeManager.Apply(_uiState.Theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
+
         Title = "Git Extensions (Avalonia / Linux)";
-        Width = 1280;
-        Height = 820;
+        Width = _uiState.WindowWidth;
+        Height = _uiState.WindowHeight;
         Background = (IBrush)Application.Current!.Resources["App.Window"]!;
 
         // ---- bottom panel: commit info (detail + diff) / working dir / blame / history
+        _detailRow = new RowDefinition(new GridLength(_uiState.DetailStar, GridUnitType.Star));
+        _diffRow = new RowDefinition(new GridLength(_uiState.DiffStar, GridUnitType.Star));
         Grid commitInfo = new()
         {
-            RowDefinitions = new RowDefinitions("2*,4,3*"),
+            RowDefinitions = new RowDefinitions
+            {
+                _detailRow,
+                new RowDefinition(new GridLength(4, GridUnitType.Pixel)),
+                _diffRow,
+            },
             Background = (IBrush)Application.Current!.Resources["App.Window"]!,
         };
         GridSplitter infoSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -84,9 +106,16 @@ public sealed class MainWindow : Window
         };
 
         // ---- right side: revision grid over the bottom panel
+        _revRow = new RowDefinition(new GridLength(_uiState.RevisionsStar, GridUnitType.Star));
+        _bottomRow = new RowDefinition(new GridLength(_uiState.BottomStar, GridUnitType.Star));
         Grid right = new()
         {
-            RowDefinitions = new RowDefinitions("3*,4,2*"),
+            RowDefinitions = new RowDefinitions
+            {
+                _revRow,
+                new RowDefinition(new GridLength(4, GridUnitType.Pixel)),
+                _bottomRow,
+            },
             ClipToBounds = true,
             Background = (IBrush)Application.Current!.Resources["App.Window"]!,
         };
@@ -99,9 +128,15 @@ public sealed class MainWindow : Window
         right.Children.Add(_bottom);
 
         // ---- main area: left tree | right side
+        _treeCol = new ColumnDefinition(new GridLength(_uiState.TreeWidth, GridUnitType.Pixel));
         Grid main = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("260,4,*"),
+            ColumnDefinitions = new ColumnDefinitions
+            {
+                _treeCol,
+                new ColumnDefinition(new GridLength(4, GridUnitType.Pixel)),
+                new ColumnDefinition(new GridLength(1, GridUnitType.Star)),
+            },
             Background = (IBrush)Application.Current!.Resources["App.Window"]!,
         };
         GridSplitter treeSplit = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
@@ -140,6 +175,29 @@ public sealed class MainWindow : Window
                 _ = PickRepositoryAsync();
             }
         };
+
+        // Persist window size + splitter positions when the window closes.
+        Closing += (_, _) => PersistLayout();
+    }
+
+    // Captures the current window size and splitter panel sizes and saves them.
+    private void PersistLayout()
+    {
+        try
+        {
+            _uiState.WindowWidth = Width;
+            _uiState.WindowHeight = Height;
+            _uiState.TreeWidth = _treeCol.Width.Value;
+            _uiState.RevisionsStar = _revRow.Height.Value;
+            _uiState.BottomStar = _bottomRow.Height.Value;
+            _uiState.DetailStar = _detailRow.Height.Value;
+            _uiState.DiffStar = _diffRow.Height.Value;
+            _uiStateService.Save(_uiState);
+        }
+        catch
+        {
+            // Best-effort; never block window close on a persistence failure.
+        }
     }
 
     private void WireEvents()
@@ -169,8 +227,18 @@ public sealed class MainWindow : Window
         _menu.OpenRecentRequested += repo => { if (Directory.Exists(repo)) OpenRepository(repo); };
         _menu.ExitRequested += Close;
         _menu.RefreshRequested += RefreshAll;
-        _menu.LightThemeRequested += () => Theming.ThemeManager.Apply(ThemeVariant.Light);
-        _menu.DarkThemeRequested += () => Theming.ThemeManager.Apply(ThemeVariant.Dark);
+        _menu.LightThemeRequested += () =>
+        {
+            Theming.ThemeManager.Apply(ThemeVariant.Light);
+            _uiState.Theme = "Light";
+            _uiStateService.Save(_uiState);
+        };
+        _menu.DarkThemeRequested += () =>
+        {
+            Theming.ThemeManager.Apply(ThemeVariant.Dark);
+            _uiState.Theme = "Dark";
+            _uiStateService.Save(_uiState);
+        };
         _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null).Success);
         _menu.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null).Success);
         _menu.PushRequested += () => RunRemoteOp("Push", (s, r) =>
@@ -199,6 +267,46 @@ public sealed class MainWindow : Window
             hash => RunOp("Reset mixed", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Mixed).Success));
         _revisions.AddCommitCommand("Reset (HARD) to here…",
             hash => RunOp("Reset hard", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Hard).Success, confirm: true));
+        _revisions.AddCommitCommand("Create branch here…", hash => _ = CreateBranchHereAsync(hash));
+        _revisions.AddCommitCommand("Create tag here…", hash => _ = CreateTagHereAsync(hash));
+    }
+
+    // Prompts for a branch name and creates it at the selected commit.
+    private async Task CreateBranchHereAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        string? name = await PromptAsync("Create branch", "Branch name:");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        RunOp($"Create branch {name}",
+            () => new BranchTagService().CreateBranch(_repoPath!, name.Trim(), startPoint: hash, checkout: false).Success);
+    }
+
+    // Prompts for a tag name (and optional message) and creates it at the commit.
+    private async Task CreateTagHereAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        string? name = await PromptAsync("Create tag", "Tag name:");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        string? message = await PromptAsync("Create tag", "Message (leave blank for a lightweight tag):");
+
+        RunOp($"Create tag {name}",
+            () => new BranchTagService().CreateTag(_repoPath!, name.Trim(), commit: hash, message?.Trim() ?? string.Empty).Success);
     }
 
     private void OnRevisionSelected(string commitHash)
