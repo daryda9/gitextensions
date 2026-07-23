@@ -90,6 +90,22 @@ public sealed class RevisionGridView : UserControl
     private bool _showAuthor = true;
     private bool _showDate = true;
 
+    // "View" toggles from the original grid. The first four change WHICH commits
+    // the walk includes (or the walk order) and therefore reload via the existing
+    // load path; the last two are render-time styles applied by RefreshView().
+    private bool _showRemotes = true;   // include refs/remotes in the walk
+    private bool _showTags = true;      // include refs/tags in the walk
+    private bool _showStashes;          // include stash commits in the walk
+    private bool _topoOrder;            // --topo-order vs default date order
+    private bool _drawNonRelativesGray; // dim rows not reachable from/to HEAD
+    private bool _highlightCurrentBranch; // emphasise the current branch's first-parent line
+
+    // Reachability sets computed from the loaded rows whenever _allRows changes,
+    // keyed by full hash. Ancestors ∪ descendants ∪ HEAD are the "relatives" of
+    // the current branch; _currentBranchLine is HEAD's first-parent chain.
+    private HashSet<string> _headRelatives = [];
+    private HashSet<string> _currentBranchLine = [];
+
     // Palette pulled from the shared app resources (see App.cs).
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
@@ -209,13 +225,21 @@ public sealed class RevisionGridView : UserControl
         Button branchesButton = MakeBarButton("Branches ▾");
         branchesButton.Flyout = BuildBranchesFlyout();
 
+        // "View" control: remote/tag/stash inclusion, walk order, and the two
+        // render-time highlight styles. Walk-affecting toggles reload; render-time
+        // ones re-template via RefreshView().
+        Button viewButton = MakeBarButton("View ▾");
+        viewButton.Flyout = BuildViewFlyout();
+
         DockPanel bar = new();
         DockPanel.SetDock(dateButton, Dock.Right);
         DockPanel.SetDock(columnsButton, Dock.Right);
+        DockPanel.SetDock(viewButton, Dock.Right);
         DockPanel.SetDock(branchesButton, Dock.Right);
         DockPanel.SetDock(_goToButton, Dock.Right);
         bar.Children.Add(columnsButton);
         bar.Children.Add(dateButton);
+        bar.Children.Add(viewButton);
         bar.Children.Add(branchesButton);
         bar.Children.Add(_goToButton);
         bar.Children.Add(_search); // fills the remaining space
@@ -338,6 +362,10 @@ public sealed class RevisionGridView : UserControl
 
         string repoPath = _repoPath;
         BranchScope scope = _branchScope;
+        bool showRemotes = _showRemotes;
+        bool showTags = _showTags;
+        bool showStashes = _showStashes;
+        bool topoOrder = _topoOrder;
 
         _list.ItemsSource = null;
         _status.Text = "Loading…";
@@ -346,13 +374,21 @@ public sealed class RevisionGridView : UserControl
         {
             try
             {
-                IReadOnlyList<RevisionRow> rows = _service.LoadRevisions(repoPath, scope: scope);
+                IReadOnlyList<RevisionRow> rows = _service.LoadRevisions(
+                    repoPath,
+                    scope: scope,
+                    showRemotes: showRemotes,
+                    showTags: showTags,
+                    showStashes: showStashes,
+                    topoOrder: topoOrder);
                 Dispatcher.UIThread.Post(() =>
                 {
                     int laneCount = rows.Count > 0 ? rows[0].LaneCount : 1;
                     _graphWidth = Math.Max(1, laneCount) * LaneWidth;
                     _allRows = rows;
                     _repoLabel = repoPath;
+                    // Recompute HEAD reachability for the relatives/highlight styles.
+                    ComputeReachability();
                     // Re-apply any current filter text so a reload keeps the view consistent.
                     ApplyFilter(_search.Text);
                 });
@@ -444,6 +480,176 @@ public sealed class RevisionGridView : UserControl
         IReadOnlyList<RevisionRow> current = _rows;
         _list.ItemsSource = null;
         _list.ItemsSource = current;
+    }
+
+    // Recomputes, from the loaded rows, HEAD's reachability sets used by the two
+    // render-time "View" highlight styles. Best-effort and bounded to the loaded
+    // window: if HEAD is not among the loaded rows the sets stay empty and both
+    // styles become no-ops. Ancestors (all parents) ∪ descendants (all children)
+    // ∪ HEAD are the "relatives"; the current-branch line is HEAD's first-parent
+    // chain. Uses only ParentHashes already carried on each row — no git.
+    private void ComputeReachability()
+    {
+        _headRelatives = [];
+        _currentBranchLine = [];
+
+        RevisionRow? head = null;
+        foreach (RevisionRow row in _allRows)
+        {
+            if (row.IsHead)
+            {
+                head = row;
+                break;
+            }
+        }
+
+        if (head is null)
+        {
+            return;
+        }
+
+        // Index by hash for O(1) parent/child lookups, and a parent -> children map.
+        Dictionary<string, RevisionRow> byHash = new(_allRows.Count);
+        Dictionary<string, List<string>> children = [];
+        foreach (RevisionRow row in _allRows)
+        {
+            byHash[row.Hash] = row;
+        }
+
+        foreach (RevisionRow row in _allRows)
+        {
+            foreach (string parent in row.ParentHashes)
+            {
+                if (!children.TryGetValue(parent, out List<string>? kids))
+                {
+                    kids = [];
+                    children[parent] = kids;
+                }
+
+                kids.Add(row.Hash);
+            }
+        }
+
+        // Ancestors: walk parents from HEAD. Descendants: walk children from HEAD.
+        HashSet<string> relatives = [head.Hash];
+        Walk(head.Hash, relatives, h => byHash.TryGetValue(h, out RevisionRow? r) ? r.ParentHashes : []);
+        Walk(head.Hash, relatives, h => children.TryGetValue(h, out List<string>? c) ? c : []);
+        _headRelatives = relatives;
+
+        // Current-branch line: HEAD's first-parent chain (approximates the branch).
+        HashSet<string> line = [];
+        string? cursor = head.Hash;
+        while (cursor is not null && line.Add(cursor) && byHash.TryGetValue(cursor, out RevisionRow? cur))
+        {
+            cursor = cur.ParentHashes.Count > 0 ? cur.ParentHashes[0] : null;
+        }
+
+        _currentBranchLine = line;
+    }
+
+    // Iterative transitive walk over a neighbour function, accumulating into seen.
+    private static void Walk(string start, HashSet<string> seen, Func<string, IReadOnlyList<string>> neighbours)
+    {
+        Stack<string> stack = new();
+        stack.Push(start);
+        while (stack.Count > 0)
+        {
+            string node = stack.Pop();
+            foreach (string next in neighbours(node))
+            {
+                if (seen.Add(next))
+                {
+                    stack.Push(next);
+                }
+            }
+        }
+    }
+
+    // "View" menu: which refs the log walks (remotes / tags / stashes), the walk
+    // order (date vs topological), and the two render-time highlight styles. The
+    // first four reload via Reload() (preserving filter/notes/date/columns/DAG);
+    // the last two only re-template via RefreshView().
+    private Flyout BuildViewFlyout()
+    {
+        StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 210 };
+
+        panel.Children.Add(SectionLabel("Show in log"));
+
+        CheckBox remotes = MakeCheck("Remote branches", _showRemotes);
+        remotes.IsCheckedChanged += (_, _) =>
+        {
+            _showRemotes = remotes.IsChecked == true;
+            Reload();
+        };
+
+        CheckBox tags = MakeCheck("Tags", _showTags);
+        tags.IsCheckedChanged += (_, _) =>
+        {
+            _showTags = tags.IsChecked == true;
+            Reload();
+        };
+
+        CheckBox stashes = MakeCheck("Stashes", _showStashes);
+        stashes.IsCheckedChanged += (_, _) =>
+        {
+            _showStashes = stashes.IsChecked == true;
+            Reload();
+        };
+
+        panel.Children.Add(remotes);
+        panel.Children.Add(tags);
+        panel.Children.Add(stashes);
+
+        panel.Children.Add(SectionLabel("Order"));
+        RadioButton dateOrder = MakeRadio("Date order", "revOrder", !_topoOrder);
+        RadioButton topoOrder = MakeRadio("Topo-order", "revOrder", _topoOrder);
+        dateOrder.IsCheckedChanged += (_, _) =>
+        {
+            if (dateOrder.IsChecked == true && _topoOrder)
+            {
+                _topoOrder = false;
+                Reload();
+            }
+        };
+        topoOrder.IsCheckedChanged += (_, _) =>
+        {
+            if (topoOrder.IsChecked == true && !_topoOrder)
+            {
+                _topoOrder = true;
+                Reload();
+            }
+        };
+        panel.Children.Add(dateOrder);
+        panel.Children.Add(topoOrder);
+
+        panel.Children.Add(SectionLabel("Highlighting"));
+
+        CheckBox nonRelatives = MakeCheck("Draw non-relatives gray", _drawNonRelativesGray);
+        nonRelatives.IsCheckedChanged += (_, _) =>
+        {
+            _drawNonRelativesGray = nonRelatives.IsChecked == true;
+            RefreshView();
+        };
+
+        CheckBox highlight = MakeCheck("Highlight current branch", _highlightCurrentBranch);
+        highlight.IsCheckedChanged += (_, _) =>
+        {
+            _highlightCurrentBranch = highlight.IsChecked == true;
+            RefreshView();
+        };
+
+        panel.Children.Add(nonRelatives);
+        panel.Children.Add(highlight);
+
+        return new Flyout
+        {
+            Content = new Border
+            {
+                Background = B("App.Panel"),
+                Padding = new Thickness(2),
+                Child = panel,
+            },
+        };
     }
 
     // Formats a row's Date cell from the selected source (commit vs author) and
@@ -1045,10 +1251,23 @@ public sealed class RevisionGridView : UserControl
             grid.Children.Add(graph);
         }
 
+        // Render-time "View" highlight styles (no reload):
+        //  - highlight current branch: HEAD's first-parent line is emphasised
+        //    (accent + bold), taking precedence over graying.
+        //  - draw non-relatives gray: rows not reachable from/to HEAD are dimmed.
+        //    Guarded on a non-empty relatives set so it is a no-op when HEAD is
+        //    outside the loaded window.
+        bool onBranch = _highlightCurrentBranch && _currentBranchLine.Contains(row.Hash);
+        bool nonRelative = !onBranch && _drawNonRelativesGray
+            && _headRelatives.Count > 0 && !_headRelatives.Contains(row.Hash);
+
+        IBrush hashBrush = nonRelative ? B("App.TextDim") : B("App.Accent");
+        IBrush subjectBrush = onBranch ? B("App.Accent") : nonRelative ? B("App.TextDim") : B("App.Text");
+
         // Hash: monospace + accent so it reads as a code identifier.
         if (_showHash)
         {
-            AddCell(grid, 1, row.ShortHash, B("App.Accent"), monospace: true);
+            AddCell(grid, 1, row.ShortHash, hashBrush, bold: onBranch, monospace: true);
         }
 
         if (_showAuthor)
@@ -1077,13 +1296,23 @@ public sealed class RevisionGridView : UserControl
 
         foreach (string refName in row.RefNames)
         {
+            // Respect the remote/tag "View" toggles: hide remote-tracking or tag
+            // badges when the corresponding toggle is off, so badge display stays
+            // consistent with what the walk includes. (Kind is the same '/'/version
+            // heuristic used by RefColors, so it is best-effort.)
+            if ((!_showRemotes && IsRemoteRef(refName)) || (!_showTags && IsTagRef(refName)))
+            {
+                continue;
+            }
+
             subject.Children.Add(BuildRefBadge(refName));
         }
 
         subject.Children.Add(new TextBlock
         {
             Text = row.Subject,
-            Foreground = B("App.Text"),
+            Foreground = subjectBrush,
+            FontWeight = onBranch ? FontWeight.Bold : FontWeight.Normal,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
         });
@@ -1129,6 +1358,14 @@ public sealed class RevisionGridView : UserControl
             },
         };
     }
+
+    // Ref-kind heuristics (shared by badge coloring and the remote/tag toggles):
+    // a "/" marks a remote-tracking ref (origin/main); a leading version-like
+    // token (v1.2, 2.0) marks a tag. Local branches match neither.
+    private static bool IsRemoteRef(string refName) => refName.Contains('/');
+
+    private static bool IsTagRef(string refName)
+        => !IsRemoteRef(refName) && Regex.IsMatch(refName, @"^v?\d");
 
     // Remote-tracking refs contain a "/" (e.g. origin/main); simple version-like
     // names (v1.2, 2.0) are treated as tags; everything else is a local branch.

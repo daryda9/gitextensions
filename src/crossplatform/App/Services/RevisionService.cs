@@ -72,6 +72,13 @@ public sealed record RevisionRow(
     ///  so the view can size the fixed-width graph column consistently.
     /// </summary>
     public int LaneCount { get; init; } = 1;
+
+    /// <summary>
+    ///  True when this commit is the currently checked-out HEAD. Used by the view
+    ///  to compute reachability (relatives / non-relatives) and to highlight the
+    ///  current branch line — both are render-time styles, no reload.
+    /// </summary>
+    public bool IsHead { get; init; }
 }
 
 /// <summary>
@@ -100,19 +107,50 @@ public sealed class RevisionService
     ///  Loads the most recent <paramref name="maxCount"/> commits, newest first,
     ///  with author, date, subject, parent hashes and ref names (branches/tags)
     ///  attached. The <paramref name="scope"/> selects which refs the log walks:
-    ///  every ref (<see cref="BranchScope.AllBranches"/>, the default — passes
-    ///  <c>--all</c>), only the current branch (<see cref="BranchScope.CurrentBranch"/>,
-    ///  plain HEAD), or a provided ref set (<see cref="BranchScope.Filtered"/>;
-    ///  falls back to HEAD when <paramref name="filteredRefs"/> is empty).
+    ///  every ref (<see cref="BranchScope.AllBranches"/>, the default), only the
+    ///  current branch (<see cref="BranchScope.CurrentBranch"/>, plain HEAD), or a
+    ///  provided ref set (<see cref="BranchScope.Filtered"/>; falls back to HEAD
+    ///  when <paramref name="filteredRefs"/> is empty).
+    ///
+    ///  <para>Under <see cref="BranchScope.AllBranches"/> the walked ref set is
+    ///  built explicitly from local branches plus, per the "View" toggles,
+    ///  remote-tracking branches (<paramref name="showRemotes"/> → <c>--remotes</c>),
+    ///  tags (<paramref name="showTags"/> → <c>--tags</c>) and stash commits
+    ///  (<paramref name="showStashes"/> → the hashes from <c>git stash list</c>).
+    ///  These toggles are inert for the current-branch / filtered scopes, which
+    ///  walk an explicit HEAD/ref set only.</para>
+    ///
+    ///  <para><paramref name="topoOrder"/> switches the walk from the default date
+    ///  order to topological order (<c>--topo-order</c>).</para>
     /// </summary>
     public IReadOnlyList<RevisionRow> LoadRevisions(
         string repoPath,
         int maxCount = 200,
         BranchScope scope = BranchScope.AllBranches,
         IReadOnlyList<string>? filteredRefs = null,
+        bool showRemotes = true,
+        bool showTags = true,
+        bool showStashes = false,
+        bool topoOrder = false,
         CancellationToken cancellationToken = default)
     {
         GitModule module = GitContext.CreateModule(repoPath);
+
+        // The currently checked-out commit, so the view can mark the HEAD row and
+        // compute reachability for the relatives/highlight render styles.
+        string headHash = string.Empty;
+        try
+        {
+            ObjectId head = module.GetCurrentCheckout();
+            if (head is { IsZero: false, IsArtificial: false })
+            {
+                headHash = head.ToString();
+            }
+        }
+        catch
+        {
+            // HEAD is a nicety for styling only; never block the log on it.
+        }
 
         // Build an ObjectId -> ref-names lookup so we can show branches/tags inline.
         Dictionary<ObjectId, List<string>> refsByCommit = [];
@@ -148,22 +186,52 @@ public sealed class RevisionService
 
         // The revision filter is fed verbatim into `git log`. --max-count caps it;
         // the scope suffix chooses the walked refs:
-        //   AllBranches   -> "--all"        (every ref)
+        //   AllBranches   -> HEAD + --branches, plus --remotes/--tags/stash hashes
+        //                    per the "View" toggles (an explicit form of --all so
+        //                    remote/tag/stash inclusion can be switched off).
         //   CurrentBranch -> ""             (git log defaults to HEAD)
         //   Filtered      -> the given refs (or HEAD when none supplied)
-        string scopeArgs = scope switch
+        string scopeArgs;
+        if (scope == BranchScope.AllBranches)
         {
-            BranchScope.AllBranches => "--all",
-            BranchScope.CurrentBranch => string.Empty,
-            BranchScope.Filtered => filteredRefs is { Count: > 0 }
+            List<string> parts = ["HEAD", "--branches"];
+            if (showRemotes)
+            {
+                parts.Add("--remotes");
+            }
+
+            if (showTags)
+            {
+                parts.Add("--tags");
+            }
+
+            if (showStashes)
+            {
+                // Stashes are not reachable from ordinary refs, so include their
+                // commit hashes explicitly (their ancestry is already covered by
+                // the branch walk). Best-effort: absent/failed stash list is fine.
+                parts.AddRange(LoadStashHashes(module));
+            }
+
+            scopeArgs = string.Join(' ', parts);
+        }
+        else if (scope == BranchScope.CurrentBranch)
+        {
+            scopeArgs = string.Empty;
+        }
+        else
+        {
+            scopeArgs = filteredRefs is { Count: > 0 }
                 ? string.Join(' ', filteredRefs)
-                : "HEAD",
-            _ => "--all",
-        };
+                : "HEAD";
+        }
+
+        // Topological vs. the default (commit-date) ordering.
+        string orderArg = topoOrder ? " --topo-order" : string.Empty;
 
         string revisionFilter = scopeArgs.Length == 0
-            ? $"--max-count={maxCount}"
-            : $"--max-count={maxCount} {scopeArgs}";
+            ? $"--max-count={maxCount}{orderArg}"
+            : $"--max-count={maxCount}{orderArg} {scopeArgs}";
 
         reader.GetLog(
             subject: collector,
@@ -196,6 +264,7 @@ public sealed class RevisionService
                 RefNames: refNames)
             {
                 HasNotes = commitsWithNotes.Contains(hash),
+                IsHead = headHash.Length > 0 && hash.Equals(headHash, StringComparison.OrdinalIgnoreCase),
             });
         }
 
@@ -243,6 +312,41 @@ public sealed class RevisionService
         }
 
         return withNotes;
+    }
+
+    /// <summary>
+    ///  Returns the commit hashes of the repository's stashes via a single
+    ///  <c>git stash list --format=%H</c>. Used to include stash commits in the
+    ///  "All branches" walk when the "Show stashes" toggle is on. Failures (no
+    ///  stashes, older git) yield an empty list so the log always loads.
+    /// </summary>
+    private static IEnumerable<string> LoadStashHashes(GitModule module)
+    {
+        List<string> hashes = [];
+        try
+        {
+            GitArgumentBuilder args = new("stash") { "list", "--format=%H" };
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            if (!result.ExitedSuccessfully)
+            {
+                return hashes;
+            }
+
+            foreach (string rawLine in result.StandardOutput.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length > 0)
+                {
+                    hashes.Add(line);
+                }
+            }
+        }
+        catch
+        {
+            // Stashes are a nicety; never block the log on their absence/failure.
+        }
+
+        return hashes;
     }
 
     /// <summary>
