@@ -18,6 +18,7 @@ public sealed class MainWindow : Window
     private readonly TabControl _tabs;
     private readonly RepositoryPickerView _picker;
     private readonly RevisionGridView _revisions;
+    private readonly CommitDetailView _detail;
     private readonly DiffView _diff;
     private readonly WorkingDirectoryView _workingDir;
 
@@ -36,13 +37,31 @@ public sealed class MainWindow : Window
 
         _picker = new RepositoryPickerView();
         _revisions = new RevisionGridView();
+        _detail = new CommitDetailView();
         _diff = new DiffView();
         _workingDir = new WorkingDirectoryView();
+
+        // Diff tab: commit metadata/message (top) over the file diff (bottom).
+        Grid diffPane = new()
+        {
+            RowDefinitions = new RowDefinitions("2*,4,3*"),
+        };
+        GridSplitter diffSplitter = new()
+        {
+            Height = 4,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        Grid.SetRow(_detail, 0);
+        Grid.SetRow(diffSplitter, 1);
+        Grid.SetRow(_diff, 2);
+        diffPane.Children.Add(_detail);
+        diffPane.Children.Add(diffSplitter);
+        diffPane.Children.Add(_diff);
 
         _openTab = new TabItem { Header = "Open Repository", Content = _picker };
         _historyTab = new TabItem { Header = "History", Content = _revisions };
         _commitTab = new TabItem { Header = "Commit", Content = _workingDir };
-        _diffTab = new TabItem { Header = "Diff", Content = _diff };
+        _diffTab = new TabItem { Header = "Diff", Content = diffPane };
 
         _tabs = new TabControl
         {
@@ -102,6 +121,7 @@ public sealed class MainWindow : Window
             return;
         }
 
+        _detail.ShowCommit(_repoPath, commitHash);
         _diff.ShowCommit(_repoPath, commitHash);
         _tabs.SelectedItem = _diffTab;
     }

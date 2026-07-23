@@ -41,6 +41,9 @@ public sealed class DiffView : UserControl
         _files = new ListBox
         {
             FontFamily = Monospace,
+            ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<DiffFileRow>(
+                (row, _) => new TextBlock { Text = row?.Display ?? string.Empty },
+                supportsRecycling: true),
         };
         _files.SelectionChanged += OnFileSelected;
 
