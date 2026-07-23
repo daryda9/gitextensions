@@ -44,6 +44,11 @@ public sealed class RevisionGridView : UserControl
     private readonly ContentControl _headerHost;
     private readonly TextBox _search;
 
+    // "Go to ▾" bar button (holds the navigation flyout) and its hash entry box,
+    // kept as fields so a keyboard shortcut (Ctrl+G) can open + focus them.
+    private readonly Button _goToButton;
+    private readonly TextBox _goToBox;
+
     // The full, graph-built revision set as loaded from git; filtering selects a
     // subset from this without re-running git or touching the underlying model.
     private IReadOnlyList<RevisionRow> _allRows = [];
@@ -174,11 +179,30 @@ public sealed class RevisionGridView : UserControl
         Button columnsButton = MakeBarButton("Columns ▾");
         columnsButton.Flyout = BuildColumnsFlyout();
 
+        // Compact commit-navigation control: first-parent / child jumps plus a
+        // "go to commit" hash box. Also reachable via keyboard (Alt+↑ / Alt+↓ / Ctrl+G).
+        _goToBox = new TextBox
+        {
+            Watermark = "hash (full or short)",
+            Background = B("App.Window"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            FontSize = 12,
+            MinWidth = 150,
+            Padding = new Thickness(6, 3, 4, 3),
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        _goToButton = MakeBarButton("Go to ▾");
+        _goToButton.Flyout = BuildGoToFlyout();
+
         DockPanel bar = new();
         DockPanel.SetDock(dateButton, Dock.Right);
         DockPanel.SetDock(columnsButton, Dock.Right);
+        DockPanel.SetDock(_goToButton, Dock.Right);
         bar.Children.Add(columnsButton);
         bar.Children.Add(dateButton);
+        bar.Children.Add(_goToButton);
         bar.Children.Add(_search); // fills the remaining space
 
         Border searchBar = new()
@@ -230,14 +254,33 @@ public sealed class RevisionGridView : UserControl
             }
         };
 
-        // Ctrl+C copies the selected commit's hash. (Up/Down selection is handled
-        // by the ListBox and fires RevisionSelected via SelectionChanged above.)
+        // Keyboard: Ctrl+C copies the selected commit's hash; Alt+↑ jumps to the
+        // first parent, Alt+↓ to the nearest child, Ctrl+G opens the "Go to" box.
+        // (Plain Up/Down selection is handled by the ListBox and fires
+        // RevisionSelected via SelectionChanged above.)
         _list.KeyDown += (_, e) =>
         {
-            if (e.Key == Key.C && e.KeyModifiers.HasFlag(KeyModifiers.Control)
-                && _list.SelectedItem is RevisionRow row)
+            bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+            bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
+
+            if (ctrl && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
             {
                 Copy(row.Hash);
+                e.Handled = true;
+            }
+            else if (alt && e.Key == Key.Up)
+            {
+                GoToParent();
+                e.Handled = true;
+            }
+            else if (alt && e.Key == Key.Down)
+            {
+                GoToChild();
+                e.Handled = true;
+            }
+            else if (ctrl && e.Key == Key.G)
+            {
+                OpenGoTo();
                 e.Handled = true;
             }
         };
@@ -529,6 +572,258 @@ public sealed class RevisionGridView : UserControl
                 Child = panel,
             },
         };
+    }
+
+    // "Go to" menu: buttons to jump to the first parent / nearest child of the
+    // current selection, plus a hash box to select an arbitrary commit. All three
+    // also work via keyboard (Alt+↑, Alt+↓, Ctrl+G).
+    private Flyout BuildGoToFlyout()
+    {
+        StackPanel panel = new() { Spacing = 4, Margin = new Thickness(6), MinWidth = 190 };
+
+        Flyout flyout = new();
+
+        panel.Children.Add(SectionLabel("Navigate"));
+
+        Button parent = MakeMenuButton("↑  First parent   (Alt+↑)");
+        parent.Click += (_, _) =>
+        {
+            flyout.Hide();
+            GoToParent();
+        };
+
+        Button child = MakeMenuButton("↓  Nearest child   (Alt+↓)");
+        child.Click += (_, _) =>
+        {
+            flyout.Hide();
+            GoToChild();
+        };
+
+        panel.Children.Add(parent);
+        panel.Children.Add(child);
+
+        panel.Children.Add(SectionLabel("Go to commit"));
+        panel.Children.Add(_goToBox);
+
+        Button go = MakeMenuButton("Select commit");
+        void RunGoTo()
+        {
+            string text = _goToBox.Text ?? string.Empty;
+            flyout.Hide();
+            GoToCommit(text);
+        }
+
+        go.Click += (_, _) => RunGoTo();
+
+        // Enter in the hash box triggers the jump.
+        _goToBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                RunGoTo();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                flyout.Hide();
+                e.Handled = true;
+            }
+        };
+
+        panel.Children.Add(go);
+
+        flyout.Content = new Border
+        {
+            Background = B("App.Panel"),
+            Padding = new Thickness(2),
+            Child = panel,
+        };
+        return flyout;
+    }
+
+    // A full-width, left-aligned button used inside the "Go to" flyout.
+    private static Button MakeMenuButton(string text)
+        => new()
+        {
+            Content = text,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 3, 8, 3),
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+        };
+
+    // Opens the "Go to" flyout and focuses the hash box (Ctrl+G).
+    private void OpenGoTo()
+    {
+        if (_goToButton.Flyout is Flyout f)
+        {
+            f.ShowAt(_goToButton);
+            Dispatcher.UIThread.Post(() =>
+            {
+                _goToBox.Focus();
+                _goToBox.SelectAll();
+            });
+        }
+    }
+
+    // --- Commit navigation ---------------------------------------------------
+    //
+    // Parent/child use the real DAG relationship carried on each row
+    // (RevisionRow.ParentHashes), NOT graph-lane geometry — so a jump lands on the
+    // exact commit even across merges. Navigation targets the currently displayed
+    // rows (_rows), which equal _allRows when no filter is applied; "Go to commit"
+    // additionally clears an active filter if the target is hidden by it.
+
+    // Selects the first parent (ParentHashes[0]) of the current selection.
+    private void GoToParent()
+    {
+        if (_list.SelectedItem is not RevisionRow row)
+        {
+            return;
+        }
+
+        if (row.ParentHashes.Count == 0)
+        {
+            _status.Text = "No parent commit (root).";
+            return;
+        }
+
+        if (!SelectByHash(row.ParentHashes[0]))
+        {
+            _status.Text = "Parent commit is not in the loaded history.";
+        }
+    }
+
+    // Selects the child commit nearest to the current selection: any loaded row
+    // that lists the current commit among its parents, closest by list position.
+    private void GoToChild()
+    {
+        if (_list.SelectedItem is not RevisionRow row)
+        {
+            return;
+        }
+
+        int current = _list.SelectedIndex;
+        RevisionRow? best = null;
+        int bestDistance = int.MaxValue;
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            foreach (string parent in _rows[i].ParentHashes)
+            {
+                if (parent == row.Hash)
+                {
+                    int distance = Math.Abs(i - current);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = _rows[i];
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        if (best is null)
+        {
+            _status.Text = "No child commit in the loaded history.";
+            return;
+        }
+
+        SelectRow(best);
+    }
+
+    // Selects the commit matching an entered hash (full or abbreviated). Searches
+    // the displayed rows first; if a filter hides the target, it is cleared and the
+    // full set is retried so the jump still lands.
+    private void GoToCommit(string? text)
+    {
+        string query = (text ?? string.Empty).Trim();
+        if (query.Length == 0)
+        {
+            return;
+        }
+
+        int index = FindIndex(_rows, query);
+        if (index < 0 && _filterActive)
+        {
+            // Drop the filter (ApplyFilter resets _rows to _allRows) and retry.
+            _search.Text = string.Empty;
+            index = FindIndex(_rows, query);
+        }
+
+        if (index < 0)
+        {
+            _status.Text = $"No commit matching \"{query}\".";
+            return;
+        }
+
+        SelectIndex(index);
+    }
+
+    // Locates a commit by hash: exact full/short match first, then a hash prefix.
+    private static int FindIndex(IReadOnlyList<RevisionRow> rows, string query)
+    {
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (rows[i].Hash.Equals(query, StringComparison.OrdinalIgnoreCase)
+                || rows[i].ShortHash.Equals(query, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (rows[i].Hash.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    // Selects a specific row (by full hash) in the displayed set; returns false if
+    // it is not currently shown. Scrolls the target into view and keeps focus on
+    // the list so successive keyboard jumps chain naturally.
+    private bool SelectByHash(string hash)
+    {
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            if (_rows[i].Hash == hash)
+            {
+                SelectIndex(i);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void SelectRow(RevisionRow row)
+    {
+        int index = FindIndex(_rows, row.Hash);
+        if (index >= 0)
+        {
+            SelectIndex(index);
+        }
+    }
+
+    private void SelectIndex(int index)
+    {
+        if (index < 0 || index >= _rows.Count)
+        {
+            return;
+        }
+
+        _list.SelectedIndex = index;
+        _list.ScrollIntoView(_rows[index]);
+        _list.Focus();
     }
 
     private static TextBlock SectionLabel(string text)
