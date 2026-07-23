@@ -87,9 +87,22 @@ public sealed class DiffView : UserControl
         blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
         MenuItem historyItem = new() { Header = "File history" };
         historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
+        MenuItem difftoolItem = new() { Header = "Open in external difftool" };
+        difftoolItem.Click += (_, _) => OpenSelectedInExternalDiffTool();
+        MenuItem compareWorkingDirItem = new() { Header = "Compare file to working directory" };
+        compareWorkingDirItem.Click += (_, _) => CompareSelectedToWorkingDirectory();
         _files.ContextMenu = new ContextMenu
         {
-            ItemsSource = new Control[] { copyPathItem, new Separator(), blameItem, historyItem },
+            ItemsSource = new Control[]
+            {
+                copyPathItem,
+                new Separator(),
+                blameItem,
+                historyItem,
+                new Separator(),
+                difftoolItem,
+                compareWorkingDirItem,
+            },
         };
 
         _diff = new SelectableTextBlock
@@ -230,6 +243,94 @@ public sealed class DiffView : UserControl
         {
             handler?.Invoke(row.Name);
         }
+    }
+
+    // Fire-and-forget: launch the configured external difftool for the selected
+    // file. The launch itself runs off the UI thread and the core runs the tool
+    // detached, so neither call blocks; only a config error is surfaced (status).
+    private void OpenSelectedInExternalDiffTool()
+    {
+        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        string repoPath = _repoPath;
+        string commitHash = _commitHash;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                string? message = DiffService.LaunchExternalDiffTool(repoPath, commitHash, row);
+                if (!string.IsNullOrEmpty(message))
+                {
+                    Dispatcher.UIThread.Post(() => _status.Text = message);
+                }
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.UIThread.Post(() => _status.Text = "Difftool error: " + ex.Message);
+            }
+        });
+    }
+
+    // Loads the diff of the selected file's committed version against the current
+    // working-tree version and renders it in the shared coloured diff pane.
+    private void CompareSelectedToWorkingDirectory()
+    {
+        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        // Supersede any in-flight per-file diff load, matching OnFileSelected.
+        _diffCts?.Cancel();
+        _diffCts?.Dispose();
+        _diffCts = new CancellationTokenSource();
+        CancellationToken token = _diffCts.Token;
+
+        string repoPath = _repoPath;
+        string commitHash = _commitHash;
+
+        _diff.Inlines?.Clear();
+        _diff.Text = "Loading diff against working directory…";
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string text = await DiffService.GetFileDiffAgainstWorkingTreeAsync(
+                    repoPath, commitHash, row, token);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        RenderDiff(text);
+                    }
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by another selection/compare; ignore.
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        _diff.Inlines?.Clear();
+                        _diff.Text = "Error: " + ex.Message;
+                    }
+                });
+            }
+        });
     }
 
     private void CopySelectedFilePath()

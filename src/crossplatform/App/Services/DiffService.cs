@@ -106,6 +106,85 @@ public static class DiffService
         return patch?.Text ?? "(no textual diff — binary file or no changes)";
     }
 
+    /// <summary>
+    ///  Launches the user's configured external diff tool (fire-and-forget,
+    ///  non-blocking) for <paramref name="file"/>, comparing the version in
+    ///  <paramref name="commitHash"/> against its first parent — i.e.
+    ///  <c>git difftool --no-prompt &lt;parent&gt; &lt;commit&gt; -- &lt;path&gt;</c>.
+    ///  The launch is detached via the core runner, so the tool runs
+    ///  independently of the app and the UI never blocks.
+    ///  Returns <c>null</c> on a successful launch, or a human-readable message
+    ///  (e.g. no difftool configured) to surface in the UI.
+    /// </summary>
+    public static string? LaunchExternalDiffTool(string repoPath, string commitHash, DiffFileRow file)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId commitId = ObjectId.Parse(commitHash);
+        ObjectId parentId = GetFirstParent(module, commitId);
+
+        // "git difftool --gui" resolves diff.guitool -> diff.tool -> merge.guitool
+        // -> merge.tool. If none of these is set, difftool would fail silently on
+        // a detached process, so surface a friendly message instead.
+        bool hasTool =
+            !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("diff.guitool")) ||
+            !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("diff.tool")) ||
+            !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("merge.guitool")) ||
+            !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("merge.tool"));
+        if (!hasTool)
+        {
+            return "No external difftool is configured. Set one with e.g. "
+                + "\"git config --global diff.tool <tool>\".";
+        }
+
+        // Reuse the core's detached difftool launch (uses "--no-prompt" and runs
+        // the process detached, so the GUI tool stays open and the app never waits).
+        module.OpenWithDifftool(
+            filename: file.Name,
+            oldFileName: file.OldName,
+            firstRevision: parentId.IsZero ? null : parentId.ToString(),
+            secondRevision: commitId.ToString(),
+            isTracked: file.IsTracked);
+
+        return null;
+    }
+
+    /// <summary>
+    ///  Returns the unified diff between the working-tree version of
+    ///  <paramref name="file"/> and its version in <paramref name="commitHash"/>
+    ///  — i.e. <c>git diff &lt;commit&gt; -- &lt;path&gt;</c> (that commit is the
+    ///  "old" side, the current working tree the "new" side). The result is a
+    ///  plain unified-diff string rendered by the same coloured diff pane.
+    /// </summary>
+    public static async Task<string> GetFileDiffAgainstWorkingTreeAsync(
+        string repoPath,
+        string commitHash,
+        DiffFileRow file,
+        CancellationToken cancellationToken = default)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId commitId = ObjectId.Parse(commitHash);
+
+        (Patch? patch, string? errorMessage) = await module.GetSingleDiffAsync(
+            firstId: commitId,
+            secondId: default, // zero ObjectId => working tree ("secondRevision" null)
+            fileName: file.Name,
+            oldFileName: null, // compare by current path only against the working tree
+            extraDiffArguments: string.Empty,
+            encoding: GitModule.SystemEncoding,
+            cacheResult: false, // the working tree is volatile; never cache
+            isTracked: file.IsTracked,
+            useGitColoring: false,
+            commandConfiguration: null!,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (!string.IsNullOrEmpty(errorMessage))
+        {
+            return errorMessage!;
+        }
+
+        return patch?.Text ?? "(no differences between the commit and the working tree)";
+    }
+
     private static ObjectId GetFirstParent(GitModule module, ObjectId commitId)
     {
         IReadOnlyList<ObjectId> parents = module.GetParents(commitId);
