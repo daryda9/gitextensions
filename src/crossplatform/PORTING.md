@@ -135,6 +135,17 @@ comportamento (le guardie sono `false`).
   Stash renderizzano. Fix: warm-up single-thread del core (race su `Lazy`
   condivisa a load concorrente); `ToString` dei DTO per il rendering delle liste.
 
+- **M7** — restyle grafico su layout dell'app originale (FormBrowse): finestra
+  unica integrata con **toolbar a icone** (Open/Fetch/Pull/Push/Commit/Stash/
+  Refresh/New branch), **albero a sinistra** (`RepoObjectsTree`: branch/remote/
+  tag/stash + menu contestuali), **revision grid DAG** al centro, **pannello
+  inferiore** a tab (Commit=dettaglio+diff / Working directory / Blame / File
+  history), **status bar** (repo · branch · ahead/behind). Riusa le 256 icone
+  PNG originali (`IconLoader`, link AvaloniaResource) + tema scuro tipo
+  GitExtensions (palette in `App.cs`). Fondazione (icone+tema) + 3 subagent in
+  parallelo (albero, toolbar+status, restyle grid/detail/diff), poi
+  integrazione del `MainWindow`. Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -195,12 +206,19 @@ credenziali passate transitoriamente negli arg del comando (mai persistite);
 blame/history guidati da input path manuale (non ancora agganciati al menu
 "Blame/History di questo file" nella lista file del diff).
 
+### UI / look originale ✅ (M7)
+Layout FormBrowse (toolbar + albero + grid DAG + pannello inferiore + status
+bar), icone originali, tema scuro. Vedi milestone M7.
+Aperto su questo fronte: menu principale (File/Edit/View…); grafica del grafo
+DAG più ricca; drag/filtri nella grid; rifinire spaziature/hover.
+
 ### Priorità bassa — contorno
 9. **Pagine settings** in Avalonia (il framework `ISettingControlBinding` è
    WinForms; ridisegnare il binding).
 10. **Sistema di plugin**: i plugin espongono form WinForms; ripensare il
     modello UI dei plugin per Avalonia.
-11. **Temi**: portare `GitUI/Theming` (oggi GDI) allo stile Avalonia.
+11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro Avalonia proprio fatto in
+    M7; resta l'eventuale switch chiaro/scuro + più varianti.
 
 ### Debito tecnico / pulizia
 - **Sostituire gli shim con implementazioni vere** dove un percorso runtime li
