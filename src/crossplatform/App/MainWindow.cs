@@ -59,11 +59,13 @@ public sealed class MainWindow : Window
         _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
         _bottom = new TabControl
         {
+            Background = (IBrush)Resources["App.Window"]!,
+            ClipToBounds = true,
             Items = { _commitInfoTab, _workingDirTab, _blameTab, _historyTab },
         };
 
         // ---- right side: revision grid over the bottom panel
-        Grid right = new() { RowDefinitions = new RowDefinitions("3*,4,2*") };
+        Grid right = new() { RowDefinitions = new RowDefinitions("3*,4,2*"), ClipToBounds = true };
         GridSplitter rightSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
         Grid.SetRow(_revisions, 0);
         Grid.SetRow(rightSplit, 1);

@@ -89,6 +89,7 @@ public sealed class RevisionGridView : UserControl
             Foreground = B("App.Text"),
             FontSize = RowFontSize,
             BorderThickness = new Thickness(0),
+            ClipToBounds = true,
             ItemTemplate = new FuncDataTemplate<RevisionRow>((row, _) => BuildRow(row), supportsRecycling: true),
         };
 
@@ -401,6 +402,11 @@ public sealed class RevisionGridView : UserControl
             _segments = segments;
             _nodeLane = nodeLane;
             _laneWidth = laneWidth;
+
+            // Custom-drawn Controls do NOT clip by default: lane lines/edges can
+            // paint outside the row's bounds and smear into neighbours / the
+            // panel below. Clip strictly to our own bounds.
+            ClipToBounds = true;
         }
 
         private static IBrush Brush(int lane)
