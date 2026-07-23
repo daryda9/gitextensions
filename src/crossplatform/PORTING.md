@@ -324,6 +324,21 @@ comportamento (le guardie sono `false`).
     → integrazione futura.
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M20** — struttura toolbar + dialoghi (3 subagent claude paralleli, file
+  disgiunti — MainToolbar/MainWindow, RepoObjectsTree, WorkingDirectoryView):
+  - **Toolbar completa**: Split view (stacked ↔ side-by-side), Commit info
+    position (below/left/right, ri-hosta il pannello dettaglio), File Explorer
+    (`ExternalToolService.OpenPath`), Terminal (`OpenTerminal`). **StashPanel**
+    ora agganciato come tab del pannello inferiore (Commit / Working directory /
+    Stash / Blame / File history).
+  - **Submodules manager dialog** dal nodo tree: update / update-all / sync-all /
+    init-all con output.
+  - **Reset changes**: discard modifiche tracked, tutte (`git reset --hard HEAD`,
+    conferma) o per-file (`git checkout -- <path>`); untracked preservati.
+  Build 0 errori, GUI verificata headless (xvfb) — toolbar + tab Stash renderizzati.
+  La struttura UI (menu · toolbar · albero · grid DAG · tab inferiori · status
+  bar) rispecchia ora `FormBrowse` dell'originale.
+
 ### Come avviarlo
 
 ```bash
@@ -428,14 +443,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 11 / 20** · parità **78.1%** (125/160 voci `[x]`). Questo giro
-> (M19): 3 subagent paralleli → commit-edit (reword-HEAD/older, squash, fixup via
-> rebase autosquash scriptato, con guardie); grid "View ▾" (mostra remote/tags/
-> stashes, topo-order, non-relatives-gray, highlight-HEAD); stash con messaggio +
-> include-untracked + view diff. Più de-dup di voci già completate (Clone/Init,
-> Reflog, Cleanup, edit dotfiles, submodule ops). Prossimo: iter. 12 → toolbar
-> mancante (split-view, commit-info position, file explorer, shell); poi
-> maintenance/Favorite/Dashboard, patch, e modello plugin.
+> **Iterazione: 12 / 20** · parità **82.5%** (132/160 voci `[x]`). Questo giro
+> (M20): 3 subagent paralleli → toolbar completa (Split view, Commit info
+> below/left/right, File Explorer, Terminal) + StashPanel agganciato come tab;
+> Submodules manager dialog (update/sync/init); Reset changes (discard tracked,
+> all + per-file). La struttura UI ora rispecchia FormBrowse (menu + toolbar +
+> tree + grid + tab inferiori). Prossimo: iter. 13 → Favorite/Dashboard,
+> maintenance (gc/fsck), patch (format/apply/view); poi modello plugin.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -450,7 +464,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Repository ▸ Refresh
 - [x] Repository ▸ File Explorer (xdg-open)
 - [x] Repository ▸ Remote repositories… (Remotes manager dal tree)
-- [ ] Repository ▸ Manage submodules / update / synchronize
+- [x] Repository ▸ Manage submodules / update / synchronize (dialog dal tree)
 - [ ] Repository ▸ Manage worktrees
 - [x] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
 - [ ] Repository ▸ Sparse working copy
@@ -491,8 +505,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 ### B. Toolbar
 - [x] Refresh
 - [x] Toggle left panel
-- [ ] Toggle split-view layout
-- [ ] Commit-info position (below/left/right)
+- [x] Toggle split-view layout (stacked ↔ side-by-side)
+- [x] Commit-info position (below/left/right)
 - [ ] Level-up / Submodules split button
 - [ ] Worktrees split button
 - [x] Working directory / recent-repo picker (Open)
@@ -501,8 +515,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Push
 - [x] Commit
 - [x] Stash (+ stash staged / pop / manage)
-- [ ] File Explorer
-- [ ] User shell selector
+- [x] File Explorer
+- [x] User shell selector (terminal in repo dir)
 - [x] Settings/Edit button (apertura)
 - [x] New branch
 - [x] Fetch
@@ -563,7 +577,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Rename branch
 - [ ] Delete remote branch
 - [x] Revert commit
-- [ ] Reset changes (dialog dedicato)
+- [x] Reset changes (discard tracked, all + per-file, conferma)
 - [x] Cleanup repository (git clean, M12)
 - [x] Resolve conflicts
 - [ ] Merge submodule
@@ -572,7 +586,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Add to .gitignore (path / *.ext / dir/, da file untracked)
 - [x] Edit .gitignore / .gitattributes / .mailmap (xdg-open, M16)
 - [ ] Sparse working copy
-- [ ] Submodules manager
+- [x] Submodules manager (update/update-all/sync/init)
 - [x] Reflog browser (copy hash / checkout)
 - [ ] Compare to branch
 - [ ] Verify database / recover lost objects
