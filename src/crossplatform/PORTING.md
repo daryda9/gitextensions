@@ -249,6 +249,21 @@ comportamento (le guardie sono `false`).
     "Columns ▾"). DAG e filtro invariati; header "Hash" → "Commit ID".
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M15** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — uno tocca `MainWindow`, uno `RepoObjectsTree`, uno `DiffView`):
+  - **Revert + Archive** dal menu contestuale della grid (`AddCommitCommand`):
+    `git revert --no-edit <hash>` (conflitti gestiti, refresh mostra lo stato) e
+    `git archive --format=zip|tar.gz -o <file> <hash>` via `ArchiveDialog`
+    (formato + save-file picker). Nuovo `RevertArchiveService`.
+  - **Remotes manager** dal nodo Remotes del tree: `RemotesDialog` (lista + Add/
+    Edit URL/Rename/Remove) + azioni rapide per-remote; `RemoteService` esteso
+    con `git remote add/rename/remove/set-url`.
+  - **DiffView**: "Open in external difftool" (`GitModule.OpenWithDifftool`,
+    detached/non-blocking, messaggio se nessun tool configurato) e "Compare file
+    to working directory" (`git diff <commit> -- <path>`, reso nel pannello diff
+    colorato esistente).
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -353,12 +368,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 6 / 20** · parità **55.0%** (88/160 voci `[x]`). Questo giro
-> (M14): 3 subagent paralleli → Clone + Init repository dal menu File; nodo
-> Submodules nel tree (list/update); revision grid — colonna git-notes + toggle
-> data (author/commit, relative/assoluta) + mostra/nascondi colonne. Prossimo:
-> iter. 7 → Remotes manager, Revert, Compare, Worktrees node, Reflog, Archive,
-> menu Repository/Tools; modello UI plugin verso la fine.
+> **Iterazione: 7 / 20** · parità **60.6%** (97/160 voci `[x]`). Questo giro
+> (M15): 3 subagent paralleli → Revert + Archive commit dal menu contestuale
+> grid; Remotes manager (add/edit-url/rename/remove) dal tree; DiffView — apri
+> file in difftool esterno + compare file→working directory. Prossimo: iter. 8 →
+> Worktrees node, Reflog, Compare (BASE/selected), menu Repository/Tools/Help,
+> toolbar mancante; modello UI plugin verso la fine.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -372,7 +387,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Dashboard (close-to-dashboard + refresh)
 - [x] Repository ▸ Refresh
 - [ ] Repository ▸ File Explorer
-- [ ] Repository ▸ Remote repositories…
+- [x] Repository ▸ Remote repositories… (Remotes manager dal tree)
 - [ ] Repository ▸ Manage submodules / update / synchronize
 - [ ] Repository ▸ Manage worktrees
 - [ ] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
@@ -395,7 +410,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Commands ▸ Create tag
 - [x] Commands ▸ Delete tag
 - [x] Commands ▸ Cherry pick
-- [ ] Commands ▸ Archive revision
+- [x] Commands ▸ Archive revision (git archive zip/tar.gz)
 - [x] Commands ▸ Checkout revision
 - [ ] Commands ▸ Bisect
 - [ ] Commands ▸ Show reflog
@@ -451,7 +466,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Colonna git notes (indicatore + tooltip, `git notes list` batch)
 - [x] Menu contestuale: copy hash/subject/author
 - [x] Menu contestuale: checkout commit / cherry-pick / reset (soft·mixed·hard)
-- [ ] Menu contestuale: revert commit
+- [x] Menu contestuale: revert commit (git revert --no-edit)
 - [x] Menu contestuale: create branch/tag here
 - [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
 - [ ] Menu contestuale: bisect good/bad/skip/stop
@@ -482,15 +497,15 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Credenziali (custom, per push/pull http)
 - [x] Clone (CloneDialog: URL + folder picker)
 - [x] Init (create new repository)
-- [ ] Remotes manager
+- [x] Remotes manager (add/edit-url/rename/remove)
 - [x] Rename branch
 - [ ] Delete remote branch
-- [ ] Revert commit
+- [x] Revert commit
 - [ ] Reset changes (dialog dedicato)
 - [ ] Cleanup repository (git clean)
 - [ ] Resolve conflicts
 - [ ] Merge submodule
-- [ ] Archive
+- [x] Archive
 - [ ] Format patch / Apply patch / View patch
 - [ ] Add to .gitignore
 - [ ] Edit .gitignore / .gitattributes / .mailmap
@@ -513,7 +528,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Merge
 - [x] Rebase (⚠ non interattivo)
 - [x] Cherry-pick
-- [ ] Revert
+- [x] Revert
 - [x] Reset (soft/mixed/hard da grid)
 - [x] Clean working directory (git clean -fd, dry-run + conferma)
 - [x] Stash: save / apply / pop / drop
@@ -523,9 +538,9 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Bisect
 - [ ] Submodule ops
 - [ ] Worktree ops
-- [ ] Archive
+- [x] Archive
 - [ ] Patch (format/apply/view)
-- [ ] Remotes manage / add upstream
+- [x] Remotes manage (add/rename/remove/set-url; add-upstream implicito)
 - [ ] Maintenance (gc / fsck / index.lock / config)
 - [ ] Clone / Init
 - [ ] Reflog
