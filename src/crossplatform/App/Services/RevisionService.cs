@@ -1,6 +1,7 @@
 using GitCommands;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
+using GitExtUtils;
 using GitUIPluginInterfaces;
 
 namespace GitExtensions.Avalonia.Services;
@@ -14,11 +15,19 @@ public sealed record RevisionRow(
     string Hash,
     string ShortHash,
     string Author,
-    string Date,
+    DateTime AuthorDate,
+    DateTime CommitDate,
     string Subject,
     IReadOnlyList<string> ParentHashes,
     IReadOnlyList<string> RefNames)
 {
+    /// <summary>
+    ///  True when this commit has a git note attached (loaded cheaply via a single
+    ///  <c>git notes list</c> for the whole repository — see
+    ///  <see cref="RevisionService.LoadNotes"/>). Shown as an indicator in the grid.
+    /// </summary>
+    public bool HasNotes { get; init; }
+
     /// <summary>Ref names joined for inline display, e.g. "[main] [origin/main] [v1.0]".</summary>
     public string RefsDisplay
         => RefNames.Count == 0 ? string.Empty : string.Join(" ", RefNames.Select(r => $"[{r}]"));
@@ -102,6 +111,10 @@ public sealed class RevisionService
             // Refs are a nicety; a failure here must not prevent the log from loading.
         }
 
+        // Commits carrying a git note. Loaded with a SINGLE `git notes list` for the
+        // whole repository (not one call per row) so the indicator column is cheap.
+        HashSet<string> commitsWithNotes = LoadNotes(module);
+
         RevisionCollector collector = new();
         RevisionReader reader = new(module);
 
@@ -130,13 +143,60 @@ public sealed class RevisionService
                 Hash: hash,
                 ShortHash: revision.ObjectId.ToShortString(),
                 Author: revision.Author ?? string.Empty,
-                Date: revision.CommitDate == DateTime.MaxValue ? string.Empty : revision.CommitDate.ToString("yyyy-MM-dd HH:mm"),
+                AuthorDate: revision.AuthorDate,
+                CommitDate: revision.CommitDate,
                 Subject: revision.Subject ?? string.Empty,
                 ParentHashes: parents,
-                RefNames: refNames));
+                RefNames: refNames)
+            {
+                HasNotes = commitsWithNotes.Contains(hash),
+            });
         }
 
         return BuildGraph(rows);
+    }
+
+    /// <summary>
+    ///  Returns the set of commit hashes that have a git note attached, using a
+    ///  single <c>git notes list</c> invocation for the whole repository. Each line
+    ///  of the output is "&lt;noteBlob&gt; &lt;annotatedCommit&gt;"; we keep the second
+    ///  token. Failures (no notes ref, older git) are swallowed and yield an empty
+    ///  set so the log always loads.
+    /// </summary>
+    private static HashSet<string> LoadNotes(GitModule module)
+    {
+        HashSet<string> withNotes = new(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            GitArgumentBuilder args = new("notes") { "list" };
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            if (!result.ExitedSuccessfully)
+            {
+                return withNotes;
+            }
+
+            foreach (string rawLine in result.StandardOutput.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                int space = line.IndexOf(' ');
+                string commit = space >= 0 ? line[(space + 1)..].Trim() : line;
+                if (commit.Length > 0)
+                {
+                    withNotes.Add(commit);
+                }
+            }
+        }
+        catch
+        {
+            // Notes are a nicety; never block the log on their absence/failure.
+        }
+
+        return withNotes;
     }
 
     /// <summary>

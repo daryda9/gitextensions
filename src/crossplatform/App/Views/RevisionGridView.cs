@@ -63,6 +63,20 @@ public sealed class RevisionGridView : UserControl
     // Path of the loaded repository, for the status line.
     private string _repoLabel = string.Empty;
 
+    // --- "View" options, matching the original Git Extensions revision grid. ---
+
+    // Which timestamp the Date column shows, and whether it is rendered relative
+    // ("3 days ago") or absolute ("yyyy-MM-dd HH:mm"). Applied live via RefreshView.
+    private enum DateSource { Commit, Author }
+
+    private DateSource _dateSource = DateSource.Commit;
+    private bool _relativeDates;
+
+    // Column visibility toggles (the graph + Subject columns always stay).
+    private bool _showHash = true;
+    private bool _showAuthor = true;
+    private bool _showDate = true;
+
     // Palette pulled from the shared app resources (see App.cs).
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
@@ -151,13 +165,29 @@ public sealed class RevisionGridView : UserControl
             }
         };
 
+        // Compact "View" controls sitting to the right of the filter box: a Date
+        // menu (author/commit + relative/absolute) and a Columns menu (show/hide
+        // Author, Date, Commit-ID). Both apply live via RefreshView().
+        Button dateButton = MakeBarButton("Date ▾");
+        dateButton.Flyout = BuildDateFlyout();
+
+        Button columnsButton = MakeBarButton("Columns ▾");
+        columnsButton.Flyout = BuildColumnsFlyout();
+
+        DockPanel bar = new();
+        DockPanel.SetDock(dateButton, Dock.Right);
+        DockPanel.SetDock(columnsButton, Dock.Right);
+        bar.Children.Add(columnsButton);
+        bar.Children.Add(dateButton);
+        bar.Children.Add(_search); // fills the remaining space
+
         Border searchBar = new()
         {
             Background = B("App.Toolbar"),
             BorderBrush = B("App.Border"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(10, 6, 10, 6),
-            Child = _search,
+            Child = bar,
         };
 
         _list = new ListBox
@@ -316,12 +346,252 @@ public sealed class RevisionGridView : UserControl
         || row.Hash.Contains(query, StringComparison.OrdinalIgnoreCase)
         || row.ShortHash.Contains(query, StringComparison.OrdinalIgnoreCase);
 
-    private Grid MakeColumns()
+    // Re-applies the current "View" options (date mode / visible columns) without
+    // re-running git: it rebuilds the header and re-templates the currently shown
+    // rows (respecting any active filter, since _rows is the filtered subset).
+    private void RefreshView()
+    {
+        _headerHost.Content = BuildHeader();
+        IReadOnlyList<RevisionRow> current = _rows;
+        _list.ItemsSource = null;
+        _list.ItemsSource = current;
+    }
+
+    // Formats a row's Date cell from the selected source (commit vs author) and
+    // mode (absolute vs relative). Artificial/empty timestamps render as blank.
+    private string FormatDate(RevisionRow row)
+    {
+        DateTime dt = _dateSource == DateSource.Author ? row.AuthorDate : row.CommitDate;
+        if (dt == DateTime.MaxValue || dt == DateTime.MinValue)
+        {
+            return string.Empty;
+        }
+
+        return _relativeDates ? Relative(dt) : dt.ToString("yyyy-MM-dd HH:mm");
+    }
+
+    // A compact human "… ago" rendering (dates are LocalDateTime, so compare to now).
+    private static string Relative(DateTime dt)
+    {
+        TimeSpan span = DateTime.Now - dt;
+        if (span.Ticks < 0)
+        {
+            span = TimeSpan.Zero;
+        }
+
+        if (span.TotalSeconds < 60)
+        {
+            return "just now";
+        }
+
+        if (span.TotalMinutes < 60)
+        {
+            int m = (int)span.TotalMinutes;
+            return $"{m} minute{(m == 1 ? "" : "s")} ago";
+        }
+
+        if (span.TotalHours < 24)
+        {
+            int h = (int)span.TotalHours;
+            return $"{h} hour{(h == 1 ? "" : "s")} ago";
+        }
+
+        if (span.TotalDays < 30)
+        {
+            int d = (int)span.TotalDays;
+            return $"{d} day{(d == 1 ? "" : "s")} ago";
+        }
+
+        if (span.TotalDays < 365)
+        {
+            int mo = (int)(span.TotalDays / 30);
+            return $"{mo} month{(mo == 1 ? "" : "s")} ago";
+        }
+
+        int y = (int)(span.TotalDays / 365);
+        return $"{y} year{(y == 1 ? "" : "s")} ago";
+    }
+
+    // A small compact toolbar button (styled from App.* brushes) used for the
+    // Date and Columns dropdown menus next to the filter box.
+    private static Button MakeBarButton(string text)
         => new()
         {
-            ColumnDefinitions = new ColumnDefinitions(
-                $"{EffectiveGraphWidth},{HashWidth},{AuthorWidth},{DateWidth},*"),
+            Content = text,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 3, 8, 3),
+            FontSize = 12,
+            Margin = new Thickness(6, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
         };
+
+    // Date menu: choose the timestamp source (commit/author) and the display mode
+    // (absolute/relative). Selections apply live.
+    private Flyout BuildDateFlyout()
+    {
+        StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 150 };
+
+        panel.Children.Add(SectionLabel("Date shown"));
+        RadioButton commit = MakeRadio("Commit date", "revDateSrc", _dateSource == DateSource.Commit);
+        RadioButton author = MakeRadio("Author date", "revDateSrc", _dateSource == DateSource.Author);
+        commit.IsCheckedChanged += (_, _) =>
+        {
+            if (commit.IsChecked == true)
+            {
+                _dateSource = DateSource.Commit;
+                RefreshView();
+            }
+        };
+        author.IsCheckedChanged += (_, _) =>
+        {
+            if (author.IsChecked == true)
+            {
+                _dateSource = DateSource.Author;
+                RefreshView();
+            }
+        };
+        panel.Children.Add(commit);
+        panel.Children.Add(author);
+
+        panel.Children.Add(SectionLabel("Format"));
+        RadioButton absolute = MakeRadio("Absolute", "revDateFmt", !_relativeDates);
+        RadioButton relative = MakeRadio("Relative", "revDateFmt", _relativeDates);
+        absolute.IsCheckedChanged += (_, _) =>
+        {
+            if (absolute.IsChecked == true)
+            {
+                _relativeDates = false;
+                RefreshView();
+            }
+        };
+        relative.IsCheckedChanged += (_, _) =>
+        {
+            if (relative.IsChecked == true)
+            {
+                _relativeDates = true;
+                RefreshView();
+            }
+        };
+        panel.Children.Add(absolute);
+        panel.Children.Add(relative);
+
+        return new Flyout
+        {
+            Content = new Border
+            {
+                Background = B("App.Panel"),
+                Padding = new Thickness(2),
+                Child = panel,
+            },
+        };
+    }
+
+    // Columns menu: toggle visibility of the Author, Date and Commit-ID columns.
+    private Flyout BuildColumnsFlyout()
+    {
+        StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 140 };
+        panel.Children.Add(SectionLabel("Show columns"));
+
+        CheckBox hash = MakeCheck("Commit ID", _showHash);
+        hash.IsCheckedChanged += (_, _) =>
+        {
+            _showHash = hash.IsChecked == true;
+            RefreshView();
+        };
+
+        CheckBox author = MakeCheck("Author", _showAuthor);
+        author.IsCheckedChanged += (_, _) =>
+        {
+            _showAuthor = author.IsChecked == true;
+            RefreshView();
+        };
+
+        CheckBox date = MakeCheck("Date", _showDate);
+        date.IsCheckedChanged += (_, _) =>
+        {
+            _showDate = date.IsChecked == true;
+            RefreshView();
+        };
+
+        panel.Children.Add(hash);
+        panel.Children.Add(author);
+        panel.Children.Add(date);
+
+        return new Flyout
+        {
+            Content = new Border
+            {
+                Background = B("App.Panel"),
+                Padding = new Thickness(2),
+                Child = panel,
+            },
+        };
+    }
+
+    private static TextBlock SectionLabel(string text)
+        => new()
+        {
+            Text = text,
+            Foreground = B("App.TextDim"),
+            FontSize = 11,
+            FontWeight = FontWeight.Bold,
+            Margin = new Thickness(0, 2, 0, 1),
+        };
+
+    private static RadioButton MakeRadio(string text, string group, bool isChecked)
+        => new()
+        {
+            Content = text,
+            GroupName = group,
+            IsChecked = isChecked,
+            Foreground = B("App.Text"),
+            FontSize = 12,
+        };
+
+    private static CheckBox MakeCheck(string text, bool isChecked)
+        => new()
+        {
+            Content = text,
+            IsChecked = isChecked,
+            Foreground = B("App.Text"),
+            FontSize = 12,
+        };
+
+    // A small amber "note" pill indicating the commit carries a git note.
+    private static Border BuildNotesBadge()
+        => new()
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x5A, 0x4B, 0x2E)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 0, 6, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            [ToolTip.TipProperty] = "This commit has a git note",
+            Child = new TextBlock
+            {
+                Text = "note",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE3, 0xCB, 0x95)),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+
+    private Grid MakeColumns()
+    {
+        // Hidden columns collapse to zero width; their content is simply not added
+        // (see BuildHeader/BuildRow) so nothing overflows into the neighbouring cell.
+        double hash = _showHash ? HashWidth : 0;
+        double author = _showAuthor ? AuthorWidth : 0;
+        double date = _showDate ? DateWidth : 0;
+
+        return new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions(
+                $"{EffectiveGraphWidth},{hash},{author},{date},*"),
+        };
+    }
 
     private Control BuildHeader()
     {
@@ -329,9 +599,21 @@ public sealed class RevisionGridView : UserControl
         grid.Margin = new Thickness(10, 0, 10, 0);
 
         AddCell(grid, 0, string.Empty, B("App.TextDim"), bold: true);
-        AddCell(grid, 1, "Hash", B("App.TextDim"), bold: true);
-        AddCell(grid, 2, "Author", B("App.TextDim"), bold: true);
-        AddCell(grid, 3, "Date", B("App.TextDim"), bold: true);
+        if (_showHash)
+        {
+            AddCell(grid, 1, "Commit ID", B("App.TextDim"), bold: true);
+        }
+
+        if (_showAuthor)
+        {
+            AddCell(grid, 2, "Author", B("App.TextDim"), bold: true);
+        }
+
+        if (_showDate)
+        {
+            AddCell(grid, 3, _relativeDates ? "Date (rel.)" : "Date", B("App.TextDim"), bold: true);
+        }
+
         AddCell(grid, 4, "Subject", B("App.TextDim"), bold: true);
 
         return new Border
@@ -367,17 +649,34 @@ public sealed class RevisionGridView : UserControl
         }
 
         // Hash: monospace + accent so it reads as a code identifier.
-        AddCell(grid, 1, row.ShortHash, B("App.Accent"), monospace: true);
-        AddCell(grid, 2, row.Author, B("App.TextDim"));
-        AddCell(grid, 3, row.Date, B("App.TextDim"));
+        if (_showHash)
+        {
+            AddCell(grid, 1, row.ShortHash, B("App.Accent"), monospace: true);
+        }
 
-        // Subject cell: optional ref badges followed by the subject text.
+        if (_showAuthor)
+        {
+            AddCell(grid, 2, row.Author, B("App.TextDim"));
+        }
+
+        if (_showDate)
+        {
+            AddCell(grid, 3, FormatDate(row), B("App.TextDim"));
+        }
+
+        // Subject cell: an optional git-notes indicator, then ref badges, then the
+        // subject text.
         StackPanel subject = new()
         {
             Orientation = Orientation.Horizontal,
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
         };
+
+        if (row.HasNotes)
+        {
+            subject.Children.Add(BuildNotesBadge());
+        }
 
         foreach (string refName in row.RefNames)
         {
