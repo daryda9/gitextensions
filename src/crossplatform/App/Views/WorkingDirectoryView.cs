@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -42,6 +43,13 @@ public sealed class WorkingDirectoryView : UserControl
             FontFamily = new FontFamily("monospace,Consolas,Menlo"),
         };
         _unstagedList.DoubleTapped += (_, _) => StageSelected();
+        _unstagedList.KeyDown += OnUnstagedKeyDown;
+
+        MenuItem stageItem = new() { Header = "Stage" };
+        stageItem.Click += (_, _) => StageSelected();
+        MenuItem unstagedCopyItem = new() { Header = "Copy path" };
+        unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
+        _unstagedList.ContextMenu = new ContextMenu { ItemsSource = new[] { stageItem, unstagedCopyItem } };
 
         _stagedList = new ListBox
         {
@@ -49,6 +57,13 @@ public sealed class WorkingDirectoryView : UserControl
             FontFamily = new FontFamily("monospace,Consolas,Menlo"),
         };
         _stagedList.DoubleTapped += (_, _) => UnstageSelected();
+        _stagedList.KeyDown += OnStagedKeyDown;
+
+        MenuItem unstageItem = new() { Header = "Unstage" };
+        unstageItem.Click += (_, _) => UnstageSelected();
+        MenuItem stagedCopyItem = new() { Header = "Copy path" };
+        stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
+        _stagedList.ContextMenu = new ContextMenu { ItemsSource = new[] { unstageItem, stagedCopyItem } };
 
         _stageButton = new Button { Content = "Stage ▼", Margin = new Thickness(0, 4, 0, 0) };
         _stageButton.Click += (_, _) => StageSelected();
@@ -77,6 +92,7 @@ public sealed class WorkingDirectoryView : UserControl
             MinHeight = 70,
             Margin = new Thickness(0, 0, 0, 4),
         };
+        _messageBox.KeyDown += OnMessageBoxKeyDown;
 
         _amendCheck = new CheckBox { Content = "Amend last commit" };
 
@@ -243,6 +259,57 @@ public sealed class WorkingDirectoryView : UserControl
                     _status.Text = "Commit failed: " + result.Output.Trim();
                 }
             });
+    }
+
+    // Enter/Space stages the focused unstaged item(s); Ctrl+Enter commits.
+    private void OnUnstagedKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            DoCommit();
+            e.Handled = true;
+        }
+        else if (e.Key is Key.Enter or Key.Space)
+        {
+            StageSelected();
+            e.Handled = true;
+        }
+    }
+
+    // Enter/Space unstages the focused staged item(s); Ctrl+Enter commits.
+    private void OnStagedKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            DoCommit();
+            e.Handled = true;
+        }
+        else if (e.Key is Key.Enter or Key.Space)
+        {
+            UnstageSelected();
+            e.Handled = true;
+        }
+    }
+
+    private void OnMessageBoxKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            DoCommit();
+            e.Handled = true;
+        }
+    }
+
+    private void CopySelectedPath(ListBox list)
+    {
+        List<WorkingDirFileRow> rows = SelectedRows(list);
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        string text = string.Join('\n', rows.Select(r => r.Path));
+        _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
     }
 
     private static List<WorkingDirFileRow> SelectedRows(ListBox list)

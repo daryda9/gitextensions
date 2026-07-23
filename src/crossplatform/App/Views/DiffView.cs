@@ -2,6 +2,8 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
@@ -30,6 +32,10 @@ public sealed class DiffView : UserControl
     private string? _commitHash;
     private CancellationTokenSource? _diffCts;
 
+    // The raw unified-diff text currently displayed (the SelectableTextBlock's
+    // Text is cleared while inlines are rendered, so keep our own copy to copy).
+    private string _currentDiffText = string.Empty;
+
     public DiffView()
     {
         _files = new ListBox
@@ -38,12 +44,22 @@ public sealed class DiffView : UserControl
         };
         _files.SelectionChanged += OnFileSelected;
 
+        MenuItem copyPathItem = new() { Header = "Copy file path" };
+        copyPathItem.Click += (_, _) => CopySelectedFilePath();
+        _files.ContextMenu = new ContextMenu { ItemsSource = new[] { copyPathItem } };
+
         _diff = new SelectableTextBlock
         {
             FontFamily = Monospace,
             Margin = new Thickness(8),
             TextWrapping = TextWrapping.NoWrap,
         };
+
+        MenuItem copyDiffItem = new() { Header = "Copy diff" };
+        copyDiffItem.Click += (_, _) => CopyDiffText();
+        MenuItem selectAllCopyItem = new() { Header = "Select all + copy" };
+        selectAllCopyItem.Click += (_, _) => SelectAllAndCopy();
+        _diff.ContextMenu = new ContextMenu { ItemsSource = new[] { copyDiffItem, selectAllCopyItem } };
 
         ScrollViewer diffScroll = new()
         {
@@ -86,6 +102,52 @@ public sealed class DiffView : UserControl
         root.Children.Add(split);
 
         Content = root;
+
+        // Ctrl+C: copy the file path when the file list is focused, otherwise the diff.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.C && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            if (_files.IsKeyboardFocusWithin)
+            {
+                CopySelectedFilePath();
+            }
+            else
+            {
+                CopyDiffText();
+            }
+
+            e.Handled = true;
+        }
+    }
+
+    private void CopySelectedFilePath()
+    {
+        if (_files.SelectedItem is DiffFileRow row)
+        {
+            CopyToClipboard(row.Name);
+        }
+    }
+
+    private void CopyDiffText() => CopyToClipboard(_currentDiffText);
+
+    private void SelectAllAndCopy()
+    {
+        _diff.SelectAll();
+        CopyToClipboard(_currentDiffText);
+    }
+
+    private void CopyToClipboard(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
     }
 
     /// <summary>
@@ -100,6 +162,7 @@ public sealed class DiffView : UserControl
         _files.ItemsSource = null;
         _diff.Inlines?.Clear();
         _diff.Text = string.Empty;
+        _currentDiffText = string.Empty;
         _status.Text = $"Loading changed files for {commitHash}…";
 
         _ = Task.Run(() =>
@@ -183,6 +246,7 @@ public sealed class DiffView : UserControl
     // file/meta headers gray.
     private void RenderDiff(string diffText)
     {
+        _currentDiffText = diffText;
         _diff.Text = string.Empty;
         InlineCollection inlines = _diff.Inlines ??= [];
         inlines.Clear();
