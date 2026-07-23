@@ -51,6 +51,7 @@ public sealed class MainMenu : UserControl
     public event Action? EditInfoExcludeRequested;
     public event Action? RepoSettingsRequested;
     public event Action? GitMaintenanceRequested;
+    public event Action? SparseCheckoutRequested;
 
     // ---- Commands
     public event Action? CommitRequested;
@@ -65,6 +66,7 @@ public sealed class MainMenu : UserControl
     public event Action? GitBashRequested;
     public event Action? GitKRequested;
     public event Action? GitGuiRequested;
+    public event Action? GitCommandLogRequested;
 
     // ---- Help
     public event Action? AboutRequested;
@@ -122,6 +124,7 @@ public sealed class MainMenu : UserControl
         repository.Items.Add(Item("Edit .mailmap", null, () => EditMailmapRequested?.Invoke()));
         repository.Items.Add(Item("Edit .git/info/exclude", null, () => EditInfoExcludeRequested?.Invoke()));
         repository.Items.Add(new Separator());
+        repository.Items.Add(Item("Sparse working copy…", null, () => SparseCheckoutRequested?.Invoke()));
         repository.Items.Add(Item("Git maintenance…", null, () => GitMaintenanceRequested?.Invoke()));
         repository.Items.Add(Item("Repository settings…", "Settings", () => RepoSettingsRequested?.Invoke()));
 
@@ -141,6 +144,8 @@ public sealed class MainMenu : UserControl
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("GitK", null, () => GitKRequested?.Invoke()));
         tools.Items.Add(Item("Git GUI", null, () => GitGuiRequested?.Invoke()));
+        tools.Items.Add(new Separator());
+        tools.Items.Add(Item("Git command log", null, () => GitCommandLogRequested?.Invoke()));
 
         MenuItem help = new() { Header = "_Help" };
         help.Items.Add(Item("User manual", "GitExtensionsHelp", () => UserManualRequested?.Invoke()));

@@ -480,12 +480,14 @@ public sealed class MainWindow : Window
         _menu.EditMailmapRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".mailmap")));
         _menu.EditInfoExcludeRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".git", "info", "exclude")));
         _menu.GitMaintenanceRequested += () => _ = OpenMaintenanceAsync();
+        _menu.SparseCheckoutRequested += () => _ = OpenSparseAsync();
         _menu.RepoSettingsRequested += () => _ = OpenSettingsAsync();
 
         // Tools: terminal + external git GUIs, launched detached in the repo dir.
         _menu.GitBashRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
         _menu.GitKRequested += () => WithRepo(p => _externalTools.LaunchDetached("gitk", Array.Empty<string>(), p, "Launched gitk"));
         _menu.GitGuiRequested += () => WithRepo(p => _externalTools.LaunchDetached("git", new[] { "gui" }, p, "Launched git gui"));
+        _menu.GitCommandLogRequested += () => _ = ShowCommandLogAsync();
 
         // Help: external documentation / project links (no repo required).
         _menu.UserManualRequested += () => Surface(_externalTools.OpenUrl("https://git-extensions-documentation.readthedocs.io/"));
@@ -522,6 +524,7 @@ public sealed class MainWindow : Window
         _revisions.AddCommitCommand("Select as BASE to compare", SelectCompareBase);
         _revisions.AddCommitCommand("Compare to BASE", CompareToBase);
         _revisions.AddCommitCommand("Compare to working directory", CompareToWorkingDirectory);
+        _revisions.AddCommitCommand("Compare to branch…", hash => _ = CompareToBranchAsync(hash));
 
         // Bisect: mark the selected commit good/bad/skip (auto-starting a session
         // if none is in progress), plus a stop/reset entry. Each surfaces git's
@@ -913,6 +916,135 @@ public sealed class MainWindow : Window
 
         string shortHash = hash.Length > 8 ? hash[..8] : hash;
         _statusBar.SetText($"Comparing {shortHash} .. working tree");
+    }
+
+    // Lists local branches, lets the user pick one, then diffs that branch vs the
+    // selected commit — git diff <branch> <selected> — reusing the shared DiffView
+    // compare path (ShowRange), exactly like "Compare to BASE". The branch is the
+    // "old" side, the selected commit the "new" side.
+    private async Task CompareToBranchAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        IReadOnlyList<BranchTagRow> localBranches;
+        try
+        {
+            localBranches = await Task.Run(() => new BranchTagService().LoadRefs(_repoPath!)
+                .Branches.Where(b => !b.IsRemote).ToList());
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"Compare to branch failed: {ex.Message}");
+            return;
+        }
+
+        if (localBranches.Count == 0)
+        {
+            _statusBar.SetText("No local branches to compare against.");
+            return;
+        }
+
+        BranchTagRow? chosen = await PickBranchAsync(localBranches);
+        if (chosen is null)
+        {
+            return;
+        }
+
+        // Prefer the branch's resolved ObjectId (so DiffView can parse it), falling
+        // back to its name if the ref carried no object id.
+        string baseRef = chosen.ObjectId is { Length: > 0 } oid ? oid : chosen.Name;
+
+        _diff.ShowRange(_repoPath, baseRef, hash);
+        _bottom.SelectedItem = _commitInfoTab;
+
+        string shortOther = hash.Length > 8 ? hash[..8] : hash;
+        _statusBar.SetText($"Comparing {chosen.Name} .. {shortOther}");
+    }
+
+    // Modal single-select branch picker; returns the chosen branch, or null on cancel.
+    private async Task<BranchTagRow?> PickBranchAsync(IReadOnlyList<BranchTagRow> branches)
+    {
+        ListBox list = new()
+        {
+            ItemsSource = branches.Select(b => b.Name).ToList(),
+            Background = (IBrush)Application.Current!.Resources["App.Control"]!,
+            Foreground = (IBrush)Application.Current!.Resources["App.Text"]!,
+            SelectedIndex = 0,
+            MinHeight = 220,
+        };
+
+        Button ok = new() { Content = "Compare", MinWidth = 90 };
+        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        Window dlg = new()
+        {
+            Title = "Compare to branch",
+            Width = 420,
+            Height = 360,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = new DockPanel
+            {
+                Margin = new Thickness(16),
+                Children =
+                {
+                    new TextBlock { Text = "Diff against branch (branch .. selected commit):", Margin = new Thickness(0, 0, 0, 6), [DockPanel.DockProperty] = Dock.Top },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Margin = new Thickness(0, 12, 0, 0),
+                        Children = { ok, cancel },
+                        [DockPanel.DockProperty] = Dock.Bottom,
+                    },
+                    list,
+                },
+            },
+        };
+
+        BranchTagRow? result = null;
+        ok.Click += (_, _) =>
+        {
+            if (list.SelectedItem is string name)
+            {
+                result = branches.FirstOrDefault(b => b.Name == name);
+            }
+
+            dlg.Close();
+        };
+        list.DoubleTapped += (_, _) => ok.RaiseEvent(new global::Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        cancel.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+        return result;
+    }
+
+    // Opens the modal git command-log viewer (reads the process-global core log).
+    private async Task ShowCommandLogAsync()
+    {
+        CommandLogWindow window = new();
+        await window.ShowDialog(this);
+    }
+
+    // Opens the modal sparse-working-copy dialog; refreshes the main view if a
+    // sparse operation changed the working tree.
+    private async Task OpenSparseAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        SparseDialog dlg = new(_repoPath);
+        await dlg.ShowDialog(this);
+
+        if (dlg.Changed)
+        {
+            RefreshAll();
+        }
     }
 
     private void ShowInBottom(TabItem tab, Action show)
