@@ -167,6 +167,20 @@ comportamento (le guardie sono `false`).
   `--selftest` (branch + commit, git core ok). Delegato a subagent in worktree,
   cherry-pick pulito.
 
+- **M10** — debito tecnico (3 subagent claude paralleli in worktree, file
+  disgiunti, cherry-pick + build check dopo ognuno, GUI verificata):
+  - **Ctrl+C Linux**: `ProcessExtensions.cs` ora invia **SIGINT** (`libc kill`,
+    P/Invoke) sul ramo non-Windows con fallback a `Kill(entireProcessTree)`;
+    Windows invariato (guardia `OperatingSystem.IsWindows()`). Latente finché
+    non esiste un call-site Linux (l'unico è in GitUI WinForms, non compilato).
+  - **NU1903**: Avalonia **11.2.3 → 11.3.14** (prima versione che tira una
+    `Tmds.DBus.Protocol` patchata); build 0 errori, GUI screenshot ok.
+  - **VSTHRD100**: async-void 7→0 (handler → wrapper `void` che delega a
+    `async Task` con try/catch), VSTHRD200 5→0. Restano 2 VSTHRD002 in
+    `RemoteService` (rimozione richiede rendere async la catena pubblica usata
+    da `MainWindow` — rinviato).
+  Build 0 errori, GUI verificata headless (xvfb) — menu/toolbar/tree/grid ok.
+
 ### Come avviarlo
 
 ```bash
@@ -246,10 +260,9 @@ estese; persistenza del tema scelto e delle dimensioni dei pannelli.
 - **Sostituire gli shim con implementazioni vere** dove un percorso runtime li
   usa davvero (es. dialog, clipboard) — oggi molti shim sono no-op sufficienti a
   compilare ma non a funzionare pienamente.
-- **P/Invoke `kernel32` in `ProcessExtensions.cs`** (Ctrl+C ai processi git
-  figli): manca un fallback Linux (signal/kill).
-- **Warning `NU1903`**: `Tmds.DBus.Protocol` (dep transitiva Avalonia) ha una
-  vulnerabilità nota → valutare bump di Avalonia.
+- ~~**P/Invoke `kernel32` in `ProcessExtensions.cs`** (Ctrl+C ai processi git
+  figli): fallback Linux~~ ✅ (M10, SIGINT via `libc kill`; latente, vedi sopra).
+- ~~**Warning `NU1903`**: `Tmds.DBus.Protocol`~~ ✅ (M10, bump Avalonia 11.3.14).
 - **Localizzazione**: verificare il caricamento delle traduzioni (`ResourceManager`)
   su Linux.
 - ~~**Packaging**: `.deb` + `dotnet publish` self-contained~~ ✅ (M9,
@@ -266,9 +279,11 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 1 / 20** · parità **45.0%** (72/160 voci `[x]`). Questo giro:
-> creata la checklist di parità (baseline da M1–M8) + packaging `.deb` completato
-> (M9). Prossimo: iter. 2 → debito tecnico.
+> **Iterazione: 2 / 20** · parità **45.0%** (72/160 voci `[x]`, invariata: iter. 2
+> era debito tecnico, non voci UI). Questo giro (M10): 3 subagent paralleli →
+> Ctrl+C SIGINT su Linux, bump Avalonia 11.3.14 (NU1903 risolto), fix VSTHRD100
+> async-void (7→0). Prossimo: iter. 3 → limiti funzionali (push force-with-lease,
+> credential-helper, Blame/History da menu contestuale).
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -447,10 +462,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] `.deb` self-contained (linux-x64) + `.desktop` + icona — `packaging/build-deb.sh`
 
 ### Debito tecnico noto (non conta ai fini parità UI)
-- [ ] Fallback Linux Ctrl+C ai git figli (ProcessExtensions signal/kill)
-- [ ] Bump Avalonia per NU1903 (Tmds.DBus)
+- [x] Fallback Linux Ctrl+C ai git figli (ProcessExtensions → SIGINT via libc
+      `kill`, guardato `OperatingSystem.IsWindows()`; latente: call-site solo in
+      GitUI WinForms, fuori dal build cross-platform)
+- [x] Bump Avalonia per NU1903 (Tmds.DBus) — 11.2.3 → 11.3.14, GUI verificata
+- [x] Fix warning VSTHRD100 (async void) — 7→0 (VSTHRD200 5→0; restano 2 VSTHRD002
+      in RemoteService, ripple su MainWindow, rinviati)
 - [ ] Verifica traduzioni ResourceManager su Linux
-- [ ] Fix warning VSTHRD100 (async void)
 - [ ] Shim no-op → implementazioni reali (dialog, clipboard)
 - [ ] Persistenza tema + dimensioni pannelli tra avvii
 - [ ] Credenziali via credential-helper git (non injection URL)
