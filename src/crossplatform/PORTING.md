@@ -234,6 +234,21 @@ comportamento (le guardie sono `false`).
     lascia il working tree. Verificato su repo temporaneo.
   Build 0 errori, GUI verificata headless (xvfb) — SettingsWindow renderizzata.
 
+- **M14** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — solo uno tocca `MainWindow`/`MainMenu`):
+  - **Clone + Init**: menu File ▸ "Clone repository…" (dialog URL + folder
+    picker) e "Create new repository…"; `CloneInitService` (`git clone`/`git
+    init`), apre il repo risultante via `OpenRepository` esistente.
+  - **Nodo Submodules** nel tree ("Submodules (N)", con stato not-init/out-of-date
+    per voce): `SubmoduleService` list via `GetSubmodulesLocalPaths` + `git
+    submodule status`; azioni Update (`--init -- <path>`) e Update all
+    (`--init --recursive`). Open rinviato (richiede MainWindow).
+  - **Revision grid**: indicatore **git-notes** (pill + tooltip, `git notes list`
+    una volta per load), **toggle data** (Commit/Author, Assoluta/Relativa via
+    flyout "Date ▾"), **mostra/nascondi colonne** (Commit ID/Author/Date via
+    "Columns ▾"). DAG e filtro invariati; header "Hash" → "Commit ID".
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -338,19 +353,19 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 5 / 20** · parità **51.2%** (82/160 voci `[x]`). Questo giro
-> (M13): 3 subagent paralleli → SettingsWindow Avalonia (identità git, default
-> pull, tema — fondazione, non il porto di `ISettingControlBinding`); rename
-> branch dal tree (`git branch -m`); stash staged (`git stash push --staged`).
-> Prossimo: iter. 6 → chiusura voci checklist (Clone, Init, Remotes manager,
-> Revert, Submodules, Compare, ecc.); modello UI plugin ancora da ripensare.
+> **Iterazione: 6 / 20** · parità **55.0%** (88/160 voci `[x]`). Questo giro
+> (M14): 3 subagent paralleli → Clone + Init repository dal menu File; nodo
+> Submodules nel tree (list/update); revision grid — colonna git-notes + toggle
+> data (author/commit, relative/assoluta) + mostra/nascondi colonne. Prossimo:
+> iter. 7 → Remotes manager, Revert, Compare, Worktrees node, Reflog, Archive,
+> menu Repository/Tools; modello UI plugin verso la fine.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
 ### A. Barra dei menu
 - [x] Start ▸ Open repository
-- [ ] Start ▸ Clone repository
-- [ ] Start ▸ Create new repository (init)
+- [x] Start ▸ Clone repository
+- [x] Start ▸ Create new repository (init)
 - [x] Start ▸ Recent repositories (MRU)
 - [ ] Start ▸ Favorite repositories
 - [x] Start ▸ Exit
@@ -420,7 +435,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Nodo Remotes + fetch/pull/push/manage
 - [x] Nodo Tags + checkout/create-branch/merge/reset/delete
 - [x] Nodo Stashes + apply/pop/open/drop/manage
-- [ ] Nodo Submodules + open/commit/reset/update/sync
+- [x] Nodo Submodules + list/update/update-all (open/commit/reset da fare)
 - [ ] Nodo Worktrees + open/create/delete/prune/manage
 - [ ] Ordinamento ref (sort-by / sort-order) + move up/down
 - [ ] Copy to clipboard / copy path dai nodi
@@ -433,7 +448,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Colonna commit id (SHA)
 - [ ] Colonna avatar
 - [ ] Colonna build status (icona/testo)
-- [ ] Colonna git notes
+- [x] Colonna git notes (indicatore + tooltip, `git notes list` batch)
 - [x] Menu contestuale: copy hash/subject/author
 - [x] Menu contestuale: checkout commit / cherry-pick / reset (soft·mixed·hard)
 - [ ] Menu contestuale: revert commit
@@ -465,8 +480,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Diff viewer
 - [x] About
 - [x] Credenziali (custom, per push/pull http)
-- [ ] Clone
-- [ ] Init
+- [x] Clone (CloneDialog: URL + folder picker)
+- [x] Init (create new repository)
 - [ ] Remotes manager
 - [x] Rename branch
 - [ ] Delete remote branch
