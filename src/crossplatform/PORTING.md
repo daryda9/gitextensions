@@ -339,6 +339,18 @@ comportamento (le guardie sono `false`).
   La struttura UI (menu · toolbar · albero · grid DAG · tab inferiori · status
   bar) rispecchia ora `FormBrowse` dell'originale.
 
+- **M21** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — MainWindow/MainMenu, RepoObjectsTree, RevisionGridView):
+  - **Favorite repositories** (`FavoritesService`, JSON) + submenu; **Dashboard**
+    (`DashboardView`) landing con recent+favorite, close-to-dashboard + refresh;
+    **Git maintenance** (`MaintenanceService`/dialog): gc / fsck / delete
+    index.lock / edit .git/config; **Repository settings** riusa `SettingsWindow`.
+  - **Delete remote branch** (`git push <remote> --delete`) + **merge submodule**
+    (`git submodule update --remote --merge`) dal tree.
+  - **Quick-search** grid: type-to-jump (F3/Shift+F3/Esc/idle) con pill overlay,
+    distinto dal filtro (non nasconde righe).
+  Build 0 errori, GUI verificata headless (xvfb) — Dashboard + repo view.
+
 ### Come avviarlo
 
 ```bash
@@ -443,13 +455,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 12 / 20** · parità **82.5%** (132/160 voci `[x]`). Questo giro
-> (M20): 3 subagent paralleli → toolbar completa (Split view, Commit info
-> below/left/right, File Explorer, Terminal) + StashPanel agganciato come tab;
-> Submodules manager dialog (update/sync/init); Reset changes (discard tracked,
-> all + per-file). La struttura UI ora rispecchia FormBrowse (menu + toolbar +
-> tree + grid + tab inferiori). Prossimo: iter. 13 → Favorite/Dashboard,
-> maintenance (gc/fsck), patch (format/apply/view); poi modello plugin.
+> **Iterazione: 13 / 20** · parità **88.1%** (141/160 voci `[x]`). Questo giro
+> (M21): 3 subagent paralleli → Favorite repositories + Dashboard (landing) +
+> git maintenance (gc/fsck/delete-index.lock/edit-config) + repo settings;
+> delete remote branch (`push --delete`) + merge submodule; grid quick-search
+> (type-to-jump F3/Esc). Prossimo: iter. 14 → patch (format/apply/view), command
+> log, compare-to-branch; poi manage-worktrees/sparse dialoghi e modello plugin.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -458,9 +469,9 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Start ▸ Clone repository
 - [x] Start ▸ Create new repository (init)
 - [x] Start ▸ Recent repositories (MRU)
-- [ ] Start ▸ Favorite repositories
+- [x] Start ▸ Favorite repositories (add + submenu, persistito)
 - [x] Start ▸ Exit
-- [ ] Dashboard (close-to-dashboard + refresh)
+- [x] Dashboard (landing recent+favorite, close-to-dashboard + refresh)
 - [x] Repository ▸ Refresh
 - [x] Repository ▸ File Explorer (xdg-open)
 - [x] Repository ▸ Remote repositories… (Remotes manager dal tree)
@@ -468,8 +479,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Repository ▸ Manage worktrees
 - [x] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
 - [ ] Repository ▸ Sparse working copy
-- [ ] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
-- [ ] Repository ▸ Repository settings
+- [x] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
+- [x] Repository ▸ Repository settings (riusa SettingsWindow)
 - [x] Commands ▸ Commit
 - [x] Commands ▸ Undo last commit (reset --soft HEAD~1, dal tab Working dir)
 - [x] Commands ▸ Pull / Fetch
@@ -548,7 +559,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Menu contestuale: bisect good/bad/skip/stop
 - [x] Menu contestuale: navigate (parent/child/go-to; Alt↑/↓, Ctrl+G)
 - [x] Filtro/ricerca (autore / messaggio / hash) — barra live in RevisionGridView
-- [ ] Quick-search da tastiera
+- [x] Quick-search da tastiera (type-to-jump, F3/Esc)
 - [ ] Drag &amp; drop
 - [x] View toggles: mostra/nascondi colonne + scope branch (all/current/filtered)
 
@@ -575,12 +586,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Init (create new repository)
 - [x] Remotes manager (add/edit-url/rename/remove)
 - [x] Rename branch
-- [ ] Delete remote branch
+- [x] Delete remote branch (git push --delete)
 - [x] Revert commit
 - [x] Reset changes (discard tracked, all + per-file, conferma)
 - [x] Cleanup repository (git clean, M12)
 - [x] Resolve conflicts
-- [ ] Merge submodule
+- [x] Merge submodule (submodule update --remote --merge)
 - [x] Archive
 - [ ] Format patch / Apply patch / View patch
 - [x] Add to .gitignore (path / *.ext / dir/, da file untracked)
@@ -589,7 +600,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Submodules manager (update/update-all/sync/init)
 - [x] Reflog browser (copy hash / checkout)
 - [ ] Compare to branch
-- [ ] Verify database / recover lost objects
+- [x] Verify database / recover lost objects (git fsck, da Maintenance)
 - [x] Settings (SettingsWindow — identità/pull/tema; fondazione estendibile)
 - [ ] Command log (FormLog)
 - [x] Bisect UI (da grid)
@@ -617,7 +628,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Archive
 - [ ] Patch (format/apply/view)
 - [x] Remotes manage (add/rename/remove/set-url; add-upstream implicito)
-- [ ] Maintenance (gc / fsck / index.lock / config)
+- [x] Maintenance (gc / fsck / index.lock / config)
 - [x] Clone / Init
 - [x] Reflog
 - [x] Blame / File history / Diff / Log
