@@ -264,6 +264,22 @@ comportamento (le guardie sono `false`).
     colorato esistente).
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M16** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — MainWindow/MainMenu, RepoObjectsTree, RevisionGridView):
+  - **Menu Repository/Tools/Help**: `ExternalToolService` (Process.Start
+    non-bloccante, fallback graceful). Repository ▸ File Explorer + Edit
+    .gitignore/.gitattributes/.mailmap/.git-info-exclude (xdg-open, touch se
+    mancante). Tools ▸ Git bash (probe x-terminal-emulator/gnome-terminal/…),
+    GitK, Git GUI (detached, cwd repo). Help ▸ manual/changelog/report/donate
+    (xdg-open URL).
+  - **Nodo Worktrees** (`WorktreeService`): "Worktrees (N)" da `git worktree
+    list --porcelain`; Add/Remove/Prune (Open rinviato). Più "Checkout tag
+    revision…" (detached) sui nodi Tag.
+  - **Grid navigate**: parent/first-parent (`ParentHashes[0]`), nearest child,
+    go-to-commit per hash (flyout "Go to ▾"); scorciatoie Alt↑ / Alt↓ / Ctrl+G.
+    DAG/filtro/note/toggle preservati.
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -368,12 +384,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 7 / 20** · parità **60.6%** (97/160 voci `[x]`). Questo giro
-> (M15): 3 subagent paralleli → Revert + Archive commit dal menu contestuale
-> grid; Remotes manager (add/edit-url/rename/remove) dal tree; DiffView — apri
-> file in difftool esterno + compare file→working directory. Prossimo: iter. 8 →
-> Worktrees node, Reflog, Compare (BASE/selected), menu Repository/Tools/Help,
-> toolbar mancante; modello UI plugin verso la fine.
+> **Iterazione: 8 / 20** · parità **65.6%** (105/160 voci `[x]`). Questo giro
+> (M16): 3 subagent paralleli → menu Repository (File Explorer, edit
+> .gitignore/.gitattributes/.mailmap/exclude) + Tools (git bash/gitk/git-gui) +
+> Help (manual/changelog/report/donate); nodo Worktrees (list/add/remove/prune)
+> + checkout tag revision; grid navigate (parent/child/go-to, Alt↑↓/Ctrl+G).
+> Prossimo: iter. 9 → Reflog, Bisect, Compare (BASE/selected), Resolve conflicts,
+> toolbar mancante, maintenance; modello UI plugin verso la fine.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -386,11 +403,11 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Start ▸ Exit
 - [ ] Dashboard (close-to-dashboard + refresh)
 - [x] Repository ▸ Refresh
-- [ ] Repository ▸ File Explorer
+- [x] Repository ▸ File Explorer (xdg-open)
 - [x] Repository ▸ Remote repositories… (Remotes manager dal tree)
 - [ ] Repository ▸ Manage submodules / update / synchronize
 - [ ] Repository ▸ Manage worktrees
-- [ ] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
+- [x] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
 - [ ] Repository ▸ Sparse working copy
 - [ ] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
 - [ ] Repository ▸ Repository settings
@@ -419,11 +436,11 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Commands ▸ View patch file
 - [ ] Repository hosts (GitHub: fork / view-create PR / add upstream)
 - [ ] Plugins menu + Plugins settings
-- [ ] Tools ▸ Git bash / Git GUI / GitK / PuTTY
+- [x] Tools ▸ Git bash / Git GUI / GitK (PuTTY N/A su Linux)
 - [ ] Tools ▸ Git command log
 - [x] Tools/Edit ▸ Settings (SettingsWindow Avalonia: identità git, pull, tema)
 - [x] Help ▸ About
-- [ ] Help ▸ User manual / Changelog / Report issue / Check updates / Translate / Donate / Telemetry
+- [x] Help ▸ User manual / Changelog / Report issue / Donate (xdg-open; check-updates/translate/telemetry N/A)
 - [x] View ▸ tema chiaro/scuro (toggle live)
 
 ### B. Toolbar
@@ -451,7 +468,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Nodo Tags + checkout/create-branch/merge/reset/delete
 - [x] Nodo Stashes + apply/pop/open/drop/manage
 - [x] Nodo Submodules + list/update/update-all (open/commit/reset da fare)
-- [ ] Nodo Worktrees + open/create/delete/prune/manage
+- [x] Nodo Worktrees + add/remove/prune (open rinviato: richiede MainWindow)
 - [ ] Ordinamento ref (sort-by / sort-order) + move up/down
 - [ ] Copy to clipboard / copy path dai nodi
 
@@ -470,7 +487,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Menu contestuale: create branch/tag here
 - [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
 - [ ] Menu contestuale: bisect good/bad/skip/stop
-- [ ] Menu contestuale: navigate (parent/child/ancestor/go-to)
+- [x] Menu contestuale: navigate (parent/child/go-to; Alt↑/↓, Ctrl+G)
 - [x] Filtro/ricerca (autore / messaggio / hash) — barra live in RevisionGridView
 - [ ] Quick-search da tastiera
 - [ ] Drag &amp; drop
@@ -534,10 +551,10 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Stash: save / apply / pop / drop
 - [x] Stash: stash staged (git stash push --staged)
 - [x] Tag: create / delete
-- [ ] Tag: checkout tag revision
+- [x] Tag: checkout tag revision (detached)
 - [ ] Bisect
 - [ ] Submodule ops
-- [ ] Worktree ops
+- [x] Worktree ops (list/add/remove/prune)
 - [x] Archive
 - [ ] Patch (format/apply/view)
 - [x] Remotes manage (add/rename/remove/set-url; add-upstream implicito)
