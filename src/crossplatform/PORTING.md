@@ -280,6 +280,20 @@ comportamento (le guardie sono `false`).
     DAG/filtro/note/toggle preservati.
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M17** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — MainWindow/MainMenu, WorkingDirectoryView, RevisionGridView):
+  - **Reflog browser** (`ReflogService`/`ReflogWindow`, View ▸ Show reflog):
+    `git reflog --format=…` parsato, copy hash / checkout detached.
+  - **Bisect** (`BisectService`): start/good/bad/skip/reset dal menu contestuale
+    della grid (auto-start), output ("commit da testare" / "first bad commit")
+    in status bar. Verificato su repo temporaneo.
+  - **Resolve conflicts** nel Working directory: sezione "Merge conflicts"
+    (`git diff --diff-filter=U`), per-file Open-in-mergetool / Take ours / Take
+    theirs / Mark resolved; nascosta quando non ci sono conflitti.
+  - **Grid scope branch**: "Branches ▾" all / current-only / filtered (stub HEAD);
+    reload preserva DAG/filtro/note.
+  Build 0 errori, GUI verificata headless (xvfb) — badge git-notes visibile.
+
 ### Come avviarlo
 
 ```bash
@@ -384,13 +398,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 8 / 20** · parità **65.6%** (105/160 voci `[x]`). Questo giro
-> (M16): 3 subagent paralleli → menu Repository (File Explorer, edit
-> .gitignore/.gitattributes/.mailmap/exclude) + Tools (git bash/gitk/git-gui) +
-> Help (manual/changelog/report/donate); nodo Worktrees (list/add/remove/prune)
-> + checkout tag revision; grid navigate (parent/child/go-to, Alt↑↓/Ctrl+G).
-> Prossimo: iter. 9 → Reflog, Bisect, Compare (BASE/selected), Resolve conflicts,
-> toolbar mancante, maintenance; modello UI plugin verso la fine.
+> **Iterazione: 9 / 20** · parità **71.2%** (114/160 voci `[x]`). Questo giro
+> (M17): 3 subagent paralleli → Reflog browser (View menu) + Bisect
+> (good/bad/skip/reset da grid); Resolve merge conflicts (mergetool / ours-theirs
+> / mark resolved) nel Working directory; grid view-toggle scope branch
+> (all/current/filtered). Prossimo: iter. 10 → Compare (BASE/selected),
+> reword/squash/fixup (interactive rebase), toolbar mancante, maintenance,
+> Favorite/Dashboard; modello UI plugin verso la fine.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -423,14 +437,14 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Commands ▸ Checkout branch
 - [x] Commands ▸ Merge branches
 - [x] Commands ▸ Rebase
-- [ ] Commands ▸ Solve merge conflicts
+- [x] Commands ▸ Solve merge conflicts (mergetool / ours-theirs / mark resolved)
 - [x] Commands ▸ Create tag
 - [x] Commands ▸ Delete tag
 - [x] Commands ▸ Cherry pick
 - [x] Commands ▸ Archive revision (git archive zip/tar.gz)
 - [x] Commands ▸ Checkout revision
-- [ ] Commands ▸ Bisect
-- [ ] Commands ▸ Show reflog
+- [x] Commands ▸ Bisect (mark good/bad/skip/reset da grid)
+- [x] Commands ▸ Show reflog (ReflogWindow)
 - [ ] Commands ▸ Format patch
 - [ ] Commands ▸ Apply patch
 - [ ] Commands ▸ View patch file
@@ -486,12 +500,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Menu contestuale: revert commit (git revert --no-edit)
 - [x] Menu contestuale: create branch/tag here
 - [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
-- [ ] Menu contestuale: bisect good/bad/skip/stop
+- [x] Menu contestuale: bisect good/bad/skip/stop
 - [x] Menu contestuale: navigate (parent/child/go-to; Alt↑/↓, Ctrl+G)
 - [x] Filtro/ricerca (autore / messaggio / hash) — barra live in RevisionGridView
 - [ ] Quick-search da tastiera
 - [ ] Drag &amp; drop
-- [ ] View toggles (mostra/nascondi colonne, all/current/filtered branches)
+- [x] View toggles: mostra/nascondi colonne + scope branch (all/current/filtered)
 
 ### E. Dialoghi / comandi (Form*)
 - [x] Blame
@@ -520,7 +534,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Revert commit
 - [ ] Reset changes (dialog dedicato)
 - [ ] Cleanup repository (git clean)
-- [ ] Resolve conflicts
+- [x] Resolve conflicts
 - [ ] Merge submodule
 - [x] Archive
 - [ ] Format patch / Apply patch / View patch
@@ -528,12 +542,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Edit .gitignore / .gitattributes / .mailmap
 - [ ] Sparse working copy
 - [ ] Submodules manager
-- [ ] Reflog browser
+- [x] Reflog browser (copy hash / checkout)
 - [ ] Compare to branch
 - [ ] Verify database / recover lost objects
 - [x] Settings (SettingsWindow — identità/pull/tema; fondazione estendibile)
 - [ ] Command log (FormLog)
-- [ ] Bisect UI
+- [x] Bisect UI (da grid)
 
 ### F. Operazioni git esposte
 - [x] Commit (+ amend)
@@ -552,7 +566,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Stash: stash staged (git stash push --staged)
 - [x] Tag: create / delete
 - [x] Tag: checkout tag revision (detached)
-- [ ] Bisect
+- [x] Bisect (good/bad/skip/reset)
 - [ ] Submodule ops
 - [x] Worktree ops (list/add/remove/prune)
 - [x] Archive
