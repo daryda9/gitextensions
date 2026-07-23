@@ -17,6 +17,8 @@ public sealed class CommitDetailView : UserControl
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
+
     private readonly CommitDetailService _service = new();
 
     private readonly SelectableTextBlock _hash;
@@ -34,8 +36,11 @@ public sealed class CommitDetailView : UserControl
     {
         _status = new TextBlock
         {
-            Margin = new Thickness(8, 6, 8, 6),
-            Foreground = Brushes.Gray,
+            Padding = new Thickness(12, 7, 12, 7),
+            Background = B("App.Toolbar"),
+            Foreground = B("App.Text"),
+            FontWeight = FontWeight.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
             Text = "No commit selected.",
         };
 
@@ -48,7 +53,7 @@ public sealed class CommitDetailView : UserControl
 
         Grid header = new()
         {
-            Margin = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(14, 10, 14, 8),
             ColumnDefinitions = new ColumnDefinitions("Auto,*"),
             RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,Auto"),
         };
@@ -63,7 +68,8 @@ public sealed class CommitDetailView : UserControl
         _message = new SelectableTextBlock
         {
             FontFamily = Monospace,
-            Margin = new Thickness(8),
+            Foreground = B("App.Text"),
+            Margin = new Thickness(14, 10, 14, 14),
             TextWrapping = TextWrapping.Wrap,
         };
 
@@ -74,12 +80,20 @@ public sealed class CommitDetailView : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        DockPanel root = new();
+        Border separator = new()
+        {
+            Height = 1,
+            Background = B("App.Border"),
+            Margin = new Thickness(14, 0, 14, 0),
+        };
+
+        DockPanel root = new() { Background = B("App.Panel") };
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(header, Dock.Top);
-        DockPanel.SetDock(new Border { Height = 1, Background = Brushes.Gray, Opacity = 0.3, Margin = new Thickness(8, 2, 8, 2) }, Dock.Top);
+        DockPanel.SetDock(separator, Dock.Top);
         root.Children.Add(_status);
         root.Children.Add(header);
+        root.Children.Add(separator);
         root.Children.Add(messageScroll);
 
         Content = root;
@@ -169,7 +183,8 @@ public sealed class CommitDetailView : UserControl
     {
         SelectableTextBlock block = new()
         {
-            Margin = new Thickness(0, 2, 0, 2),
+            Foreground = B("App.Text"),
+            Margin = new Thickness(0, 3, 0, 3),
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -186,9 +201,9 @@ public sealed class CommitDetailView : UserControl
         TextBlock labelBlock = new()
         {
             Text = label,
-            Foreground = Brushes.Gray,
+            Foreground = B("App.TextDim"),
             FontWeight = FontWeight.Bold,
-            Margin = new Thickness(0, 2, 12, 2),
+            Margin = new Thickness(0, 3, 16, 3),
             VerticalAlignment = VerticalAlignment.Center,
         };
 

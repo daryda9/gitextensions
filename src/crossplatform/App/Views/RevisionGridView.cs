@@ -1,9 +1,13 @@
+using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 
@@ -31,10 +35,20 @@ public sealed class RevisionGridView : UserControl
     // Graph rendering metrics.
     private const double LaneWidth = 14;
 
+    // Row metrics — kept tight for a dense, GitExtensions-like log.
+    private const double RowFontSize = 12;
+
     private readonly RevisionService _service = new();
     private readonly ListBox _list;
     private readonly TextBlock _status;
     private readonly ContentControl _headerHost;
+
+    // The rows currently displayed, kept so BuildRow can compute a row's index
+    // (for the subtle alternating-row background).
+    private IReadOnlyList<RevisionRow> _rows = [];
+
+    // Palette pulled from the shared app resources (see App.cs).
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
     // Width of the graph column; updated to fit the loaded graph's lane count.
     private double _graphWidth = LaneWidth;
@@ -59,8 +73,11 @@ public sealed class RevisionGridView : UserControl
     {
         _status = new TextBlock
         {
-            Margin = new Thickness(8, 6, 8, 4),
-            Foreground = Brushes.Gray,
+            Margin = new Thickness(10, 6, 10, 6),
+            Foreground = B("App.TextDim"),
+            FontSize = 12,
+            Background = B("App.Toolbar"),
+            Padding = new Thickness(0, 2, 0, 2),
             Text = "No repository loaded.",
         };
 
@@ -68,9 +85,34 @@ public sealed class RevisionGridView : UserControl
 
         _list = new ListBox
         {
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+            Background = B("App.Window"),
+            Foreground = B("App.Text"),
+            FontSize = RowFontSize,
+            BorderThickness = new Thickness(0),
             ItemTemplate = new FuncDataTemplate<RevisionRow>((row, _) => BuildRow(row), supportsRecycling: true),
         };
+
+        // Dense rows, transparent containers, and an App.Selection highlight for
+        // the selected/hovered row (styling the Fluent ListBoxItem template).
+        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
+        {
+            Setters =
+            {
+                new Setter(ListBoxItem.PaddingProperty, new Thickness(0)),
+                new Setter(ListBoxItem.MinHeightProperty, 0d),
+                new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent),
+            },
+        });
+        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":pointerover")
+            .Template().OfType<ContentPresenter>())
+        {
+            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.PanelAlt")) },
+        });
+        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected")
+            .Template().OfType<ContentPresenter>())
+        {
+            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")) },
+        });
 
         _list.SelectionChanged += (_, _) =>
         {
@@ -92,7 +134,7 @@ public sealed class RevisionGridView : UserControl
             }
         };
 
-        DockPanel root = new();
+        DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_headerHost, Dock.Top);
         root.Children.Add(_status);
@@ -120,6 +162,7 @@ public sealed class RevisionGridView : UserControl
                 {
                     int laneCount = rows.Count > 0 ? rows[0].LaneCount : 1;
                     _graphWidth = Math.Max(1, laneCount) * LaneWidth;
+                    _rows = rows;
                     _headerHost.Content = BuildHeader();
                     _list.ItemsSource = rows;
                     _status.Text = $"{repoPath}  —  {rows.Count} commits";
@@ -142,18 +185,20 @@ public sealed class RevisionGridView : UserControl
     private Control BuildHeader()
     {
         Grid grid = MakeColumns();
-        grid.Margin = new Thickness(8, 0, 8, 2);
+        grid.Margin = new Thickness(10, 0, 10, 0);
 
-        AddCell(grid, 0, string.Empty, bold: true);
-        AddCell(grid, 1, "Hash", bold: true);
-        AddCell(grid, 2, "Author", bold: true);
-        AddCell(grid, 3, "Date", bold: true);
-        AddCell(grid, 4, "Subject", bold: true);
+        AddCell(grid, 0, string.Empty, B("App.TextDim"), bold: true);
+        AddCell(grid, 1, "Hash", B("App.TextDim"), bold: true);
+        AddCell(grid, 2, "Author", B("App.TextDim"), bold: true);
+        AddCell(grid, 3, "Date", B("App.TextDim"), bold: true);
+        AddCell(grid, 4, "Subject", B("App.TextDim"), bold: true);
 
         return new Border
         {
-            BorderBrush = Brushes.Gray,
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
             BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0, 3, 0, 3),
             Child = grid,
         };
     }
@@ -161,44 +206,40 @@ public sealed class RevisionGridView : UserControl
     private Control BuildRow(RevisionRow row)
     {
         Grid grid = MakeColumns();
-        grid.Margin = new Thickness(0, 1, 0, 1);
+        grid.Margin = new Thickness(10, 0, 10, 0);
+        grid.MinHeight = 20;
+
+        // Subtle alternating-row background (App.Panel / App.PanelAlt).
+        int index = _rows is List<RevisionRow> list ? list.IndexOf(row) : IndexOf(_rows, row);
+        grid.Background = (index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt");
 
         // Graph cell (column 0): the DAG lanes for this row.
         RevisionGraphControl graph = new(row.GraphSegments, row.NodeLane, LaneWidth);
         Grid.SetColumn(graph, 0);
         grid.Children.Add(graph);
 
-        AddCell(grid, 1, row.ShortHash);
-        AddCell(grid, 2, row.Author);
-        AddCell(grid, 3, row.Date);
+        // Hash: monospace + accent so it reads as a code identifier.
+        AddCell(grid, 1, row.ShortHash, B("App.Accent"), monospace: true);
+        AddCell(grid, 2, row.Author, B("App.TextDim"));
+        AddCell(grid, 3, row.Date, B("App.TextDim"));
 
         // Subject cell: optional ref badges followed by the subject text.
         StackPanel subject = new()
         {
             Orientation = Orientation.Horizontal,
             Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
         };
 
         foreach (string refName in row.RefNames)
         {
-            subject.Children.Add(new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32)),
-                CornerRadius = new CornerRadius(3),
-                Padding = new Thickness(4, 0, 4, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock
-                {
-                    Text = refName,
-                    Foreground = Brushes.White,
-                    FontSize = 11,
-                },
-            });
+            subject.Children.Add(BuildRefBadge(refName));
         }
 
         subject.Children.Add(new TextBlock
         {
             Text = row.Subject,
+            Foreground = B("App.Text"),
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
         });
@@ -208,6 +249,58 @@ public sealed class RevisionGridView : UserControl
 
         grid.ContextMenu = BuildRowContextMenu(row);
         return grid;
+    }
+
+    private static int IndexOf(IReadOnlyList<RevisionRow> rows, RevisionRow row)
+    {
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (ReferenceEquals(rows[i], row))
+            {
+                return i;
+            }
+        }
+
+        return 0;
+    }
+
+    // A rounded, muted "pill" for a ref name, coloured by kind: local branch,
+    // remote-tracking branch, or tag — echoing the original GitExtensions look.
+    private static Border BuildRefBadge(string refName)
+    {
+        (Color bg, Color fg) = RefColors(refName);
+
+        return new Border
+        {
+            Background = new SolidColorBrush(bg),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 0, 6, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = refName,
+                Foreground = new SolidColorBrush(fg),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
+
+    // Remote-tracking refs contain a "/" (e.g. origin/main); simple version-like
+    // names (v1.2, 2.0) are treated as tags; everything else is a local branch.
+    private static (Color Bg, Color Fg) RefColors(string refName)
+    {
+        if (refName.Contains('/'))
+        {
+            return (Color.FromRgb(0x3A, 0x4A, 0x5C), Color.FromRgb(0xAF, 0xCB, 0xE3)); // remote: muted blue
+        }
+
+        if (Regex.IsMatch(refName, @"^v?\d"))
+        {
+            return (Color.FromRgb(0x5A, 0x4B, 0x2E), Color.FromRgb(0xE3, 0xCB, 0x95)); // tag: muted amber
+        }
+
+        return (Color.FromRgb(0x37, 0x50, 0x3A), Color.FromRgb(0xB6, 0xE0, 0xB9)); // local branch: muted green
     }
 
     // Right-click menu: copy details of the row that was clicked.
@@ -256,15 +349,21 @@ public sealed class RevisionGridView : UserControl
         _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
     }
 
-    private static void AddCell(Grid grid, int column, string text, bool bold = false)
+    private static void AddCell(Grid grid, int column, string text, IBrush? foreground = null, bool bold = false, bool monospace = false)
     {
         TextBlock block = new()
         {
             Text = text,
+            Foreground = foreground ?? B("App.Text"),
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
             FontWeight = bold ? FontWeight.Bold : FontWeight.Normal,
         };
+
+        if (monospace)
+        {
+            block.FontFamily = new FontFamily("monospace,Consolas,Menlo");
+        }
 
         Grid.SetColumn(block, column);
         grid.Children.Add(block);

@@ -1,10 +1,13 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 
@@ -19,10 +22,16 @@ public sealed class DiffView : UserControl
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 
-    private static readonly IBrush AddedBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0xB9, 0x50));
-    private static readonly IBrush RemovedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x5A, 0x5A));
-    private static readonly IBrush HunkBrush = new SolidColorBrush(Color.FromRgb(0x4A, 0x9E, 0xD6));
-    private static readonly IBrush MetaBrush = Brushes.Gray;
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
+
+    // Diff line colours tuned for the dark palette; hunk/meta pull from app resources.
+    private static readonly IBrush AddedBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
+    private static readonly IBrush RemovedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+
+    // File-status glyph colours: modified=accent, added=green, deleted=red.
+    private static readonly IBrush ModifiedGlyph = new SolidColorBrush(Color.FromRgb(0x4A, 0x9E, 0xD6));
+    private static readonly IBrush AddedGlyph = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
+    private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
 
     private readonly ListBox _files;
     private readonly SelectableTextBlock _diff;
@@ -41,11 +50,36 @@ public sealed class DiffView : UserControl
         _files = new ListBox
         {
             FontFamily = Monospace,
+            FontSize = 12,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderThickness = new Thickness(0),
             ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<DiffFileRow>(
-                (row, _) => new TextBlock { Text = row?.Display ?? string.Empty },
+                (row, _) => BuildFileRow(row),
                 supportsRecycling: true),
         };
         _files.SelectionChanged += OnFileSelected;
+
+        // Tight rows + an App.Selection highlight, matching the revision grid.
+        _files.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
+        {
+            Setters =
+            {
+                new Setter(ListBoxItem.PaddingProperty, new Thickness(8, 1, 8, 1)),
+                new Setter(ListBoxItem.MinHeightProperty, 0d),
+                new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent),
+            },
+        });
+        _files.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":pointerover")
+            .Template().OfType<ContentPresenter>())
+        {
+            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.PanelAlt")) },
+        });
+        _files.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected")
+            .Template().OfType<ContentPresenter>())
+        {
+            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")) },
+        });
 
         MenuItem copyPathItem = new() { Header = "Copy file path" };
         copyPathItem.Click += (_, _) => CopySelectedFilePath();
@@ -54,7 +88,9 @@ public sealed class DiffView : UserControl
         _diff = new SelectableTextBlock
         {
             FontFamily = Monospace,
-            Margin = new Thickness(8),
+            FontSize = 12,
+            Foreground = B("App.Text"),
+            Margin = new Thickness(12, 10, 12, 12),
             TextWrapping = TextWrapping.NoWrap,
         };
 
@@ -67,19 +103,24 @@ public sealed class DiffView : UserControl
         ScrollViewer diffScroll = new()
         {
             Content = _diff,
+            Background = B("App.Window"),
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
         _status = new TextBlock
         {
-            Margin = new Thickness(8, 6, 8, 6),
-            Foreground = Brushes.Gray,
+            Padding = new Thickness(12, 7, 12, 7),
+            Background = B("App.Toolbar"),
+            Foreground = B("App.TextDim"),
+            FontSize = 12,
+            TextTrimming = TextTrimming.CharacterEllipsis,
             Text = "No commit selected.",
         };
 
         Grid split = new()
         {
+            Background = B("App.Panel"),
             ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"),
         };
 
@@ -89,6 +130,7 @@ public sealed class DiffView : UserControl
         GridSplitter splitter = new()
         {
             Width = 4,
+            Background = B("App.Border"),
             ResizeDirection = GridResizeDirection.Columns,
         };
         Grid.SetColumn(splitter, 1);
@@ -99,7 +141,7 @@ public sealed class DiffView : UserControl
         split.Children.Add(splitter);
         split.Children.Add(diffScroll);
 
-        DockPanel root = new();
+        DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
         root.Children.Add(_status);
         root.Children.Add(split);
@@ -108,6 +150,48 @@ public sealed class DiffView : UserControl
 
         // Ctrl+C: copy the file path when the file list is focused, otherwise the diff.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+    }
+
+    // A changed-file row: a coloured status glyph (M/A/D/R/C) followed by the path.
+    private static Control BuildFileRow(DiffFileRow? row)
+    {
+        if (row is null)
+        {
+            return new TextBlock();
+        }
+
+        (char glyph, IBrush glyphBrush) = row.Kind switch
+        {
+            DiffChangeKind.Added => ('A', AddedGlyph),
+            DiffChangeKind.Deleted => ('D', DeletedGlyph),
+            DiffChangeKind.Renamed => ('R', ModifiedGlyph),
+            DiffChangeKind.Copied => ('C', ModifiedGlyph),
+            _ => ('M', ModifiedGlyph),
+        };
+
+        string path = row.OldName is null || row.OldName == row.Name
+            ? row.Name
+            : $"{row.OldName} -> {row.Name}";
+
+        StackPanel panel = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = glyph.ToString(),
+            Foreground = glyphBrush,
+            FontFamily = Monospace,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = path,
+            Foreground = B("App.Text"),
+            FontFamily = Monospace,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        return panel;
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
@@ -268,11 +352,11 @@ public sealed class DiffView : UserControl
                 line.StartsWith("copy ", StringComparison.Ordinal) ||
                 line.StartsWith("similarity ", StringComparison.Ordinal))
             {
-                brush = MetaBrush;
+                brush = B("App.TextDim");
             }
             else if (line.StartsWith("@@", StringComparison.Ordinal))
             {
-                brush = HunkBrush;
+                brush = B("App.Accent");
             }
             else if (line.StartsWith('+'))
             {
