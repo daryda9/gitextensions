@@ -1,0 +1,3 @@
+# Debian packaging (Linux/Avalonia port)
+
+Building the `.deb` requires `dpkg-deb` (from `dpkg-dev`: `sudo apt install dpkg-dev`) and the .NET 10 SDK on `PATH`. Run `./build-deb.sh` from this directory; it does a self-contained `dotnet publish` (so the target machine needs no .NET runtime), stages a Debian tree (payload under `/opt/gitextensions`, a `/usr/bin/gitextensions` launcher, a `.desktop` entry and a 256x256 icon), and produces `out/gitextensions_<version>_amd64.deb`. Install it with `sudo dpkg -i out/gitextensions_<version>_amd64.deb` (or `sudo apt install ./out/gitextensions_<version>_amd64.deb` to pull the `git` dependency automatically), then launch from your app menu or by running `gitextensions`.

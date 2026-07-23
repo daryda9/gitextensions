@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Git Extensions
+Comment=Graphical user interface for Git
+Exec=gitextensions %U
+Icon=gitextensions
+Terminal=false
+Type=Application
+Categories=Development;RevisionControl;
+Keywords=git;vcs;version control;source control;
+StartupNotify=true
