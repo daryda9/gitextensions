@@ -11,6 +11,8 @@ namespace GitExtensions.Avalonia.Services;
 public sealed record RemoteRow(string Name, string FetchUrl, string PushUrl)
 {
     public string Display => string.IsNullOrEmpty(FetchUrl) ? Name : $"{Name}  ({FetchUrl})";
+
+    public override string ToString() => Display;
 }
 
 /// <summary>

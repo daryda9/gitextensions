@@ -27,6 +27,8 @@ public enum StashResetMode
 public sealed record StashRow(int Index, string Name, string Message)
 {
     public string Display => $"{Name}: {Message}";
+
+    public override string ToString() => Display;
 }
 
 /// <summary>

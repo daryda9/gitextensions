@@ -44,6 +44,17 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     public event Action<string>? RevisionSelected;
 
+    // Host-registered commit-targeted actions (checkout, cherry-pick, reset, …),
+    // appended to each row's context menu. Each handler receives the full hash.
+    private readonly List<(string Header, Action<string> Handler)> _commitCommands = [];
+
+    /// <summary>
+    ///  Registers an extra context-menu command shown on each commit row; the
+    ///  handler is invoked with the row's full commit hash.
+    /// </summary>
+    public void AddCommitCommand(string header, Action<string> handler)
+        => _commitCommands.Add((header, handler));
+
     public RevisionGridView()
     {
         _status = new TextBlock
@@ -211,7 +222,7 @@ public sealed class RevisionGridView : UserControl
         MenuItem copyAuthor = new() { Header = "Copy author" };
         copyAuthor.Click += (_, _) => Copy(row.Author);
 
-        return new ContextMenu
+        ContextMenu menu = new()
         {
             Items =
             {
@@ -220,6 +231,19 @@ public sealed class RevisionGridView : UserControl
                 copyAuthor,
             },
         };
+
+        if (_commitCommands.Count > 0)
+        {
+            menu.Items.Add(new Separator());
+            foreach ((string header, Action<string> handler) in _commitCommands)
+            {
+                MenuItem item = new() { Header = header };
+                item.Click += (_, _) => handler(row.Hash);
+                menu.Items.Add(item);
+            }
+        }
+
+        return menu;
     }
 
     private void Copy(string? text)

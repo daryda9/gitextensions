@@ -27,6 +27,8 @@ public sealed record BranchTagRow(
             return $"{marker}{Name}  ({kind})";
         }
     }
+
+    public override string ToString() => Display;
 }
 
 /// <summary>
