@@ -363,6 +363,18 @@ comportamento (le guardie sono `false`).
     (Avalonia DoDragDrop, same-list guard, riusa Stage/Unstage).
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M23** — Command log + Compare-to-branch + Sparse (1 subagent) + ricerca
+  modello plugin (1 Explore read-only):
+  - **Git command log** (Tools): `CommandLogWindow` legge il `CommandLog` statico
+    reale del core (`Executable.Start` → `LogProcessStart`) → mostra i comandi git
+    effettivamente eseguiti.
+  - **Compare to branch**: grid context → picker branch locali → `git diff
+    branch..selected` reso via `DiffView.ShowRange` esistente.
+  - **Sparse working copy** (`SparseService`/`SparseDialog`): `git sparse-checkout
+    list/init --cone/set/disable`.
+  - **Piano plugin** documentato (vedi "## Piano modello plugin") per iter. 17-18.
+  Build 0 errori.
+
 ### Come avviarlo
 
 ```bash
@@ -467,11 +479,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 14 / 20** · parità **92.5%** (148/160 voci `[x]`). Questo giro
-> (M22): 3 subagent paralleli → Patch format/apply/view (menu Commands + viewer
-> colorato); Manage worktrees dialog dal tree; drag & drop stage/unstage nel
-> Working directory. Prossimo: iter. 15 → command log, compare-to-branch, sparse
-> working copy; poi toolbar minori + modello plugin. Residue non-SKIP: ~7.
+> **Iterazione: 15 / 20** · parità **95.6%** (153/160 voci `[x]`). Questo giro
+> (M23): Command log (legge il `CommandLog` reale del core) + Compare-to-branch
+> (riusa DiffView) + Sparse working copy (`git sparse-checkout`); in parallelo
+> ricerca+piano del modello plugin (vedi "Piano modello plugin"). Residue: Plugins
+> (iter. 17-18), 2 toolbar split-button (iter. 16), 4 SKIP (GitHub hosts ×2,
+> avatar, build-status — N/A o dipendenti da plugin/CI).
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -489,7 +502,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Repository ▸ Manage submodules / update / synchronize (dialog dal tree)
 - [x] Repository ▸ Manage worktrees (dialog dal tree)
 - [x] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
-- [ ] Repository ▸ Sparse working copy
+- [x] Repository ▸ Sparse working copy (git sparse-checkout)
 - [x] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
 - [x] Repository ▸ Repository settings (riusa SettingsWindow)
 - [x] Commands ▸ Commit
@@ -518,7 +531,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Repository hosts (GitHub: fork / view-create PR / add upstream)
 - [ ] Plugins menu + Plugins settings
 - [x] Tools ▸ Git bash / Git GUI / GitK (PuTTY N/A su Linux)
-- [ ] Tools ▸ Git command log
+- [x] Tools ▸ Git command log (legge core CommandLog)
 - [x] Tools/Edit ▸ Settings (SettingsWindow Avalonia: identità git, pull, tema)
 - [x] Help ▸ About
 - [x] Help ▸ User manual / Changelog / Report issue / Donate (xdg-open; check-updates/translate/telemetry N/A)
@@ -607,13 +620,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Format patch / Apply patch / View patch (viewer colorato)
 - [x] Add to .gitignore (path / *.ext / dir/, da file untracked)
 - [x] Edit .gitignore / .gitattributes / .mailmap (xdg-open, M16)
-- [ ] Sparse working copy
+- [x] Sparse working copy
 - [x] Submodules manager (update/update-all/sync/init)
 - [x] Reflog browser (copy hash / checkout)
-- [ ] Compare to branch
+- [x] Compare to branch (git diff branch..selected → DiffView)
 - [x] Verify database / recover lost objects (git fsck, da Maintenance)
 - [x] Settings (SettingsWindow — identità/pull/tema; fondazione estendibile)
-- [ ] Command log (FormLog)
+- [x] Command log (CommandLogWindow)
 - [x] Bisect UI (da grid)
 
 ### F. Operazioni git esposte
