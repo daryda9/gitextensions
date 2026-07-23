@@ -181,6 +181,23 @@ comportamento (le guardie sono `false`).
     da `MainWindow` — rinviato).
   Build 0 errori, GUI verificata headless (xvfb) — menu/toolbar/tree/grid ok.
 
+- **M11** — limiti funzionali + rifinitura grid (2 subagent claude paralleli,
+  file disgiunti, cherry-pick + build + GUI ok):
+  - **Push sicuro**: `RemoteService.Push` usa ora `ForcePushOptions.ForceWithLease`
+    (`--force-with-lease`) invece di `--force`; checkbox UI "Force (with lease)".
+  - **Credenziali senza URL injection**: rimosso il rewrite `user:pass@` nell'URL;
+    quando servono credenziali (retry post-auth-fail, solo http/https) si passano
+    a git via helper per-comando `-c credential.helper='!f(){...}'` che legge
+    **variabili d'ambiente** (`GE_AVALONIA_CRED_USER/PASS`) settate solo per quel
+    comando e ripristinate in `finally`. La riga di comando (che `Executable`
+    logga) contiene solo i *nomi* delle variabili → il segreto non finisce in
+    log/reflog/URL. ssh resta key-based. Verificato con `git credential fill`.
+  - **Filtro/ricerca grid**: `TextBox` live in cima a `RevisionGridView`
+    (autore/messaggio/hash full+short, case-insensitive, Esc/✕ per pulire); con
+    filtro attivo la colonna grafo DAG collassa a larghezza 0 (evita edge verso
+    righe nascoste), il modello `_allRows` non viene mutato.
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -236,10 +253,12 @@ merge/branch edge, fork/merge gestiti). ✅
 8. ~~**Blame** e **file history**~~ ✅ `BlameView`/`FileHistoryView`
    (+ service); nel tab, input path relativo al repo.
 
-Aperto/limiti su questo blocco: push force = `--force` (non force-with-lease);
-credenziali passate transitoriamente negli arg del comando (mai persistite);
-blame/history guidati da input path manuale (non ancora agganciati al menu
-"Blame/History di questo file" nella lista file del diff).
+Risolto in M11: push usa `--force-with-lease`; credenziali via git
+credential-helper (variabili d'ambiente, non più injection nell'URL, segreto non
+loggato). Blame/File-history sono agganciati al menu contestuale della lista file
+del diff (`DiffView` → `BlameRequested`/`FileHistoryRequested` → tab in
+`MainWindow`) — già dalla UI M7. Resta aperto: blame/history dal menu del
+pannello sinistro / grid a livello di commit (meno prioritario).
 
 ### UI / look originale ✅ (M7 + M8)
 Layout FormBrowse (toolbar + albero + grid DAG + pannello inferiore + status
@@ -279,11 +298,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 2 / 20** · parità **45.0%** (72/160 voci `[x]`, invariata: iter. 2
-> era debito tecnico, non voci UI). Questo giro (M10): 3 subagent paralleli →
-> Ctrl+C SIGINT su Linux, bump Avalonia 11.3.14 (NU1903 risolto), fix VSTHRD100
-> async-void (7→0). Prossimo: iter. 3 → limiti funzionali (push force-with-lease,
-> credential-helper, Blame/History da menu contestuale).
+> **Iterazione: 3 / 20** · parità **45.6%** (73/160 voci `[x]`). Questo giro
+> (M11): 2 subagent paralleli → push `--force-with-lease` + credenziali via git
+> credential-helper (secret non loggato, no URL injection); barra filtro/ricerca
+> live nella revision grid (autore/messaggio/hash). Confermato che Blame/History
+> da menu contestuale erano già cablati. Prossimo: iter. 4 → rifiniture UI
+> (persistenza tema + dimensioni pannelli, drag&drop) e voci checklist.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -381,7 +401,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
 - [ ] Menu contestuale: bisect good/bad/skip/stop
 - [ ] Menu contestuale: navigate (parent/child/ancestor/go-to)
-- [ ] Filtro/ricerca (autore / messaggio / committer / hash)
+- [x] Filtro/ricerca (autore / messaggio / hash) — barra live in RevisionGridView
 - [ ] Quick-search da tastiera
 - [ ] Drag &amp; drop
 - [ ] View toggles (mostra/nascondi colonne, all/current/filtered branches)
@@ -431,7 +451,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 ### F. Operazioni git esposte
 - [x] Commit (+ amend)
 - [ ] Commit: squash / fixup / reword / edit / undo
-- [x] Push (⚠ `--force`, non ancora `--force-with-lease`)
+- [x] Push (`--force-with-lease`, non più `--force`)
 - [x] Pull / Fetch (+ fetch all / prune)
 - [x] Branch: create / checkout / delete
 - [ ] Branch: rename
@@ -471,4 +491,4 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Verifica traduzioni ResourceManager su Linux
 - [ ] Shim no-op → implementazioni reali (dialog, clipboard)
 - [ ] Persistenza tema + dimensioni pannelli tra avvii
-- [ ] Credenziali via credential-helper git (non injection URL)
+- [x] Credenziali via credential-helper git (env-var, non injection URL, secret non loggato)
