@@ -5,6 +5,7 @@ using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
@@ -48,6 +49,22 @@ public sealed class RevisionGridView : UserControl
     // kept as fields so a keyboard shortcut (Ctrl+G) can open + focus them.
     private readonly Button _goToButton;
     private readonly TextBox _goToBox;
+
+    // --- Type-to-search (quick-search) -------------------------------------
+    //
+    // Distinct from the text FILTER above (_search), which HIDES non-matching
+    // rows. Quick-search never touches the row set: while the grid/list itself
+    // has focus, printable keystrokes accumulate into _quickSearch and the
+    // selection JUMPS to the next row whose subject/author contains the buffer,
+    // leaving every other row visible. F3/Enter jump to the next match,
+    // Shift+F3 to the previous (both wrap); Backspace edits the buffer; Esc
+    // clears it; and a short idle timeout auto-dismisses it. Because it lives on
+    // _list's own key/text handlers (not _search's), it never competes with the
+    // filter box for typed characters.
+    private readonly Border _quickSearchOverlay;
+    private readonly TextBlock _quickSearchLabel;
+    private readonly DispatcherTimer _quickSearchTimer;
+    private string _quickSearch = string.Empty;
 
     // The full, graph-built revision set as loaded from git; filtering selects a
     // subset from this without re-running git or touching the underlying model.
@@ -301,6 +318,8 @@ public sealed class RevisionGridView : UserControl
         {
             bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
             bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
+            bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+            bool quickActive = _quickSearch.Length > 0;
 
             if (ctrl && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
             {
@@ -322,7 +341,82 @@ public sealed class RevisionGridView : UserControl
                 OpenGoTo();
                 e.Handled = true;
             }
+            // --- quick-search navigation (only when the list itself is focused) ---
+            else if (e.Key == Key.F3)
+            {
+                // F3 / Shift+F3 step to the next / previous match, wrapping.
+                if (quickActive)
+                {
+                    QuickSearchStep(forward: !shift);
+                    e.Handled = true;
+                }
+            }
+            else if (e.Key == Key.Enter && quickActive && !ctrl && !alt)
+            {
+                // Enter also advances to the next match while quick-searching.
+                QuickSearchStep(forward: !shift);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Back && quickActive)
+            {
+                // Backspace edits the buffer; emptying it dismisses the adorner.
+                _quickSearch = _quickSearch[..^1];
+                if (_quickSearch.Length == 0)
+                {
+                    EndQuickSearch();
+                }
+                else
+                {
+                    QuickSearchApply(fromCurrentInclusive: true);
+                }
+
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape && quickActive)
+            {
+                // Esc clears/dismisses the quick-search.
+                EndQuickSearch();
+                e.Handled = true;
+            }
         };
+
+        // Transient quick-search adorner: a small pill floating at the bottom-left
+        // of the list, shown only while a quick-search is in progress.
+        _quickSearchLabel = new TextBlock
+        {
+            Foreground = B("App.Text"),
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _quickSearchOverlay = new Border
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Accent"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(10, 0, 0, 10),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            IsHitTestVisible = false,
+            IsVisible = false,
+            Child = _quickSearchLabel,
+        };
+
+        // Idle timeout: a pause in typing dismisses the quick-search buffer, so a
+        // later keystroke starts fresh (matching the original grid's behaviour).
+        _quickSearchTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _quickSearchTimer.Tick += (_, _) => EndQuickSearch();
+
+        // Printable characters typed while the list is focused feed the buffer.
+        // Using the TextInput event (rather than KeyDown) gives the actual typed
+        // character with keyboard layout / shift applied, and only fires for real
+        // text input — never for Enter/Backspace/F3, which KeyDown handles below.
+        _list.AddHandler(InputElement.TextInputEvent, OnListTextInput, RoutingStrategies.Bubble);
+
+        Panel listHost = new();
+        listHost.Children.Add(_list);
+        listHost.Children.Add(_quickSearchOverlay);
 
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(searchBar, Dock.Top);
@@ -331,7 +425,7 @@ public sealed class RevisionGridView : UserControl
         root.Children.Add(searchBar);
         root.Children.Add(_status);
         root.Children.Add(_headerHost);
-        root.Children.Add(_list);
+        root.Children.Add(listHost);
 
         Content = root;
     }
@@ -976,6 +1070,119 @@ public sealed class RevisionGridView : UserControl
                 _goToBox.SelectAll();
             });
         }
+    }
+
+    // --- Type-to-search (quick-search) ---------------------------------------
+    //
+    // Fed by _list's TextInput event, so it only runs when the grid/list has
+    // focus — the filter box (_search) owns its own typing and is untouched.
+    // Never hides rows; it only moves the selection and shows a transient pill.
+
+    // A printable character was typed with the list focused: extend the buffer
+    // and jump to the next match from the current selection (inclusive), so a
+    // still-matching current row stays put as the query is refined.
+    private void OnListTextInput(object? sender, TextInputEventArgs e)
+    {
+        string text = e.Text ?? string.Empty;
+        if (text.Length == 0 || _rows.Count == 0)
+        {
+            return;
+        }
+
+        // Ignore control characters (e.g. an escape sequence surfacing as text).
+        foreach (char c in text)
+        {
+            if (char.IsControl(c))
+            {
+                return;
+            }
+        }
+
+        _quickSearch += text;
+        QuickSearchApply(fromCurrentInclusive: true);
+        e.Handled = true;
+    }
+
+    // Searches from the current selection and (re)positions it on the first
+    // matching row, updating the adorner. Restarts the idle-dismiss timer.
+    private void QuickSearchApply(bool fromCurrentInclusive)
+    {
+        int start = _list.SelectedIndex >= 0 ? _list.SelectedIndex : 0;
+        int index = QuickMatchIndex(_quickSearch, start, forward: true, inclusive: fromCurrentInclusive);
+        bool found = index >= 0;
+        if (found)
+        {
+            SelectIndex(index);
+        }
+
+        ShowQuickSearch(found);
+    }
+
+    // F3 / Shift+F3 (and Enter): advance to the next/previous match, starting
+    // just past the current selection so repeated presses cycle through matches.
+    private void QuickSearchStep(bool forward)
+    {
+        int start = _list.SelectedIndex >= 0 ? _list.SelectedIndex : 0;
+        int index = QuickMatchIndex(_quickSearch, start, forward, inclusive: false);
+        bool found = index >= 0;
+        if (found)
+        {
+            SelectIndex(index);
+        }
+
+        ShowQuickSearch(found);
+    }
+
+    // Finds the index of the next row matching the buffer, scanning the displayed
+    // rows in the requested direction and wrapping around. When inclusive, the
+    // start row itself is considered first; otherwise the scan begins one step on.
+    private int QuickMatchIndex(string query, int start, bool forward, bool inclusive)
+    {
+        int n = _rows.Count;
+        if (n == 0 || query.Length == 0)
+        {
+            return -1;
+        }
+
+        int step = forward ? 1 : -1;
+        int begin = inclusive ? start : start + step;
+        for (int k = 0; k < n; k++)
+        {
+            int i = (((begin + (step * k)) % n) + n) % n;
+            if (QuickMatches(_rows[i], query))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    // Quick-search matches on the subject or author (not the hash — that is what
+    // the "Go to commit" box is for), case-insensitively.
+    private static bool QuickMatches(RevisionRow row, string query)
+        => row.Subject.Contains(query, StringComparison.OrdinalIgnoreCase)
+        || row.Author.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    // Shows/refreshes the transient adorner and (re)arms the idle-dismiss timer.
+    private void ShowQuickSearch(bool found)
+    {
+        _quickSearchLabel.Text = found
+            ? $"quick-search: {_quickSearch}…"
+            : $"quick-search: {_quickSearch}…  (no match)";
+        _quickSearchLabel.Foreground = found ? B("App.Text") : B("App.TextDim");
+        _quickSearchOverlay.IsVisible = true;
+
+        _quickSearchTimer.Stop();
+        _quickSearchTimer.Start();
+    }
+
+    // Clears the buffer and hides the adorner (Esc, empty backspace, or idle).
+    private void EndQuickSearch()
+    {
+        _quickSearchTimer.Stop();
+        _quickSearch = string.Empty;
+        _quickSearchOverlay.IsVisible = false;
     }
 
     // --- Commit navigation ---------------------------------------------------
