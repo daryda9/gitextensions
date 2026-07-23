@@ -24,6 +24,7 @@ public sealed class RepoObjectsTree : UserControl
     private readonly BranchTagService _branchTagService = new();
     private readonly StashOpsService _stashService = new();
     private readonly SubmoduleService _submoduleService = new();
+    private readonly RemoteService _remoteService = new();
 
     private readonly TreeView _tree;
 
@@ -152,11 +153,13 @@ public sealed class RepoObjectsTree : UserControl
 
         // Remotes (remote branches grouped by remote name, e.g. "origin/...").
         TreeViewItem remotesNode = Category("Remotes", "Remotes", remote.Count);
+        remotesNode.ContextMenu = RemotesRootMenu();
         foreach (IGrouping<string, BranchTagRow> group in remote
                      .GroupBy(RemoteName, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
             TreeViewItem groupNode = Category(group.Key, "Remote", group.Count());
+            groupNode.ContextMenu = RemoteGroupMenu(group.Key);
             foreach (BranchTagRow row in group.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase))
             {
                 string label = ShortRemoteName(row.Name, group.Key);
@@ -325,6 +328,23 @@ public sealed class RepoObjectsTree : UserControl
         return menu;
     }
 
+    private ContextMenu RemotesRootMenu()
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Manage remotes…", "Remotes", () => _ = DoManageRemotesAsync()));
+        return menu;
+    }
+
+    private ContextMenu RemoteGroupMenu(string remote)
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Edit URL…", "Remote", () => _ = DoEditRemoteUrlAsync(remote)));
+        menu.Items.Add(MenuItem("Rename…", "Remote", () => _ = DoRenameRemoteAsync(remote)));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuItem("Remove", "Remove", () => _ = DoRemoveRemoteAsync(remote)));
+        return menu;
+    }
+
     private static MenuItem MenuItem(string text, string? icon, Action onClick)
     {
         MenuItem item = new() { Header = text };
@@ -430,6 +450,93 @@ public sealed class RepoObjectsTree : UserControl
         }
     }
 
+    private async Task DoManageRemotesAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            RemotesDialog dialog = new(repo);
+            await dialog.ShowDialog(owner);
+            if (dialog.Changed)
+            {
+                OperationCompleted?.Invoke();
+                Refresh();
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the dialog simply closes.
+        }
+    }
+
+    private async Task DoEditRemoteUrlAsync(string remote)
+    {
+        try
+        {
+            string current = FindRemoteUrl(remote);
+            string? url = await PromptAsync($"URL for remote '{remote}':", current);
+            if (url is { Length: > 0 } target && !string.Equals(target, current, StringComparison.Ordinal))
+            {
+                RunRemote(() => _remoteService.SetRemoteUrl(_repoPath!, remote, target));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the prompt/mutation simply aborts.
+        }
+    }
+
+    private async Task DoRenameRemoteAsync(string remote)
+    {
+        try
+        {
+            string? name = await PromptAsync($"Rename remote '{remote}' to:", remote);
+            if (name is { Length: > 0 } target && !string.Equals(target, remote, StringComparison.Ordinal))
+            {
+                RunRemote(() => _remoteService.RenameRemote(_repoPath!, remote, target));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the prompt/mutation simply aborts.
+        }
+    }
+
+    private async Task DoRemoveRemoteAsync(string remote)
+    {
+        try
+        {
+            if (await ConfirmAsync($"Remove remote '{remote}'?"))
+            {
+                RunRemote(() => _remoteService.RemoveRemote(_repoPath!, remote));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
+        }
+    }
+
+    // Best-effort lookup of a remote's fetch URL to prefill the edit prompt;
+    // returns empty when unavailable (the prompt then starts blank).
+    private string FindRemoteUrl(string remote)
+    {
+        try
+        {
+            return _repoPath is { Length: > 0 } repo
+                ? _remoteService.ListRemotes(repo).FirstOrDefault(r => r.Name == remote)?.FetchUrl ?? string.Empty
+                : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     // --- Mutation plumbing ------------------------------------------------
 
     private void RunMutation(Func<BranchTagResult> work)
@@ -465,6 +572,38 @@ public sealed class RepoObjectsTree : UserControl
     }
 
     private void RunStash(Func<StashOpResult> work)
+    {
+        if (_repoPath is not { Length: > 0 } || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        _ = Task.Run(() =>
+        {
+            bool success;
+            try
+            {
+                success = work().Success;
+            }
+            catch
+            {
+                success = false;
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _busy = false;
+                if (success)
+                {
+                    OperationCompleted?.Invoke();
+                    Refresh();
+                }
+            });
+        });
+    }
+
+    private void RunRemote(Func<RemoteOpResult> work)
     {
         if (_repoPath is not { Length: > 0 } || _busy)
         {

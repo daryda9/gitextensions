@@ -2,6 +2,7 @@ using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
+using GitExtUtils;
 
 namespace GitExtensions.Avalonia.Services;
 
@@ -60,6 +61,73 @@ public sealed class RemoteService
             r.Name,
             r.FetchUrl ?? string.Empty,
             r.PushUrls.Count > 0 ? r.PushUrls[0] : r.FetchUrl ?? string.Empty))];
+    }
+
+    /// <summary>
+    ///  Adds a new remote: <c>git remote add &lt;name&gt; &lt;url&gt;</c>.
+    /// </summary>
+    public RemoteOpResult AddRemote(string repoPath, string name, string url)
+    {
+        string remote = name?.Trim() ?? string.Empty;
+        string target = url?.Trim() ?? string.Empty;
+        if (remote.Length == 0 || target.Length == 0)
+        {
+            return new RemoteOpResult(false, "Remote name and URL are required.", AuthFailed: false);
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("remote") { "add", remote, target };
+        return Run(module, args);
+    }
+
+    /// <summary>
+    ///  Renames a remote: <c>git remote rename &lt;old&gt; &lt;new&gt;</c>.
+    /// </summary>
+    public RemoteOpResult RenameRemote(string repoPath, string oldName, string newName)
+    {
+        string source = oldName?.Trim() ?? string.Empty;
+        string target = newName?.Trim() ?? string.Empty;
+        if (source.Length == 0 || target.Length == 0)
+        {
+            return new RemoteOpResult(false, "Remote name cannot be empty.", AuthFailed: false);
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("remote") { "rename", source, target };
+        return Run(module, args);
+    }
+
+    /// <summary>
+    ///  Removes a remote: <c>git remote remove &lt;name&gt;</c>.
+    /// </summary>
+    public RemoteOpResult RemoveRemote(string repoPath, string name)
+    {
+        string remote = name?.Trim() ?? string.Empty;
+        if (remote.Length == 0)
+        {
+            return new RemoteOpResult(false, "Remote name cannot be empty.", AuthFailed: false);
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("remote") { "remove", remote };
+        return Run(module, args);
+    }
+
+    /// <summary>
+    ///  Changes a remote's fetch URL: <c>git remote set-url &lt;name&gt; &lt;url&gt;</c>.
+    /// </summary>
+    public RemoteOpResult SetRemoteUrl(string repoPath, string name, string url)
+    {
+        string remote = name?.Trim() ?? string.Empty;
+        string target = url?.Trim() ?? string.Empty;
+        if (remote.Length == 0 || target.Length == 0)
+        {
+            return new RemoteOpResult(false, "Remote name and URL are required.", AuthFailed: false);
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("remote") { "set-url", remote, target };
+        return Run(module, args);
     }
 
     /// <summary>
