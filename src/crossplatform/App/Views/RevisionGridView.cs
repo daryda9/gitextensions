@@ -42,16 +42,36 @@ public sealed class RevisionGridView : UserControl
     private readonly ListBox _list;
     private readonly TextBlock _status;
     private readonly ContentControl _headerHost;
+    private readonly TextBox _search;
+
+    // The full, graph-built revision set as loaded from git; filtering selects a
+    // subset from this without re-running git or touching the underlying model.
+    private IReadOnlyList<RevisionRow> _allRows = [];
 
     // The rows currently displayed, kept so BuildRow can compute a row's index
     // (for the subtle alternating-row background).
     private IReadOnlyList<RevisionRow> _rows = [];
 
+    // True while a non-empty filter is applied. The DAG graph is drawn from
+    // segments precomputed against ADJACENT rows in the full list, so showing an
+    // arbitrary subset would leave lane lines/edges pointing at hidden neighbours
+    // (a garbled graph). While filtering we therefore collapse the graph column
+    // to zero width and skip drawing it, restoring it in full when the filter is
+    // cleared. The underlying model (_allRows) is never mutated.
+    private bool _filterActive;
+
+    // Path of the loaded repository, for the status line.
+    private string _repoLabel = string.Empty;
+
     // Palette pulled from the shared app resources (see App.cs).
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
-    // Width of the graph column; updated to fit the loaded graph's lane count.
+    // Width of the graph column when NOT filtering; updated to fit the loaded
+    // graph's lane count. While a filter is active the effective width is 0.
     private double _graphWidth = LaneWidth;
+
+    // The column width actually used by the header/rows right now (0 while filtering).
+    private double EffectiveGraphWidth => _filterActive ? 0 : _graphWidth;
 
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
@@ -82,6 +102,63 @@ public sealed class RevisionGridView : UserControl
         };
 
         _headerHost = new ContentControl { Content = BuildHeader() };
+
+        _search = new TextBox
+        {
+            Watermark = "Filter: author / message / hash",
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            FontSize = 12,
+            Padding = new Thickness(6, 3, 4, 3),
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+
+        // A small inline "clear" affordance, shown only when the box has text.
+        Button clearButton = new()
+        {
+            Content = "✕",
+            Foreground = B("App.TextDim"),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 0, 4, 0),
+            FontSize = 12,
+            IsVisible = false,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        clearButton.Click += (_, _) =>
+        {
+            _search.Text = string.Empty;
+            _search.Focus();
+        };
+        _search.InnerRightContent = clearButton;
+
+        // Live, in-memory filtering as the user types (no git re-run per keystroke).
+        _search.TextChanged += (_, _) =>
+        {
+            clearButton.IsVisible = !string.IsNullOrEmpty(_search.Text);
+            ApplyFilter(_search.Text);
+        };
+
+        // Esc clears the filter (and keeps focus in the box).
+        _search.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                _search.Text = string.Empty;
+                e.Handled = true;
+            }
+        };
+
+        Border searchBar = new()
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(10, 6, 10, 6),
+            Child = _search,
+        };
 
         _list = new ListBox
         {
@@ -136,8 +213,10 @@ public sealed class RevisionGridView : UserControl
         };
 
         DockPanel root = new() { Background = B("App.Window") };
+        DockPanel.SetDock(searchBar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_headerHost, Dock.Top);
+        root.Children.Add(searchBar);
         root.Children.Add(_status);
         root.Children.Add(_headerHost);
         root.Children.Add(_list);
@@ -163,10 +242,10 @@ public sealed class RevisionGridView : UserControl
                 {
                     int laneCount = rows.Count > 0 ? rows[0].LaneCount : 1;
                     _graphWidth = Math.Max(1, laneCount) * LaneWidth;
-                    _rows = rows;
-                    _headerHost.Content = BuildHeader();
-                    _list.ItemsSource = rows;
-                    _status.Text = $"{repoPath}  —  {rows.Count} commits";
+                    _allRows = rows;
+                    _repoLabel = repoPath;
+                    // Re-apply any current filter text so a reload keeps the view consistent.
+                    ApplyFilter(_search.Text);
                 });
             }
             catch (Exception ex)
@@ -176,11 +255,72 @@ public sealed class RevisionGridView : UserControl
         });
     }
 
+    /// <summary>
+    ///  Applies a case-insensitive substring filter over the already-loaded
+    ///  revisions (author name, commit subject, and full/abbreviated hash).
+    ///  Empty text shows everything. Runs purely in memory — no git per keystroke.
+    /// </summary>
+    private void ApplyFilter(string? text)
+    {
+        string query = (text ?? string.Empty).Trim();
+        bool wasFiltering = _filterActive;
+        _filterActive = query.Length > 0;
+
+        IReadOnlyList<RevisionRow> filtered;
+        if (!_filterActive)
+        {
+            filtered = _allRows;
+        }
+        else
+        {
+            List<RevisionRow> matches = [];
+            foreach (RevisionRow row in _allRows)
+            {
+                if (Matches(row, query))
+                {
+                    matches.Add(row);
+                }
+            }
+
+            filtered = matches;
+        }
+
+        _rows = filtered;
+
+        // The graph column width changes with the filter state; rebuild the
+        // header so its columns stay aligned with the (re-templated) rows.
+        _headerHost.Content = BuildHeader();
+
+        // Reassign the source so every visible row is rebuilt against the current
+        // filter/graph state (and stale selection is dropped).
+        _list.ItemsSource = null;
+        _list.ItemsSource = filtered;
+
+        if (_filterActive)
+        {
+            _status.Text = $"{_repoLabel}  —  {filtered.Count} of {_allRows.Count} commits  (filter: \"{query}\")";
+        }
+        else
+        {
+            _status.Text = _allRows.Count == 0
+                ? "No repository loaded."
+                : $"{_repoLabel}  —  {_allRows.Count} commits";
+        }
+
+        _ = wasFiltering; // (state kept for clarity; no extra action needed)
+    }
+
+    private static bool Matches(RevisionRow row, string query)
+        => row.Author.Contains(query, StringComparison.OrdinalIgnoreCase)
+        || row.Subject.Contains(query, StringComparison.OrdinalIgnoreCase)
+        || row.Hash.Contains(query, StringComparison.OrdinalIgnoreCase)
+        || row.ShortHash.Contains(query, StringComparison.OrdinalIgnoreCase);
+
     private Grid MakeColumns()
         => new()
         {
             ColumnDefinitions = new ColumnDefinitions(
-                $"{_graphWidth},{HashWidth},{AuthorWidth},{DateWidth},*"),
+                $"{EffectiveGraphWidth},{HashWidth},{AuthorWidth},{DateWidth},*"),
         };
 
     private Control BuildHeader()
@@ -214,10 +354,17 @@ public sealed class RevisionGridView : UserControl
         int index = _rows is List<RevisionRow> list ? list.IndexOf(row) : IndexOf(_rows, row);
         grid.Background = (index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt");
 
-        // Graph cell (column 0): the DAG lanes for this row.
-        RevisionGraphControl graph = new(row.GraphSegments, row.NodeLane, LaneWidth);
-        Grid.SetColumn(graph, 0);
-        grid.Children.Add(graph);
+        // Graph cell (column 0): the DAG lanes for this row. While a filter is
+        // active the rows shown are a non-contiguous subset, so the precomputed
+        // segments (which reference adjacent rows in the full list) no longer make
+        // sense — the column is collapsed to zero width and the graph is skipped
+        // to avoid rendering a garbled DAG. It returns in full once the filter clears.
+        if (!_filterActive)
+        {
+            RevisionGraphControl graph = new(row.GraphSegments, row.NodeLane, LaneWidth);
+            Grid.SetColumn(graph, 0);
+            grid.Children.Add(graph);
+        }
 
         // Hash: monospace + accent so it reads as a code identifier.
         AddCell(grid, 1, row.ShortHash, B("App.Accent"), monospace: true);
