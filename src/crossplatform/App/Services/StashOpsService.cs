@@ -69,6 +69,38 @@ public sealed class StashOpsService
     }
 
     /// <summary>
+    ///  Saves the current working-directory changes to a new stash with an explicit
+    ///  message, optionally including untracked files. Runs
+    ///  <c>git stash push [-u] -m &lt;message&gt;</c> directly so the exact command
+    ///  is predictable regardless of the core builder's flag ordering.
+    /// </summary>
+    public StashOpResult StashSaveMessage(string repoPath, string message, bool includeUntracked)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("stash")
+        {
+            "push",
+            { includeUntracked, "-u" },
+            { !string.IsNullOrWhiteSpace(message), "-m" },
+            { !string.IsNullOrWhiteSpace(message), message.Quote() },
+        };
+        return Run(module, args);
+    }
+
+    /// <summary>
+    ///  Returns the full unified patch for the given stash via
+    ///  <c>git stash show -p &lt;ref&gt;</c>. On failure the git output is returned
+    ///  as-is so the caller can surface it.
+    /// </summary>
+    public string GetStashDiff(string repoPath, string stashRef)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("stash") { "show", "-p", stashRef };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return result.AllOutput;
+    }
+
+    /// <summary>
     ///  Stashes ONLY the staged (index) changes, leaving unstaged / working-tree
     ///  changes in place. Uses <c>git stash push --staged [-m &lt;message&gt;]</c>
     ///  (requires git 2.35+, which introduced <c>--staged</c>). There is no core
