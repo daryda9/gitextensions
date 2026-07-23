@@ -30,6 +30,31 @@ public sealed class WorkingDirectoryView : UserControl
     private string? _repoPath;
     private bool _busy;
 
+    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
+
+    private static ListBox MakeList()
+        => new()
+        {
+            SelectionMode = SelectionMode.Multiple,
+            FontFamily = Monospace,
+            FontSize = 12,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            MinHeight = 90,
+            ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<WorkingDirFileRow>(
+                (row, _) => new TextBlock
+                {
+                    Text = row?.Display ?? string.Empty,
+                    Foreground = B("App.Text"),
+                    FontFamily = Monospace,
+                    FontSize = 12,
+                },
+                supportsRecycling: true),
+        };
+
     /// <summary>
     ///  Raised on the UI thread after a successful commit (lists already refreshed).
     /// </summary>
@@ -37,11 +62,7 @@ public sealed class WorkingDirectoryView : UserControl
 
     public WorkingDirectoryView()
     {
-        _unstagedList = new ListBox
-        {
-            SelectionMode = SelectionMode.Multiple,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
-        };
+        _unstagedList = MakeList();
         _unstagedList.DoubleTapped += (_, _) => StageSelected();
         _unstagedList.KeyDown += OnUnstagedKeyDown;
 
@@ -51,11 +72,7 @@ public sealed class WorkingDirectoryView : UserControl
         unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
         _unstagedList.ContextMenu = new ContextMenu { ItemsSource = new[] { stageItem, unstagedCopyItem } };
 
-        _stagedList = new ListBox
-        {
-            SelectionMode = SelectionMode.Multiple,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
-        };
+        _stagedList = MakeList();
         _stagedList.DoubleTapped += (_, _) => UnstageSelected();
         _stagedList.KeyDown += OnStagedKeyDown;
 
@@ -120,12 +137,12 @@ public sealed class WorkingDirectoryView : UserControl
         _status = new TextBlock
         {
             Margin = new Thickness(10, 2, 10, 6),
-            Foreground = Brushes.Gray,
+            Foreground = B("App.TextDim"),
             Text = "No repository loaded.",
             TextWrapping = TextWrapping.Wrap,
         };
 
-        DockPanel root = new();
+        DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Bottom);
         DockPanel.SetDock(commitPanel, Dock.Bottom);
         root.Children.Add(_status);

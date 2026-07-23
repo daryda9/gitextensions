@@ -12,6 +12,8 @@ namespace GitExtensions.Avalonia.Services;
 public sealed record WorkingDirFileRow(string Path, string Status, bool IsStaged)
 {
     public string Display => $"{Status}  {Path}";
+
+    public override string ToString() => Display;
 }
 
 /// <summary>

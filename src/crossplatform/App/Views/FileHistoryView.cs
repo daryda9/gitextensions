@@ -25,6 +25,8 @@ public sealed class FileHistoryView : UserControl
     private const double AuthorWidth = 170;
     private const double DateWidth = 130;
 
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
+
     private readonly FileHistoryService _service = new();
     private readonly ListBox _list;
     private readonly TextBlock _status;
@@ -39,13 +41,19 @@ public sealed class FileHistoryView : UserControl
         _status = new TextBlock
         {
             Margin = new Thickness(8, 6, 8, 4),
-            Foreground = Brushes.Gray,
+            Foreground = B("App.TextDim"),
+            Background = B("App.Toolbar"),
+            Padding = new Thickness(4, 4, 4, 4),
             Text = "No file loaded.",
         };
 
         _list = new ListBox
         {
             FontFamily = Monospace,
+            FontSize = 12,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderThickness = new Thickness(0),
             ItemTemplate = new FuncDataTemplate<FileHistoryRow>((row, _) => BuildRow(row), supportsRecycling: true),
         };
 
@@ -69,7 +77,7 @@ public sealed class FileHistoryView : UserControl
 
         Control header = BuildHeader();
 
-        DockPanel root = new();
+        DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(header, Dock.Top);
         root.Children.Add(_status);

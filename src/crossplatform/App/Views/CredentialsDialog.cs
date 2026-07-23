@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
+using Avalonia.Media;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -25,6 +26,7 @@ public sealed class CredentialsDialog : Window
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Background = (IBrush)Application.Current!.Resources["App.Window"]!;
 
         TextBlock prompt = new()
         {

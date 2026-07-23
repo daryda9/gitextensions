@@ -66,6 +66,7 @@ public sealed class RepositoryPickerView : UserControl
         StackPanel root = new()
         {
             Margin = new Thickness(12),
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             Children =
             {
                 browseButton,

@@ -256,6 +256,7 @@ public sealed class MainWindow : Window
             Width = 640,
             Height = 460,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Resources["App.Window"]!,
             Content = picker,
         };
         picker.RepositorySelected += repo =>
@@ -290,6 +291,7 @@ public sealed class MainWindow : Window
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Resources["App.Window"]!,
             Content = new StackPanel
             {
                 Margin = new Thickness(16),
@@ -325,6 +327,7 @@ public sealed class MainWindow : Window
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Resources["App.Window"]!,
             Content = new StackPanel
             {
                 Margin = new Thickness(16),

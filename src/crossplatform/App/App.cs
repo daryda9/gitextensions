@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
@@ -29,6 +31,21 @@ public class App : Application
         Resources["App.Accent"] = new SolidColorBrush(Color.Parse("#007ACC"));
         Resources["App.Selection"] = new SolidColorBrush(Color.Parse("#094771"));
         Resources["App.GraphGreen"] = new SolidColorBrush(Color.Parse("#4EC9B0"));
+
+        // Normalize control sizing: Fluent's default tab headers are oversized
+        // for a dense tool; keep them compact and consistent with the rest.
+        Style tabItem = new(x => x.OfType<TabItem>());
+        tabItem.Setters.Add(new Setter(TemplatedControl.FontSizeProperty, 13.0));
+        tabItem.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, FontWeight.Normal));
+        tabItem.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(12, 6)));
+        tabItem.Setters.Add(new Setter(Layoutable.MinHeightProperty, 0.0));
+        Styles.Add(tabItem);
+
+        // A sane default text size app-wide (Fluent defaults to 14, which reads
+        // large next to the 12px grid/diff); views can still override.
+        Style text = new(x => x.OfType<TextBlock>());
+        text.Setters.Add(new Setter(TextBlock.FontSizeProperty, 13.0));
+        Styles.Add(text);
     }
 
     public override void OnFrameworkInitializationCompleted()

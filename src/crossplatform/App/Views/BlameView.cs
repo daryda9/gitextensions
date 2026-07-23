@@ -25,7 +25,8 @@ public sealed class BlameView : UserControl
     private const double AuthorWidth = 160;
     private const double LineWidth = 60;
 
-    private static readonly IBrush MetaBrush = Brushes.Gray;
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
+    private static readonly IBrush MetaBrush = B("App.TextDim");
 
     private readonly BlameService _service = new();
     private readonly ListBox _list;
@@ -36,26 +37,33 @@ public sealed class BlameView : UserControl
         _status = new TextBlock
         {
             Margin = new Thickness(8, 6, 8, 4),
-            Foreground = Brushes.Gray,
+            Foreground = B("App.TextDim"),
+            Background = B("App.Toolbar"),
+            Padding = new Thickness(4, 4, 4, 4),
             Text = "No file loaded.",
         };
 
         _list = new ListBox
         {
             FontFamily = Monospace,
+            FontSize = 12,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderThickness = new Thickness(0),
             ItemTemplate = new FuncDataTemplate<BlameLineRow>((row, _) => BuildRow(row), supportsRecycling: true),
         };
 
         ScrollViewer scroll = new()
         {
             Content = _list,
+            Background = B("App.Panel"),
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
         Control header = BuildHeader();
 
-        DockPanel root = new();
+        DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(header, Dock.Top);
         root.Children.Add(_status);
