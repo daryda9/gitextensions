@@ -39,6 +39,11 @@ public sealed class MainMenu : UserControl
     public event Action? FetchRequested;
     public event Action? PullRequested;
     public event Action? PushRequested;
+    public event Action? FileExplorerRequested;
+    public event Action? EditGitignoreRequested;
+    public event Action? EditGitattributesRequested;
+    public event Action? EditMailmapRequested;
+    public event Action? EditInfoExcludeRequested;
 
     // ---- Commands
     public event Action? CommitRequested;
@@ -46,8 +51,17 @@ public sealed class MainMenu : UserControl
     public event Action? NewBranchRequested;
     public event Action? NewTagRequested;
 
+    // ---- Tools
+    public event Action? GitBashRequested;
+    public event Action? GitKRequested;
+    public event Action? GitGuiRequested;
+
     // ---- Help
     public event Action? AboutRequested;
+    public event Action? UserManualRequested;
+    public event Action? ReportIssueRequested;
+    public event Action? ChangelogRequested;
+    public event Action? DonateRequested;
 
     public MainMenu()
     {
@@ -82,6 +96,13 @@ public sealed class MainMenu : UserControl
         repository.Items.Add(Item("Fetch", "PullFetch", () => FetchRequested?.Invoke()));
         repository.Items.Add(Item("Pull", "Pull", () => PullRequested?.Invoke()));
         repository.Items.Add(Item("Push", "Push", () => PushRequested?.Invoke()));
+        repository.Items.Add(new Separator());
+        repository.Items.Add(Item("File Explorer", "BrowseFileExplorer", () => FileExplorerRequested?.Invoke()));
+        repository.Items.Add(new Separator());
+        repository.Items.Add(Item("Edit .gitignore", "EditGitIgnore", () => EditGitignoreRequested?.Invoke()));
+        repository.Items.Add(Item("Edit .gitattributes", null, () => EditGitattributesRequested?.Invoke()));
+        repository.Items.Add(Item("Edit .mailmap", null, () => EditMailmapRequested?.Invoke()));
+        repository.Items.Add(Item("Edit .git/info/exclude", null, () => EditInfoExcludeRequested?.Invoke()));
 
         MenuItem commands = new() { Header = "_Commands" };
         commands.Items.Add(Item("Commit…", "CommitSummary", () => CommitRequested?.Invoke()));
@@ -90,14 +111,25 @@ public sealed class MainMenu : UserControl
         commands.Items.Add(Item("New branch…", "BranchCreate", () => NewBranchRequested?.Invoke()));
         commands.Items.Add(Item("New tag…", "TagCreate", () => NewTagRequested?.Invoke()));
 
+        MenuItem tools = new() { Header = "_Tools" };
+        tools.Items.Add(Item("Git bash", "GitForWindows", () => GitBashRequested?.Invoke()));
+        tools.Items.Add(new Separator());
+        tools.Items.Add(Item("GitK", null, () => GitKRequested?.Invoke()));
+        tools.Items.Add(Item("Git GUI", null, () => GitGuiRequested?.Invoke()));
+
         MenuItem help = new() { Header = "_Help" };
+        help.Items.Add(Item("User manual", "GitExtensionsHelp", () => UserManualRequested?.Invoke()));
+        help.Items.Add(Item("Report an issue", null, () => ReportIssueRequested?.Invoke()));
+        help.Items.Add(Item("Changelog", null, () => ChangelogRequested?.Invoke()));
+        help.Items.Add(Item("Donate", null, () => DonateRequested?.Invoke()));
+        help.Items.Add(new Separator());
         help.Items.Add(Item("About", null, () => AboutRequested?.Invoke()));
 
         Menu menu = new()
         {
             Background = toolbar,
             Foreground = text,
-            Items = { file, edit, view, repository, commands, help },
+            Items = { file, edit, view, repository, commands, tools, help },
         };
 
         Content = menu;

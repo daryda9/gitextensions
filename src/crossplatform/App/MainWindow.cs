@@ -48,6 +48,7 @@ public sealed class MainWindow : Window
     private readonly FileHistoryView _fileHistory = new();
 
     private readonly StashOpsService _stashOps = new();
+    private readonly ExternalToolService _externalTools = new();
 
     private readonly UiStateService _uiStateService = new();
     private readonly UiState _uiState;
@@ -260,6 +261,24 @@ public sealed class MainWindow : Window
         _menu.AboutRequested += () => _ = AboutDialog.ShowAsync(this);
         _menu.SettingsRequested += () => _ = OpenSettingsAsync();
 
+        // Repository: file explorer + edit repo config files (created if absent).
+        _menu.FileExplorerRequested += () => WithRepo(p => _externalTools.OpenPath(p));
+        _menu.EditGitignoreRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".gitignore")));
+        _menu.EditGitattributesRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".gitattributes")));
+        _menu.EditMailmapRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".mailmap")));
+        _menu.EditInfoExcludeRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".git", "info", "exclude")));
+
+        // Tools: terminal + external git GUIs, launched detached in the repo dir.
+        _menu.GitBashRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
+        _menu.GitKRequested += () => WithRepo(p => _externalTools.LaunchDetached("gitk", Array.Empty<string>(), p, "Launched gitk"));
+        _menu.GitGuiRequested += () => WithRepo(p => _externalTools.LaunchDetached("git", new[] { "gui" }, p, "Launched git gui"));
+
+        // Help: external documentation / project links (no repo required).
+        _menu.UserManualRequested += () => Surface(_externalTools.OpenUrl("https://git-extensions-documentation.readthedocs.io/"));
+        _menu.ReportIssueRequested += () => Surface(_externalTools.OpenUrl("https://github.com/gitextensions/gitextensions/issues"));
+        _menu.ChangelogRequested += () => Surface(_externalTools.OpenUrl("https://github.com/gitextensions/gitextensions/releases"));
+        _menu.DonateRequested += () => Surface(_externalTools.OpenUrl("https://opencollective.com/gitextensions"));
+
         // Commit-targeted operations on the revision grid.
         _revisions.AddCommitCommand("Checkout this commit",
             hash => RunOp("Checkout", () => new BranchTagService().Checkout(_repoPath!, hash).Success));
@@ -346,6 +365,24 @@ public sealed class MainWindow : Window
         RunOp($"Create tag {name}",
             () => new BranchTagService().CreateTag(_repoPath!, name.Trim(), commit: hash, message?.Trim() ?? string.Empty).Success);
     }
+
+    // Runs an external-tool action that needs the current repo, surfacing its
+    // result (or a "no repository" note) in the status bar. Never throws: the
+    // service catches launch failures and returns them as a failed result.
+    private void WithRepo(Func<string, ExternalToolResult> action)
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        Surface(action(_repoPath));
+    }
+
+    // Reflects an external-tool result in the status bar; failures are reported
+    // as text rather than thrown, so a missing tool never crashes the UI.
+    private void Surface(ExternalToolResult result) => _statusBar.SetText(result.Message);
 
     private void OnRevisionSelected(string commitHash)
     {
