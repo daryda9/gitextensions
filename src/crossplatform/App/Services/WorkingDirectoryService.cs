@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
+using GitExtUtils;
 
 namespace GitExtensions.Avalonia.Services;
 
@@ -27,7 +29,8 @@ public sealed record WorkingDirCommitResult(bool Success, string Output);
 /// </summary>
 public sealed record WorkingDirStatus(
     IReadOnlyList<WorkingDirFileRow> Staged,
-    IReadOnlyList<WorkingDirFileRow> Unstaged);
+    IReadOnlyList<WorkingDirFileRow> Unstaged,
+    IReadOnlyList<string> Conflicts);
 
 /// <summary>
 ///  Working-directory operations (status, stage, unstage, commit) implemented by
@@ -49,7 +52,131 @@ public sealed class WorkingDirectoryService
 
         return new WorkingDirStatus(
             [.. staged.Select(f => ToRow(f, isStaged: true))],
-            [.. unstaged.Select(f => ToRow(f, isStaged: false))]);
+            [.. unstaged.Select(f => ToRow(f, isStaged: false))],
+            ListConflicts(module));
+    }
+
+    /// <summary>
+    ///  Lists the conflicted (unmerged) paths in the working directory via
+    ///  <c>git diff --name-only --diff-filter=U</c>. Empty when the repository is
+    ///  not in a conflicted state (e.g. no merge/rebase in progress).
+    /// </summary>
+    public IReadOnlyList<string> ListConflicts(string repoPath)
+        => ListConflicts(GitContext.CreateModule(repoPath));
+
+    private static IReadOnlyList<string> ListConflicts(GitModule module)
+    {
+        GitArgumentBuilder args = new("diff")
+        {
+            "--name-only",
+            "--diff-filter=U",
+        };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        if (!result.ExitedSuccessfully)
+        {
+            return [];
+        }
+
+        return [.. result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.TrimEnd('\r'))
+            .Where(l => l.Length > 0)];
+    }
+
+    /// <summary>
+    ///  Launches the user's configured merge tool for <paramref name="path"/>
+    ///  (<c>git mergetool --no-prompt -- &lt;path&gt;</c>), detached and
+    ///  non-blocking so the UI thread is never held while the (interactive) tool
+    ///  runs. When no merge tool is configured, git is not launched — instead the
+    ///  configured-tool check fails and a descriptive message is returned so the
+    ///  view can surface it. Never throws.
+    /// </summary>
+    public WorkingDirCommitResult LaunchMergetool(string repoPath, string path)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        // A detached launch can't capture git's "no tool configured" message,
+        // so pre-check the config and surface a message ourselves instead.
+        GitArgumentBuilder configArgs = new("config")
+        {
+            "--get",
+            "merge.tool",
+        };
+        ExecutionResult configResult = module.GitExecutable.Execute(configArgs, throwOnErrorExit: false);
+        if (!configResult.ExitedSuccessfully || configResult.StandardOutput.Trim().Length == 0)
+        {
+            return new WorkingDirCommitResult(false,
+                "No merge tool configured. Set one with 'git config merge.tool <tool>' (e.g. vimdiff, meld, kdiff3).");
+        }
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "git",
+                UseShellExecute = false,
+                WorkingDirectory = repoPath,
+            };
+            psi.ArgumentList.Add("mergetool");
+            psi.ArgumentList.Add("--no-prompt");
+            psi.ArgumentList.Add("--");
+            psi.ArgumentList.Add(path);
+
+            Process? proc = Process.Start(psi);
+            return proc is null
+                ? new WorkingDirCommitResult(false, "Could not start git mergetool.")
+                : new WorkingDirCommitResult(true, $"Launched merge tool for {path}.");
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not launch merge tool: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    ///  Marks a conflicted file as resolved by staging it (<c>git add -- &lt;path&gt;</c>).
+    /// </summary>
+    public WorkingDirCommitResult MarkResolved(string repoPath, string path)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("add") { "--", path };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  Resolves a conflict by keeping our version (<c>git checkout --ours</c>)
+    ///  then staging it.
+    /// </summary>
+    public WorkingDirCommitResult TakeOurs(string repoPath, string path)
+        => TakeSide(repoPath, path, ours: true);
+
+    /// <summary>
+    ///  Resolves a conflict by keeping their version (<c>git checkout --theirs</c>)
+    ///  then staging it.
+    /// </summary>
+    public WorkingDirCommitResult TakeTheirs(string repoPath, string path)
+        => TakeSide(repoPath, path, ours: false);
+
+    private static WorkingDirCommitResult TakeSide(string repoPath, string path, bool ours)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        GitArgumentBuilder checkoutArgs = new("checkout")
+        {
+            ours ? "--ours" : "--theirs",
+            "--",
+            path,
+        };
+        ExecutionResult checkout = module.GitExecutable.Execute(checkoutArgs, throwOnErrorExit: false);
+        if (!checkout.ExitedSuccessfully)
+        {
+            return new WorkingDirCommitResult(false, checkout.AllOutput);
+        }
+
+        GitArgumentBuilder addArgs = new("add") { "--", path };
+        ExecutionResult add = module.GitExecutable.Execute(addArgs, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(add.ExitedSuccessfully, add.AllOutput);
     }
 
     /// <summary>

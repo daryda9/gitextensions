@@ -20,6 +20,8 @@ public sealed class WorkingDirectoryView : UserControl
 
     private readonly ListBox _unstagedList;
     private readonly ListBox _stagedList;
+    private readonly ListBox _conflictsList;
+    private readonly Grid _conflictsPanel;
     private readonly Button _stageButton;
     private readonly Button _unstageButton;
     private readonly TextBox _messageBox;
@@ -57,6 +59,30 @@ public sealed class WorkingDirectoryView : UserControl
                 supportsRecycling: true),
         };
 
+    // A ListBox of plain conflicted-path strings (distinct from the staged/unstaged
+    // WorkingDirFileRow lists). Styled with the accent brush so conflicts stand out.
+    private static ListBox MakeStringList()
+        => new()
+        {
+            SelectionMode = SelectionMode.Multiple,
+            FontFamily = Monospace,
+            FontSize = 12,
+            Background = B("App.Panel"),
+            Foreground = B("App.Accent"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            MinHeight = 60,
+            ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<string>(
+                (path, _) => new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(path) ? string.Empty : "⚠  " + path,
+                    Foreground = B("App.Accent"),
+                    FontFamily = Monospace,
+                    FontSize = 12,
+                },
+                supportsRecycling: true),
+        };
+
     /// <summary>
     ///  Raised on the UI thread after a successful commit (lists already refreshed).
     /// </summary>
@@ -83,6 +109,25 @@ public sealed class WorkingDirectoryView : UserControl
         MenuItem stagedCopyItem = new() { Header = "Copy path" };
         stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
         _stagedList.ContextMenu = new ContextMenu { ItemsSource = new[] { unstageItem, stagedCopyItem } };
+
+        _conflictsList = MakeStringList();
+        _conflictsList.DoubleTapped += (_, _) => OpenInMergetool();
+
+        MenuItem mergetoolItem = new() { Header = "Open in mergetool" };
+        mergetoolItem.Click += (_, _) => OpenInMergetool();
+        MenuItem takeOursItem = new() { Header = "Take ours" };
+        takeOursItem.Click += (_, _) => ResolveConflicts("ours");
+        MenuItem takeTheirsItem = new() { Header = "Take theirs" };
+        takeTheirsItem.Click += (_, _) => ResolveConflicts("theirs");
+        MenuItem markResolvedItem = new() { Header = "Mark resolved" };
+        markResolvedItem.Click += (_, _) => ResolveConflicts("resolved");
+        _conflictsList.ContextMenu = new ContextMenu
+        {
+            ItemsSource = new[] { mergetoolItem, takeOursItem, takeTheirsItem, markResolvedItem },
+        };
+
+        _conflictsPanel = MakeConflictsPanel(_conflictsList);
+        _conflictsPanel.IsVisible = false;
 
         _stageButton = new Button { Content = "Stage ▼", Margin = new Thickness(0, 4, 0, 0) };
         _stageButton.Click += (_, _) => StageSelected();
@@ -162,8 +207,10 @@ public sealed class WorkingDirectoryView : UserControl
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Bottom);
         DockPanel.SetDock(commitPanel, Dock.Bottom);
+        DockPanel.SetDock(_conflictsPanel, Dock.Top);
         root.Children.Add(_status);
         root.Children.Add(commitPanel);
+        root.Children.Add(_conflictsPanel);
         root.Children.Add(lists);
 
         Content = root;
@@ -202,6 +249,32 @@ public sealed class WorkingDirectoryView : UserControl
         return grid;
     }
 
+    // The conflicts section (title + list) lives in a bordered container docked
+    // above the staged/unstaged lists. It is collapsed (IsVisible=false) whenever
+    // there are no conflicts, so a clean repository shows the normal staging UI.
+    private static Grid MakeConflictsPanel(ListBox list)
+    {
+        Grid grid = new()
+        {
+            RowDefinitions = new RowDefinitions("Auto,*"),
+            Margin = new Thickness(8, 8, 8, 0),
+        };
+
+        TextBlock title = new()
+        {
+            Text = "Merge conflicts (double-click to open mergetool)",
+            FontWeight = FontWeight.Bold,
+            Foreground = B("App.Accent"),
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+
+        Grid.SetRow(title, 0);
+        Grid.SetRow(list, 1);
+        grid.Children.Add(title);
+        grid.Children.Add(list);
+        return grid;
+    }
+
     private void RefreshStatus()
     {
         if (_repoPath is not { Length: > 0 } repo)
@@ -217,7 +290,102 @@ public sealed class WorkingDirectoryView : UserControl
             {
                 _unstagedList.ItemsSource = status.Unstaged.ToList();
                 _stagedList.ItemsSource = status.Staged.ToList();
-                _status.Text = $"{status.Unstaged.Count} unstaged, {status.Staged.Count} staged.";
+
+                List<string> conflicts = status.Conflicts.ToList();
+                _conflictsList.ItemsSource = conflicts;
+                _conflictsPanel.IsVisible = conflicts.Count > 0;
+
+                _status.Text = conflicts.Count > 0
+                    ? $"{conflicts.Count} conflict(s), {status.Unstaged.Count} unstaged, {status.Staged.Count} staged."
+                    : $"{status.Unstaged.Count} unstaged, {status.Staged.Count} staged.";
+            });
+    }
+
+    private List<string> SelectedConflicts()
+        => _conflictsList.SelectedItems?.OfType<string>().ToList() ?? [];
+
+    // Launches the configured merge tool for each selected conflict (detached).
+    // Does not RefreshStatus immediately: the tool runs asynchronously, so the
+    // user marks the file resolved (or takes ours/theirs) once done.
+    private void OpenInMergetool()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        List<string> paths = SelectedConflicts();
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        _status.Text = "Launching merge tool…";
+        RunGit(
+            () =>
+            {
+                WorkingDirCommitResult last = new(true, string.Empty);
+                foreach (string path in paths)
+                {
+                    last = _service.LaunchMergetool(repo, path);
+                    if (!last.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return last;
+            },
+            result => _status.Text = result.Success
+                ? "Merge tool launched. Mark resolved when done."
+                : result.Output.Trim());
+    }
+
+    // Resolves selected conflicts via "ours", "theirs", or plain "mark resolved"
+    // (git add), then refreshes so resolved files leave the conflicts section.
+    private void ResolveConflicts(string mode)
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        List<string> paths = SelectedConflicts();
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        _status.Text = "Resolving conflict(s)…";
+        RunGit(
+            () =>
+            {
+                WorkingDirCommitResult last = new(true, string.Empty);
+                foreach (string path in paths)
+                {
+                    last = mode switch
+                    {
+                        "ours" => _service.TakeOurs(repo, path),
+                        "theirs" => _service.TakeTheirs(repo, path),
+                        _ => _service.MarkResolved(repo, path),
+                    };
+
+                    if (!last.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return last;
+            },
+            result =>
+            {
+                if (!result.Success)
+                {
+                    _status.Text = "Resolve failed: " + result.Output.Trim();
+                }
+
+                RefreshStatus();
             });
     }
 
