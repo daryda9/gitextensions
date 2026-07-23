@@ -77,6 +77,14 @@ public sealed class RevisionGridView : UserControl
     private DateSource _dateSource = DateSource.Commit;
     private bool _relativeDates;
 
+    // Which refs the log walks (All branches / current branch only / filtered).
+    // Session-local; changing it re-runs the log via the existing load path.
+    private BranchScope _branchScope = BranchScope.AllBranches;
+
+    // Path of the repository last asked to load, so a scope change can re-run the
+    // log without the caller re-supplying it (LoadRepository stores it here).
+    private string _repoPath = string.Empty;
+
     // Column visibility toggles (the graph + Subject columns always stay).
     private bool _showHash = true;
     private bool _showAuthor = true;
@@ -196,12 +204,19 @@ public sealed class RevisionGridView : UserControl
         _goToButton = MakeBarButton("Go to ▾");
         _goToButton.Flyout = BuildGoToFlyout();
 
+        // Branch-scope control: All branches / Current branch only / Filtered.
+        // Switching re-runs the log through the existing load path (Reload).
+        Button branchesButton = MakeBarButton("Branches ▾");
+        branchesButton.Flyout = BuildBranchesFlyout();
+
         DockPanel bar = new();
         DockPanel.SetDock(dateButton, Dock.Right);
         DockPanel.SetDock(columnsButton, Dock.Right);
+        DockPanel.SetDock(branchesButton, Dock.Right);
         DockPanel.SetDock(_goToButton, Dock.Right);
         bar.Children.Add(columnsButton);
         bar.Children.Add(dateButton);
+        bar.Children.Add(branchesButton);
         bar.Children.Add(_goToButton);
         bar.Children.Add(_search); // fills the remaining space
 
@@ -303,6 +318,27 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     public void LoadRepository(string repoPath)
     {
+        _repoPath = repoPath;
+        Reload();
+    }
+
+    /// <summary>
+    ///  (Re-)runs the git log for the stored repository under the current branch
+    ///  scope, off the UI thread. Used both for the initial load and whenever the
+    ///  branch-scope toggle changes. All view state (text filter, git-notes, date
+    ///  mode, column show/hide) is preserved: the DAG graph is rebuilt by the
+    ///  service, and the current filter text is re-applied on completion.
+    /// </summary>
+    private void Reload()
+    {
+        if (string.IsNullOrEmpty(_repoPath))
+        {
+            return;
+        }
+
+        string repoPath = _repoPath;
+        BranchScope scope = _branchScope;
+
         _list.ItemsSource = null;
         _status.Text = "Loading…";
 
@@ -310,7 +346,7 @@ public sealed class RevisionGridView : UserControl
         {
             try
             {
-                IReadOnlyList<RevisionRow> rows = _service.LoadRevisions(repoPath);
+                IReadOnlyList<RevisionRow> rows = _service.LoadRevisions(repoPath, scope: scope);
                 Dispatcher.UIThread.Post(() =>
                 {
                     int laneCount = rows.Count > 0 ? rows[0].LaneCount : 1;
@@ -327,6 +363,16 @@ public sealed class RevisionGridView : UserControl
             }
         });
     }
+
+    // Human label for the current branch scope, shown in the status line so the
+    // effect of the toggle (and the resulting commit count) is visible.
+    private string ScopeLabel => _branchScope switch
+    {
+        BranchScope.AllBranches => "all branches",
+        BranchScope.CurrentBranch => "current branch",
+        BranchScope.Filtered => "filtered (current branch)",
+        _ => "all branches",
+    };
 
     /// <summary>
     ///  Applies a case-insensitive substring filter over the already-loaded
@@ -371,13 +417,13 @@ public sealed class RevisionGridView : UserControl
 
         if (_filterActive)
         {
-            _status.Text = $"{_repoLabel}  —  {filtered.Count} of {_allRows.Count} commits  (filter: \"{query}\")";
+            _status.Text = $"{_repoLabel}  —  {filtered.Count} of {_allRows.Count} commits  ({ScopeLabel}; filter: \"{query}\")";
         }
         else
         {
             _status.Text = _allRows.Count == 0
                 ? "No repository loaded."
-                : $"{_repoLabel}  —  {_allRows.Count} commits";
+                : $"{_repoLabel}  —  {_allRows.Count} commits  ({ScopeLabel})";
         }
 
         _ = wasFiltering; // (state kept for clarity; no extra action needed)
@@ -572,6 +618,62 @@ public sealed class RevisionGridView : UserControl
                 Child = panel,
             },
         };
+    }
+
+    // Branches menu: choose which refs the log walks. Each selection re-runs the
+    // log via Reload(), preserving the text filter, git-notes, date mode, column
+    // toggles and the (service-rebuilt) DAG graph.
+    private Flyout BuildBranchesFlyout()
+    {
+        StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 190 };
+
+        panel.Children.Add(SectionLabel("Branches shown"));
+
+        RadioButton all = MakeRadio("All branches", "revBranchScope", _branchScope == BranchScope.AllBranches);
+        RadioButton current = MakeRadio("Current branch only", "revBranchScope", _branchScope == BranchScope.CurrentBranch);
+        RadioButton filtered = MakeRadio("Filtered branches", "revBranchScope", _branchScope == BranchScope.Filtered);
+
+        all.IsCheckedChanged += (_, _) => SelectScope(all, BranchScope.AllBranches);
+        current.IsCheckedChanged += (_, _) => SelectScope(current, BranchScope.CurrentBranch);
+        filtered.IsCheckedChanged += (_, _) => SelectScope(filtered, BranchScope.Filtered);
+
+        panel.Children.Add(all);
+        panel.Children.Add(current);
+        panel.Children.Add(filtered);
+
+        // "Filtered" has no selection UI yet, so it walks the current branch.
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Filtered walks the current branch until a ref picker is added.",
+            Foreground = B("App.TextDim"),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+        });
+
+        return new Flyout
+        {
+            Content = new Border
+            {
+                Background = B("App.Panel"),
+                Padding = new Thickness(2),
+                Child = panel,
+            },
+        };
+    }
+
+    // Applies a newly-checked branch-scope radio: updates the mode and re-runs the
+    // log. Guarded so the uncheck half of a radio pair does nothing, and a no-op
+    // re-selection of the same mode does not trigger a redundant reload.
+    private void SelectScope(RadioButton radio, BranchScope scope)
+    {
+        if (radio.IsChecked != true || _branchScope == scope)
+        {
+            return;
+        }
+
+        _branchScope = scope;
+        Reload();
     }
 
     // "Go to" menu: buttons to jump to the first parent / nearest child of the

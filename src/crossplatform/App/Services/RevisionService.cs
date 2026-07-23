@@ -7,6 +7,25 @@ using GitUIPluginInterfaces;
 namespace GitExtensions.Avalonia.Services;
 
 /// <summary>
+///  Which refs the revision log should walk, mirroring the branch-scope toggle
+///  of the original Git Extensions revision grid.
+/// </summary>
+public enum BranchScope
+{
+    /// <summary>Walk every ref (<c>git log --all</c>) — the grid's default.</summary>
+    AllBranches,
+
+    /// <summary>Walk only the checked-out branch (plain <c>git log</c>, i.e. HEAD).</summary>
+    CurrentBranch,
+
+    /// <summary>
+    ///  Walk an explicitly provided set of refs (plus HEAD when none is given).
+    ///  With no selection UI wired yet this behaves as <see cref="CurrentBranch"/>.
+    /// </summary>
+    Filtered,
+}
+
+/// <summary>
 ///  A single commit row, projected from a core <see cref="GitRevision"/> for
 ///  display in the Avalonia revision grid. Field/type names are prefixed with
 ///  <c>Revision</c> to stay unique across sibling views.
@@ -78,11 +97,20 @@ public sealed record RevisionGraphSegment(
 public sealed class RevisionService
 {
     /// <summary>
-    ///  Loads the most recent <paramref name="maxCount"/> commits reachable from
-    ///  HEAD (the current branch), newest first, with author, date, subject,
-    ///  parent hashes and ref names (branches/tags) attached.
+    ///  Loads the most recent <paramref name="maxCount"/> commits, newest first,
+    ///  with author, date, subject, parent hashes and ref names (branches/tags)
+    ///  attached. The <paramref name="scope"/> selects which refs the log walks:
+    ///  every ref (<see cref="BranchScope.AllBranches"/>, the default — passes
+    ///  <c>--all</c>), only the current branch (<see cref="BranchScope.CurrentBranch"/>,
+    ///  plain HEAD), or a provided ref set (<see cref="BranchScope.Filtered"/>;
+    ///  falls back to HEAD when <paramref name="filteredRefs"/> is empty).
     /// </summary>
-    public IReadOnlyList<RevisionRow> LoadRevisions(string repoPath, int maxCount = 200, CancellationToken cancellationToken = default)
+    public IReadOnlyList<RevisionRow> LoadRevisions(
+        string repoPath,
+        int maxCount = 200,
+        BranchScope scope = BranchScope.AllBranches,
+        IReadOnlyList<string>? filteredRefs = null,
+        CancellationToken cancellationToken = default)
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
@@ -118,10 +146,28 @@ public sealed class RevisionService
         RevisionCollector collector = new();
         RevisionReader reader = new(module);
 
-        // No revision/path filter => log the current branch (HEAD). --max-count limits it.
+        // The revision filter is fed verbatim into `git log`. --max-count caps it;
+        // the scope suffix chooses the walked refs:
+        //   AllBranches   -> "--all"        (every ref)
+        //   CurrentBranch -> ""             (git log defaults to HEAD)
+        //   Filtered      -> the given refs (or HEAD when none supplied)
+        string scopeArgs = scope switch
+        {
+            BranchScope.AllBranches => "--all",
+            BranchScope.CurrentBranch => string.Empty,
+            BranchScope.Filtered => filteredRefs is { Count: > 0 }
+                ? string.Join(' ', filteredRefs)
+                : "HEAD",
+            _ => "--all",
+        };
+
+        string revisionFilter = scopeArgs.Length == 0
+            ? $"--max-count={maxCount}"
+            : $"--max-count={maxCount} {scopeArgs}";
+
         reader.GetLog(
             subject: collector,
-            revisionFilter: $"--max-count={maxCount}",
+            revisionFilter: revisionFilter,
             pathFilter: string.Empty,
             hasNotes: false,
             autostashLabel: string.Empty,
