@@ -83,7 +83,14 @@ public sealed class DiffView : UserControl
 
         MenuItem copyPathItem = new() { Header = "Copy file path" };
         copyPathItem.Click += (_, _) => CopySelectedFilePath();
-        _files.ContextMenu = new ContextMenu { ItemsSource = new[] { copyPathItem } };
+        MenuItem blameItem = new() { Header = "Blame" };
+        blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
+        MenuItem historyItem = new() { Header = "File history" };
+        historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
+        _files.ContextMenu = new ContextMenu
+        {
+            ItemsSource = new Control[] { copyPathItem, new Separator(), blameItem, historyItem },
+        };
 
         _diff = new SelectableTextBlock
         {
@@ -208,6 +215,20 @@ public sealed class DiffView : UserControl
             }
 
             e.Handled = true;
+        }
+    }
+
+    /// <summary>Raised (with the repo-relative file path) to blame the selected file.</summary>
+    public event Action<string>? BlameRequested;
+
+    /// <summary>Raised (with the repo-relative file path) to show the selected file's history.</summary>
+    public event Action<string>? FileHistoryRequested;
+
+    private void RaiseFileAction(Action<string>? handler)
+    {
+        if (_files.SelectedItem is DiffFileRow row)
+        {
+            handler?.Invoke(row.Name);
         }
     }
 

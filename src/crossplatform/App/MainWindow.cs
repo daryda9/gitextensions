@@ -2,199 +2,144 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
-using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
 
 namespace GitExtensions.Avalonia;
 
 /// <summary>
-///  Shell window: a repository picker plus tabbed views (History, Commit, Diff,
-///  Branches, Remote, Stash, Blame, File History) wired together over the reused
-///  Git Extensions core. Each view is a self-contained <see cref="UserControl"/>
-///  that talks to the core through <see cref="GitContext"/>.
+///  Integrated main window modelled on the original GitExtensions FormBrowse:
+///  a top toolbar, a left repository-objects tree (branches/remotes/tags/
+///  stashes), the revision-grid DAG in the centre, a bottom detail/diff +
+///  working-directory panel, and a status bar. All views are self-contained
+///  <see cref="UserControl"/>s driven over the reused core via <see cref="GitContext"/>.
 /// </summary>
 public sealed class MainWindow : Window
 {
-    private readonly TextBlock _repoLabel;
-    private readonly TabControl _tabs;
+    private readonly MainToolbar _toolbar = new();
+    private readonly StatusBarView _statusBar = new();
+    private readonly RepoObjectsTree _tree = new();
+    private readonly RevisionGridView _revisions = new();
+    private readonly CommitDetailView _detail = new();
+    private readonly DiffView _diff = new();
+    private readonly WorkingDirectoryView _workingDir = new();
 
-    private readonly RepositoryPickerView _picker;
-    private readonly RevisionGridView _revisions;
-    private readonly CommitDetailView _detail;
-    private readonly DiffView _diff;
-    private readonly WorkingDirectoryView _workingDir;
-    private readonly BranchTagPanel _branches;
-    private readonly RemotePanel _remote;
-    private readonly StashPanel _stash;
-    private readonly BlameView _blame;
-    private readonly FileHistoryView _fileHistory;
+    private readonly TabControl _bottom;
+    private readonly TabItem _commitInfoTab;
+    private readonly TabItem _workingDirTab;
+    private readonly TabItem _blameTab;
+    private readonly TabItem _historyTab;
+    private readonly BlameView _blame = new();
+    private readonly FileHistoryView _fileHistory = new();
 
     private readonly StashOpsService _stashOps = new();
-
-    private readonly TabItem _openTab;
-    private readonly TabItem _historyTab;
-    private readonly TabItem _diffTab;
 
     private string? _repoPath;
 
     public MainWindow()
     {
         Title = "Git Extensions (Avalonia / Linux)";
-        Width = 1200;
-        Height = 760;
+        Width = 1280;
+        Height = 820;
+        Background = (IBrush)Resources["App.Window"]!;
 
-        _picker = new RepositoryPickerView();
-        _revisions = new RevisionGridView();
-        _detail = new CommitDetailView();
-        _diff = new DiffView();
-        _workingDir = new WorkingDirectoryView();
-        _branches = new BranchTagPanel();
-        _remote = new RemotePanel();
-        _stash = new StashPanel();
-        _blame = new BlameView();
-        _fileHistory = new FileHistoryView();
+        // ---- bottom panel: commit info (detail + diff) / working dir / blame / history
+        Grid commitInfo = new() { RowDefinitions = new RowDefinitions("2*,4,3*") };
+        GridSplitter infoSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetRow(_detail, 0);
+        Grid.SetRow(infoSplit, 1);
+        Grid.SetRow(_diff, 2);
+        commitInfo.Children.Add(_detail);
+        commitInfo.Children.Add(infoSplit);
+        commitInfo.Children.Add(_diff);
 
-        _openTab = new TabItem { Header = "Open Repository", Content = _picker };
-        _historyTab = new TabItem { Header = "History", Content = _revisions };
-        _diffTab = new TabItem { Header = "Diff", Content = BuildDiffPane() };
-
-        _tabs = new TabControl
+        _commitInfoTab = new TabItem { Header = "Commit", Content = commitInfo };
+        _workingDirTab = new TabItem { Header = "Working directory", Content = _workingDir };
+        _blameTab = new TabItem { Header = "Blame", Content = _blame };
+        _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
+        _bottom = new TabControl
         {
-            Items =
-            {
-                _openTab,
-                _historyTab,
-                new TabItem { Header = "Commit", Content = _workingDir },
-                _diffTab,
-                new TabItem { Header = "Branches", Content = _branches },
-                new TabItem { Header = "Remote", Content = _remote },
-                new TabItem { Header = "Stash", Content = _stash },
-                new TabItem { Header = "Blame", Content = BuildFilePane(_blame, ShowBlame) },
-                new TabItem { Header = "File History", Content = BuildFilePane(_fileHistory, ShowFileHistory) },
-            },
+            Items = { _commitInfoTab, _workingDirTab, _blameTab, _historyTab },
         };
 
-        _repoLabel = new TextBlock
-        {
-            Margin = new Thickness(10, 6),
-            Foreground = Brushes.Gray,
-            Text = "No repository open.",
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        // ---- right side: revision grid over the bottom panel
+        Grid right = new() { RowDefinitions = new RowDefinitions("3*,4,2*") };
+        GridSplitter rightSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetRow(_revisions, 0);
+        Grid.SetRow(rightSplit, 1);
+        Grid.SetRow(_bottom, 2);
+        right.Children.Add(_revisions);
+        right.Children.Add(rightSplit);
+        right.Children.Add(_bottom);
 
-        DockPanel root = new();
-        DockPanel.SetDock(_repoLabel, Dock.Top);
-        root.Children.Add(_repoLabel);
-        root.Children.Add(_tabs);
+        // ---- main area: left tree | right side
+        Grid main = new() { ColumnDefinitions = new ColumnDefinitions("260,4,*") };
+        GridSplitter treeSplit = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
+        Grid.SetColumn(_tree, 0);
+        Grid.SetColumn(treeSplit, 1);
+        Grid.SetColumn(right, 2);
+        main.Children.Add(_tree);
+        main.Children.Add(treeSplit);
+        main.Children.Add(right);
+
+        DockPanel root = new() { Background = (IBrush)Resources["App.Window"]! };
+        DockPanel.SetDock(_toolbar, Dock.Top);
+        DockPanel.SetDock(_statusBar, Dock.Bottom);
+        root.Children.Add(_toolbar);
+        root.Children.Add(_statusBar);
+        root.Children.Add(main);
         Content = root;
 
-        // Wire the views together.
-        _picker.RepositorySelected += OnRepositorySelected;
-        _revisions.RevisionSelected += OnRevisionSelected;
-        _workingDir.Committed += RefreshAfterMutation;
-        _branches.OperationCompleted += RefreshAfterMutation;
-        _remote.OperationCompleted += RefreshAfterMutation;
-        _stash.OperationCompleted += RefreshAfterMutation;
-        _fileHistory.RevisionSelected += OnRevisionSelected;
+        WireEvents();
 
-        // Commit-targeted operations, offered on each revision-grid row.
-        _revisions.AddCommitCommand("Checkout this commit",
-            hash => RunCommitOp("Checkout", hash, () => new BranchTagService().Checkout(_repoPath!, hash) is { Success: true }));
-        _revisions.AddCommitCommand("Cherry-pick",
-            hash => RunCommitOp("Cherry-pick", hash, () => _stashOps.CherryPick(_repoPath!, hash).Success));
-        _revisions.AddCommitCommand("Reset (soft) to here",
-            hash => RunCommitOp("Reset soft", hash, () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Soft).Success));
-        _revisions.AddCommitCommand("Reset (mixed) to here",
-            hash => RunCommitOp("Reset mixed", hash, () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Mixed).Success));
-        _revisions.AddCommitCommand("Reset (HARD) to here…",
-            hash => RunCommitOp("Reset hard", hash, () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Hard).Success, confirm: true));
-
-        // Startup: if a repo was supplied (CLI / cwd), open it; else show picker.
         Opened += (_, _) =>
         {
-            string? initial = FindRepositoryRoot(
-                App.InitialRepoPath ?? Directory.GetCurrentDirectory());
+            string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory());
             if (initial is not null)
             {
                 OpenRepository(initial);
             }
             else
             {
-                _tabs.SelectedItem = _openTab;
+                _ = PickRepositoryAsync();
             }
         };
     }
 
-    // Diff tab: commit metadata/message (top) over the file diff (bottom).
-    private Control BuildDiffPane()
+    private void WireEvents()
     {
-        Grid pane = new() { RowDefinitions = new RowDefinitions("2*,4,3*") };
-        GridSplitter splitter = new()
-        {
-            Height = 4,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-        };
-        Grid.SetRow(_detail, 0);
-        Grid.SetRow(splitter, 1);
-        Grid.SetRow(_diff, 2);
-        pane.Children.Add(_detail);
-        pane.Children.Add(splitter);
-        pane.Children.Add(_diff);
-        return pane;
+        _revisions.RevisionSelected += OnRevisionSelected;
+        _fileHistory.RevisionSelected += OnRevisionSelected;
+        _workingDir.Committed += RefreshAll;
+        _tree.OperationCompleted += RefreshAll;
+        _tree.RefSelected += OnRevisionSelected;
+
+        _diff.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
+        _diff.FileHistoryRequested += path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
+
+        // Toolbar actions.
+        _toolbar.OpenRepoRequested += () => _ = PickRepositoryAsync();
+        _toolbar.RefreshRequested += RefreshAll;
+        _toolbar.CommitRequested += () => _bottom.SelectedItem = _workingDirTab;
+        _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null).Success);
+        _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null).Success);
+        _toolbar.PushRequested += () => RunRemoteOp("Push", (s, r) =>
+            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null).Success);
+        _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
+        _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
+
+        // Commit-targeted operations on the revision grid.
+        _revisions.AddCommitCommand("Checkout this commit",
+            hash => RunOp("Checkout", () => new BranchTagService().Checkout(_repoPath!, hash).Success));
+        _revisions.AddCommitCommand("Cherry-pick",
+            hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success));
+        _revisions.AddCommitCommand("Reset (soft) to here",
+            hash => RunOp("Reset soft", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Soft).Success));
+        _revisions.AddCommitCommand("Reset (mixed) to here",
+            hash => RunOp("Reset mixed", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Mixed).Success));
+        _revisions.AddCommitCommand("Reset (HARD) to here…",
+            hash => RunOp("Reset hard", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Hard).Success, confirm: true));
     }
-
-    // Blame / File-History tab: a repo-relative path input above the view.
-    private static Control BuildFilePane(Control view, Action<string> show)
-    {
-        TextBox pathBox = new()
-        {
-            Watermark = "Repo-relative file path (e.g. src/crossplatform/App/Program.cs)",
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        Button showButton = new() { Content = "Show", Margin = new Thickness(6, 0, 0, 0) };
-        showButton.Click += (_, _) =>
-        {
-            if (!string.IsNullOrWhiteSpace(pathBox.Text))
-            {
-                show(pathBox.Text.Trim());
-            }
-        };
-
-        Grid bar = new()
-        {
-            Margin = new Thickness(8),
-            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-        };
-        Grid.SetColumn(pathBox, 0);
-        Grid.SetColumn(showButton, 1);
-        bar.Children.Add(pathBox);
-        bar.Children.Add(showButton);
-
-        DockPanel pane = new();
-        DockPanel.SetDock(bar, Dock.Top);
-        pane.Children.Add(bar);
-        pane.Children.Add(view);
-        return pane;
-    }
-
-    private void ShowBlame(string path)
-    {
-        if (_repoPath is not null)
-        {
-            _blame.ShowBlame(_repoPath, path);
-        }
-    }
-
-    private void ShowFileHistory(string path)
-    {
-        if (_repoPath is not null)
-        {
-            _fileHistory.ShowHistory(_repoPath, path);
-        }
-    }
-
-    private void OnRepositorySelected(string repoPath) => OpenRepository(repoPath);
 
     private void OnRevisionSelected(string commitHash)
     {
@@ -205,25 +150,50 @@ public sealed class MainWindow : Window
 
         _detail.ShowCommit(_repoPath, commitHash);
         _diff.ShowCommit(_repoPath, commitHash);
-        _tabs.SelectedItem = _diffTab;
+        _bottom.SelectedItem = _commitInfoTab;
     }
 
-    private void RefreshAfterMutation()
+    private void ShowInBottom(TabItem tab, Action show)
+    {
+        if (_repoPath is not null)
+        {
+            show();
+            _bottom.SelectedItem = tab;
+        }
+    }
+
+    private void RefreshAll()
     {
         if (_repoPath is null)
         {
             return;
         }
 
+        WarmUpCore(_repoPath);
         _revisions.LoadRepository(_repoPath);
         _workingDir.LoadRepository(_repoPath);
-        _branches.LoadRepository(_repoPath);
-        _stash.LoadRepository(_repoPath);
+        _tree.LoadRepository(_repoPath);
+        _statusBar.LoadRepository(_repoPath);
     }
 
-    // Runs a commit-targeted git op off the UI thread, optionally after a
-    // confirmation, then refreshes the dependent views.
-    private void RunCommitOp(string label, string hash, Func<bool> op, bool confirm = false)
+    // Picks the remote (first configured, or "origin") and runs a remote op.
+    private void RunRemoteOp(string label, Func<RemoteService, string, bool> op)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        RunOp(label, () =>
+        {
+            RemoteService svc = new();
+            var remotes = svc.ListRemotes(_repoPath);
+            string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
+            return op(svc, remote);
+        });
+    }
+
+    private void RunOp(string label, Func<bool> op, bool confirm = false)
     {
         if (_repoPath is null)
         {
@@ -235,12 +205,12 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
-            if (confirm && !await ConfirmAsync($"{label} at {hash[..Math.Min(8, hash.Length)]}? This may discard work."))
+            if (confirm && !await ConfirmAsync($"{label}? This may discard work."))
             {
                 return;
             }
 
-            _repoLabel.Text = $"{label}…";
+            _statusBar.SetText($"{label}…");
             bool ok;
             try
             {
@@ -248,16 +218,69 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                _repoLabel.Text = $"{label} failed: {ex.Message}";
+                _statusBar.SetText($"{label} failed: {ex.Message}");
                 return;
             }
 
-            _repoLabel.Text = $"Repository: {_repoPath}  —  {label}: {(ok ? "ok" : "failed")}";
-            RefreshAfterMutation();
+            RefreshAll();
+            if (!ok)
+            {
+                _statusBar.SetText($"{label} failed — see the panel output.");
+            }
         }
     }
 
-    private async Task<bool> ConfirmAsync(string message)
+    private async Task NewBranchAsync()
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        string? name = await PromptAsync("New branch", "Branch name:");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        RunOp($"Create branch {name}",
+            () => new BranchTagService().CreateBranch(_repoPath!, name.Trim(), startPoint: "HEAD", checkout: true).Success);
+    }
+
+    private async Task PickRepositoryAsync()
+    {
+        RepositoryPickerView picker = new();
+        Window dlg = new()
+        {
+            Title = "Open Git repository",
+            Width = 640,
+            Height = 460,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = picker,
+        };
+        picker.RepositorySelected += repo =>
+        {
+            dlg.Close();
+            OpenRepository(repo);
+        };
+        await dlg.ShowDialog(this);
+    }
+
+    private void OpenRepository(string repoPath)
+    {
+        _repoPath = repoPath;
+        WarmUpCore(repoPath);
+
+        _revisions.LoadRepository(repoPath);
+        _workingDir.LoadRepository(repoPath);
+        _tree.LoadRepository(repoPath);
+        _statusBar.LoadRepository(repoPath);
+    }
+
+    // Confirmation dialog (Yes/No).
+    private Task<bool> ConfirmAsync(string message) => YesNoAsync(message);
+
+    private async Task<bool> YesNoAsync(string message)
     {
         Button yes = new() { Content = "Yes", MinWidth = 80 };
         Button no = new() { Content = "No", MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
@@ -290,29 +313,44 @@ public sealed class MainWindow : Window
         return result;
     }
 
-    private void OpenRepository(string repoPath)
+    // Single-line text prompt; returns null on cancel.
+    private async Task<string?> PromptAsync(string title, string label)
     {
-        _repoPath = repoPath;
-        _repoLabel.Text = $"Repository: {repoPath}";
-
-        // Warm the reused core on a single thread before the panels load
-        // concurrently: several views each build a GitModule and hit the core's
-        // first-time initialization at once, which otherwise races a shared
-        // Lazy ("ValueFactory attempted to access the Value property").
-        WarmUpCore(repoPath);
-
-        _revisions.LoadRepository(repoPath);
-        _workingDir.LoadRepository(repoPath);
-        _branches.LoadRepository(repoPath);
-        _remote.LoadRepository(repoPath);
-        _stash.LoadRepository(repoPath);
-        _picker.Refresh();
-
-        _tabs.SelectedItem = _historyTab;
+        TextBox input = new() { Watermark = label };
+        Button ok = new() { Content = "OK", MinWidth = 80 };
+        Button cancel = new() { Content = "Cancel", MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
+        Window dlg = new()
+        {
+            Title = title,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Children =
+                {
+                    new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 6) },
+                    input,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Margin = new Thickness(0, 16, 0, 0),
+                        Children = { ok, cancel },
+                    },
+                },
+            },
+        };
+        string? result = null;
+        ok.Click += (_, _) => { result = input.Text; dlg.Close(); };
+        cancel.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+        return result;
     }
 
-    // Touches the core's main read paths once, sequentially, so any shared
-    // process-global lazy state is initialized before concurrent panel loads.
+    // Touches the core's main read paths once, sequentially, so shared
+    // process-global lazy state initializes before concurrent panel loads.
     private static void WarmUpCore(string repoPath)
     {
         try
@@ -323,7 +361,7 @@ public sealed class MainWindow : Window
         }
         catch
         {
-            // Warm-up is best-effort; the panels report their own errors.
+            // Best-effort; the panels report their own errors.
         }
     }
 
