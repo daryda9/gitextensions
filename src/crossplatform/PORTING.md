@@ -308,6 +308,22 @@ comportamento (le guardie sono `false`).
     dagli untracked).
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M19** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — MainWindow, RevisionGridView/RevisionService, StashPanel/StashOpsService):
+  - **Commit-edit** (`CommitEditService`, da grid): reword-HEAD (`--amend`),
+    reword-older / squash / fixup via `git rebase` non-interattivo con
+    `GIT_SEQUENCE_EDITOR`/`GIT_EDITOR` scriptati (awk flippa pick→reword/squash/
+    fixup). Guardia dirty-tree + conferma "riscrive la history" + `rebase
+    --abort` on-fail. Edge-case root verificati.
+  - **Grid "View ▾"**: walk-toggle show remote-branches/tags/stashes (`--branches
+    --remotes --tags` + stash hash espliciti) + topo-order; render-only
+    non-relatives-gray + highlight-HEAD (reachability sui `ParentHashes` caricati).
+  - **Stash**: "Stash…" con messaggio + include-untracked (`git stash push -u
+    -m`), + view diff patch colorato (`git stash show -p`). Nota: `StashPanel`
+    non ancora agganciato a MainWindow (toolbar Stash chiama StashSave diretto)
+    → integrazione futura.
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -412,12 +428,14 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 10 / 20** · parità **74.4%** (119/160 voci `[x]`). Questo giro
-> (M18): 3 subagent paralleli → Compare commits (select BASE / compare to BASE /
-> compare to working dir) via grid → DiffView; tree sort refs (nome/data,
-> asc/desc) + copy name/path + move up/down; Add-to-.gitignore (path / *.ext /
-> dir/) da file untracked. Prossimo: iter. 11 → reword/squash/fixup (interactive
-> rebase), toolbar mancante, maintenance, Favorite/Dashboard; plugin verso la fine.
+> **Iterazione: 11 / 20** · parità **78.1%** (125/160 voci `[x]`). Questo giro
+> (M19): 3 subagent paralleli → commit-edit (reword-HEAD/older, squash, fixup via
+> rebase autosquash scriptato, con guardie); grid "View ▾" (mostra remote/tags/
+> stashes, topo-order, non-relatives-gray, highlight-HEAD); stash con messaggio +
+> include-untracked + view diff. Più de-dup di voci già completate (Clone/Init,
+> Reflog, Cleanup, edit dotfiles, submodule ops). Prossimo: iter. 12 → toolbar
+> mancante (split-view, commit-info position, file explorer, shell); poi
+> maintenance/Favorite/Dashboard, patch, e modello plugin.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -546,13 +564,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Delete remote branch
 - [x] Revert commit
 - [ ] Reset changes (dialog dedicato)
-- [ ] Cleanup repository (git clean)
+- [x] Cleanup repository (git clean, M12)
 - [x] Resolve conflicts
 - [ ] Merge submodule
 - [x] Archive
 - [ ] Format patch / Apply patch / View patch
 - [x] Add to .gitignore (path / *.ext / dir/, da file untracked)
-- [ ] Edit .gitignore / .gitattributes / .mailmap
+- [x] Edit .gitignore / .gitattributes / .mailmap (xdg-open, M16)
 - [ ] Sparse working copy
 - [ ] Submodules manager
 - [x] Reflog browser (copy hash / checkout)
@@ -564,7 +582,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ### F. Operazioni git esposte
 - [x] Commit (+ amend)
-- [ ] Commit: squash / fixup / reword / edit / undo
+- [x] Commit: squash / fixup / reword / undo (edit interattivo: reword-older ok)
 - [x] Push (`--force-with-lease`, non più `--force`)
 - [x] Pull / Fetch (+ fetch all / prune)
 - [x] Branch: create / checkout / delete
@@ -580,14 +598,14 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Tag: create / delete
 - [x] Tag: checkout tag revision (detached)
 - [x] Bisect (good/bad/skip/reset)
-- [ ] Submodule ops
+- [x] Submodule ops (list/update/update-all; open da fare)
 - [x] Worktree ops (list/add/remove/prune)
 - [x] Archive
 - [ ] Patch (format/apply/view)
 - [x] Remotes manage (add/rename/remove/set-url; add-upstream implicito)
 - [ ] Maintenance (gc / fsck / index.lock / config)
-- [ ] Clone / Init
-- [ ] Reflog
+- [x] Clone / Init
+- [x] Reflog
 - [x] Blame / File history / Diff / Log
 - [x] Compare (working dir / difftool / BASE; branch da fare)
 - [ ] Repository-host (GitHub) ops
