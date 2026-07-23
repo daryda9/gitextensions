@@ -64,6 +64,10 @@ public sealed class MainWindow : Window
     private string? _repoPath;
     private string? _lastSelectedHash;
 
+    // The commit chosen as the "BASE" for the grid's Compare actions (single-select
+    // grid, so BASE + "Compare to BASE" together stand in for a two-commit compare).
+    private string? _compareBaseHash;
+
     public MainWindow()
     {
         // Load persisted UI state first, and apply the remembered theme before
@@ -297,6 +301,13 @@ public sealed class MainWindow : Window
         _revisions.AddCommitCommand("Revert this commit…", RevertThisCommit);
         _revisions.AddCommitCommand("Archive this commit…", hash => _ = ArchiveThisCommitAsync(hash));
 
+        // Compare actions. The grid is single-select, so we mirror the original's
+        // two-commit compare with a remembered BASE + "Compare to BASE" pair, plus
+        // a direct commit-vs-working-tree compare. Results drive the shared DiffView.
+        _revisions.AddCommitCommand("Select as BASE to compare", SelectCompareBase);
+        _revisions.AddCommitCommand("Compare to BASE", CompareToBase);
+        _revisions.AddCommitCommand("Compare to working directory", CompareToWorkingDirectory);
+
         // Bisect: mark the selected commit good/bad/skip (auto-starting a session
         // if none is in progress), plus a stop/reset entry. Each surfaces git's
         // output — the next commit to test, or the final "first bad commit".
@@ -476,6 +487,59 @@ public sealed class MainWindow : Window
         _detail.ShowCommit(_repoPath, commitHash);
         _diff.ShowCommit(_repoPath, commitHash);
         _bottom.SelectedItem = _commitInfoTab;
+    }
+
+    // Remembers the chosen commit as the comparison BASE (the "old" side of a
+    // later "Compare to BASE"). Reported in the status bar as a short hash.
+    private void SelectCompareBase(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        _compareBaseHash = hash;
+        string shortHash = hash.Length > 8 ? hash[..8] : hash;
+        _statusBar.SetText($"Selected {shortHash} as compare BASE. Use \"Compare to BASE\" on another commit.");
+    }
+
+    // Diffs BASE..selected (BASE the "old" side) and renders the changed files +
+    // per-file diffs in the shared DiffView. Hints in the status bar if no BASE set.
+    private void CompareToBase(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        if (_compareBaseHash is not { Length: > 0 } baseHash)
+        {
+            _statusBar.SetText("No BASE selected. Right-click a commit and choose \"Select as BASE to compare\" first.");
+            return;
+        }
+
+        _diff.ShowRange(_repoPath, baseHash, hash);
+        _bottom.SelectedItem = _commitInfoTab;
+
+        string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
+        string shortOther = hash.Length > 8 ? hash[..8] : hash;
+        _statusBar.SetText($"Comparing {shortBase} .. {shortOther}");
+    }
+
+    // Diffs the selected commit against the current working tree (git diff <hash>)
+    // and renders the result in the shared DiffView.
+    private void CompareToWorkingDirectory(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        _diff.ShowAgainstWorkingDirectory(_repoPath, hash);
+        _bottom.SelectedItem = _commitInfoTab;
+
+        string shortHash = hash.Length > 8 ? hash[..8] : hash;
+        _statusBar.SetText($"Comparing {shortHash} .. working tree");
     }
 
     private void ShowInBottom(TabItem tab, Action show)

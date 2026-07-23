@@ -33,12 +33,23 @@ public sealed class DiffView : UserControl
     private static readonly IBrush AddedGlyph = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
     private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
 
+    // Which comparison the currently loaded file list represents, so file
+    // selection loads the matching per-file diff.
+    private enum CompareMode
+    {
+        Commit,       // a single commit vs its first parent
+        Range,        // BASE..other (two commits)
+        WorkingTree,  // a commit vs the current working tree
+    }
+
     private readonly ListBox _files;
     private readonly SelectableTextBlock _diff;
     private readonly TextBlock _status;
 
     private string? _repoPath;
-    private string? _commitHash;
+    private string? _commitHash;   // the (right/"new") commit; also the "other" side in Range mode
+    private string? _baseHash;     // the ("old"/left) commit in Range mode
+    private CompareMode _mode = CompareMode.Commit;
     private CancellationTokenSource? _diffCts;
 
     // The raw unified-diff text currently displayed (the SelectableTextBlock's
@@ -367,22 +378,79 @@ public sealed class DiffView : UserControl
     {
         _repoPath = repoPath;
         _commitHash = commitHash;
+        _baseHash = null;
+        _mode = CompareMode.Commit;
 
+        LoadFileList(
+            () => DiffService.GetChangedFiles(repoPath, commitHash),
+            count => $"{commitHash}  —  {count} changed file(s)",
+            $"Loading changed files for {commitHash}…");
+    }
+
+    /// <summary>
+    ///  Loads the changed-files list and per-file diffs for the range
+    ///  <paramref name="baseHash"/>..<paramref name="otherHash"/>
+    ///  (i.e. <c>git diff &lt;base&gt; &lt;other&gt;</c>).
+    /// </summary>
+    public void ShowRange(string repoPath, string baseHash, string otherHash)
+    {
+        _repoPath = repoPath;
+        _commitHash = otherHash;
+        _baseHash = baseHash;
+        _mode = CompareMode.Range;
+
+        string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
+        string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;
+
+        LoadFileList(
+            () => DiffService.GetDiffFilesBetween(repoPath, baseHash, otherHash),
+            count => $"{shortBase} .. {shortOther}  —  {count} changed file(s)",
+            $"Loading changed files for {shortBase}..{shortOther}…");
+    }
+
+    /// <summary>
+    ///  Loads the changed-files list and per-file diffs comparing
+    ///  <paramref name="commitHash"/> against the current working tree
+    ///  (i.e. <c>git diff &lt;commit&gt;</c>).
+    /// </summary>
+    public void ShowAgainstWorkingDirectory(string repoPath, string commitHash)
+    {
+        _repoPath = repoPath;
+        _commitHash = commitHash;
+        _baseHash = null;
+        _mode = CompareMode.WorkingTree;
+
+        string shortHash = commitHash.Length > 8 ? commitHash[..8] : commitHash;
+
+        LoadFileList(
+            () => DiffService.GetChangedFilesAgainstWorkingTree(repoPath, commitHash),
+            count => $"{shortHash} .. working tree  —  {count} changed file(s)",
+            $"Loading changes since {shortHash}…");
+    }
+
+    // Shared changed-file-list loader: clears the panes, loads the file rows off
+    // the UI thread, then populates the list and auto-selects the first row so
+    // its per-file diff loads via OnFileSelected (which dispatches on _mode).
+    private void LoadFileList(
+        Func<IReadOnlyList<DiffFileRow>> load,
+        Func<int, string> statusFor,
+        string loadingText)
+    {
         _files.ItemsSource = null;
         _diff.Inlines?.Clear();
         _diff.Text = string.Empty;
         _currentDiffText = string.Empty;
-        _status.Text = $"Loading changed files for {commitHash}…";
+        _status.Text = loadingText;
 
         _ = Task.Run(() =>
         {
             try
             {
-                IReadOnlyList<DiffFileRow> rows = DiffService.GetChangedFiles(repoPath, commitHash);
+                IReadOnlyList<DiffFileRow> rows = load();
                 Dispatcher.UIThread.Post(() =>
                 {
                     _files.ItemsSource = rows;
-                    _status.Text = $"{commitHash}  —  {rows.Count} changed file(s)";
+                    _status.Text = statusFor(rows.Count);
                     if (rows.Count > 0)
                     {
                         _files.SelectedIndex = 0;
@@ -411,6 +479,8 @@ public sealed class DiffView : UserControl
 
         string repoPath = _repoPath;
         string commitHash = _commitHash;
+        string? baseHash = _baseHash;
+        CompareMode mode = _mode;
 
         _diff.Inlines?.Clear();
         _diff.Text = "Loading diff…";
@@ -419,7 +489,15 @@ public sealed class DiffView : UserControl
         {
             try
             {
-                string text = await DiffService.GetFileDiffAsync(repoPath, commitHash, row, token);
+                string text = mode switch
+                {
+                    CompareMode.Range =>
+                        await DiffService.GetFileDiffBetweenAsync(repoPath, baseHash!, commitHash, row, token),
+                    CompareMode.WorkingTree =>
+                        await DiffService.GetFileDiffAgainstWorkingTreeAsync(repoPath, commitHash, row, token),
+                    _ =>
+                        await DiffService.GetFileDiffAsync(repoPath, commitHash, row, token),
+                };
                 if (token.IsCancellationRequested)
                 {
                     return;

@@ -107,6 +107,99 @@ public static class DiffService
     }
 
     /// <summary>
+    ///  Returns the files that differ between two commits — the changed-file set
+    ///  of <c>git diff &lt;baseHash&gt; &lt;otherHash&gt;</c>. <paramref name="baseHash"/>
+    ///  is the "old" side, <paramref name="otherHash"/> the "new" side.
+    /// </summary>
+    public static IReadOnlyList<DiffFileRow> GetDiffFilesBetween(string repoPath, string baseHash, string otherHash)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId baseId = ObjectId.Parse(baseHash);
+        ObjectId otherId = ObjectId.Parse(otherHash);
+
+        IReadOnlyList<GitItemStatus> changes = module.GetDiffFilesWithSubmodulesStatus(
+            firstId: baseId,
+            secondId: otherId,
+            parentToSecond: baseId,
+            excludeSkipWorktreeFiles: true,
+            untrackedFilesMode: UntrackedFilesMode.No,
+            cancellationToken: CancellationToken.None);
+
+        List<DiffFileRow> rows = [];
+        foreach (GitItemStatus item in changes)
+        {
+            rows.Add(new DiffFileRow(item.Name, item.OldName, MapKind(item), item.IsTracked));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    ///  Returns the files that differ between <paramref name="commitHash"/> and
+    ///  the current working tree — the changed-file set of <c>git diff &lt;commitHash&gt;</c>
+    ///  (the commit is the "old" side, the working tree the "new" side).
+    /// </summary>
+    public static IReadOnlyList<DiffFileRow> GetChangedFilesAgainstWorkingTree(string repoPath, string commitHash)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId commitId = ObjectId.Parse(commitHash);
+
+        // secondId default (zero) => second revision null => "git diff <commit>"
+        // compares the commit against the working tree.
+        IReadOnlyList<GitItemStatus> changes = module.GetDiffFilesWithSubmodulesStatus(
+            firstId: commitId,
+            secondId: default,
+            parentToSecond: commitId,
+            excludeSkipWorktreeFiles: true,
+            untrackedFilesMode: UntrackedFilesMode.No,
+            cancellationToken: CancellationToken.None);
+
+        List<DiffFileRow> rows = [];
+        foreach (GitItemStatus item in changes)
+        {
+            rows.Add(new DiffFileRow(item.Name, item.OldName, MapKind(item), item.IsTracked));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    ///  Returns the unified diff text for a single <paramref name="file"/> between
+    ///  two commits — i.e. <c>git diff &lt;baseHash&gt; &lt;otherHash&gt; -- &lt;path&gt;</c>.
+    /// </summary>
+    public static async Task<string> GetFileDiffBetweenAsync(
+        string repoPath,
+        string baseHash,
+        string otherHash,
+        DiffFileRow file,
+        CancellationToken cancellationToken = default)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId baseId = ObjectId.Parse(baseHash);
+        ObjectId otherId = ObjectId.Parse(otherHash);
+
+        (Patch? patch, string? errorMessage) = await module.GetSingleDiffAsync(
+            firstId: baseId,
+            secondId: otherId,
+            fileName: file.Name,
+            oldFileName: file.OldName,
+            extraDiffArguments: string.Empty,
+            encoding: GitModule.SystemEncoding,
+            cacheResult: true,
+            isTracked: file.IsTracked,
+            useGitColoring: false,
+            commandConfiguration: null!,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (!string.IsNullOrEmpty(errorMessage))
+        {
+            return errorMessage!;
+        }
+
+        return patch?.Text ?? "(no textual diff — binary file or no changes)";
+    }
+
+    /// <summary>
     ///  Launches the user's configured external diff tool (fire-and-forget,
     ///  non-blocking) for <paramref name="file"/>, comparing the version in
     ///  <paramref name="commitHash"/> against its first parent — i.e.
