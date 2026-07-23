@@ -8,7 +8,7 @@ namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
 ///  Remote operations panel: lists the repository's remotes and offers Fetch,
-///  Pull (with a rebase option) and Push (with a force option) against the
+///  Pull (with a rebase option) and Push (with a safe force-with-lease option) against the
 ///  selected remote, reusing the Git Extensions core via <see cref="RemoteService"/>.
 ///
 ///  All git work runs off the UI thread (<see cref="Task.Run"/>) and results are
@@ -50,7 +50,12 @@ public sealed class RemotePanel : UserControl
         _remotesList.SelectionChanged += (_, _) => UpdateButtons();
 
         _rebaseCheck = new CheckBox { Content = "Rebase on pull", Margin = new Thickness(0, 0, 12, 0) };
-        _forceCheck = new CheckBox { Content = "Force push", Margin = new Thickness(0, 0, 12, 0) };
+        _forceCheck = new CheckBox
+        {
+            Content = "Force (with lease)",
+            Margin = new Thickness(0, 0, 12, 0),
+            [ToolTip.TipProperty] = "Safe force push (--force-with-lease): rejected if the remote branch advanced since your last fetch, so it won't overwrite others' work.",
+        };
 
         _fetchButton = new Button { Content = "Fetch", MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
         _fetchButton.Click += (_, _) => _ = DoFetchAsync();
