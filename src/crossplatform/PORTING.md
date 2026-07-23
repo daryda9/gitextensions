@@ -351,6 +351,18 @@ comportamento (le guardie sono `false`).
     distinto dal filtro (non nasconde righe).
   Build 0 errori, GUI verificata headless (xvfb) — Dashboard + repo view.
 
+- **M22** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — MainMenu/MainWindow, RepoObjectsTree, WorkingDirectoryView):
+  - **Patch** (`PatchService` + `PatchDialogs`): Commands ▸ Format patch
+    (`git format-patch base..HEAD -o dir`), Apply patch (`git am`, fallback `git
+    apply`), View patch file (viewer read-only colorato, riusa il rendering di
+    DiffView).
+  - **Manage worktrees dialog** (`WorktreesDialog`) dal nodo Worktrees: list /
+    add / remove / prune.
+  - **Drag & drop**: trascina file tra le liste staged/unstaged per stage/unstage
+    (Avalonia DoDragDrop, same-list guard, riusa Stage/Unstage).
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -455,12 +467,11 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 13 / 20** · parità **88.1%** (141/160 voci `[x]`). Questo giro
-> (M21): 3 subagent paralleli → Favorite repositories + Dashboard (landing) +
-> git maintenance (gc/fsck/delete-index.lock/edit-config) + repo settings;
-> delete remote branch (`push --delete`) + merge submodule; grid quick-search
-> (type-to-jump F3/Esc). Prossimo: iter. 14 → patch (format/apply/view), command
-> log, compare-to-branch; poi manage-worktrees/sparse dialoghi e modello plugin.
+> **Iterazione: 14 / 20** · parità **92.5%** (148/160 voci `[x]`). Questo giro
+> (M22): 3 subagent paralleli → Patch format/apply/view (menu Commands + viewer
+> colorato); Manage worktrees dialog dal tree; drag & drop stage/unstage nel
+> Working directory. Prossimo: iter. 15 → command log, compare-to-branch, sparse
+> working copy; poi toolbar minori + modello plugin. Residue non-SKIP: ~7.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -476,7 +487,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Repository ▸ File Explorer (xdg-open)
 - [x] Repository ▸ Remote repositories… (Remotes manager dal tree)
 - [x] Repository ▸ Manage submodules / update / synchronize (dialog dal tree)
-- [ ] Repository ▸ Manage worktrees
+- [x] Repository ▸ Manage worktrees (dialog dal tree)
 - [x] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
 - [ ] Repository ▸ Sparse working copy
 - [x] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
@@ -501,9 +512,9 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Commands ▸ Checkout revision
 - [x] Commands ▸ Bisect (mark good/bad/skip/reset da grid)
 - [x] Commands ▸ Show reflog (ReflogWindow)
-- [ ] Commands ▸ Format patch
-- [ ] Commands ▸ Apply patch
-- [ ] Commands ▸ View patch file
+- [x] Commands ▸ Format patch
+- [x] Commands ▸ Apply patch
+- [x] Commands ▸ View patch file
 - [ ] Repository hosts (GitHub: fork / view-create PR / add upstream)
 - [ ] Plugins menu + Plugins settings
 - [x] Tools ▸ Git bash / Git GUI / GitK (PuTTY N/A su Linux)
@@ -560,7 +571,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Menu contestuale: navigate (parent/child/go-to; Alt↑/↓, Ctrl+G)
 - [x] Filtro/ricerca (autore / messaggio / hash) — barra live in RevisionGridView
 - [x] Quick-search da tastiera (type-to-jump, F3/Esc)
-- [ ] Drag &amp; drop
+- [x] Drag &amp; drop (stage/unstage nel Working directory)
 - [x] View toggles: mostra/nascondi colonne + scope branch (all/current/filtered)
 
 ### E. Dialoghi / comandi (Form*)
@@ -593,7 +604,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Resolve conflicts
 - [x] Merge submodule (submodule update --remote --merge)
 - [x] Archive
-- [ ] Format patch / Apply patch / View patch
+- [x] Format patch / Apply patch / View patch (viewer colorato)
 - [x] Add to .gitignore (path / *.ext / dir/, da file untracked)
 - [x] Edit .gitignore / .gitattributes / .mailmap (xdg-open, M16)
 - [ ] Sparse working copy
@@ -626,7 +637,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Submodule ops (list/update/update-all; open da fare)
 - [x] Worktree ops (list/add/remove/prune)
 - [x] Archive
-- [ ] Patch (format/apply/view)
+- [x] Patch (format/apply/view)
 - [x] Remotes manage (add/rename/remove/set-url; add-upstream implicito)
 - [x] Maintenance (gc / fsck / index.lock / config)
 - [x] Clone / Init
