@@ -30,6 +30,16 @@ internal static class Program
                 Log("  " + c.Display);
             }
 
+            // Validate the shared GitModule factory + reused core APIs.
+            Log("[7] Building GitModule via GitContext…");
+            var module = GitContext.CreateModule(repo);
+            Log($"[8] Module.WorkingDir: {module.WorkingDir}");
+            _ = new GitCommands.RevisionReader(module);
+            var head = module.GetCurrentCheckout();
+            Log($"[9] HEAD: {head}");
+            var changed = module.GetAllChangedFiles();
+            Log($"[10] Working-dir changed files: {changed.Count}");
+
             return;
         }
 
