@@ -45,6 +45,21 @@ public sealed class WorkingDirectoryView : UserControl
     private string? _repoPath;
     private bool _busy;
 
+    // Drag & drop between the two lists. The payload carries the dragged files'
+    // relative paths under DragPathsFormat plus the originating list's role under
+    // DragSourceFormat ("unstaged"/"staged"), so the drop target can enforce the
+    // same-list no-op guard and pick stage vs unstage.
+    private const string DragPathsFormat = "application/x-gitext-workdir-paths";
+    private const string DragSourceFormat = "application/x-gitext-workdir-source";
+    private const string SourceUnstaged = "unstaged";
+    private const string SourceStaged = "staged";
+
+    // Pointer-drag tracking: a press on a list arms a pending drag; once the pointer
+    // moves past a small threshold (still held) we hand off to DragDrop.DoDragDrop.
+    private Point _dragStartPoint;
+    private bool _dragPending;
+    private ListBox? _dragSource;
+
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
@@ -145,6 +160,9 @@ public sealed class WorkingDirectoryView : UserControl
         MenuItem stagedCopyItem = new() { Header = "Copy path" };
         stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
         _stagedList.ContextMenu = new ContextMenu { ItemsSource = new[] { unstageItem, stagedCopyItem } };
+
+        WireDragDrop(_unstagedList);
+        WireDragDrop(_stagedList);
 
         _conflictsList = MakeStringList();
         _conflictsList.DoubleTapped += (_, _) => OpenInMergetool();
@@ -545,15 +563,148 @@ public sealed class WorkingDirectoryView : UserControl
             });
     }
 
-    private void StageSelected()
+    // ── Drag & drop ─────────────────────────────────────────────────────────
+    // A file (or multi-selection) dragged from the unstaged list onto the staged
+    // list stages it; dragged the other way it unstages. Dropping onto the same
+    // list is a no-op. Existing buttons / context menu / double-click keep working.
+
+    private void WireDragDrop(ListBox list)
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        // The source side: arm on press, begin the drag once the pointer moves.
+        list.PointerPressed += OnListPointerPressed;
+        list.PointerMoved += OnListPointerMoved;
+        list.PointerReleased += (_, _) => _dragPending = false;
+
+        // The target side: accept our payload only, and always as a Move.
+        DragDrop.SetAllowDrop(list, true);
+        list.AddHandler(DragDrop.DragOverEvent, OnDragOver);
+        list.AddHandler(DragDrop.DropEvent, OnDrop);
+    }
+
+    private void OnListPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not ListBox list)
         {
             return;
         }
 
-        List<WorkingDirFileRow> files = SelectedRows(_unstagedList);
-        if (files.Count == 0)
+        if (!e.GetCurrentPoint(list).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        _dragStartPoint = e.GetPosition(null);
+        _dragSource = list;
+        _dragPending = true;
+    }
+
+    private async void OnListPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_dragPending || _dragSource is not { } source || sender is not ListBox list || list != source)
+        {
+            return;
+        }
+
+        // Button released outside the list (missed PointerReleased): cancel.
+        if (!e.GetCurrentPoint(list).Properties.IsLeftButtonPressed)
+        {
+            _dragPending = false;
+            return;
+        }
+
+        Point pos = e.GetPosition(null);
+        if (Math.Abs(pos.X - _dragStartPoint.X) < 4 && Math.Abs(pos.Y - _dragStartPoint.Y) < 4)
+        {
+            return; // below the drag threshold — leave normal click/selection alone.
+        }
+
+        _dragPending = false;
+
+        List<WorkingDirFileRow> rows = SelectedRows(source);
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        DataObject data = new();
+        data.Set(DragPathsFormat, rows.Select(r => r.Path).ToList());
+        data.Set(DragSourceFormat, source == _stagedList ? SourceStaged : SourceUnstaged);
+
+        await DragDrop.DoDragDrop(e, data, DragDropEffects.Move);
+    }
+
+    // Accept the drop only when it carries our payload and the source list differs
+    // from the list under the pointer (guards against dropping onto the same list).
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = CanAcceptDrop(sender, e) ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private bool CanAcceptDrop(object? sender, DragEventArgs e)
+    {
+        if (sender is not ListBox target || !e.Data.Contains(DragPathsFormat))
+        {
+            return false;
+        }
+
+        string? source = e.Data.Get(DragSourceFormat) as string;
+        string targetRole = target == _stagedList ? SourceStaged : SourceUnstaged;
+        return source is not null && source != targetRole;
+    }
+
+    private void OnDrop(object? sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is not ListBox target || !e.Data.Contains(DragPathsFormat))
+        {
+            return;
+        }
+
+        string? source = e.Data.Get(DragSourceFormat) as string;
+        string targetRole = target == _stagedList ? SourceStaged : SourceUnstaged;
+        if (source is null || source == targetRole)
+        {
+            return; // same-list drop (or unknown source): no-op.
+        }
+
+        List<string> paths = (e.Data.Get(DragPathsFormat) as List<string>) ?? [];
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        if (targetRole == SourceStaged)
+        {
+            // Dropped onto the staged list → stage the dragged unstaged files.
+            StageRows(RowsByPath(_unstagedList, paths));
+        }
+        else
+        {
+            // Dropped onto the unstaged list → unstage the dragged staged files.
+            UnstageRows(RowsByPath(_stagedList, paths));
+        }
+    }
+
+    // Resolves dragged relative paths back to the live rows of the given list.
+    private static List<WorkingDirFileRow> RowsByPath(ListBox list, ICollection<string> paths)
+    {
+        HashSet<string> wanted = new(paths);
+        return (list.ItemsSource as System.Collections.IEnumerable)?
+            .OfType<WorkingDirFileRow>()
+            .Where(r => wanted.Contains(r.Path))
+            .ToList() ?? [];
+    }
+
+    private void StageSelected() => StageRows(SelectedRows(_unstagedList));
+
+    private void UnstageSelected() => UnstageRows(SelectedRows(_stagedList));
+
+    // Stages the given unstaged rows (shared by the Stage button/menu/key, the
+    // double-click, and the drag-drop onto the staged list).
+    private void StageRows(List<WorkingDirFileRow> files)
+    {
+        if (_repoPath is not { Length: > 0 } repo || files.Count == 0)
         {
             return;
         }
@@ -564,15 +715,11 @@ public sealed class WorkingDirectoryView : UserControl
             _ => RefreshStatus());
     }
 
-    private void UnstageSelected()
+    // Unstages the given staged rows (shared by the Unstage button/menu/key, the
+    // double-click, and the drag-drop onto the unstaged list).
+    private void UnstageRows(List<WorkingDirFileRow> files)
     {
-        if (_repoPath is not { Length: > 0 } repo)
-        {
-            return;
-        }
-
-        List<WorkingDirFileRow> files = SelectedRows(_stagedList);
-        if (files.Count == 0)
+        if (_repoPath is not { Length: > 0 } repo || files.Count == 0)
         {
             return;
         }
