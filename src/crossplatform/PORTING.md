@@ -198,6 +198,25 @@ comportamento (le guardie sono `false`).
     righe nascoste), il modello `_allRows` non viene mutato.
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M12** — rifiniture UI + voci checklist (2 subagent claude paralleli, file
+  disgiunti — solo uno tocca `MainWindow`):
+  - **Persistenza stato UI**: nuovo `UiStateService` legge/scrive
+    `~/.config/GitExtensions.Avalonia/ui-state.json` (dimensioni finestra, larghezza
+    albero, ratio degli split info/diff, tema Light/Dark). All'avvio applica tema
+    (prima che i brush `App.*` vengano letti) + dimensioni + pannelli; salva su
+    `Window.Closing` e al cambio tema. `Sanitize` clampa valori corrotti →
+    nessun pannello collassato. Restore verificato in GUI (riapre in Light a
+    finestra ridotta).
+  - **Create branch/tag dalla grid**: registrati via `AddCommitCommand` come
+    checkout/cherry-pick/reset (stesso `RunOp`→`RefreshAll`), riusano
+    `BranchTagService.CreateBranch/CreateTag` e il prompt `PromptAsync` esistente.
+  - **Undo last commit**: `git reset --soft HEAD~1` dal tab Working directory
+    (mantiene le modifiche staged; errore gestito se non c'è parent).
+  - **Clean working directory**: `git clean -fd` con **dry-run + conferma modale**
+    (lista i file da rimuovere, "This cannot be undone"); niente rimozione senza
+    Yes esplicito. Flow distruttivo testato in GUI.
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -264,8 +283,9 @@ pannello sinistro / grid a livello di commit (meno prioritario).
 Layout FormBrowse (toolbar + albero + grid DAG + pannello inferiore + status
 bar), icone originali, tema scuro/chiaro, **barra menu**, About, scorciatoie.
 Vedi milestone M7/M8.
-Aperto su questo fronte: filtri/ricerca nella grid; drag&drop; scorciatoie più
-estese; persistenza del tema scelto e delle dimensioni dei pannelli.
+Aperto su questo fronte: ~~filtri/ricerca nella grid~~ ✅ (M11); drag&drop;
+scorciatoie più estese; ~~persistenza del tema scelto e delle dimensioni dei
+pannelli~~ ✅ (M12, `UiStateService`).
 
 ### Priorità bassa — contorno
 9. **Pagine settings** in Avalonia (il framework `ISettingControlBinding` è
@@ -273,7 +293,8 @@ estese; persistenza del tema scelto e delle dimensioni dei pannelli.
 10. **Sistema di plugin**: i plugin espongono form WinForms; ripensare il
     modello UI dei plugin per Avalonia.
 11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro + chiaro Avalonia con
-    switch live (`ThemeManager`, M7/M8). Resta: persistere la scelta + varianti.
+    switch live (`ThemeManager`, M7/M8) + ~~persistenza~~ ✅ (M12). Resta:
+    eventuali varianti/accenti aggiuntivi.
 
 ### Debito tecnico / pulizia
 - **Sostituire gli shim con implementazioni vere** dove un percorso runtime li
@@ -298,12 +319,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 3 / 20** · parità **45.6%** (73/160 voci `[x]`). Questo giro
-> (M11): 2 subagent paralleli → push `--force-with-lease` + credenziali via git
-> credential-helper (secret non loggato, no URL injection); barra filtro/ricerca
-> live nella revision grid (autore/messaggio/hash). Confermato che Blame/History
-> da menu contestuale erano già cablati. Prossimo: iter. 4 → rifiniture UI
-> (persistenza tema + dimensioni pannelli, drag&drop) e voci checklist.
+> **Iterazione: 4 / 20** · parità **48.1%** (77/160 voci `[x]`). Questo giro
+> (M12): 2 subagent paralleli → persistenza tema + dimensioni finestra/pannelli
+> tra avvii (`UiStateService`, JSON in `~/.config`) + create branch/tag dal menu
+> contestuale della grid; Undo last commit (reset --soft) + Clean working
+> directory (dry-run + conferma). Prossimo: iter. 5 → settings + plugin, poi
+> chiusura voci checklist (Clone, Init, Remotes manager, Submodules, ecc.).
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -325,12 +346,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
 - [ ] Repository ▸ Repository settings
 - [x] Commands ▸ Commit
-- [ ] Commands ▸ Undo last commit
+- [x] Commands ▸ Undo last commit (reset --soft HEAD~1, dal tab Working dir)
 - [x] Commands ▸ Pull / Fetch
 - [x] Commands ▸ Push
 - [x] Commands ▸ Manage stashes
 - [x] Commands ▸ Reset changes
-- [ ] Commands ▸ Clean working directory
+- [x] Commands ▸ Clean working directory (dry-run + conferma)
 - [x] Commands ▸ Create branch
 - [x] Commands ▸ Delete branch
 - [x] Commands ▸ Checkout branch
@@ -397,7 +418,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Menu contestuale: copy hash/subject/author
 - [x] Menu contestuale: checkout commit / cherry-pick / reset (soft·mixed·hard)
 - [ ] Menu contestuale: revert commit
-- [ ] Menu contestuale: create branch/tag here
+- [x] Menu contestuale: create branch/tag here
 - [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
 - [ ] Menu contestuale: bisect good/bad/skip/stop
 - [ ] Menu contestuale: navigate (parent/child/ancestor/go-to)
@@ -460,7 +481,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Cherry-pick
 - [ ] Revert
 - [x] Reset (soft/mixed/hard da grid)
-- [ ] Clean working directory
+- [x] Clean working directory (git clean -fd, dry-run + conferma)
 - [x] Stash: save / apply / pop / drop
 - [ ] Stash: stash staged
 - [x] Tag: create / delete
@@ -490,5 +511,5 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
       in RemoteService, ripple su MainWindow, rinviati)
 - [ ] Verifica traduzioni ResourceManager su Linux
 - [ ] Shim no-op → implementazioni reali (dialog, clipboard)
-- [ ] Persistenza tema + dimensioni pannelli tra avvii
+- [x] Persistenza tema + dimensioni pannelli tra avvii (UiStateService, JSON in ~/.config)
 - [x] Credenziali via credential-helper git (env-var, non injection URL, secret non loggato)
