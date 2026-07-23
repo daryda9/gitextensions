@@ -4,8 +4,10 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using GitCommands;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
+using GitExtensions.Extensibility.Git;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -31,6 +33,29 @@ public sealed class RepoObjectsTree : UserControl
 
     private string? _repoPath;
     private bool _busy;
+
+    // --- Session-local ref ordering state --------------------------------
+    // All sorting/reordering below is view-only: it reorders the displayed
+    // child nodes for the current session and never touches git. The last
+    // loaded snapshot is retained so a re-sort can rebuild the tree without
+    // re-listing refs.
+    private enum RefSortKey { Name, CommitDate }
+    private enum RefSortOrder { Ascending, Descending }
+
+    private RefSortKey _sortKey = RefSortKey.Name;
+    private RefSortOrder _sortOrder = RefSortOrder.Ascending;
+
+    private RepoSnapshot? _snapshot;
+
+    // Commit dates resolved lazily (only when the user picks "sort by commit
+    // date"), keyed by full ObjectId, cached for the session.
+    private readonly Dictionary<string, DateTime> _commitDates = new(StringComparer.Ordinal);
+    private bool _resolvingDates;
+
+    // Manual local-branch order (branch names) engaged by Move up / Move down.
+    // When set it takes precedence over _sortKey/_sortOrder for local branches;
+    // choosing any explicit sort clears it.
+    private List<string>? _manualBranchOrder;
 
     /// <summary>
     ///  Raised on the UI thread when a branch or tag node is selected, carrying the
@@ -128,6 +153,8 @@ public sealed class RepoObjectsTree : UserControl
 
     private void BuildTree(RepoSnapshot snapshot)
     {
+        _snapshot = snapshot;
+
         List<BranchTagRow> local = [];
         List<BranchTagRow> remote = [];
         foreach (BranchTagRow row in snapshot.Refs.Branches)
@@ -144,7 +171,8 @@ public sealed class RepoObjectsTree : UserControl
 
         // Branches (local).
         TreeViewItem branchesNode = Category("Branches", "Branch", local.Count);
-        foreach (BranchTagRow row in local.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase))
+        branchesNode.ContextMenu = RefSortMenu();
+        foreach (BranchTagRow row in OrderLocalBranches(local))
         {
             string label = row.IsCurrent ? $"✓ {row.Name}" : row.Name;
             TreeViewItem leaf = Leaf(label, "BranchLocal", row, row.IsCurrent);
@@ -163,7 +191,7 @@ public sealed class RepoObjectsTree : UserControl
         {
             TreeViewItem groupNode = Category(group.Key, "Remote", group.Count());
             groupNode.ContextMenu = RemoteGroupMenu(group.Key);
-            foreach (BranchTagRow row in group.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase))
+            foreach (BranchTagRow row in SortRefs(group))
             {
                 string label = ShortRemoteName(row.Name, group.Key);
                 TreeViewItem leaf = Leaf(label, "BranchRemote", row, isCurrent: false);
@@ -178,7 +206,8 @@ public sealed class RepoObjectsTree : UserControl
 
         // Tags.
         TreeViewItem tagsNode = Category("Tags", "Tag", tags.Count);
-        foreach (BranchTagRow row in tags.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase))
+        tagsNode.ContextMenu = RefSortMenu();
+        foreach (BranchTagRow row in SortRefs(tags))
         {
             TreeViewItem leaf = Leaf(row.Name, "Tag", row, isCurrent: false);
             leaf.ContextMenu = TagMenu(row);
@@ -305,8 +334,13 @@ public sealed class RepoObjectsTree : UserControl
         menu.Items.Add(MenuItem("Merge into current", "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name))));
         menu.Items.Add(MenuItem("Rebase current onto", "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
 
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Name)));
+
         if (!row.IsRemote)
         {
+            menu.Items.Add(MenuItem("Move up", null, () => MoveBranch(row, up: true)));
+            menu.Items.Add(MenuItem("Move down", null, () => MoveBranch(row, up: false)));
             menu.Items.Add(new Separator());
             menu.Items.Add(MenuItem("Rename branch…", "BranchRename", () => _ = DoRenameBranchAsync(row)));
             menu.Items.Add(MenuItem("Delete", "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
@@ -322,6 +356,8 @@ public sealed class RepoObjectsTree : UserControl
         // HEAD, which is the expected "checkout tag revision" behaviour. Reuses
         // the same BranchTagService.Checkout used for branches/revisions.
         menu.Items.Add(MenuItem("Checkout tag revision…", "BranchCheckout", () => DoCheckout(row)));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Name)));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Delete", "TagDelete", () => _ = DoDeleteTagAsync(row)));
         return menu;
@@ -341,6 +377,9 @@ public sealed class RepoObjectsTree : UserControl
         ContextMenu menu = new();
         // No "Open" action: making a worktree the active repository requires
         // MainWindow, which is out of scope for this control.
+        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Branch.Length > 0 ? row.Branch : System.IO.Path.GetFileName(row.Path.TrimEnd('/', '\\')))));
+        menu.Items.Add(MenuItem("Copy path", "CopyToClipboard", () => CopyText(row.Path)));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Remove", "Remove", () => _ = DoRemoveWorktreeAsync(row)));
         return menu;
     }
@@ -359,6 +398,9 @@ public sealed class RepoObjectsTree : UserControl
     {
         ContextMenu menu = new();
         menu.Items.Add(MenuItem("Update", "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Path)));
+        menu.Items.Add(MenuItem("Copy path", "CopyToClipboard", () => CopyText(SubmoduleFullPath(row))));
         return menu;
     }
 
@@ -379,6 +421,8 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu RemoteGroupMenu(string remote)
     {
         ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(remote)));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Edit URL…", "Remote", () => _ = DoEditRemoteUrlAsync(remote)));
         menu.Items.Add(MenuItem("Rename…", "Remote", () => _ = DoRenameRemoteAsync(remote)));
         menu.Items.Add(new Separator());
@@ -397,6 +441,192 @@ public sealed class RepoObjectsTree : UserControl
         item.Click += (_, _) => onClick();
         return item;
     }
+
+    // --- Ref sorting / reordering (view-only) -----------------------------
+
+    // Sort submenu attached to the Branches and Tags root nodes. Rebuilt on
+    // every BuildTree so the ✓ markers reflect the current session settings.
+    private ContextMenu RefSortMenu()
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(SortKeyItem("Sort by name", RefSortKey.Name));
+        menu.Items.Add(SortKeyItem("Sort by commit date", RefSortKey.CommitDate));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(SortOrderItem("Ascending", RefSortOrder.Ascending));
+        menu.Items.Add(SortOrderItem("Descending", RefSortOrder.Descending));
+        return menu;
+    }
+
+    private MenuItem SortKeyItem(string text, RefSortKey key)
+        => MenuItem(_sortKey == key ? "✓ " + text : "    " + text, null, () => SetSort(key, _sortOrder));
+
+    private MenuItem SortOrderItem(string text, RefSortOrder order)
+        => MenuItem(_sortOrder == order ? "✓ " + text : "    " + text, null, () => SetSort(_sortKey, order));
+
+    // Applies new session-local sort settings and rebuilds the tree from the
+    // retained snapshot. Choosing an explicit sort clears any manual order.
+    private void SetSort(RefSortKey key, RefSortOrder order)
+    {
+        _sortKey = key;
+        _sortOrder = order;
+        _manualBranchOrder = null;
+
+        if (_snapshot is not { } snapshot)
+        {
+            return;
+        }
+
+        if (key == RefSortKey.CommitDate)
+        {
+            EnsureDatesThenRebuild(snapshot);
+        }
+        else
+        {
+            BuildTree(snapshot);
+        }
+    }
+
+    // Resolves any missing commit dates off the UI thread (via the reused core
+    // module), caches them for the session, then rebuilds. Read-only work; a
+    // reentrancy flag avoids overlapping resolves.
+    private void EnsureDatesThenRebuild(RepoSnapshot snapshot)
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            BuildTree(snapshot);
+            return;
+        }
+
+        List<string> missing = snapshot.Refs.Branches
+            .Concat(snapshot.Refs.Tags)
+            .Select(r => r.ObjectId)
+            .Where(oid => oid.Length > 0 && !_commitDates.ContainsKey(oid))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (missing.Count == 0 || _resolvingDates)
+        {
+            BuildTree(snapshot);
+            return;
+        }
+
+        _resolvingDates = true;
+        _ = Task.Run(() =>
+        {
+            Dictionary<string, DateTime> resolved = new(StringComparer.Ordinal);
+            try
+            {
+                GitModule module = GitContext.CreateModule(repo);
+                foreach (string oid in missing)
+                {
+                    try
+                    {
+                        resolved[oid] = module.GetRevision(ObjectId.Parse(oid), shortFormat: true).CommitDate;
+                    }
+                    catch
+                    {
+                        // Unresolvable ref (e.g. annotated-tag object): leave it
+                        // out so DateFor falls back to DateTime.MinValue.
+                    }
+                }
+            }
+            catch
+            {
+                // Module creation failed; rebuild with whatever is cached.
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                foreach ((string oid, DateTime date) in resolved)
+                {
+                    _commitDates[oid] = date;
+                }
+
+                _resolvingDates = false;
+                BuildTree(snapshot);
+            });
+        });
+    }
+
+    // Local-branch order: manual order (if engaged) wins, otherwise the current
+    // sort settings.
+    private IEnumerable<BranchTagRow> OrderLocalBranches(IReadOnlyList<BranchTagRow> local)
+    {
+        if (_manualBranchOrder is { Count: > 0 } order)
+        {
+            return local.OrderBy(r =>
+            {
+                int i = order.IndexOf(r.Name);
+                return i < 0 ? int.MaxValue : i;
+            }).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        return SortRefs(local);
+    }
+
+    private List<BranchTagRow> SortRefs(IEnumerable<BranchTagRow> rows)
+    {
+        bool asc = _sortOrder == RefSortOrder.Ascending;
+        if (_sortKey == RefSortKey.CommitDate)
+        {
+            return (asc
+                    ? rows.OrderBy(DateFor).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+                    : rows.OrderByDescending(DateFor).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        return (asc
+                ? rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+                : rows.OrderByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private DateTime DateFor(BranchTagRow row)
+        => row.ObjectId.Length > 0 && _commitDates.TryGetValue(row.ObjectId, out DateTime d) ? d : DateTime.MinValue;
+
+    // Moves a local branch up/down in the displayed order (session-local visual
+    // only). Engages manual order, seeding it from the currently displayed order
+    // so the first move is relative to what the user sees.
+    private void MoveBranch(BranchTagRow row, bool up)
+    {
+        if (row.IsRemote || row.IsTag || _snapshot is not { } snapshot)
+        {
+            return;
+        }
+
+        List<BranchTagRow> local = snapshot.Refs.Branches.Where(r => !r.IsRemote).ToList();
+        if (local.Count < 2)
+        {
+            return;
+        }
+
+        _manualBranchOrder ??= OrderLocalBranches(local).Select(r => r.Name).ToList();
+
+        int index = _manualBranchOrder.IndexOf(row.Name);
+        int target = up ? index - 1 : index + 1;
+        if (index < 0 || target < 0 || target >= _manualBranchOrder.Count)
+        {
+            return;
+        }
+
+        (_manualBranchOrder[index], _manualBranchOrder[target]) = (_manualBranchOrder[target], _manualBranchOrder[index]);
+        BuildTree(snapshot);
+    }
+
+    // Fire-and-forget copy to the system clipboard via the Avalonia TopLevel.
+    private void CopyText(string text)
+    {
+        if (!string.IsNullOrEmpty(text))
+        {
+            _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
+        }
+    }
+
+    // Absolute filesystem path of a submodule (its Path is repo-relative).
+    private string SubmoduleFullPath(SubmoduleRow row)
+        => _repoPath is { Length: > 0 } repo
+            ? System.IO.Path.GetFullPath(System.IO.Path.Combine(repo, row.Path))
+            : row.Path;
 
     // --- Interactions -----------------------------------------------------
 
