@@ -85,7 +85,21 @@ soluzione originale non lo referenzia. Verificato: `git status` mostra solo
 | `Core.GitExtUtils` | parti portabili di `GitExtUtils` (+ bootstrap threading) |
 | `Core.GitUIPluginInterfaces` | = `GitUIPluginInterfaces` sotto net10.0 |
 | `Core.GitCommands` | = `GitCommands` (tutta la logica git) sotto net10.0 |
-| `App/GitExtensions.Avalonia` | UI Avalonia (apri repo → log dei commit) |
+| `App/GitExtensions.Avalonia` | UI Avalonia: picker + tab History/Commit/Diff |
+
+Foundation condivisa: `App/GitContext.cs` (`CreateModule(path)`) è l'unico
+modo supportato con cui le viste ottengono un `GitModule` del core
+pienamente cablato (riusa `ServiceContainerRegistry`).
+
+Viste Avalonia (una `UserControl` self-contained + un service ciascuna,
+tutte sul core riusato via `GitContext`):
+
+| Vista | Service | Cosa fa |
+|---|---|---|
+| `RevisionGridView` | `RevisionService` | log multi-colonna (hash/autore/data/oggetto) + badge ref, via `RevisionReader`/`GetRefs` |
+| `DiffView` | `DiffService` | file changed di un commit + diff unificato colorato, via `GetDiffFiles*`/`GetSingleDiffAsync` |
+| `WorkingDirectoryView` | `WorkingDirectoryService` | staged/unstaged, stage/unstage, commit (amend), via `GetIndex/WorkTreeFiles`/`StageFiles`/`Commands.Commit` |
+| `RepositoryPickerView` | `RecentRepositoriesService` | folder picker nativo Avalonia + MRU via `RepositoryHistoryManager` |
 
 ### Unica modifica al sorgente esistente
 
@@ -102,6 +116,12 @@ comportamento (le guardie sono `false`).
 - **M3** — slice verticale funzionante: apri repo → branch corrente + log dei
   commit, letti dal core riusato (`Executable` / `GitModule` / `AppSettings`).
   Verificato headless (`--selftest`) e in GUI su Wayland/X11.
+- **M4** — nucleo UX quotidiano: factory `GitModule` condivisa + shell a tab
+  (History, Commit, Diff) con picker repo + MRU. Le 4 viste ad alta priorità
+  (revision grid, diff, working dir/staging, repo picker) sono implementate
+  sul core riusato. Sviluppate in parallelo (4 subagent in worktree isolati),
+  merge pulito, build 0 errori, GUI verificata headless (xvfb) — la History
+  mostra 200 commit con badge ref.
 
 ### Come avviarlo
 
@@ -122,16 +142,18 @@ Il lavoro attuale è **fondamenta + una slice**. Il grosso resta: ogni vista è
 oggi una form WinForms in `GitUI`, da ricostruire in Avalonia **sullo stesso
 core riusato**. In ordine di priorità suggerito:
 
-### Priorità alta — nucleo UX quotidiano
-1. **Revision grid con grafo** — la vista principale: DAG dei commit, branch/tag,
-   colonne autore/data/messaggio. Riusare `RevisionReader` / `GitRevision`.
-2. **Vista diff** — diff del commit selezionato e file changed list. Riusare la
-   logica diff di `GitCommands`.
-3. **Working directory / staging** — file modificati, stage/unstage, commit
-   (messaggio, amend). Riusare `GitModule` status/commit.
-4. **Selezione repo & repository recenti** — dialog nativo Avalonia per aprire un
-   repo (oggi il picker WinForms è uno stub che ritorna Cancel); MRU da
-   `RecentRepositoryHistory`.
+### Priorità alta — nucleo UX quotidiano ✅ (M4)
+1. ~~**Revision grid**~~ ✅ `RevisionGridView` — log multi-colonna + badge ref.
+   Manca ancora il **grafo DAG** (lane): oggi lista pulita senza grafico.
+2. ~~**Vista diff**~~ ✅ `DiffView` — file changed + diff unificato colorato.
+3. ~~**Working directory / staging**~~ ✅ `WorkingDirectoryView` — stage/unstage,
+   commit + amend.
+4. ~~**Selezione repo & repository recenti**~~ ✅ `RepositoryPickerView` — folder
+   picker nativo + MRU via `RepositoryHistoryManager`.
+
+Rifiniture aperte sull'alta priorità: grafo DAG nella revision grid;
+dettaglio del commit selezionato (autore/committer/parent/messaggio esteso)
+accanto al diff; scorciatoie/menu contestuali.
 
 ### Priorità media — operazioni git
 5. **Branch/tag**: crea, checkout, merge, rebase, delete.
