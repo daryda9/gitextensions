@@ -249,3 +249,195 @@ target multiplo direttamente nei csproj reali** (invece dell'albero separato),
 usando `#if WINDOWS` per isolare il codice WinForms. L'approccio attuale (albero
 separato + shim) è a rischio zero per la build Windows ma duplica la lista dei
 sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
+
+---
+
+## Parità con Git Extensions
+
+> **Iterazione: 1 / 20** · parità **44.4%** (71/160 voci `[x]`). Questo giro:
+> creata la checklist di parità (baseline da M1–M8) + packaging `.deb` in corso.
+> Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
+> RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
+
+### A. Barra dei menu
+- [x] Start ▸ Open repository
+- [ ] Start ▸ Clone repository
+- [ ] Start ▸ Create new repository (init)
+- [x] Start ▸ Recent repositories (MRU)
+- [ ] Start ▸ Favorite repositories
+- [x] Start ▸ Exit
+- [ ] Dashboard (close-to-dashboard + refresh)
+- [x] Repository ▸ Refresh
+- [ ] Repository ▸ File Explorer
+- [ ] Repository ▸ Remote repositories…
+- [ ] Repository ▸ Manage submodules / update / synchronize
+- [ ] Repository ▸ Manage worktrees
+- [ ] Repository ▸ Edit .gitignore / .gitattributes / exclude / mailmap
+- [ ] Repository ▸ Sparse working copy
+- [ ] Repository ▸ Git maintenance (gc / fsck / delete index.lock / edit config)
+- [ ] Repository ▸ Repository settings
+- [x] Commands ▸ Commit
+- [ ] Commands ▸ Undo last commit
+- [x] Commands ▸ Pull / Fetch
+- [x] Commands ▸ Push
+- [x] Commands ▸ Manage stashes
+- [x] Commands ▸ Reset changes
+- [ ] Commands ▸ Clean working directory
+- [x] Commands ▸ Create branch
+- [x] Commands ▸ Delete branch
+- [x] Commands ▸ Checkout branch
+- [x] Commands ▸ Merge branches
+- [x] Commands ▸ Rebase
+- [ ] Commands ▸ Solve merge conflicts
+- [x] Commands ▸ Create tag
+- [x] Commands ▸ Delete tag
+- [x] Commands ▸ Cherry pick
+- [ ] Commands ▸ Archive revision
+- [x] Commands ▸ Checkout revision
+- [ ] Commands ▸ Bisect
+- [ ] Commands ▸ Show reflog
+- [ ] Commands ▸ Format patch
+- [ ] Commands ▸ Apply patch
+- [ ] Commands ▸ View patch file
+- [ ] Repository hosts (GitHub: fork / view-create PR / add upstream)
+- [ ] Plugins menu + Plugins settings
+- [ ] Tools ▸ Git bash / Git GUI / GitK / PuTTY
+- [ ] Tools ▸ Git command log
+- [ ] Tools ▸ Settings
+- [x] Help ▸ About
+- [ ] Help ▸ User manual / Changelog / Report issue / Check updates / Translate / Donate / Telemetry
+- [x] View ▸ tema chiaro/scuro (toggle live)
+
+### B. Toolbar
+- [x] Refresh
+- [x] Toggle left panel
+- [ ] Toggle split-view layout
+- [ ] Commit-info position (below/left/right)
+- [ ] Level-up / Submodules split button
+- [ ] Worktrees split button
+- [x] Working directory / recent-repo picker (Open)
+- [x] Branch select (checkout)
+- [x] Pull (+ merge/rebase/fetch/fetch-all varianti)
+- [x] Push
+- [x] Commit
+- [x] Stash (+ stash staged / pop / manage)
+- [ ] File Explorer
+- [ ] User shell selector
+- [x] Settings/Edit button (apertura)
+- [x] New branch
+- [x] Fetch
+
+### C. Pannello sinistro (RepoObjectsTree)
+- [x] Nodo Branches + checkout/create/merge/rebase/reset/rename/delete/filter
+- [x] Nodo Remotes + fetch/pull/push/manage
+- [x] Nodo Tags + checkout/create-branch/merge/reset/delete
+- [x] Nodo Stashes + apply/pop/open/drop/manage
+- [ ] Nodo Submodules + open/commit/reset/update/sync
+- [ ] Nodo Worktrees + open/create/delete/prune/manage
+- [ ] Ordinamento ref (sort-by / sort-order) + move up/down
+- [ ] Copy to clipboard / copy path dai nodi
+
+### D. Revision grid
+- [x] Colonna grafo DAG (multi-lane)
+- [x] Colonna messaggio/oggetto
+- [x] Colonna autore
+- [x] Colonna data
+- [x] Colonna commit id (SHA)
+- [ ] Colonna avatar
+- [ ] Colonna build status (icona/testo)
+- [ ] Colonna git notes
+- [x] Menu contestuale: copy hash/subject/author
+- [x] Menu contestuale: checkout commit / cherry-pick / reset (soft·mixed·hard)
+- [ ] Menu contestuale: revert commit
+- [ ] Menu contestuale: create branch/tag here
+- [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
+- [ ] Menu contestuale: bisect good/bad/skip/stop
+- [ ] Menu contestuale: navigate (parent/child/ancestor/go-to)
+- [ ] Filtro/ricerca (autore / messaggio / committer / hash)
+- [ ] Quick-search da tastiera
+- [ ] Drag &amp; drop
+- [ ] View toggles (mostra/nascondi colonne, all/current/filtered branches)
+
+### E. Dialoghi / comandi (Form*)
+- [x] Blame
+- [x] File history
+- [x] Commit / staging (working directory)
+- [x] Push
+- [x] Pull / Fetch
+- [x] Create branch
+- [x] Checkout branch
+- [x] Checkout revision
+- [x] Create tag
+- [x] Delete branch
+- [x] Delete tag
+- [x] Merge branch
+- [x] Rebase
+- [x] Cherry pick
+- [x] Stash manager
+- [x] Diff viewer
+- [x] About
+- [x] Credenziali (custom, per push/pull http)
+- [ ] Clone
+- [ ] Init
+- [ ] Remotes manager
+- [ ] Rename branch
+- [ ] Delete remote branch
+- [ ] Revert commit
+- [ ] Reset changes (dialog dedicato)
+- [ ] Cleanup repository (git clean)
+- [ ] Resolve conflicts
+- [ ] Merge submodule
+- [ ] Archive
+- [ ] Format patch / Apply patch / View patch
+- [ ] Add to .gitignore
+- [ ] Edit .gitignore / .gitattributes / .mailmap
+- [ ] Sparse working copy
+- [ ] Submodules manager
+- [ ] Reflog browser
+- [ ] Compare to branch
+- [ ] Verify database / recover lost objects
+- [ ] Settings
+- [ ] Command log (FormLog)
+- [ ] Bisect UI
+
+### F. Operazioni git esposte
+- [x] Commit (+ amend)
+- [ ] Commit: squash / fixup / reword / edit / undo
+- [x] Push (⚠ `--force`, non ancora `--force-with-lease`)
+- [x] Pull / Fetch (+ fetch all / prune)
+- [x] Branch: create / checkout / delete
+- [ ] Branch: rename
+- [x] Merge
+- [x] Rebase (⚠ non interattivo)
+- [x] Cherry-pick
+- [ ] Revert
+- [x] Reset (soft/mixed/hard da grid)
+- [ ] Clean working directory
+- [x] Stash: save / apply / pop / drop
+- [ ] Stash: stash staged
+- [x] Tag: create / delete
+- [ ] Tag: checkout tag revision
+- [ ] Bisect
+- [ ] Submodule ops
+- [ ] Worktree ops
+- [ ] Archive
+- [ ] Patch (format/apply/view)
+- [ ] Remotes manage / add upstream
+- [ ] Maintenance (gc / fsck / index.lock / config)
+- [ ] Clone / Init
+- [ ] Reflog
+- [x] Blame / File history / Diff / Log
+- [ ] Compare (branch / working dir / difftool)
+- [ ] Repository-host (GitHub) ops
+
+### Packaging / distribuzione
+- [ ] `.deb` self-contained (linux-x64) + `.desktop` + icona — **in corso (iter. 1)**
+
+### Debito tecnico noto (non conta ai fini parità UI)
+- [ ] Fallback Linux Ctrl+C ai git figli (ProcessExtensions signal/kill)
+- [ ] Bump Avalonia per NU1903 (Tmds.DBus)
+- [ ] Verifica traduzioni ResourceManager su Linux
+- [ ] Fix warning VSTHRD100 (async void)
+- [ ] Shim no-op → implementazioni reali (dialog, clipboard)
+- [ ] Persistenza tema + dimensioni pannelli tra avvii
+- [ ] Credenziali via credential-helper git (non injection URL)
