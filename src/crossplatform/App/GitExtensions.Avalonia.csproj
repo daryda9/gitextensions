@@ -9,6 +9,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Reuse the original Git Extensions icon set (WinForms resources) as
+         Avalonia resources, exposed under avares://…/Assets/Icons/<name>.png. -->
+    <AvaloniaResource Include="..\..\app\GitUI\Resources\Icons\*.png">
+      <Link>Assets/Icons/%(Filename)%(Extension)</Link>
+    </AvaloniaResource>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
