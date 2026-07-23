@@ -113,6 +113,48 @@ public sealed class WorkingDirectoryService
         }
     }
 
+    /// <summary>
+    ///  Undoes the last commit while keeping its changes staged/in the working
+    ///  tree (<c>git reset --soft HEAD~1</c>). Does NOT discard any work. If there
+    ///  is no parent commit (e.g. only one commit / a root commit), git fails and
+    ///  the error text is returned in the result rather than throwing.
+    /// </summary>
+    public WorkingDirCommitResult UndoLastCommit(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        ArgumentString args = Commands.Reset(ResetMode.Soft, "HEAD~1");
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  Previews which untracked files/dirs would be removed by a clean, without
+    ///  deleting anything (<c>git clean -n -d</c>, plus <c>-x</c> when
+    ///  <paramref name="includeIgnored"/> is set). Used to drive the required
+    ///  confirmation step before a destructive clean.
+    /// </summary>
+    public WorkingDirCommitResult CleanDryRun(string repoPath, bool includeIgnored = false)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        CleanMode mode = includeIgnored ? CleanMode.All : CleanMode.OnlyNonIgnored;
+        ExecutionResult result = module.Clean(mode, dryRun: true, directories: true);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  Removes untracked files and directories (<c>git clean -f -d</c>, plus
+    ///  <c>-x</c> when <paramref name="includeIgnored"/> is set). Destructive —
+    ///  callers MUST confirm (see <see cref="CleanDryRun"/>) first.
+    /// </summary>
+    public WorkingDirCommitResult Clean(string repoPath, bool includeIgnored = false)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        CleanMode mode = includeIgnored ? CleanMode.All : CleanMode.OnlyNonIgnored;
+        ExecutionResult result = module.Clean(mode, dryRun: false, directories: true);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
     // The core stage/unstage helpers key off GitItemStatus.Name and IsDeleted, so
     // re-resolving from a fresh status snapshot keeps those flags accurate rather
     // than reconstructing GitItemStatus objects from the display rows.

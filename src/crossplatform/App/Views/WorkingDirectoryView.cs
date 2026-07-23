@@ -25,6 +25,8 @@ public sealed class WorkingDirectoryView : UserControl
     private readonly TextBox _messageBox;
     private readonly CheckBox _amendCheck;
     private readonly Button _commitButton;
+    private readonly Button _undoButton;
+    private readonly Button _cleanButton;
     private readonly TextBlock _status;
 
     private string? _repoPath;
@@ -130,7 +132,22 @@ public sealed class WorkingDirectoryView : UserControl
         commitBar.Children.Add(_amendCheck);
         commitBar.Children.Add(_commitButton);
 
+        _undoButton = new Button { Content = "Undo last commit", Margin = new Thickness(0, 0, 6, 0) };
+        _undoButton.Click += (_, _) => UndoLastCommit();
+
+        _cleanButton = new Button { Content = "Clean…" };
+        _cleanButton.Click += (_, _) => _ = CleanWorkingDirectoryAsync();
+
+        StackPanel actionsBar = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 0, 0, 4),
+        };
+        actionsBar.Children.Add(_undoButton);
+        actionsBar.Children.Add(_cleanButton);
+
         StackPanel commitPanel = new() { Margin = new Thickness(8, 4, 8, 4) };
+        commitPanel.Children.Add(actionsBar);
         commitPanel.Children.Add(_messageBox);
         commitPanel.Children.Add(commitBar);
 
@@ -278,6 +295,154 @@ public sealed class WorkingDirectoryView : UserControl
             });
     }
 
+    // Undoes the last commit but keeps the changes (git reset --soft HEAD~1),
+    // then refreshes via the shared RefreshStatus path. Fails gracefully when
+    // there is no parent commit (the git error is shown in the status line).
+    private void UndoLastCommit()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        _status.Text = "Undoing last commit…";
+        RunGit(
+            () => _service.UndoLastCommit(repo),
+            result =>
+            {
+                if (result.Success)
+                {
+                    _status.Text = "Last commit undone (changes kept).";
+                    RefreshStatus();
+                    Committed?.Invoke();
+                }
+                else
+                {
+                    _status.Text = "Undo failed: " + result.Output.Trim();
+                }
+            });
+    }
+
+    // Destructive: first shows a dry-run preview of what "git clean -f -d" would
+    // remove and requires explicit confirmation before running the real clean.
+    private async Task CleanWorkingDirectoryAsync()
+    {
+        if (_busy || _repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        _status.Text = "Previewing clean…";
+        // Guard the preview/confirm window (RunGit's _busy check only covers the
+        // actual clean below), so the button can't be re-triggered mid-flow.
+        _cleanButton.IsEnabled = false;
+
+        WorkingDirCommitResult preview;
+        try
+        {
+            preview = await Task.Run(() => _service.CleanDryRun(repo));
+        }
+        catch (Exception ex)
+        {
+            _status.Text = "Error: " + ex.Message;
+            _cleanButton.IsEnabled = !_busy;
+            return;
+        }
+
+        if (!preview.Success)
+        {
+            _status.Text = "Clean preview failed: " + preview.Output.Trim();
+            _cleanButton.IsEnabled = !_busy;
+            return;
+        }
+
+        string preview_text = preview.Output.Trim();
+        if (preview_text.Length == 0)
+        {
+            _status.Text = "Nothing to clean (no untracked files).";
+            _cleanButton.IsEnabled = !_busy;
+            return;
+        }
+
+        bool confirmed = await ConfirmAsync(
+            "The following untracked files/directories will be permanently removed:\n\n"
+            + preview_text
+            + "\n\nThis cannot be undone. Continue?");
+
+        if (!confirmed)
+        {
+            _status.Text = "Clean cancelled.";
+            _cleanButton.IsEnabled = !_busy;
+            return;
+        }
+
+        // RunGit's SetBusy(true) takes over button-disabling from here.
+        _status.Text = "Cleaning…";
+        RunGit(
+            () => _service.Clean(repo),
+            result =>
+            {
+                _status.Text = result.Success
+                    ? "Working directory cleaned."
+                    : "Clean failed: " + result.Output.Trim();
+                RefreshStatus();
+            });
+    }
+
+    // Minimal modal confirmation using base Avalonia only (no message-box
+    // package), matching the pattern used elsewhere in the app (StashPanel).
+    private async Task<bool> ConfirmAsync(string text)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return false;
+        }
+
+        bool result = false;
+
+        Button yes = new() { Content = "Yes", MinWidth = 70, Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = "No", MinWidth = 70 };
+
+        StackPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        buttons.Children.Add(yes);
+        buttons.Children.Add(no);
+
+        StackPanel content = new() { Margin = new Thickness(16), Background = B("App.Window") };
+        content.Children.Add(new TextBlock
+        {
+            Text = text,
+            Foreground = B("App.Text"),
+            FontFamily = Monospace,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 460,
+        });
+        content.Children.Add(buttons);
+
+        Window dialog = new()
+        {
+            Title = "Confirm clean",
+            Width = 500,
+            MaxHeight = 500,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Background = B("App.Window"),
+            Content = new ScrollViewer { Content = content },
+        };
+
+        yes.Click += (_, _) => { result = true; dialog.Close(); };
+        no.Click += (_, _) => { result = false; dialog.Close(); };
+
+        await dialog.ShowDialog(owner);
+        return result;
+    }
+
     // Enter/Space stages the focused unstaged item(s); Ctrl+Enter commits.
     private void OnUnstagedKeyDown(object? sender, KeyEventArgs e)
     {
@@ -370,5 +535,7 @@ public sealed class WorkingDirectoryView : UserControl
         _stageButton.IsEnabled = !busy;
         _unstageButton.IsEnabled = !busy;
         _commitButton.IsEnabled = !busy;
+        _undoButton.IsEnabled = !busy;
+        _cleanButton.IsEnabled = !busy;
     }
 }
