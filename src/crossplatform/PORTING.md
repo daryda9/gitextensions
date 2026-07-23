@@ -196,8 +196,8 @@ Rifiniture alta priorità ✅ (M5):
   tastiera Enter/Spazio, Ctrl+Enter = commit).
 - Fix: la lista file del diff mostra `Display` (glifo + path).
 
-Aperto: grafo multi-lane verificato solo su storia lineare (algoritmo gestisce
-fork/merge).
+Nota: grafo multi-lane verificato su repo ramificato in M8 (lane colorate,
+merge/branch edge, fork/merge gestiti). ✅
 
 ### Priorità media — operazioni git ✅ (M6)
 5. ~~**Branch/tag**~~ ✅ `BranchTagPanel`/`BranchTagService` — crea, checkout,
@@ -228,8 +228,8 @@ estese; persistenza del tema scelto e delle dimensioni dei pannelli.
    WinForms; ridisegnare il binding).
 10. **Sistema di plugin**: i plugin espongono form WinForms; ripensare il
     modello UI dei plugin per Avalonia.
-11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro Avalonia proprio fatto in
-    M7; resta l'eventuale switch chiaro/scuro + più varianti.
+11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro + chiaro Avalonia con
+    switch live (`ThemeManager`, M7/M8). Resta: persistere la scelta + varianti.
 
 ### Debito tecnico / pulizia
 - **Sostituire gli shim con implementazioni vere** dove un percorso runtime li
