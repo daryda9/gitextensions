@@ -147,8 +147,8 @@ oggi una form WinForms in `GitUI`, da ricostruire in Avalonia **sullo stesso
 core riusato**. In ordine di priorità suggerito:
 
 ### Priorità alta — nucleo UX quotidiano ✅ (M4)
-1. ~~**Revision grid**~~ ✅ `RevisionGridView` — log multi-colonna + badge ref.
-   Manca ancora il **grafo DAG** (lane): oggi lista pulita senza grafico.
+1. ~~**Revision grid**~~ ✅ `RevisionGridView` — log multi-colonna + badge ref
+   + **grafo DAG** (lane) aggiunto in M5.
 2. ~~**Vista diff**~~ ✅ `DiffView` — file changed + diff unificato colorato.
 3. ~~**Working directory / staging**~~ ✅ `WorkingDirectoryView` — stage/unstage,
    commit + amend.
