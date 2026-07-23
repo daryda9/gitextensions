@@ -273,6 +273,40 @@ public sealed class MainWindow : Window
             hash => RunOp("Reset hard", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Hard).Success, confirm: true));
         _revisions.AddCommitCommand("Create branch here…", hash => _ = CreateBranchHereAsync(hash));
         _revisions.AddCommitCommand("Create tag here…", hash => _ = CreateTagHereAsync(hash));
+        _revisions.AddCommitCommand("Revert this commit…", RevertThisCommit);
+        _revisions.AddCommitCommand("Archive this commit…", hash => _ = ArchiveThisCommitAsync(hash));
+    }
+
+    // Reverts the selected commit on the current branch (git revert --no-edit).
+    // Reuses the RunOp refresh pattern via the output-surfacing overload so a
+    // revert that stops on a conflict shows the git output instead of crashing.
+    private void RevertThisCommit(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        RunOp("Revert", () => new RevertArchiveService().Revert(_repoPath!, hash));
+    }
+
+    // Opens the archive dialog for the selected commit; on success reports the
+    // written path in the status bar.
+    private async Task ArchiveThisCommitAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        ArchiveDialog dlg = new(_repoPath, hash);
+        await dlg.ShowDialog(this);
+
+        if (dlg.ArchivedPath is { Length: > 0 } path)
+        {
+            string shortHash = hash.Length > 8 ? hash[..8] : hash;
+            _statusBar.SetText($"Archived {shortHash} → {path}");
+        }
     }
 
     // Prompts for a branch name and creates it at the selected commit.
@@ -399,6 +433,42 @@ public sealed class MainWindow : Window
             if (!ok)
             {
                 _statusBar.SetText($"{label} failed — see the panel output.");
+            }
+        }
+    }
+
+    // Output-surfacing variant of RunOp: mirrors the same status→run→refresh
+    // structure, but on failure shows the first line of the git output (e.g. a
+    // revert conflict) rather than a generic message. Never crashes on conflict.
+    private void RunOp(string label, Func<RevertArchiveResult> op)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        _ = RunAsync();
+        return;
+
+        async Task RunAsync()
+        {
+            _statusBar.SetText($"{label}…");
+            RevertArchiveResult result;
+            try
+            {
+                result = await Task.Run(op);
+            }
+            catch (Exception ex)
+            {
+                _statusBar.SetText($"{label} failed: {ex.Message}");
+                return;
+            }
+
+            RefreshAll();
+            if (!result.Success)
+            {
+                string firstLine = result.Output.Split('\n')[0].Trim();
+                _statusBar.SetText($"{label} stopped: {firstLine} — see the panel output.");
             }
         }
     }
