@@ -85,7 +85,7 @@ public sealed class BranchTagPanel : UserControl
         _newTagButton = MakeButton("New tag", () => DoCreateTag());
         _mergeButton = MakeButton("Merge", () => DoMerge());
         _rebaseButton = MakeButton("Rebase", () => DoRebase());
-        _deleteButton = MakeButton("Delete", () => DoDelete());
+        _deleteButton = MakeButton("Delete", () => _ = DoDeleteAsync());
         _refreshButton = MakeButton("Refresh", () => RefreshRefs());
 
         WrapPanel buttons = new() { Margin = new Thickness(8, 0, 8, 4) };
@@ -264,37 +264,44 @@ public sealed class BranchTagPanel : UserControl
         RunMutation(() => _service.RebaseOnto(repo, row.Name));
     }
 
-    private async void DoDelete()
+    private async Task DoDeleteAsync()
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return;
+            }
 
-        if (SelectedRow() is not { } row)
+            if (SelectedRow() is not { } row)
+            {
+                _status.Text = "Select a branch or tag to delete.";
+                return;
+            }
+
+            if (row.IsCurrent)
+            {
+                _status.Text = "Cannot delete the current branch.";
+                return;
+            }
+
+            string kind = row.IsTag ? "tag" : "branch";
+            bool confirmed = await ConfirmAsync($"Delete {kind} '{row.Name}'?");
+            if (!confirmed)
+            {
+                return;
+            }
+
+            bool force = _forceDelete.IsChecked == true;
+            _status.Text = $"Deleting {kind} {row.Name}…";
+            RunMutation(() => row.IsTag
+                ? _service.DeleteTag(repo, row.Name)
+                : _service.DeleteBranch(repo, row.Name, force));
+        }
+        catch (Exception ex)
         {
-            _status.Text = "Select a branch or tag to delete.";
-            return;
+            _status.Text = "Failed: " + ex.Message;
         }
-
-        if (row.IsCurrent)
-        {
-            _status.Text = "Cannot delete the current branch.";
-            return;
-        }
-
-        string kind = row.IsTag ? "tag" : "branch";
-        bool confirmed = await ConfirmAsync($"Delete {kind} '{row.Name}'?");
-        if (!confirmed)
-        {
-            return;
-        }
-
-        bool force = _forceDelete.IsChecked == true;
-        _status.Text = $"Deleting {kind} {row.Name}…";
-        RunMutation(() => row.IsTag
-            ? _service.DeleteTag(repo, row.Name)
-            : _service.DeleteBranch(repo, row.Name, force));
     }
 
     // Runs a mutating op off the UI thread; on success refreshes the ref lists

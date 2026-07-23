@@ -263,7 +263,7 @@ public sealed class RepoObjectsTree : UserControl
         if (!row.IsRemote)
         {
             menu.Items.Add(new Separator());
-            menu.Items.Add(MenuItem("Delete", "BranchDelete", () => DoDeleteBranch(row)));
+            menu.Items.Add(MenuItem("Delete", "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
         }
 
         return menu;
@@ -272,7 +272,7 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu TagMenu(BranchTagRow row)
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem("Delete", "TagDelete", () => DoDeleteTag(row)));
+        menu.Items.Add(MenuItem("Delete", "TagDelete", () => _ = DoDeleteTagAsync(row)));
         return menu;
     }
 
@@ -282,7 +282,7 @@ public sealed class RepoObjectsTree : UserControl
         menu.Items.Add(MenuItem("Apply", null, () => RunStash(() => _stashService.StashApply(_repoPath!, row.Name))));
         menu.Items.Add(MenuItem("Pop", null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Drop", null, () => DoDropStash(row)));
+        menu.Items.Add(MenuItem("Drop", null, () => _ = DoDropStashAsync(row)));
         return menu;
     }
 
@@ -319,32 +319,53 @@ public sealed class RepoObjectsTree : UserControl
     private void DoCheckout(BranchTagRow row)
         => RunMutation(() => _branchTagService.Checkout(_repoPath!, row.Name));
 
-    private async void DoDeleteBranch(BranchTagRow row)
+    private async Task DoDeleteBranchAsync(BranchTagRow row)
     {
-        if (row.IsCurrent)
+        try
         {
-            return;
-        }
+            if (row.IsCurrent)
+            {
+                return;
+            }
 
-        if (await ConfirmAsync($"Delete branch '{row.Name}'?"))
+            if (await ConfirmAsync($"Delete branch '{row.Name}'?"))
+            {
+                RunMutation(() => _branchTagService.DeleteBranch(_repoPath!, row.Name, force: false));
+            }
+        }
+        catch
         {
-            RunMutation(() => _branchTagService.DeleteBranch(_repoPath!, row.Name, force: false));
+            // No status surface on this control; the confirm/mutation simply aborts.
         }
     }
 
-    private async void DoDeleteTag(BranchTagRow row)
+    private async Task DoDeleteTagAsync(BranchTagRow row)
     {
-        if (await ConfirmAsync($"Delete tag '{row.Name}'?"))
+        try
         {
-            RunMutation(() => _branchTagService.DeleteTag(_repoPath!, row.Name));
+            if (await ConfirmAsync($"Delete tag '{row.Name}'?"))
+            {
+                RunMutation(() => _branchTagService.DeleteTag(_repoPath!, row.Name));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
         }
     }
 
-    private async void DoDropStash(StashRow row)
+    private async Task DoDropStashAsync(StashRow row)
     {
-        if (await ConfirmAsync($"Drop stash '{row.Name}'?"))
+        try
         {
-            RunStash(() => _stashService.StashDrop(_repoPath!, row.Name));
+            if (await ConfirmAsync($"Drop stash '{row.Name}'?"))
+            {
+                RunStash(() => _stashService.StashDrop(_repoPath!, row.Name));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
         }
     }
 

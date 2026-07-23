@@ -118,36 +118,49 @@ public sealed class RepositoryPickerView : UserControl
         });
     }
 
-    private async void OnBrowseClick(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+    // Event handler: synchronously delegates to the guarded async core so the
+    // handler itself is not "async void" (exceptions are contained below).
+    private void OnBrowseClick(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+        => _ = BrowseAsync();
+
+    private async Task BrowseAsync()
     {
-        TopLevel? top = TopLevel.GetTopLevel(this);
-        if (top is null)
+        try
         {
-            return;
+            TopLevel? top = TopLevel.GetTopLevel(this);
+            if (top is null)
+            {
+                return;
+            }
+
+            IReadOnlyList<IStorageFolder> folders = await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                AllowMultiple = false,
+                Title = "Open Git repository",
+            });
+
+            if (folders.Count == 0)
+            {
+                return;
+            }
+
+            string? localPath = folders[0].TryGetLocalPath();
+            if (string.IsNullOrEmpty(localPath))
+            {
+                _status.Text = "The selected folder has no local path.";
+                return;
+            }
+
+            await SelectRepositoryAsync(localPath);
         }
-
-        IReadOnlyList<IStorageFolder> folders = await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        catch (Exception ex)
         {
-            AllowMultiple = false,
-            Title = "Open Git repository",
-        });
-
-        if (folders.Count == 0)
-        {
-            return;
+            _status.Text = "Error: " + ex.Message;
         }
-
-        string? localPath = folders[0].TryGetLocalPath();
-        if (string.IsNullOrEmpty(localPath))
-        {
-            _status.Text = "The selected folder has no local path.";
-            return;
-        }
-
-        await SelectRepositoryAsync(localPath);
     }
 
-    private async void OnRecentSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    // Event handler: synchronously delegates to the guarded async core (see above).
+    private void OnRecentSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_recentList.SelectedItem is not string path || string.IsNullOrEmpty(path))
         {
@@ -157,39 +170,46 @@ public sealed class RepositoryPickerView : UserControl
         // Reset selection so the same entry can be picked again later.
         _recentList.SelectedItem = null;
 
-        await SelectRepositoryAsync(path);
+        _ = SelectRepositoryAsync(path);
     }
 
     private async Task SelectRepositoryAsync(string candidatePath)
     {
-        _status.Text = "Validating…";
-
-        // git working-dir validation touches the filesystem — keep it off the UI thread.
-        string? repoRoot = await Task.Run(() => FindRepositoryRoot(candidatePath));
-
-        if (repoRoot is null)
-        {
-            _status.Text = $"Not a git repository: {candidatePath}";
-            return;
-        }
-
         try
         {
-            await _recentRepositories.AddAsync(repoRoot);
-        }
-        catch
-        {
-            // Recording the MRU entry is best-effort; still open the repository.
-        }
+            _status.Text = "Validating…";
 
-        await Dispatcher.UIThread.InvokeAsync(() =>
-        {
-            _status.Text = $"Opening {repoRoot}";
-            RepositorySelected?.Invoke(repoRoot);
-        });
+            // git working-dir validation touches the filesystem — keep it off the UI thread.
+            string? repoRoot = await Task.Run(() => FindRepositoryRoot(candidatePath));
 
-        // Reflect the new most-recent entry.
-        Refresh();
+            if (repoRoot is null)
+            {
+                _status.Text = $"Not a git repository: {candidatePath}";
+                return;
+            }
+
+            try
+            {
+                await _recentRepositories.AddAsync(repoRoot);
+            }
+            catch
+            {
+                // Recording the MRU entry is best-effort; still open the repository.
+            }
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _status.Text = $"Opening {repoRoot}";
+                RepositorySelected?.Invoke(repoRoot);
+            });
+
+            // Reflect the new most-recent entry.
+            Refresh();
+        }
+        catch (Exception ex)
+        {
+            _status.Text = "Error: " + ex.Message;
+        }
     }
 
     // Accept a subdirectory: walk up until a git working dir (repository root) is found.

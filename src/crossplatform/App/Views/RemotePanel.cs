@@ -53,13 +53,13 @@ public sealed class RemotePanel : UserControl
         _forceCheck = new CheckBox { Content = "Force push", Margin = new Thickness(0, 0, 12, 0) };
 
         _fetchButton = new Button { Content = "Fetch", MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
-        _fetchButton.Click += (_, _) => _ = DoFetch();
+        _fetchButton.Click += (_, _) => _ = DoFetchAsync();
 
         _pullButton = new Button { Content = "Pull", MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
-        _pullButton.Click += (_, _) => _ = DoPull();
+        _pullButton.Click += (_, _) => _ = DoPullAsync();
 
         _pushButton = new Button { Content = "Push", MinWidth = 80 };
-        _pushButton.Click += (_, _) => _ = DoPush();
+        _pushButton.Click += (_, _) => _ = DoPushAsync();
 
         StackPanel options = new()
         {
@@ -195,7 +195,7 @@ public sealed class RemotePanel : UserControl
         }
     }
 
-    private Task DoFetch()
+    private Task DoFetchAsync()
     {
         RemoteRow? remote = Selected();
         if (_repoPath is not { Length: > 0 } repo || remote is null)
@@ -203,10 +203,10 @@ public sealed class RemotePanel : UserControl
             return Task.CompletedTask;
         }
 
-        return RunOp("Fetch", creds => _service.Fetch(repo, remote.Name, creds));
+        return RunOpAsync("Fetch", creds => _service.Fetch(repo, remote.Name, creds));
     }
 
-    private Task DoPull()
+    private Task DoPullAsync()
     {
         RemoteRow? remote = Selected();
         if (_repoPath is not { Length: > 0 } repo || remote is null)
@@ -215,10 +215,10 @@ public sealed class RemotePanel : UserControl
         }
 
         bool rebase = _rebaseCheck.IsChecked == true;
-        return RunOp("Pull", creds => _service.Pull(repo, remote.Name, rebase, creds));
+        return RunOpAsync("Pull", creds => _service.Pull(repo, remote.Name, rebase, creds));
     }
 
-    private Task DoPush()
+    private Task DoPushAsync()
     {
         RemoteRow? remote = Selected();
         if (_repoPath is not { Length: > 0 } repo || remote is null)
@@ -234,12 +234,12 @@ public sealed class RemotePanel : UserControl
 
         bool force = _forceCheck.IsChecked == true;
         string branch = _currentBranch;
-        return RunOp("Push", creds => _service.Push(repo, remote.Name, branch, force, creds));
+        return RunOpAsync("Push", creds => _service.Push(repo, remote.Name, branch, force, creds));
     }
 
     // Runs a remote operation off the UI thread; on an authentication failure it
     // prompts for credentials and retries the operation exactly once.
-    private async Task RunOp(string label, Func<GitCredentials?, RemoteOpResult> op)
+    private async Task RunOpAsync(string label, Func<GitCredentials?, RemoteOpResult> op)
     {
         if (_busy)
         {
@@ -256,7 +256,7 @@ public sealed class RemotePanel : UserControl
 
             if (result.AuthFailed)
             {
-                GitCredentials? creds = await PromptCredentials();
+                GitCredentials? creds = await PromptCredentialsAsync();
                 if (creds is not null)
                 {
                     _status.Text = $"{label} (retrying with credentials)…";
@@ -290,7 +290,7 @@ public sealed class RemotePanel : UserControl
         }
     }
 
-    private async Task<GitCredentials?> PromptCredentials()
+    private async Task<GitCredentials?> PromptCredentialsAsync()
     {
         if (TopLevel.GetTopLevel(this) is Window owner)
         {

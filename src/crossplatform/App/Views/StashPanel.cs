@@ -77,7 +77,7 @@ public sealed class StashPanel : UserControl
         _popButton.Click += (_, _) => DoPop();
 
         _dropButton = new Button { Content = "Drop" };
-        _dropButton.Click += (_, _) => DoDrop();
+        _dropButton.Click += (_, _) => _ = DoDropAsync();
 
         StackPanel opButtons = new()
         {
@@ -192,23 +192,30 @@ public sealed class StashPanel : UserControl
             result => OnMutated(result, "Stash popped."));
     }
 
-    private async void DoDrop()
+    private async Task DoDropAsync()
     {
-        if (SelectedStash() is not { } stash || _repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (SelectedStash() is not { } stash || _repoPath is not { Length: > 0 } repo)
+            {
+                return;
+            }
 
-        bool confirmed = await ConfirmAsync($"Drop {stash.Name}?\n\n{stash.Message}\n\nThis cannot be undone.");
-        if (!confirmed)
+            bool confirmed = await ConfirmAsync($"Drop {stash.Name}?\n\n{stash.Message}\n\nThis cannot be undone.");
+            if (!confirmed)
+            {
+                return;
+            }
+
+            _status.Text = "Dropping…";
+            RunGit(
+                () => _service.StashDrop(repo, stash.Name),
+                result => OnMutated(result, "Stash dropped."));
+        }
+        catch (Exception ex)
         {
-            return;
+            _status.Text = "Failed: " + ex.Message;
         }
-
-        _status.Text = "Dropping…";
-        RunGit(
-            () => _service.StashDrop(repo, stash.Name),
-            result => OnMutated(result, "Stash dropped."));
     }
 
     private void OnMutated(StashOpResult result, string okText, Action? onSuccess = null)
