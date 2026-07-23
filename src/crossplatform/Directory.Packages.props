@@ -4,10 +4,10 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="AdysTech.CredentialManager" Version="2.3.0" />
-    <PackageVersion Include="Avalonia" Version="11.2.3" />
-    <PackageVersion Include="Avalonia.Desktop" Version="11.2.3" />
-    <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.2.3" />
-    <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.2.3" />
+    <PackageVersion Include="Avalonia" Version="11.3.14" />
+    <PackageVersion Include="Avalonia.Desktop" Version="11.3.14" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.3.14" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.3.14" />
     <PackageVersion Include="Ben.Demystifier" Version="0.4.1" />
     <PackageVersion Include="JetBrains.Annotations" Version="2021.2.0" />
     <PackageVersion Include="Microsoft.VisualStudio.Composition" Version="17.2.41" />
