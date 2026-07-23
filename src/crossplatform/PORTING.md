@@ -156,6 +156,17 @@ comportamento (le guardie sono `false`).
   branch edge). 2 subagent (menu, about+toolbar) + tema/integrazione a mano.
   Build 0 errori, GUI verificata headless (xvfb) in tema scuro e chiaro.
 
+- **M9** — packaging Linux: `packaging/build-deb.sh` produce un `.deb`
+  **self-contained** (`dotnet publish -r linux-x64 --self-contained`, nessun
+  SDK/runtime richiesto all'utente). Pacchetto `gitextensions_5.0.0-linux1_amd64.deb`
+  (~35 MB, payload ~105 MB): payload in `/opt/gitextensions/`, launcher
+  `/usr/bin/gitextensions`, `.desktop` in `/usr/share/applications/`, icona
+  256px (logo ufficiale) in `hicolor`, `control` con `Depends: git`, `postinst`
+  (update-desktop-database/gtk-update-icon-cache, guardati). Script idempotente,
+  fail-fast. Verificato: `.deb` costruito + binario pubblicato supera il
+  `--selftest` (branch + commit, git core ok). Delegato a subagent in worktree,
+  cherry-pick pulito.
+
 ### Come avviarlo
 
 ```bash
@@ -241,7 +252,8 @@ estese; persistenza del tema scelto e delle dimensioni dei pannelli.
   vulnerabilità nota → valutare bump di Avalonia.
 - **Localizzazione**: verificare il caricamento delle traduzioni (`ResourceManager`)
   su Linux.
-- **Packaging**: `.deb`/AppImage/Flatpak + `dotnet publish` self-contained.
+- ~~**Packaging**: `.deb` + `dotnet publish` self-contained~~ ✅ (M9,
+  `packaging/build-deb.sh`). Resta opzionale: AppImage / Flatpak.
 
 ### Nota architetturale
 Man mano che si aggiungono viste, valutare se conviene **aggiungere `net10.0` come
@@ -254,8 +266,9 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 1 / 20** · parità **44.4%** (71/160 voci `[x]`). Questo giro:
-> creata la checklist di parità (baseline da M1–M8) + packaging `.deb` in corso.
+> **Iterazione: 1 / 20** · parità **45.0%** (72/160 voci `[x]`). Questo giro:
+> creata la checklist di parità (baseline da M1–M8) + packaging `.deb` completato
+> (M9). Prossimo: iter. 2 → debito tecnico.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -431,7 +444,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Repository-host (GitHub) ops
 
 ### Packaging / distribuzione
-- [ ] `.deb` self-contained (linux-x64) + `.desktop` + icona — **in corso (iter. 1)**
+- [x] `.deb` self-contained (linux-x64) + `.desktop` + icona — `packaging/build-deb.sh`
 
 ### Debito tecnico noto (non conta ai fini parità UI)
 - [ ] Fallback Linux Ctrl+C ai git figli (ProcessExtensions signal/kill)
