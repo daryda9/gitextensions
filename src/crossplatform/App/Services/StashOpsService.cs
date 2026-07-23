@@ -69,6 +69,25 @@ public sealed class StashOpsService
     }
 
     /// <summary>
+    ///  Stashes ONLY the staged (index) changes, leaving unstaged / working-tree
+    ///  changes in place. Uses <c>git stash push --staged [-m &lt;message&gt;]</c>
+    ///  (requires git 2.35+, which introduced <c>--staged</c>). There is no core
+    ///  builder for this, so raw git is run just like apply/pop/drop.
+    /// </summary>
+    public StashOpResult StashStaged(string repoPath, string message)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("stash")
+        {
+            "push",
+            "--staged",
+            { !string.IsNullOrWhiteSpace(message), "-m" },
+            { !string.IsNullOrWhiteSpace(message), message.Quote() },
+        };
+        return Run(module, args);
+    }
+
+    /// <summary>
     ///  Applies the given stash, keeping it in the stash list.
     /// </summary>
     public StashOpResult StashApply(string repoPath, string name)

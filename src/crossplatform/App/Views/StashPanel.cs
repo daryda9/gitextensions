@@ -26,6 +26,7 @@ public sealed class StashPanel : UserControl
     private readonly TextBox _messageBox;
     private readonly CheckBox _untrackedCheck;
     private readonly Button _saveButton;
+    private readonly Button _stagedButton;
     private readonly Button _applyButton;
     private readonly Button _popButton;
     private readonly Button _dropButton;
@@ -67,8 +68,11 @@ public sealed class StashPanel : UserControl
             Margin = new Thickness(0, 0, 0, 4),
         };
 
-        _saveButton = new Button { Content = "Save stash" };
+        _saveButton = new Button { Content = "Save stash", Margin = new Thickness(0, 0, 6, 0) };
         _saveButton.Click += (_, _) => DoSave();
+
+        _stagedButton = new Button { Content = "Stash staged" };
+        _stagedButton.Click += (_, _) => DoStashStaged();
 
         _applyButton = new Button { Content = "Apply", Margin = new Thickness(0, 0, 6, 0) };
         _applyButton.Click += (_, _) => DoApply();
@@ -100,10 +104,14 @@ public sealed class StashPanel : UserControl
         listPanel.Children.Add(_stashList);
         listPanel.Children.Add(opButtons);
 
+        StackPanel saveButtons = new() { Orientation = Orientation.Horizontal };
+        saveButtons.Children.Add(_saveButton);
+        saveButtons.Children.Add(_stagedButton);
+
         StackPanel savePanel = new() { Margin = new Thickness(8, 4, 8, 4) };
         savePanel.Children.Add(_messageBox);
         savePanel.Children.Add(_untrackedCheck);
-        savePanel.Children.Add(_saveButton);
+        savePanel.Children.Add(saveButtons);
 
         _status = new TextBlock
         {
@@ -164,6 +172,21 @@ public sealed class StashPanel : UserControl
         RunGit(
             () => _service.StashSave(repo, message, untracked),
             result => OnMutated(result, "Stash saved.", () => _messageBox.Text = string.Empty));
+    }
+
+    private void DoStashStaged()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        string message = _messageBox.Text ?? string.Empty;
+
+        _status.Text = "Stashing staged changes…";
+        RunGit(
+            () => _service.StashStaged(repo, message),
+            result => OnMutated(result, "Staged changes stashed.", () => _messageBox.Text = string.Empty));
     }
 
     private void DoApply()
@@ -315,6 +338,7 @@ public sealed class StashPanel : UserControl
     {
         _busy = busy;
         _saveButton.IsEnabled = !busy;
+        _stagedButton.IsEnabled = !busy;
         _applyButton.IsEnabled = !busy;
         _popButton.IsEnabled = !busy;
         _dropButton.IsEnabled = !busy;
