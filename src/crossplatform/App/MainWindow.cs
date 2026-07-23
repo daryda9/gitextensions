@@ -460,6 +460,9 @@ public sealed class MainWindow : Window
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _menu.NewBranchRequested += () => _ = NewBranchAsync();
         _menu.NewTagRequested += () => _ = NewTagAsync();
+        _menu.FormatPatchRequested += () => _ = FormatPatchAsync();
+        _menu.ApplyPatchRequested += () => _ = ApplyPatchAsync();
+        _menu.ViewPatchRequested += () => _ = ViewPatchAsync();
         _menu.CopyHashRequested += () =>
         {
             if (_lastSelectedHash is { Length: > 0 } h)
@@ -1065,6 +1068,183 @@ public sealed class MainWindow : Window
 
         RunOp($"Create branch {name}",
             () => new BranchTagService().CreateBranch(_repoPath!, name.Trim(), startPoint: "HEAD", checkout: true).Success);
+    }
+
+    // ---- patch operations (format / apply / view) ----------------------------------
+
+    // Prompts for a base ref, picks an output directory, then generates one patch
+    // per commit in <base>..HEAD there (git format-patch). Reports the files written.
+    private async Task FormatPatchAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        string? baseRef = await PromptAsync(
+            "Format patch",
+            "Base ref/commit (patches are produced for <base>..HEAD):",
+            "HEAD~1");
+        if (string.IsNullOrWhiteSpace(baseRef))
+        {
+            return;
+        }
+
+        TopLevel? top = GetTopLevel(this);
+        if (top is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<IStorageFolder> folders =
+            await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                AllowMultiple = false,
+                Title = "Choose an output directory for the patch files",
+            });
+
+        if (folders.Count == 0)
+        {
+            return;
+        }
+
+        string? outDir = folders[0].TryGetLocalPath();
+        if (string.IsNullOrEmpty(outDir))
+        {
+            _statusBar.SetText("The selected folder has no local path.");
+            return;
+        }
+
+        string trimmedBase = baseRef.Trim();
+        _statusBar.SetText("Generating patches…");
+
+        PatchResult result;
+        try
+        {
+            result = await Task.Run(() => new PatchService().FormatPatch(_repoPath!, trimmedBase, outDir));
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"Format patch failed: {ex.Message}");
+            return;
+        }
+
+        if (result.Success)
+        {
+            _statusBar.SetText(result.Files.Count > 0
+                ? $"Wrote {result.Files.Count} patch file(s) to {outDir}"
+                : $"format-patch produced no patches for {trimmedBase}..HEAD");
+        }
+        else
+        {
+            string firstLine = result.Output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
+            _statusBar.SetText($"Format patch failed: {firstLine}");
+            await new PatchOutputWindow("Format patch — failed", result.Output).ShowDialog(this);
+        }
+    }
+
+    // Picks a .patch/.diff file and applies it (git am, falling back to git apply).
+    // Surfaces git's output; on failure shows the full message in a modal.
+    private async Task ApplyPatchAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        string? file = await PickPatchFileAsync("Choose a patch file to apply");
+        if (file is null)
+        {
+            return;
+        }
+
+        _statusBar.SetText("Applying patch…");
+
+        PatchResult result;
+        try
+        {
+            result = await Task.Run(() => new PatchService().ApplyPatch(_repoPath!, file));
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"Apply patch failed: {ex.Message}");
+            return;
+        }
+
+        RefreshAll();
+
+        if (result.Success)
+        {
+            _statusBar.SetText($"Applied patch {Path.GetFileName(file)}");
+        }
+        else
+        {
+            _statusBar.SetText($"Apply patch failed for {Path.GetFileName(file)} — see output.");
+            await new PatchOutputWindow("Apply patch — failed", result.Output).ShowDialog(this);
+        }
+    }
+
+    // Picks a .patch/.diff file, reads it, and shows it in the colour-rendered
+    // read-only patch viewer (same colouring as DiffView).
+    private async Task ViewPatchAsync()
+    {
+        string? file = await PickPatchFileAsync("Choose a patch file to view");
+        if (file is null)
+        {
+            return;
+        }
+
+        string text;
+        try
+        {
+            text = await File.ReadAllTextAsync(file);
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"Could not read {Path.GetFileName(file)}: {ex.Message}");
+            return;
+        }
+
+        await new PatchViewerWindow(Path.GetFileName(file), text).ShowDialog(this);
+    }
+
+    // Shared open-file picker for patch files, filtered to .patch/.diff (with an
+    // "all files" fallback). Returns the local path, or null if cancelled.
+    private async Task<string?> PickPatchFileAsync(string title)
+    {
+        TopLevel? top = GetTopLevel(this);
+        if (top is null)
+        {
+            return null;
+        }
+
+        IReadOnlyList<IStorageFile> files =
+            await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                AllowMultiple = false,
+                Title = title,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("Patch files") { Patterns = new[] { "*.patch", "*.diff" } },
+                    new FilePickerFileType("All files") { Patterns = new[] { "*" } },
+                },
+            });
+
+        if (files.Count == 0)
+        {
+            return null;
+        }
+
+        string? path = files[0].TryGetLocalPath();
+        if (string.IsNullOrEmpty(path))
+        {
+            _statusBar.SetText("The selected file has no local path.");
+            return null;
+        }
+
+        return path;
     }
 
     // Opens the modal Settings window over the main window, passing the current

@@ -57,6 +57,9 @@ public sealed class MainMenu : UserControl
     public event Action? StashRequested;
     public event Action? NewBranchRequested;
     public event Action? NewTagRequested;
+    public event Action? FormatPatchRequested;
+    public event Action? ApplyPatchRequested;
+    public event Action? ViewPatchRequested;
 
     // ---- Tools
     public event Action? GitBashRequested;
@@ -128,6 +131,10 @@ public sealed class MainMenu : UserControl
         commands.Items.Add(new Separator());
         commands.Items.Add(Item("New branch…", "BranchCreate", () => NewBranchRequested?.Invoke()));
         commands.Items.Add(Item("New tag…", "TagCreate", () => NewTagRequested?.Invoke()));
+        commands.Items.Add(new Separator());
+        commands.Items.Add(Item("Format patch…", null, () => FormatPatchRequested?.Invoke()));
+        commands.Items.Add(Item("Apply patch…", null, () => ApplyPatchRequested?.Invoke()));
+        commands.Items.Add(Item("View patch file…", null, () => ViewPatchRequested?.Invoke()));
 
         MenuItem tools = new() { Header = "_Tools" };
         tools.Items.Add(Item("Git bash", "GitForWindows", () => GitBashRequested?.Invoke()));
