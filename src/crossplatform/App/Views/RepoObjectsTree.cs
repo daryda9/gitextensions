@@ -25,6 +25,7 @@ public sealed class RepoObjectsTree : UserControl
     private readonly StashOpsService _stashService = new();
     private readonly SubmoduleService _submoduleService = new();
     private readonly RemoteService _remoteService = new();
+    private readonly WorktreeService _worktreeService = new();
 
     private readonly TreeView _tree;
 
@@ -102,7 +103,8 @@ public sealed class RepoObjectsTree : UserControl
                 BranchTagListing refs = _branchTagService.LoadRefs(repo);
                 IReadOnlyList<StashRow> stashes = _stashService.ListStashes(repo);
                 IReadOnlyList<SubmoduleRow> submodules = _submoduleService.ListSubmodules(repo);
-                snapshot = new RepoSnapshot(refs, stashes, submodules);
+                IReadOnlyList<WorktreeRow> worktrees = _worktreeService.ListWorktrees(repo);
+                snapshot = new RepoSnapshot(refs, stashes, submodules, worktrees);
             }
             catch (Exception ex)
             {
@@ -136,6 +138,7 @@ public sealed class RepoObjectsTree : UserControl
         IReadOnlyList<BranchTagRow> tags = snapshot.Refs.Tags;
         IReadOnlyList<StashRow> stashes = snapshot.Stashes;
         IReadOnlyList<SubmoduleRow> submodules = snapshot.Submodules;
+        IReadOnlyList<WorktreeRow> worktrees = snapshot.Worktrees;
 
         List<TreeViewItem> roots = [];
 
@@ -215,6 +218,21 @@ public sealed class RepoObjectsTree : UserControl
         }
 
         roots.Add(submodulesNode);
+
+        // Worktrees. The root node carries "Add…" and "Prune"; each leaf carries
+        // "Remove" for its own path. No "Open" action is wired: opening a worktree
+        // as the active repository requires MainWindow, which is out of scope for
+        // this control.
+        TreeViewItem worktreesNode = Category("Worktrees", "WorkTree", worktrees.Count);
+        worktreesNode.ContextMenu = WorktreeRootMenu();
+        foreach (WorktreeRow row in worktrees)
+        {
+            TreeViewItem leaf = Leaf(row.Display, "WorkTree", row, isCurrent: false);
+            leaf.ContextMenu = WorktreeMenu(row);
+            worktreesNode.Items.Add(leaf);
+        }
+
+        roots.Add(worktreesNode);
 
         branchesNode.IsExpanded = true;
         _tree.ItemsSource = roots;
@@ -300,7 +318,30 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu TagMenu(BranchTagRow row)
     {
         ContextMenu menu = new();
+        // Checkout the tag ref: a plain `git checkout <tag>` lands on a detached
+        // HEAD, which is the expected "checkout tag revision" behaviour. Reuses
+        // the same BranchTagService.Checkout used for branches/revisions.
+        menu.Items.Add(MenuItem("Checkout tag revision…", "BranchCheckout", () => DoCheckout(row)));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Delete", "TagDelete", () => _ = DoDeleteTagAsync(row)));
+        return menu;
+    }
+
+    private ContextMenu WorktreeRootMenu()
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Add…", "WorkTree", () => _ = DoAddWorktreeAsync()));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuItem("Prune", "CleanupRepo", () => RunWorktree(() => _worktreeService.PruneWorktrees(_repoPath!))));
+        return menu;
+    }
+
+    private ContextMenu WorktreeMenu(WorktreeRow row)
+    {
+        ContextMenu menu = new();
+        // No "Open" action: making a worktree the active repository requires
+        // MainWindow, which is out of scope for this control.
+        menu.Items.Add(MenuItem("Remove", "Remove", () => _ = DoRemoveWorktreeAsync(row)));
         return menu;
     }
 
@@ -521,6 +562,41 @@ public sealed class RepoObjectsTree : UserControl
         }
     }
 
+    private async Task DoAddWorktreeAsync()
+    {
+        try
+        {
+            string? path = await PromptAsync("New worktree path:", string.Empty);
+            if (path is not { Length: > 0 } target)
+            {
+                return;
+            }
+
+            // Branch is optional: empty lets git create a branch named after the path.
+            string? branch = await PromptAsync($"Branch/revision for '{target}' (blank = new branch):", string.Empty);
+            RunWorktree(() => _worktreeService.AddWorktree(_repoPath!, target, branch ?? string.Empty));
+        }
+        catch
+        {
+            // No status surface on this control; the prompt/mutation simply aborts.
+        }
+    }
+
+    private async Task DoRemoveWorktreeAsync(WorktreeRow row)
+    {
+        try
+        {
+            if (await ConfirmAsync($"Remove worktree '{row.Path}'?"))
+            {
+                RunWorktree(() => _worktreeService.RemoveWorktree(_repoPath!, row.Path));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
+        }
+    }
+
     // Best-effort lookup of a remote's fetch URL to prefill the edit prompt;
     // returns empty when unavailable (the prompt then starts blank).
     private string FindRemoteUrl(string remote)
@@ -667,6 +743,38 @@ public sealed class RepoObjectsTree : UserControl
         });
     }
 
+    private void RunWorktree(Func<WorktreeOpResult> work)
+    {
+        if (_repoPath is not { Length: > 0 } || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        _ = Task.Run(() =>
+        {
+            bool success;
+            try
+            {
+                success = work().Success;
+            }
+            catch
+            {
+                success = false;
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _busy = false;
+                if (success)
+                {
+                    OperationCompleted?.Invoke();
+                    Refresh();
+                }
+            });
+        });
+    }
+
     // Minimal modal yes/no confirmation; allows the action when no owner window
     // is available (e.g. headless).
     private async Task<bool> ConfirmAsync(string message)
@@ -755,5 +863,5 @@ public sealed class RepoObjectsTree : UserControl
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;
 
-    private sealed record RepoSnapshot(BranchTagListing Refs, IReadOnlyList<StashRow> Stashes, IReadOnlyList<SubmoduleRow> Submodules);
+    private sealed record RepoSnapshot(BranchTagListing Refs, IReadOnlyList<StashRow> Stashes, IReadOnlyList<SubmoduleRow> Submodules, IReadOnlyList<WorktreeRow> Worktrees);
 }
