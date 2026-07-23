@@ -2,67 +2,128 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
-using Avalonia.Threading;
+using GitExtensions.Avalonia.Views;
 
 namespace GitExtensions.Avalonia;
 
+/// <summary>
+///  Shell window: a repository picker plus tabbed views (History, Commit, Diff)
+///  wired together over the reused Git Extensions core. Each view is a
+///  self-contained <see cref="UserControl"/> that talks to the core through
+///  <see cref="GitContext"/>.
+/// </summary>
 public sealed class MainWindow : Window
 {
-    private readonly TextBox _pathBox;
-    private readonly TextBlock _status;
-    private readonly ListBox _commits;
+    private readonly TextBlock _repoLabel;
+    private readonly TabControl _tabs;
+    private readonly RepositoryPickerView _picker;
+    private readonly RevisionGridView _revisions;
+    private readonly DiffView _diff;
+    private readonly WorkingDirectoryView _workingDir;
+
+    private readonly TabItem _openTab;
+    private readonly TabItem _historyTab;
+    private readonly TabItem _commitTab;
+    private readonly TabItem _diffTab;
+
+    private string? _repoPath;
 
     public MainWindow()
     {
         Title = "Git Extensions (Avalonia / Linux)";
-        Width = 1000;
-        Height = 640;
+        Width = 1100;
+        Height = 720;
 
-        _pathBox = new TextBox
+        _picker = new RepositoryPickerView();
+        _revisions = new RevisionGridView();
+        _diff = new DiffView();
+        _workingDir = new WorkingDirectoryView();
+
+        _openTab = new TabItem { Header = "Open Repository", Content = _picker };
+        _historyTab = new TabItem { Header = "History", Content = _revisions };
+        _commitTab = new TabItem { Header = "Commit", Content = _workingDir };
+        _diffTab = new TabItem { Header = "Diff", Content = _diff };
+
+        _tabs = new TabControl
         {
-            Text = App.InitialRepoPath ?? Directory.GetCurrentDirectory(),
-            Watermark = "Path to a git repository",
+            Items =
+            {
+                _openTab,
+                _historyTab,
+                _commitTab,
+                _diffTab,
+            },
+        };
+
+        _repoLabel = new TextBlock
+        {
+            Margin = new Thickness(10, 6),
+            Foreground = Brushes.Gray,
+            Text = "No repository open.",
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        Button openButton = new() { Content = "Open", Margin = new Thickness(6, 0, 0, 0) };
-        openButton.Click += (_, _) => LoadRepository(_pathBox.Text ?? string.Empty);
-
-        Grid toolbar = new()
-        {
-            Margin = new Thickness(8),
-            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-        };
-        Grid.SetColumn(_pathBox, 0);
-        Grid.SetColumn(openButton, 1);
-        toolbar.Children.Add(_pathBox);
-        toolbar.Children.Add(openButton);
-
-        _status = new TextBlock
-        {
-            Margin = new Thickness(10, 0, 10, 6),
-            Foreground = Brushes.Gray,
-            Text = "Enter a repository path and press Open.",
-        };
-
-        _commits = new ListBox
-        {
-            Margin = new Thickness(8, 0, 8, 8),
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
-        };
-
         DockPanel root = new();
-        DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(_status, Dock.Top);
-        root.Children.Add(toolbar);
-        root.Children.Add(_status);
-        root.Children.Add(_commits);
-
+        DockPanel.SetDock(_repoLabel, Dock.Top);
+        root.Children.Add(_repoLabel);
+        root.Children.Add(_tabs);
         Content = root;
 
-        // Auto-load the current directory if it is a repo, so the app shows
-        // real data immediately.
-        Opened += (_, _) => LoadRepository(_pathBox.Text ?? string.Empty);
+        // Wire the views together.
+        _picker.RepositorySelected += OnRepositorySelected;
+        _revisions.RevisionSelected += OnRevisionSelected;
+        _workingDir.Committed += OnCommitted;
+
+        // Startup: if a repo was supplied (CLI / cwd), open it; else show picker.
+        Opened += (_, _) =>
+        {
+            string? initial = FindRepositoryRoot(
+                App.InitialRepoPath ?? Directory.GetCurrentDirectory());
+            if (initial is not null)
+            {
+                OpenRepository(initial);
+            }
+            else
+            {
+                _tabs.SelectedItem = _openTab;
+            }
+        };
+    }
+
+    private void OnRepositorySelected(string repoPath)
+    {
+        OpenRepository(repoPath);
+    }
+
+    private void OnRevisionSelected(string commitHash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        _diff.ShowCommit(_repoPath, commitHash);
+        _tabs.SelectedItem = _diffTab;
+    }
+
+    private void OnCommitted()
+    {
+        if (_repoPath is not null)
+        {
+            _revisions.LoadRepository(_repoPath);
+        }
+    }
+
+    private void OpenRepository(string repoPath)
+    {
+        _repoPath = repoPath;
+        _repoLabel.Text = $"Repository: {repoPath}";
+
+        _revisions.LoadRepository(repoPath);
+        _workingDir.LoadRepository(repoPath);
+        _picker.Refresh();
+
+        _tabs.SelectedItem = _historyTab;
     }
 
     // Accept a subdirectory: walk up until a git working dir is found.
@@ -87,39 +148,5 @@ public sealed class MainWindow : Window
         }
 
         return null;
-    }
-
-    private void LoadRepository(string path)
-    {
-        _commits.ItemsSource = null;
-
-        string? repo = FindRepositoryRoot(path);
-        if (repo is null)
-        {
-            _status.Text = $"Not a git repository: {path}";
-            return;
-        }
-
-        path = repo;
-
-        _status.Text = "Loading…";
-
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                string branch = GitService.ReadCurrentBranch(path);
-                IReadOnlyList<CommitRow> commits = GitService.ReadCommits(path);
-                Dispatcher.UIThread.Post(() =>
-                {
-                    _commits.ItemsSource = commits.Select(c => c.Display).ToList();
-                    _status.Text = $"{path}  —  branch '{branch}'  —  {commits.Count} commits";
-                });
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.UIThread.Post(() => _status.Text = "Error: " + ex.Message);
-            }
-        });
     }
 }
