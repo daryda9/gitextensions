@@ -146,6 +146,16 @@ comportamento (le guardie sono `false`).
   parallelo (albero, toolbar+status, restyle grid/detail/diff), poi
   integrazione del `MainWindow`. Build 0 errori, GUI verificata headless (xvfb).
 
+- **M8** — menu + rifiniture UI: **barra menu** (File/Edit/View/Repository/
+  Commands/Help) sopra la toolbar, con "Open recent" (MRU), tema chiaro/scuro,
+  About, e voci che rispecchiano toolbar + New tag; **`ThemeManager`** con
+  switch **chiaro/scuro live** (muta il colore dei brush stabili → repaint
+  senza DynamicResource); **scorciatoie globali** (F5 refresh, Ctrl+O apri);
+  **About dialog**; polish toolbar (bordo, spaziatura, hover/pressed, tooltip).
+  Grafo DAG multi-lane verificato su repo ramificato (lane colorate, merge/
+  branch edge). 2 subagent (menu, about+toolbar) + tema/integrazione a mano.
+  Build 0 errori, GUI verificata headless (xvfb) in tema scuro e chiaro.
+
 ### Come avviarlo
 
 ```bash
@@ -206,11 +216,12 @@ credenziali passate transitoriamente negli arg del comando (mai persistite);
 blame/history guidati da input path manuale (non ancora agganciati al menu
 "Blame/History di questo file" nella lista file del diff).
 
-### UI / look originale ✅ (M7)
+### UI / look originale ✅ (M7 + M8)
 Layout FormBrowse (toolbar + albero + grid DAG + pannello inferiore + status
-bar), icone originali, tema scuro. Vedi milestone M7.
-Aperto su questo fronte: menu principale (File/Edit/View…); grafica del grafo
-DAG più ricca; drag/filtri nella grid; rifinire spaziature/hover.
+bar), icone originali, tema scuro/chiaro, **barra menu**, About, scorciatoie.
+Vedi milestone M7/M8.
+Aperto su questo fronte: filtri/ricerca nella grid; drag&drop; scorciatoie più
+estese; persistenza del tema scelto e delle dimensioni dei pannelli.
 
 ### Priorità bassa — contorno
 9. **Pagine settings** in Avalonia (il framework `ISettingControlBinding` è
