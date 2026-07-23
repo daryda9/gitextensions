@@ -1,11 +1,24 @@
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Styling;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
 
 namespace GitExtensions.Avalonia;
+
+/// <summary>A minimal ICommand for wiring key bindings to void actions.</summary>
+internal sealed class RelayCommand(Action execute) : ICommand
+{
+    public event EventHandler? CanExecuteChanged;
+
+    public bool CanExecute(object? parameter) => true;
+
+    public void Execute(object? parameter) => execute();
+}
 
 /// <summary>
 ///  Integrated main window modelled on the original GitExtensions FormBrowse:
@@ -16,6 +29,7 @@ namespace GitExtensions.Avalonia;
 /// </summary>
 public sealed class MainWindow : Window
 {
+    private readonly MainMenu _menu = new();
     private readonly MainToolbar _toolbar = new();
     private readonly StatusBarView _statusBar = new();
     private readonly RepoObjectsTree _tree = new();
@@ -35,6 +49,7 @@ public sealed class MainWindow : Window
     private readonly StashOpsService _stashOps = new();
 
     private string? _repoPath;
+    private string? _lastSelectedHash;
 
     public MainWindow()
     {
@@ -98,12 +113,18 @@ public sealed class MainWindow : Window
         main.Children.Add(right);
 
         DockPanel root = new() { Background = (IBrush)Application.Current!.Resources["App.Window"]! };
+        DockPanel.SetDock(_menu, Dock.Top);
         DockPanel.SetDock(_toolbar, Dock.Top);
         DockPanel.SetDock(_statusBar, Dock.Bottom);
+        root.Children.Add(_menu);
         root.Children.Add(_toolbar);
         root.Children.Add(_statusBar);
         root.Children.Add(main);
         Content = root;
+
+        // Global shortcuts: F5 refresh, Ctrl+O open.
+        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.F5), Command = new RelayCommand(RefreshAll) });
+        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.O, KeyModifiers.Control), Command = new RelayCommand(() => _ = PickRepositoryAsync()) });
 
         WireEvents();
 
@@ -143,6 +164,30 @@ public sealed class MainWindow : Window
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
 
+        // Menu actions (mirror the toolbar + menu-only entries).
+        _menu.OpenRepoRequested += () => _ = PickRepositoryAsync();
+        _menu.OpenRecentRequested += repo => { if (Directory.Exists(repo)) OpenRepository(repo); };
+        _menu.ExitRequested += Close;
+        _menu.RefreshRequested += RefreshAll;
+        _menu.LightThemeRequested += () => Theming.ThemeManager.Apply(ThemeVariant.Light);
+        _menu.DarkThemeRequested += () => Theming.ThemeManager.Apply(ThemeVariant.Dark);
+        _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null).Success);
+        _menu.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null).Success);
+        _menu.PushRequested += () => RunRemoteOp("Push", (s, r) =>
+            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null).Success);
+        _menu.CommitRequested += () => _bottom.SelectedItem = _workingDirTab;
+        _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
+        _menu.NewBranchRequested += () => _ = NewBranchAsync();
+        _menu.NewTagRequested += () => _ = NewTagAsync();
+        _menu.CopyHashRequested += () =>
+        {
+            if (_lastSelectedHash is { Length: > 0 } h)
+            {
+                _ = Clipboard?.SetTextAsync(h);
+            }
+        };
+        _menu.AboutRequested += () => _ = AboutDialog.ShowAsync(this);
+
         // Commit-targeted operations on the revision grid.
         _revisions.AddCommitCommand("Checkout this commit",
             hash => RunOp("Checkout", () => new BranchTagService().Checkout(_repoPath!, hash).Success));
@@ -163,6 +208,7 @@ public sealed class MainWindow : Window
             return;
         }
 
+        _lastSelectedHash = commitHash;
         _detail.ShowCommit(_repoPath, commitHash);
         _diff.ShowCommit(_repoPath, commitHash);
         _bottom.SelectedItem = _commitInfoTab;
@@ -245,6 +291,23 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async Task NewTagAsync()
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        string? name = await PromptAsync("New tag", "Tag name:");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        RunOp($"Create tag {name}",
+            () => new BranchTagService().CreateTag(_repoPath!, name.Trim(), "HEAD", string.Empty).Success);
+    }
+
     private async Task NewBranchAsync()
     {
         if (_repoPath is null)
@@ -291,6 +354,20 @@ public sealed class MainWindow : Window
         _workingDir.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
+        _ = PopulateRecentAsync();
+    }
+
+    private async Task PopulateRecentAsync()
+    {
+        try
+        {
+            IReadOnlyList<string> recent = await new RecentRepositoriesService().LoadAsync();
+            _menu.SetRecentRepositories(recent);
+        }
+        catch
+        {
+            // Non-fatal: the menu just shows "(none)".
+        }
     }
 
     // Confirmation dialog (Yes/No).
