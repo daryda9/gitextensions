@@ -122,6 +122,10 @@ comportamento (le guardie sono `false`).
   sul core riusato. Sviluppate in parallelo (4 subagent in worktree isolati),
   merge pulito, build 0 errori, GUI verificata headless (xvfb) — la History
   mostra 200 commit con badge ref.
+- **M5** — rifiniture alta priorità: grafo DAG nella grid, pannello dettaglio
+  commit nel tab Diff, menu contestuali + scorciatoie. Sviluppate in parallelo
+  (3 subagent in worktree), merge pulito, build 0 errori, GUI verificata
+  headless (xvfb) — grafo + dettaglio + diff colorato renderizzano.
 
 ### Come avviarlo
 
@@ -151,9 +155,21 @@ core riusato**. In ordine di priorità suggerito:
 4. ~~**Selezione repo & repository recenti**~~ ✅ `RepositoryPickerView` — folder
    picker nativo + MRU via `RepositoryHistoryManager`.
 
-Rifiniture aperte sull'alta priorità: grafo DAG nella revision grid;
-dettaglio del commit selezionato (autore/committer/parent/messaggio esteso)
-accanto al diff; scorciatoie/menu contestuali.
+Rifiniture alta priorità ✅ (M5):
+- **Grafo DAG** nella revision grid: `RevisionGraphControl` disegna le lane
+  (sweep top-down con indici stabili, nodi + edge branch/merge), colonna
+  allineata con header/righe. `RevisionService.BuildGraph`.
+- **Dettaglio commit**: `CommitDetailView` (hash/autore/committer/parent +
+  messaggio esteso) impilato sopra il diff nel tab Diff (GridSplitter); la
+  selezione di una revisione pilota sia dettaglio che diff.
+- **Menu contestuali + scorciatoie**: grid (copy hash/subject/author, Ctrl+C),
+  diff (copy path / copy diff), working dir (stage/unstage da menu e da
+  tastiera Enter/Spazio, Ctrl+Enter = commit).
+- Fix: la lista file del diff mostra `Display` (glifo + path).
+
+Aperto (bassa priorità su questo blocco): grafo multi-lane verificato solo
+su storia lineare (algoritmo gestisce fork/merge); azioni git mutanti nei
+menu (checkout/reset) rinviate al blocco "operazioni git".
 
 ### Priorità media — operazioni git
 5. **Branch/tag**: crea, checkout, merge, rebase, delete.
