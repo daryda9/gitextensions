@@ -55,6 +55,15 @@ public sealed class MainWindow : Window
 
     private readonly UiStateService _uiStateService = new();
     private readonly UiState _uiState;
+    private readonly FavoritesService _favoritesService = new();
+    private readonly DashboardView _dashboard = new();
+
+    // The repository work area (tree | revision grid | detail/diff), and the root
+    // dock panel it lives in. The window swaps between this and the dashboard by
+    // replacing the dock panel's fill child.
+    private Grid _repositoryArea = null!;
+    private DockPanel _root = null!;
+    private bool _dashboardShowing;
 
     // Splitter-driven definitions we persist/restore. The revision/bottom and
     // detail/diff definitions are recreated whenever the layout is rebuilt (split
@@ -144,6 +153,7 @@ public sealed class MainWindow : Window
         main.Children.Add(_tree);
         main.Children.Add(treeSplit);
         main.Children.Add(right);
+        _repositoryArea = main;
 
         DockPanel root = new() { Background = (IBrush)Application.Current!.Resources["App.Window"]! };
         DockPanel.SetDock(_menu, Dock.Top);
@@ -153,6 +163,7 @@ public sealed class MainWindow : Window
         root.Children.Add(_toolbar);
         root.Children.Add(_statusBar);
         root.Children.Add(main);
+        _root = root;
         Content = root;
 
         // Global shortcuts: F5 refresh, Ctrl+O open.
@@ -170,7 +181,7 @@ public sealed class MainWindow : Window
             }
             else
             {
-                _ = PickRepositoryAsync();
+                ShowDashboard();
             }
         };
 
@@ -375,6 +386,19 @@ public sealed class MainWindow : Window
         _tree.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
 
+        _dashboard.RepositorySelected += repo =>
+        {
+            if (Directory.Exists(repo))
+            {
+                OpenRepository(repo);
+            }
+            else
+            {
+                _statusBar.SetText($"Repository no longer exists: {repo}");
+            }
+        };
+        _dashboard.OpenOtherRequested += () => _ = PickRepositoryAsync();
+
         _diff.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _diff.FileHistoryRequested += path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
 
@@ -400,6 +424,19 @@ public sealed class MainWindow : Window
         _menu.CloneRequested += () => _ = CloneRepositoryAsync();
         _menu.InitRequested += () => _ = InitRepositoryAsync();
         _menu.OpenRecentRequested += repo => { if (Directory.Exists(repo)) OpenRepository(repo); };
+        _menu.OpenFavoriteRequested += repo =>
+        {
+            if (Directory.Exists(repo))
+            {
+                OpenRepository(repo);
+            }
+            else
+            {
+                _statusBar.SetText($"Favorite no longer exists: {repo}");
+            }
+        };
+        _menu.AddFavoriteRequested += AddCurrentToFavorites;
+        _menu.DashboardRequested += ShowDashboard;
         _menu.ExitRequested += Close;
         _menu.RefreshRequested += RefreshAll;
         _menu.ShowReflogRequested += () => _ = ShowReflogAsync();
@@ -439,6 +476,8 @@ public sealed class MainWindow : Window
         _menu.EditGitattributesRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".gitattributes")));
         _menu.EditMailmapRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".mailmap")));
         _menu.EditInfoExcludeRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".git", "info", "exclude")));
+        _menu.GitMaintenanceRequested += () => _ = OpenMaintenanceAsync();
+        _menu.RepoSettingsRequested += () => _ = OpenSettingsAsync();
 
         // Tools: terminal + external git GUIs, launched detached in the repo dir.
         _menu.GitBashRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
@@ -884,6 +923,13 @@ public sealed class MainWindow : Window
 
     private void RefreshAll()
     {
+        // When the dashboard is showing, "Refresh" (menu / F5) reloads its lists.
+        if (_dashboardShowing)
+        {
+            ShowDashboard();
+            return;
+        }
+
         if (_repoPath is null)
         {
             return;
@@ -1121,6 +1167,7 @@ public sealed class MainWindow : Window
     private void OpenRepository(string repoPath)
     {
         _repoPath = repoPath;
+        ShowRepositoryView();
         WarmUpCore(repoPath);
 
         _revisions.LoadRepository(repoPath);
@@ -1128,7 +1175,23 @@ public sealed class MainWindow : Window
         _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
+        _menu.SetFavoriteRepositories(_favoritesService.Load());
+        _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
+    }
+
+    // Records the opened repository in the core MRU so it appears in "Open recent"
+    // and on the dashboard next time. Best-effort; never blocks the open.
+    private static async Task RecordRecentAsync(string repoPath)
+    {
+        try
+        {
+            await new RecentRepositoriesService().AddAsync(repoPath);
+        }
+        catch
+        {
+            // Non-fatal.
+        }
     }
 
     private async Task PopulateRecentAsync()
@@ -1142,6 +1205,95 @@ public sealed class MainWindow : Window
         {
             // Non-fatal: the menu just shows "(none)".
         }
+    }
+
+    // ---- dashboard + favorites -------------------------------------------------------
+
+    // Swaps the repository work area out for the dashboard landing view, and loads
+    // it with the current favorite + recent lists. Reachable from "Close (go to
+    // Dashboard)" and on startup when no repository is found.
+    private void ShowDashboard()
+    {
+        if (!_dashboardShowing)
+        {
+            _root.Children.Remove(_repositoryArea);
+            if (!_root.Children.Contains(_dashboard))
+            {
+                _root.Children.Add(_dashboard);
+            }
+
+            _dashboardShowing = true;
+        }
+
+        _menu.SetFavoriteRepositories(_favoritesService.Load());
+        _ = LoadDashboardAsync();
+        _statusBar.SetText("Dashboard");
+    }
+
+    // Restores the repository work area (used whenever a repository is opened).
+    private void ShowRepositoryView()
+    {
+        if (_dashboardShowing)
+        {
+            _root.Children.Remove(_dashboard);
+            if (!_root.Children.Contains(_repositoryArea))
+            {
+                _root.Children.Add(_repositoryArea);
+            }
+
+            _dashboardShowing = false;
+        }
+    }
+
+    // Loads the dashboard's favorite + recent lists (recent off the UI thread).
+    private async Task LoadDashboardAsync()
+    {
+        IReadOnlyList<string> favorites = _favoritesService.Load();
+        IReadOnlyList<string> recent;
+        try
+        {
+            recent = await new RecentRepositoriesService().LoadAsync();
+        }
+        catch
+        {
+            recent = Array.Empty<string>();
+        }
+
+        _dashboard.Load(favorites, recent);
+    }
+
+    // Marks the currently open repository as a favorite and refreshes the submenu
+    // (and the dashboard, if it happens to be visible).
+    private void AddCurrentToFavorites()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open to add to favorites.");
+            return;
+        }
+
+        IReadOnlyList<string> favorites = _favoritesService.Add(_repoPath);
+        _menu.SetFavoriteRepositories(favorites);
+        if (_dashboardShowing)
+        {
+            _dashboard.Load(favorites, Array.Empty<string>());
+            _ = LoadDashboardAsync();
+        }
+
+        _statusBar.SetText($"Added to favorites: {_repoPath}");
+    }
+
+    // Opens the Git maintenance dialog for the current repository.
+    private async Task OpenMaintenanceAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        await MaintenanceDialog.ShowAsync(this, _repoPath);
+        RefreshAll();
     }
 
     // Confirmation dialog (Yes/No).
