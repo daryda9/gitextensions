@@ -294,6 +294,20 @@ comportamento (le guardie sono `false`).
     reload preserva DAG/filtro/note.
   Build 0 errori, GUI verificata headless (xvfb) — badge git-notes visibile.
 
+- **M18** — chiusura voci checklist (3 subagent claude paralleli, file disgiunti
+  — MainWindow/DiffView/DiffService, RepoObjectsTree, WorkingDirectoryView):
+  - **Compare commits**: grid context "Select as BASE" / "Compare to BASE"
+    (`git diff base other`) / "Compare to working directory" (`git diff commit`),
+    reso nel pannello DiffView esistente (file list + diff colorato). Grid
+    single-select → coppia BASE+CompareToBASE copre il confronto a due commit.
+  - **Tree**: sort ref (nome / data commit, asc/desc, session-local, data
+    risolta lazy off-thread) + move up/down (branch) + Copy name / Copy path
+    (submodule/worktree) via clipboard Avalonia.
+  - **Add to .gitignore**: da file untracked del Working directory — path esatto
+    / `*.ext` / `dir/`, append con dedupe + newline, refresh (il file sparisce
+    dagli untracked).
+  Build 0 errori, GUI verificata headless (xvfb).
+
 ### Come avviarlo
 
 ```bash
@@ -398,13 +412,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 9 / 20** · parità **71.2%** (114/160 voci `[x]`). Questo giro
-> (M17): 3 subagent paralleli → Reflog browser (View menu) + Bisect
-> (good/bad/skip/reset da grid); Resolve merge conflicts (mergetool / ours-theirs
-> / mark resolved) nel Working directory; grid view-toggle scope branch
-> (all/current/filtered). Prossimo: iter. 10 → Compare (BASE/selected),
-> reword/squash/fixup (interactive rebase), toolbar mancante, maintenance,
-> Favorite/Dashboard; modello UI plugin verso la fine.
+> **Iterazione: 10 / 20** · parità **74.4%** (119/160 voci `[x]`). Questo giro
+> (M18): 3 subagent paralleli → Compare commits (select BASE / compare to BASE /
+> compare to working dir) via grid → DiffView; tree sort refs (nome/data,
+> asc/desc) + copy name/path + move up/down; Add-to-.gitignore (path / *.ext /
+> dir/) da file untracked. Prossimo: iter. 11 → reword/squash/fixup (interactive
+> rebase), toolbar mancante, maintenance, Favorite/Dashboard; plugin verso la fine.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -483,8 +496,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Nodo Stashes + apply/pop/open/drop/manage
 - [x] Nodo Submodules + list/update/update-all (open/commit/reset da fare)
 - [x] Nodo Worktrees + add/remove/prune (open rinviato: richiede MainWindow)
-- [ ] Ordinamento ref (sort-by / sort-order) + move up/down
-- [ ] Copy to clipboard / copy path dai nodi
+- [x] Ordinamento ref (sort-by name/data + asc/desc) + move up/down (branch)
+- [x] Copy to clipboard (nome) / copy path (submodule/worktree)
 
 ### D. Revision grid
 - [x] Colonna grafo DAG (multi-lane)
@@ -499,7 +512,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Menu contestuale: checkout commit / cherry-pick / reset (soft·mixed·hard)
 - [x] Menu contestuale: revert commit (git revert --no-edit)
 - [x] Menu contestuale: create branch/tag here
-- [ ] Menu contestuale: compare (BASE / selected / working dir / branch / difftool)
+- [x] Menu contestuale: compare (select BASE / compare to BASE / working dir / difftool; compare-to-branch da fare)
 - [x] Menu contestuale: bisect good/bad/skip/stop
 - [x] Menu contestuale: navigate (parent/child/go-to; Alt↑/↓, Ctrl+G)
 - [x] Filtro/ricerca (autore / messaggio / hash) — barra live in RevisionGridView
@@ -538,7 +551,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Merge submodule
 - [x] Archive
 - [ ] Format patch / Apply patch / View patch
-- [ ] Add to .gitignore
+- [x] Add to .gitignore (path / *.ext / dir/, da file untracked)
 - [ ] Edit .gitignore / .gitattributes / .mailmap
 - [ ] Sparse working copy
 - [ ] Submodules manager
@@ -576,7 +589,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Clone / Init
 - [ ] Reflog
 - [x] Blame / File history / Diff / Log
-- [ ] Compare (branch / working dir / difftool)
+- [x] Compare (working dir / difftool / BASE; branch da fare)
 - [ ] Repository-host (GitHub) ops
 
 ### Packaging / distribuzione
