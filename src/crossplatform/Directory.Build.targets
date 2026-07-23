@@ -1,0 +1,4 @@
+<Project>
+  <!-- Empty: prevents MSBuild from walking up to the repo-root
+       Directory.Build.targets for this cross-platform tree. -->
+</Project>

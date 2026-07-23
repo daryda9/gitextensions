@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GitCommands</RootNamespace>
+    <AssemblyName>GitCommands</AssemblyName>
+    <DefineConstants>$(DefineConstants);TRACE_REVISIONREADER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(AppDir)\GitCommands\**\*.cs" Exclude="$(AppDir)\GitCommands\**\obj\**\*.cs;$(AppDir)\GitCommands\**\bin\**\*.cs" />
+    <!-- Portable theme identity types referenced by AppSettings. -->
+    <Compile Include="$(AppDir)\GitExtUtils\GitUI\Theming\AppColor.cs" />
+    <Compile Include="$(AppDir)\GitExtUtils\GitUI\Theming\AppColorDefaults.cs" />
+    <Compile Include="$(AppDir)\GitExtUtils\GitUI\Theming\ThemeId.cs" />
+    <!-- Validates is internal and linked per-assembly in the real build. -->
+    <Compile Include="$(AppDir)\GitExtUtils\Validates.cs" Link="Validates.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="JetBrains.Annotations" />
+    <PackageReference Include="System.IO.Abstractions" />
+    <PackageReference Include="System.Reactive.Linq" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Core.Extensibility.csproj" />
+    <ProjectReference Include="Core.GitExtUtils.csproj" />
+    <ProjectReference Include="Core.GitUIPluginInterfaces.csproj" />
+  </ItemGroup>
+
+</Project>

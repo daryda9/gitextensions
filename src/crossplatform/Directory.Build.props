@@ -1,0 +1,41 @@
+<Project>
+  <!-- Standalone cross-platform build tree. Intentionally does NOT import the
+       repo-root Directory.Build.props, so WinForms is not forced on and the
+       target framework is plain net10.0 (no 'WINDOWS' compile symbol). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>false</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS1573;CS1591;CS1712;CS0618;CA1416;NU1701</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- These projects share a directory, so give each its own obj/bin to stop
+         them stomping each other's project.assets.json. -->
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AppDir>$(MSBuildThisFileDirectory)..\app</AppDir>
+    <PluginsDir>$(MSBuildThisFileDirectory)..\plugins</PluginsDir>
+  </PropertyGroup>
+
+  <!-- Replicate the implicit usings that UseWindowsForms would normally add, so
+       source files that rely on them resolve against our compat shims. -->
+  <!-- Replicate WinForms implicit usings for the reused core projects only.
+       The Avalonia app and the shim assembly opt out to avoid type clashes
+       (Control/Application exist in both Avalonia and our shims). -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Compat.WinFormsShims' AND '$(MSBuildProjectName)' != 'GitExtensions.Avalonia'">
+    <Using Include="System.Drawing" />
+    <Using Include="System.Windows.Forms" />
+    <Using Include="System.ComponentModel" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Compat.WinFormsShims'">
+    <!-- Root Directory.Build.targets adds this to every project in the real build. -->
+    <PackageReference Include="Microsoft.VisualStudio.Threading" />
+  </ItemGroup>
+</Project>

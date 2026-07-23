@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GitUIPluginInterfaces</RootNamespace>
+    <AssemblyName>GitUIPluginInterfaces</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(PluginsDir)\GitUIPluginInterfaces\**\*.cs" Exclude="$(PluginsDir)\GitUIPluginInterfaces\**\obj\**\*.cs;$(PluginsDir)\GitUIPluginInterfaces\**\bin\**\*.cs" />
+    <!-- Validates is internal and linked per-assembly in the real build. -->
+    <Compile Include="$(AppDir)\GitExtUtils\Validates.cs" Link="Validates.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="JetBrains.Annotations" />
+    <PackageReference Include="Microsoft.VisualStudio.Composition" />
+    <PackageReference Include="System.Reactive.Interfaces" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Core.GitExtUtils.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GitExtensions.Compat</RootNamespace>
+    <AssemblyName>GitExtensions.Compat.WinFormsShims</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Compat\**\*.cs" />
+  </ItemGroup>
+
+</Project>

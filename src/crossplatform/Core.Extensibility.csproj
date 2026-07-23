@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GitExtensions.Extensibility</RootNamespace>
+    <AssemblyName>GitExtensions.Extensibility</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(AppDir)\GitExtensions.Extensibility\**\*.cs" Exclude="$(AppDir)\GitExtensions.Extensibility\**\obj\**\*.cs;$(AppDir)\GitExtensions.Extensibility\**\bin\**\*.cs;$(AppDir)\GitExtensions.Extensibility\Settings\UserControls\**\*.cs;$(AppDir)\GitExtensions.Extensibility\Settings\CredentialsSetting.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AdysTech.CredentialManager" />
+    <PackageReference Include="StrongOf" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Compat.WinFormsShims.csproj" />
+  </ItemGroup>
+
+</Project>

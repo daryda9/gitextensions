@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="AdysTech.CredentialManager" Version="2.3.0" />
+    <PackageVersion Include="Avalonia" Version="11.2.3" />
+    <PackageVersion Include="Avalonia.Desktop" Version="11.2.3" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.2.3" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.2.3" />
+    <PackageVersion Include="Ben.Demystifier" Version="0.4.1" />
+    <PackageVersion Include="JetBrains.Annotations" Version="2021.2.0" />
+    <PackageVersion Include="Microsoft.VisualStudio.Composition" Version="17.2.41" />
+    <PackageVersion Include="Microsoft.VisualStudio.Threading" Version="17.13.61" />
+    <PackageVersion Include="StrongOf" Version="1.2.4" />
+    <PackageVersion Include="System.Configuration.ConfigurationManager" Version="10.0.0" />
+    <PackageVersion Include="System.IO.Abstractions" Version="22.0.12" />
+    <PackageVersion Include="System.Reactive" Version="5.0.0" />
+    <PackageVersion Include="System.Reactive.Interfaces" Version="5.0.0" />
+    <PackageVersion Include="System.Reactive.Linq" Version="5.0.0" />
+  </ItemGroup>
+</Project>

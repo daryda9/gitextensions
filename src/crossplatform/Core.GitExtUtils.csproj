@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GitExtUtils</RootNamespace>
+    <AssemblyName>GitExtUtils</AssemblyName>
+  </PropertyGroup>
+
+  <!-- OS-neutral utilities at the project root, plus the portable threading /
+       helper types from the GitUI/ subtree (TaskManager, ThreadHelper, …).
+       The WinForms/GDI/Win32-bound parts of GitUI/ are excluded: the Theming
+       (GDI) and Interops (Win32) folders and the control/toolstrip helpers. -->
+  <ItemGroup>
+    <Compile Include="$(AppDir)\GitExtUtils\*.cs" Exclude="$(AppDir)\GitExtUtils\ClipboardUtil.cs" />
+    <Compile Include="$(AppDir)\GitExtUtils\Linq\**\*.cs" />
+    <Compile Include="$(AppDir)\GitExtUtils\Properties\**\*.cs" />
+    <!-- Cross-platform startup hook (accesses ThreadHelper internals). -->
+    <Compile Include="$(MSBuildThisFileDirectory)Bootstrap\ThreadHelperBootstrap.cs" />
+    <Compile Include="$(AppDir)\GitExtUtils\GitUI\**\*.cs"
+             Exclude="$(AppDir)\GitExtUtils\GitUI\Theming\**\*.cs;
+                      $(AppDir)\GitExtUtils\GitUI\Interops\**\*.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ComboBoxExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ControlDpiExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ControlHotkeyExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\DpiUtil.cs;
+                      $(AppDir)\GitExtUtils\GitUI\HighDpiMouseCursors.cs;
+                      $(AppDir)\GitExtUtils\GitUI\IMenuItemBackgroundFilter.cs;
+                      $(AppDir)\GitExtUtils\GitUI\IToolStripEx.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ListViewExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\PropertyGridExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ToolStripExProfessionalRenderer.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ToolStripExSystemRenderer.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ToolStripExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ToolStripUtil.cs;
+                      $(AppDir)\GitExtUtils\GitUI\Win32ApiUtil.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ImageListExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\TableLayoutPanelExtensions.cs;
+                      $(AppDir)\GitExtUtils\GitUI\ControlUtil.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AdysTech.CredentialManager" />
+    <PackageReference Include="Ben.Demystifier" />
+    <PackageReference Include="JetBrains.Annotations" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Core.Extensibility.csproj" />
+  </ItemGroup>
+
+</Project>

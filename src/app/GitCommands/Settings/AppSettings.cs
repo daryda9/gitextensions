@@ -90,8 +90,9 @@ public static partial class AppSettings
 
         SettingsContainer = new DistributedSettings(lowerPriority: null, GitExtSettingsCache.FromCache(SettingsFilePath), SettingLevel.Unknown);
 
-        if (newFile || !File.Exists(SettingsFilePath))
+        if ((newFile || !File.Exists(SettingsFilePath)) && OperatingSystem.IsWindows())
         {
+            // Legacy settings live in the Windows registry; nothing to import elsewhere.
             ImportFromRegistry();
         }
 
@@ -261,6 +262,12 @@ public static partial class AppSettings
 
     private static bool ReadBoolRegKey(string key, bool defaultValue)
     {
+        // The registry only exists on Windows; elsewhere fall back to the default.
+        if (!OperatingSystem.IsWindows())
+        {
+            return defaultValue;
+        }
+
         object? obj = VersionIndependentRegKey.GetValue(key);
         if (obj is not string)
         {
@@ -277,17 +284,32 @@ public static partial class AppSettings
 
     private static void WriteBoolRegKey(string key, bool value)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         VersionIndependentRegKey.SetValue(key, value ? "true" : "false");
     }
 
     [return: NotNullIfNotNull(nameof(defaultValue))]
     private static string? ReadStringRegValue(string key, string? defaultValue)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return defaultValue;
+        }
+
         return (string?)VersionIndependentRegKey.GetValue(key, defaultValue);
     }
 
     private static void WriteStringRegValue(string key, string value)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         VersionIndependentRegKey.SetValue(key, value);
     }
 

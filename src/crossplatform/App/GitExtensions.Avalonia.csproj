@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>GitExtensions.Avalonia</RootNamespace>
+    <AssemblyName>GitExtensions.Avalonia</AssemblyName>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core.GitCommands.csproj" />
+  </ItemGroup>
+
+</Project>
