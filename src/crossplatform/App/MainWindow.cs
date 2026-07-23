@@ -42,10 +42,12 @@ public sealed class MainWindow : Window
     private readonly TabControl _bottom;
     private readonly TabItem _commitInfoTab;
     private readonly TabItem _workingDirTab;
+    private readonly TabItem _stashTab;
     private readonly TabItem _blameTab;
     private readonly TabItem _historyTab;
     private readonly BlameView _blame = new();
     private readonly FileHistoryView _fileHistory = new();
+    private readonly StashPanel _stash = new();
 
     private readonly StashOpsService _stashOps = new();
     private readonly ExternalToolService _externalTools = new();
@@ -54,12 +56,20 @@ public sealed class MainWindow : Window
     private readonly UiStateService _uiStateService = new();
     private readonly UiState _uiState;
 
-    // Splitter-driven definitions we persist/restore (assigned in the ctor).
+    // Splitter-driven definitions we persist/restore. The revision/bottom and
+    // detail/diff definitions are recreated whenever the layout is rebuilt (split
+    // orientation / commit-info position changes), so they are not readonly.
     private readonly ColumnDefinition _treeCol;
-    private readonly RowDefinition _revRow;
-    private readonly RowDefinition _bottomRow;
-    private readonly RowDefinition _detailRow;
-    private readonly RowDefinition _diffRow;
+    private RowDefinition _revRow;
+    private RowDefinition _bottomRow;
+    private RowDefinition _detailRow;
+    private RowDefinition _diffRow;
+
+    // The rebuildable right-hand region (revision grid + bottom panel, with the
+    // commit-info panel positioned relative to the grid) and its layout state.
+    private readonly Grid _right = new();
+    private CommitInfoPosition _commitInfoPosition;
+    private bool _splitHorizontal;
 
     private string? _repoPath;
     private string? _lastSelectedHash;
@@ -80,59 +90,40 @@ public sealed class MainWindow : Window
         Height = _uiState.WindowHeight;
         Background = (IBrush)Application.Current!.Resources["App.Window"]!;
 
-        // ---- bottom panel: commit info (detail + diff) / working dir / blame / history
+        // View toggles are session-local: commit info below the graph, detail
+        // stacked over the diff (the original FormBrowse defaults). Persisting
+        // them would need extra UiState fields, which live in a service we do not
+        // own here, so they simply reset each session.
+        _commitInfoPosition = CommitInfoPosition.BelowGraph;
+        _splitHorizontal = false;
+
+        // Detail/diff definitions are (re)created by RebuildRightRegion; seed them
+        // here so PersistLayout has valid references before the first rebuild.
         _detailRow = new RowDefinition(new GridLength(_uiState.DetailStar, GridUnitType.Star));
         _diffRow = new RowDefinition(new GridLength(_uiState.DiffStar, GridUnitType.Star));
-        Grid commitInfo = new()
-        {
-            RowDefinitions = new RowDefinitions
-            {
-                _detailRow,
-                new RowDefinition(new GridLength(4, GridUnitType.Pixel)),
-                _diffRow,
-            },
-            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
-        };
-        GridSplitter infoSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
-        Grid.SetRow(_detail, 0);
-        Grid.SetRow(infoSplit, 1);
-        Grid.SetRow(_diff, 2);
-        commitInfo.Children.Add(_detail);
-        commitInfo.Children.Add(infoSplit);
-        commitInfo.Children.Add(_diff);
+        _revRow = new RowDefinition(new GridLength(_uiState.RevisionsStar, GridUnitType.Star));
+        _bottomRow = new RowDefinition(new GridLength(_uiState.BottomStar, GridUnitType.Star));
 
-        _commitInfoTab = new TabItem { Header = "Commit", Content = commitInfo };
+        // ---- bottom panel: commit info (detail + diff) / working dir / stash / blame / history
+        _commitInfoTab = new TabItem { Header = "Commit" };
         _workingDirTab = new TabItem { Header = "Working directory", Content = _workingDir };
+        _stashTab = new TabItem { Header = "Stash", Content = _stash };
         _blameTab = new TabItem { Header = "Blame", Content = _blame };
         _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
         _bottom = new TabControl
         {
             Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             ClipToBounds = true,
-            Items = { _commitInfoTab, _workingDirTab, _blameTab, _historyTab },
+            Items = { _commitInfoTab, _workingDirTab, _stashTab, _blameTab, _historyTab },
         };
 
-        // ---- right side: revision grid over the bottom panel
-        _revRow = new RowDefinition(new GridLength(_uiState.RevisionsStar, GridUnitType.Star));
-        _bottomRow = new RowDefinition(new GridLength(_uiState.BottomStar, GridUnitType.Star));
-        Grid right = new()
-        {
-            RowDefinitions = new RowDefinitions
-            {
-                _revRow,
-                new RowDefinition(new GridLength(4, GridUnitType.Pixel)),
-                _bottomRow,
-            },
-            ClipToBounds = true,
-            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
-        };
-        GridSplitter rightSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
-        Grid.SetRow(_revisions, 0);
-        Grid.SetRow(rightSplit, 1);
-        Grid.SetRow(_bottom, 2);
-        right.Children.Add(_revisions);
-        right.Children.Add(rightSplit);
-        right.Children.Add(_bottom);
+        // ---- right side: revision grid + bottom panel, with the commit-info panel
+        // positioned relative to the grid (below / left / right). Built dynamically
+        // so the split-view and commit-info-position toggles can rearrange it live.
+        _right.ClipToBounds = true;
+        _right.Background = (IBrush)Application.Current!.Resources["App.Window"]!;
+        RebuildRightRegion();
+        Grid right = _right;
 
         // ---- main area: left tree | right side
         _treeCol = new ColumnDefinition(new GridLength(_uiState.TreeWidth, GridUnitType.Pixel));
@@ -207,11 +198,180 @@ public sealed class MainWindow : Window
         }
     }
 
+    // Rebuilds the right-hand region (revision grid + bottom panel) for the current
+    // commit-info position and split orientation. Reuses the shared views, detaching
+    // them from their previous parents first so they can be safely re-hosted.
+    private void RebuildRightRegion()
+    {
+        Detach(_revisions);
+        Detach(_detail);
+        Detach(_diff);
+        Detach(_bottom);
+
+        // The Commit tab hosts the detail+diff only when the commit info sits below
+        // the graph; otherwise the detail moves beside the grid and the tab shows
+        // just the diff.
+        bool detailBelow = _commitInfoPosition == CommitInfoPosition.BelowGraph;
+        _commitInfoTab.Content = BuildCommitTabContent(detailBelow);
+
+        _right.Children.Clear();
+        _right.ColumnDefinitions.Clear();
+        _right.RowDefinitions.Clear();
+
+        // Preserve the current star sizes across the rebuild.
+        _revRow = new RowDefinition(new GridLength(_revRow.Height.Value, GridUnitType.Star));
+        _bottomRow = new RowDefinition(new GridLength(_bottomRow.Height.Value, GridUnitType.Star));
+        _right.RowDefinitions.Add(_revRow);
+        _right.RowDefinitions.Add(new RowDefinition(new GridLength(4, GridUnitType.Pixel)));
+        _right.RowDefinitions.Add(_bottomRow);
+
+        Control top = detailBelow ? _revisions : BuildGraphWithSideDetail();
+
+        GridSplitter rightSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetRow(top, 0);
+        Grid.SetRow(rightSplit, 1);
+        Grid.SetRow(_bottom, 2);
+        _right.Children.Add(top);
+        _right.Children.Add(rightSplit);
+        _right.Children.Add(_bottom);
+    }
+
+    // Places the revision grid and the commit-detail panel side by side, with the
+    // detail on the left or right of the grid per the current position.
+    private Control BuildGraphWithSideDetail()
+    {
+        bool detailLeft = _commitInfoPosition == CommitInfoPosition.LeftOfGraph;
+        Grid grid = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions
+            {
+                new ColumnDefinition(new GridLength(detailLeft ? 1 : 2, GridUnitType.Star)),
+                new ColumnDefinition(new GridLength(4, GridUnitType.Pixel)),
+                new ColumnDefinition(new GridLength(detailLeft ? 2 : 1, GridUnitType.Star)),
+            },
+            ClipToBounds = true,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+        };
+        GridSplitter split = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
+        Control first = detailLeft ? _detail : _revisions;
+        Control second = detailLeft ? _revisions : _detail;
+        Grid.SetColumn(first, 0);
+        Grid.SetColumn(split, 1);
+        Grid.SetColumn(second, 2);
+        grid.Children.Add(first);
+        grid.Children.Add(split);
+        grid.Children.Add(second);
+        return grid;
+    }
+
+    // Builds the Commit tab body. When the detail belongs here it is arranged with
+    // the diff either stacked (vertical split) or side by side (horizontal split);
+    // otherwise the detail lives beside the grid and the tab shows only the diff.
+    private Control BuildCommitTabContent(bool includeDetail)
+    {
+        if (!includeDetail)
+        {
+            return _diff;
+        }
+
+        _detailRow = new RowDefinition(new GridLength(_detailRow.Height.Value, GridUnitType.Star));
+        _diffRow = new RowDefinition(new GridLength(_diffRow.Height.Value, GridUnitType.Star));
+
+        Grid grid = new()
+        {
+            ClipToBounds = true,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+        };
+
+        if (_splitHorizontal)
+        {
+            // Side-by-side: detail | diff, split by a vertical gutter.
+            grid.ColumnDefinitions = new ColumnDefinitions
+            {
+                new ColumnDefinition(new GridLength(_detailRow.Height.Value, GridUnitType.Star)),
+                new ColumnDefinition(new GridLength(4, GridUnitType.Pixel)),
+                new ColumnDefinition(new GridLength(_diffRow.Height.Value, GridUnitType.Star)),
+            };
+            GridSplitter split = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
+            Grid.SetColumn(_detail, 0);
+            Grid.SetColumn(split, 1);
+            Grid.SetColumn(_diff, 2);
+            grid.Children.Add(_detail);
+            grid.Children.Add(split);
+            grid.Children.Add(_diff);
+        }
+        else
+        {
+            // Stacked: detail over diff, split by a horizontal gutter.
+            grid.RowDefinitions = new RowDefinitions
+            {
+                _detailRow,
+                new RowDefinition(new GridLength(4, GridUnitType.Pixel)),
+                _diffRow,
+            };
+            GridSplitter split = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
+            Grid.SetRow(_detail, 0);
+            Grid.SetRow(split, 1);
+            Grid.SetRow(_diff, 2);
+            grid.Children.Add(_detail);
+            grid.Children.Add(split);
+            grid.Children.Add(_diff);
+        }
+
+        return grid;
+    }
+
+    // Detaches a control from its current parent so it can be re-hosted elsewhere
+    // (Avalonia forbids adding a control that still has a visual parent).
+    private static void Detach(Control c)
+    {
+        switch (c.Parent)
+        {
+            case Panel p:
+                p.Children.Remove(c);
+                break;
+            case ContentControl cc:
+                cc.Content = null;
+                break;
+            case Decorator d:
+                d.Child = null;
+                break;
+        }
+    }
+
+    // Flips the Commit tab between stacked and side-by-side detail/diff.
+    private void ToggleSplitView()
+    {
+        _splitHorizontal = !_splitHorizontal;
+        RebuildRightRegion();
+        _bottom.SelectedItem = _commitInfoTab;
+        _statusBar.SetText(_splitHorizontal ? "Split view: side by side" : "Split view: stacked");
+    }
+
+    // Repositions the commit-info (detail) panel relative to the revision grid.
+    private void SetCommitInfoPosition(CommitInfoPosition position)
+    {
+        if (_commitInfoPosition == position)
+        {
+            return;
+        }
+
+        _commitInfoPosition = position;
+        RebuildRightRegion();
+        _statusBar.SetText(position switch
+        {
+            CommitInfoPosition.LeftOfGraph => "Commit info: left of graph",
+            CommitInfoPosition.RightOfGraph => "Commit info: right of graph",
+            _ => "Commit info: below graph",
+        });
+    }
+
     private void WireEvents()
     {
         _revisions.RevisionSelected += OnRevisionSelected;
         _fileHistory.RevisionSelected += OnRevisionSelected;
         _workingDir.Committed += RefreshAll;
+        _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
 
@@ -228,6 +388,12 @@ public sealed class MainWindow : Window
             s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null).Success);
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
+
+        // View / layout + external-tool toolbar actions.
+        _toolbar.SplitViewToggleRequested += ToggleSplitView;
+        _toolbar.CommitInfoPositionChanged += SetCommitInfoPosition;
+        _toolbar.FileExplorerRequested += () => WithRepo(p => _externalTools.OpenPath(p));
+        _toolbar.OpenTerminalRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
 
         // Menu actions (mirror the toolbar + menu-only entries).
         _menu.OpenRepoRequested += () => _ = PickRepositoryAsync();
@@ -726,6 +892,7 @@ public sealed class MainWindow : Window
         WarmUpCore(_repoPath);
         _revisions.LoadRepository(_repoPath);
         _workingDir.LoadRepository(_repoPath);
+        _stash.LoadRepository(_repoPath);
         _tree.LoadRepository(_repoPath);
         _statusBar.LoadRepository(_repoPath);
     }
@@ -958,6 +1125,7 @@ public sealed class MainWindow : Window
 
         _revisions.LoadRepository(repoPath);
         _workingDir.LoadRepository(repoPath);
+        _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
         _ = PopulateRecentAsync();

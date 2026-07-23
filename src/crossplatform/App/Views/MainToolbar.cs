@@ -21,6 +21,17 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="IconLoader"/>; when an icon is missing the button degrades to its
 ///  text label.
 /// </summary>
+/// <summary>
+///  Where the commit-info (commit detail) panel sits relative to the revision
+///  grid, mirroring the original FormBrowse "Commit info position" toggle.
+/// </summary>
+public enum CommitInfoPosition
+{
+    BelowGraph,
+    LeftOfGraph,
+    RightOfGraph,
+}
+
 public sealed class MainToolbar : UserControl
 {
     public event Action? OpenRepoRequested;
@@ -31,6 +42,12 @@ public sealed class MainToolbar : UserControl
     public event Action? StashRequested;
     public event Action? RefreshRequested;
     public event Action? NewBranchRequested;
+
+    // View / layout controls (added to match the original FormBrowse toolbar).
+    public event Action? SplitViewToggleRequested;
+    public event Action<CommitInfoPosition>? CommitInfoPositionChanged;
+    public event Action? FileExplorerRequested;
+    public event Action? OpenTerminalRequested;
 
     public MainToolbar()
     {
@@ -66,6 +83,25 @@ public sealed class MainToolbar : UserControl
         bar.Children.Add(MakeButton("ReloadRevisions", "Refresh", "Refresh", () => RefreshRequested?.Invoke()));
         bar.Children.Add(Separator(border));
         bar.Children.Add(MakeButton("BranchCreate", "New branch", "Create a new branch", () => NewBranchRequested?.Invoke()));
+
+        // ---- view / layout group -------------------------------------------------
+        bar.Children.Add(Separator(border));
+        bar.Children.Add(MakeButton("LayoutFooter", "Split view",
+            "Toggle the Commit tab layout between side-by-side and stacked (detail + diff)",
+            () => SplitViewToggleRequested?.Invoke()));
+        bar.Children.Add(MakeMenuButton("LayoutSidebarLeft", "Commit info", "Commit-info position", new[]
+        {
+            ("LayoutFooter", "Below graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.BelowGraph))),
+            ("LayoutSidebarTopLeft", "Left of graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.LeftOfGraph))),
+            ("LayoutSidebarTopRight", "Right of graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.RightOfGraph))),
+        }));
+
+        // ---- external tools group ------------------------------------------------
+        bar.Children.Add(Separator(border));
+        bar.Children.Add(MakeButton("BrowseFileExplorer", "File Explorer", "Open the repository in the file manager",
+            () => FileExplorerRequested?.Invoke()));
+        bar.Children.Add(MakeButton("Console", "Terminal", "Open a terminal in the repository directory",
+            () => OpenTerminalRequested?.Invoke()));
 
         // Flat/borderless buttons with a subtle hover fill (the Fluent template
         // paints the button's chrome through its inner ContentPresenter, so we
@@ -141,6 +177,70 @@ public sealed class MainToolbar : UserControl
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, tooltip);
         button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    // A flat toolbar button that drops a menu (icon + caption + a small chevron),
+    // used for the commit-info-position selector. Each entry is an icon name, its
+    // menu text, and the action to run when chosen.
+    private Button MakeMenuButton(string iconName, string label, string tooltip,
+        (string Icon, string Text, Action OnClick)[] items)
+    {
+        StackPanel content = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        Image? icon = IconLoader.Image(iconName, 16);
+        if (icon is not null)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            content.Children.Add(icon);
+        }
+
+        content.Children.Add(new TextBlock
+        {
+            Text = label,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = "▾", // ▾ chevron hints at the drop-down.
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 10,
+        });
+
+        MenuFlyout flyout = new();
+        foreach ((string ic, string text, Action onClick) in items)
+        {
+            MenuItem menuItem = new() { Header = text };
+            Image? mIcon = IconLoader.Image(ic, 16);
+            if (mIcon is not null)
+            {
+                menuItem.Icon = mIcon;
+            }
+
+            menuItem.Click += (_, _) => onClick();
+            flyout.Items.Add(menuItem);
+        }
+
+        Button button = new()
+        {
+            Content = content,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Flyout = flyout,
+        };
+        button.Classes.Add("toolbtn");
+        ToolTip.SetTip(button, tooltip);
         return button;
     }
 
