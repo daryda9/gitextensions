@@ -371,6 +371,8 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu WorktreeRootMenu()
     {
         ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Manage worktrees…", "WorkTree", () => _ = DoManageWorktreesAsync()));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Add…", "WorkTree", () => _ = DoAddWorktreeAsync()));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Prune", "CleanupRepo", () => RunWorktree(() => _worktreeService.PruneWorktrees(_repoPath!))));
@@ -863,6 +865,29 @@ public sealed class RepoObjectsTree : UserControl
         catch
         {
             // No status surface on this control; the confirm/mutation simply aborts.
+        }
+    }
+
+    private async Task DoManageWorktreesAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            WorktreesDialog dialog = new(repo);
+            await dialog.ShowDialog(owner);
+            if (dialog.Changed)
+            {
+                OperationCompleted?.Invoke();
+                Refresh();
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the dialog simply closes.
         }
     }
 
