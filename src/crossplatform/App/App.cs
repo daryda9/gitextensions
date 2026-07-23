@@ -19,18 +19,9 @@ public class App : Application
     public override void Initialize()
     {
         Styles.Add(new FluentTheme());
-        RequestedThemeVariant = ThemeVariant.Dark;
 
-        Resources["App.Window"] = new SolidColorBrush(Color.Parse("#1E1E1E"));
-        Resources["App.Panel"] = new SolidColorBrush(Color.Parse("#252526"));
-        Resources["App.PanelAlt"] = new SolidColorBrush(Color.Parse("#2D2D30"));
-        Resources["App.Toolbar"] = new SolidColorBrush(Color.Parse("#333337"));
-        Resources["App.Border"] = new SolidColorBrush(Color.Parse("#3F3F46"));
-        Resources["App.Text"] = new SolidColorBrush(Color.Parse("#DCDCDC"));
-        Resources["App.TextDim"] = new SolidColorBrush(Color.Parse("#9B9B9B"));
-        Resources["App.Accent"] = new SolidColorBrush(Color.Parse("#007ACC"));
-        Resources["App.Selection"] = new SolidColorBrush(Color.Parse("#094771"));
-        Resources["App.GraphGreen"] = new SolidColorBrush(Color.Parse("#4EC9B0"));
+        // Palette brushes + dark/light theme switching (see Theming/ThemeManager).
+        Theming.ThemeManager.Initialize(this);
 
         // Normalize control sizing: Fluent's default tab headers are oversized
         // for a dense tool; keep them compact and consistent with the rest.
