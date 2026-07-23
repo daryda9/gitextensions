@@ -217,6 +217,23 @@ comportamento (le guardie sono `false`).
     Yes esplicito. Flow distruttivo testato in GUI.
   Build 0 errori, GUI verificata headless (xvfb).
 
+- **M13** — settings + voci checklist (3 subagent claude paralleli, file
+  disgiunti — solo uno tocca `MainWindow`/`MainMenu`):
+  - **SettingsWindow** Avalonia (nuova): lista categorie a sinistra + pannello a
+    destra, Save/Cancel. Impostazioni reali e persistite: **identità git**
+    (`user.name`/`user.email` via `GetEffectiveSetting`/`SetSetting`, repo-local
+    con fallback global), **default pull action** (merge/rebase/fetch, nuovo
+    `SettingsService` → `app-settings.json`), **tema** (Light/Dark via
+    `UiStateService`/`ThemeManager`, preview live, Cancel ripristina). Aperta da
+    menu Edit ▸ Settings…. Fondazione estendibile, NON il porto del framework
+    WinForms `ISettingControlBinding`.
+  - **Rename branch** dal context menu del tree (`git branch -m`, solo branch
+    locali; prompt + refresh riusati; git rifiuta target esistente → errore
+    mostrato).
+  - **Stash staged** (`git stash push --staged`, git ≥2.35): stasha solo l'index,
+    lascia il working tree. Verificato su repo temporaneo.
+  Build 0 errori, GUI verificata headless (xvfb) — SettingsWindow renderizzata.
+
 ### Come avviarlo
 
 ```bash
@@ -288,8 +305,10 @@ scorciatoie più estese; ~~persistenza del tema scelto e delle dimensioni dei
 pannelli~~ ✅ (M12, `UiStateService`).
 
 ### Priorità bassa — contorno
-9. **Pagine settings** in Avalonia (il framework `ISettingControlBinding` è
-   WinForms; ridisegnare il binding).
+9. **Pagine settings** in Avalonia — fondazione fatta ✅ (M13, `SettingsWindow`:
+   identità git, default pull, tema). Resta: coprire più impostazioni (diff/merge
+   tool, tab size, ecc.) sopra questa base; il framework WinForms
+   `ISettingControlBinding` NON è stato portato (approccio nativo Avalonia).
 10. **Sistema di plugin**: i plugin espongono form WinForms; ripensare il
     modello UI dei plugin per Avalonia.
 11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro + chiaro Avalonia con
@@ -319,12 +338,12 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 4 / 20** · parità **48.1%** (77/160 voci `[x]`). Questo giro
-> (M12): 2 subagent paralleli → persistenza tema + dimensioni finestra/pannelli
-> tra avvii (`UiStateService`, JSON in `~/.config`) + create branch/tag dal menu
-> contestuale della grid; Undo last commit (reset --soft) + Clean working
-> directory (dry-run + conferma). Prossimo: iter. 5 → settings + plugin, poi
-> chiusura voci checklist (Clone, Init, Remotes manager, Submodules, ecc.).
+> **Iterazione: 5 / 20** · parità **51.2%** (82/160 voci `[x]`). Questo giro
+> (M13): 3 subagent paralleli → SettingsWindow Avalonia (identità git, default
+> pull, tema — fondazione, non il porto di `ISettingControlBinding`); rename
+> branch dal tree (`git branch -m`); stash staged (`git stash push --staged`).
+> Prossimo: iter. 6 → chiusura voci checklist (Clone, Init, Remotes manager,
+> Revert, Submodules, Compare, ecc.); modello UI plugin ancora da ripensare.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -372,7 +391,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Plugins menu + Plugins settings
 - [ ] Tools ▸ Git bash / Git GUI / GitK / PuTTY
 - [ ] Tools ▸ Git command log
-- [ ] Tools ▸ Settings
+- [x] Tools/Edit ▸ Settings (SettingsWindow Avalonia: identità git, pull, tema)
 - [x] Help ▸ About
 - [ ] Help ▸ User manual / Changelog / Report issue / Check updates / Translate / Donate / Telemetry
 - [x] View ▸ tema chiaro/scuro (toggle live)
@@ -449,7 +468,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Clone
 - [ ] Init
 - [ ] Remotes manager
-- [ ] Rename branch
+- [x] Rename branch
 - [ ] Delete remote branch
 - [ ] Revert commit
 - [ ] Reset changes (dialog dedicato)
@@ -465,7 +484,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Reflog browser
 - [ ] Compare to branch
 - [ ] Verify database / recover lost objects
-- [ ] Settings
+- [x] Settings (SettingsWindow — identità/pull/tema; fondazione estendibile)
 - [ ] Command log (FormLog)
 - [ ] Bisect UI
 
@@ -475,7 +494,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Push (`--force-with-lease`, non più `--force`)
 - [x] Pull / Fetch (+ fetch all / prune)
 - [x] Branch: create / checkout / delete
-- [ ] Branch: rename
+- [x] Branch: rename (git branch -m, da tree)
 - [x] Merge
 - [x] Rebase (⚠ non interattivo)
 - [x] Cherry-pick
@@ -483,7 +502,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Reset (soft/mixed/hard da grid)
 - [x] Clean working directory (git clean -fd, dry-run + conferma)
 - [x] Stash: save / apply / pop / drop
-- [ ] Stash: stash staged
+- [x] Stash: stash staged (git stash push --staged)
 - [x] Tag: create / delete
 - [ ] Tag: checkout tag revision
 - [ ] Bisect
