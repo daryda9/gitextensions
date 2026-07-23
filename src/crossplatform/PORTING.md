@@ -126,6 +126,14 @@ comportamento (le guardie sono `false`).
   commit nel tab Diff, menu contestuali + scorciatoie. Sviluppate in parallelo
   (3 subagent in worktree), merge pulito, build 0 errori, GUI verificata
   headless (xvfb) — grafo + dettaglio + diff colorato renderizzano.
+- **M6** — operazioni git (priorità media): tab Branches (crea/checkout/merge/
+  rebase/delete branch + tag), Remote (fetch/pull/push + dialog credenziali),
+  Stash (save/apply/pop/drop), Blame, File History; azioni commit-targeted
+  (checkout/cherry-pick/reset soft·mixed·hard) dal menu contestuale della grid.
+  Sviluppate in parallelo (4 subagent in worktree), merge pulito, build 0
+  errori, GUI verificata headless (xvfb) — History/Branches(45 branch,179 tag)/
+  Stash renderizzano. Fix: warm-up single-thread del core (race su `Lazy`
+  condivisa a load concorrente); `ToString` dei DTO per il rendering delle liste.
 
 ### Come avviarlo
 
@@ -167,16 +175,25 @@ Rifiniture alta priorità ✅ (M5):
   tastiera Enter/Spazio, Ctrl+Enter = commit).
 - Fix: la lista file del diff mostra `Display` (glifo + path).
 
-Aperto (bassa priorità su questo blocco): grafo multi-lane verificato solo
-su storia lineare (algoritmo gestisce fork/merge); azioni git mutanti nei
-menu (checkout/reset) rinviate al blocco "operazioni git".
+Aperto: grafo multi-lane verificato solo su storia lineare (algoritmo gestisce
+fork/merge).
 
-### Priorità media — operazioni git
-5. **Branch/tag**: crea, checkout, merge, rebase, delete.
-6. **Remote**: fetch, pull, push (con dialog credenziali — oggi
-   `CredentialsControl` WinForms è escluso, serve equivalente Avalonia).
-7. **Stash**, **cherry-pick**, **reset**.
-8. **Blame** e **file history**.
+### Priorità media — operazioni git ✅ (M6)
+5. ~~**Branch/tag**~~ ✅ `BranchTagPanel`/`BranchTagService` — crea, checkout,
+   merge, rebase, delete (branch + tag).
+6. ~~**Remote**~~ ✅ `RemotePanel`/`RemoteService` — fetch, pull, push +
+   `CredentialsDialog` (retry auth iniettando cred nell'URL, solo http/https;
+   ssh resta key-based).
+7. ~~**Stash / cherry-pick / reset**~~ ✅ `StashPanel`/`StashOpsService` —
+   stash save/apply/pop/drop; cherry-pick e reset (soft/mixed/hard) dal menu
+   contestuale della revision grid.
+8. ~~**Blame** e **file history**~~ ✅ `BlameView`/`FileHistoryView`
+   (+ service); nel tab, input path relativo al repo.
+
+Aperto/limiti su questo blocco: push force = `--force` (non force-with-lease);
+credenziali passate transitoriamente negli arg del comando (mai persistite);
+blame/history guidati da input path manuale (non ancora agganciati al menu
+"Blame/History di questo file" nella lista file del diff).
 
 ### Priorità bassa — contorno
 9. **Pagine settings** in Avalonia (il framework `ISettingControlBinding` è
