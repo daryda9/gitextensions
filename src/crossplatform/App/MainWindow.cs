@@ -49,6 +49,7 @@ public sealed class MainWindow : Window
 
     private readonly StashOpsService _stashOps = new();
     private readonly ExternalToolService _externalTools = new();
+    private readonly BisectService _bisect = new();
 
     private readonly UiStateService _uiStateService = new();
     private readonly UiState _uiState;
@@ -231,6 +232,7 @@ public sealed class MainWindow : Window
         _menu.OpenRecentRequested += repo => { if (Directory.Exists(repo)) OpenRepository(repo); };
         _menu.ExitRequested += Close;
         _menu.RefreshRequested += RefreshAll;
+        _menu.ShowReflogRequested += () => _ = ShowReflogAsync();
         _menu.LightThemeRequested += () =>
         {
             Theming.ThemeManager.Apply(ThemeVariant.Light);
@@ -294,6 +296,85 @@ public sealed class MainWindow : Window
         _revisions.AddCommitCommand("Create tag here…", hash => _ = CreateTagHereAsync(hash));
         _revisions.AddCommitCommand("Revert this commit…", RevertThisCommit);
         _revisions.AddCommitCommand("Archive this commit…", hash => _ = ArchiveThisCommitAsync(hash));
+
+        // Bisect: mark the selected commit good/bad/skip (auto-starting a session
+        // if none is in progress), plus a stop/reset entry. Each surfaces git's
+        // output — the next commit to test, or the final "first bad commit".
+        _revisions.AddCommitCommand("Bisect: mark good",
+            hash => RunBisect("Bisect good", () => _bisect.MarkGood(_repoPath!, hash), ensureStarted: true));
+        _revisions.AddCommitCommand("Bisect: mark bad",
+            hash => RunBisect("Bisect bad", () => _bisect.MarkBad(_repoPath!, hash), ensureStarted: true));
+        _revisions.AddCommitCommand("Bisect: skip",
+            hash => RunBisect("Bisect skip", () => _bisect.Skip(_repoPath!, hash), ensureStarted: true));
+        _revisions.AddCommitCommand("Bisect: stop/reset",
+            _ => RunBisect("Bisect reset", () => _bisect.Reset(_repoPath!), ensureStarted: false));
+    }
+
+    // Opens the modal reflog browser; on a checkout from it, refreshes the main
+    // view. Mirrors the other dialog-launch helpers (e.g. RemotesDialog).
+    private async Task ShowReflogAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        ReflogWindow window = new(_repoPath);
+        await window.ShowDialog(this);
+
+        if (window.CheckedOut)
+        {
+            RefreshAll();
+        }
+    }
+
+    // Runs a bisect step off the UI thread, optionally auto-starting a session
+    // first, then surfaces git's output (next commit to test / first bad commit)
+    // in the status bar and refreshes the grid. Never throws.
+    private void RunBisect(string label, Func<BisectResult> op, bool ensureStarted)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        _ = RunAsync();
+        return;
+
+        async Task RunAsync()
+        {
+            _statusBar.SetText($"{label}…");
+            BisectResult result;
+            try
+            {
+                result = await Task.Run(() =>
+                {
+                    if (ensureStarted && !_bisect.IsInProgress(_repoPath!))
+                    {
+                        BisectResult start = _bisect.Start(_repoPath!);
+                        if (!start.Success)
+                        {
+                            return start;
+                        }
+                    }
+
+                    return op();
+                });
+            }
+            catch (Exception ex)
+            {
+                _statusBar.SetText($"{label} failed: {ex.Message}");
+                return;
+            }
+
+            RefreshAll();
+
+            string firstLine = result.Output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
+            _statusBar.SetText(result.Success
+                ? (firstLine.Length > 0 ? $"{label}: {firstLine}" : $"{label} done.")
+                : $"{label} failed: {firstLine}");
+        }
     }
 
     // Reverts the selected commit on the current branch (git revert --no-edit).

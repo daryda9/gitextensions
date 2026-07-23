@@ -34,6 +34,7 @@ public sealed class MainMenu : UserControl
     public event Action? LightThemeRequested;
     public event Action? DarkThemeRequested;
     public event Action? RefreshRequested;
+    public event Action? ShowReflogRequested;
 
     // ---- Repository
     public event Action? FetchRequested;
@@ -90,6 +91,7 @@ public sealed class MainMenu : UserControl
         view.Items.Add(Item("Light theme", null, () => LightThemeRequested?.Invoke()));
         view.Items.Add(Item("Dark theme", null, () => DarkThemeRequested?.Invoke()));
         view.Items.Add(new Separator());
+        view.Items.Add(Item("Show reflog…", null, () => ShowReflogRequested?.Invoke()));
         view.Items.Add(Item("Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
 
         MenuItem repository = new() { Header = "_Repository" };
