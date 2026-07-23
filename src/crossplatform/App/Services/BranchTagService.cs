@@ -160,6 +160,37 @@ public sealed class BranchTagService
     }
 
     /// <summary>
+    ///  Renames the local branch <paramref name="oldName"/> to
+    ///  <paramref name="newName"/> via <c>git branch -m</c>. Fails gracefully when
+    ///  the source branch is missing or the target name already exists.
+    /// </summary>
+    public BranchTagResult RenameBranch(string repoPath, string oldName, string newName)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string source = oldName?.Trim() ?? string.Empty;
+        string target = newName?.Trim() ?? string.Empty;
+        if (source.Length == 0 || target.Length == 0)
+        {
+            return new BranchTagResult(false, "Branch name cannot be empty.");
+        }
+
+        IGitRef? branch = module
+            .GetRefs(RefsFilter.Heads)
+            .FirstOrDefault(r => string.Equals(r.Name, source, StringComparison.Ordinal));
+
+        if (branch is null)
+        {
+            return new BranchTagResult(false, $"Local branch '{source}' not found.");
+        }
+
+        // Plain "git branch -m <old> <new>" (no -M): git itself refuses when the
+        // target already exists, and we surface that message via the result DTO.
+        GitArgumentBuilder args = new("branch") { "-m", source, target };
+        return Run(module, args);
+    }
+
+    /// <summary>
     ///  Deletes the local branch <paramref name="name"/> (force skips the merged
     ///  check). Uses the core delete-branch command builder.
     /// </summary>

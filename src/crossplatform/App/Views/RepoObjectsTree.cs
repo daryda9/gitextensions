@@ -263,6 +263,7 @@ public sealed class RepoObjectsTree : UserControl
         if (!row.IsRemote)
         {
             menu.Items.Add(new Separator());
+            menu.Items.Add(MenuItem("Rename branch…", "BranchRename", () => _ = DoRenameBranchAsync(row)));
             menu.Items.Add(MenuItem("Delete", "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
         }
 
@@ -318,6 +319,28 @@ public sealed class RepoObjectsTree : UserControl
 
     private void DoCheckout(BranchTagRow row)
         => RunMutation(() => _branchTagService.Checkout(_repoPath!, row.Name));
+
+    private async Task DoRenameBranchAsync(BranchTagRow row)
+    {
+        try
+        {
+            if (row.IsTag || row.IsRemote)
+            {
+                return;
+            }
+
+            string? newName = await PromptAsync($"Rename branch '{row.Name}' to:", row.Name);
+            if (newName is { Length: > 0 } target
+                && !string.Equals(target, row.Name, StringComparison.Ordinal))
+            {
+                RunMutation(() => _branchTagService.RenameBranch(_repoPath!, row.Name, target));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the prompt/mutation simply aborts.
+        }
+    }
 
     private async Task DoDeleteBranchAsync(BranchTagRow row)
     {
@@ -465,6 +488,54 @@ public sealed class RepoObjectsTree : UserControl
         buttons.Children.Add(no);
         StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
         content.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(buttons);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    // Minimal modal text prompt mirroring ConfirmAsync; returns the entered text,
+    // or null when cancelled / no owner window is available (e.g. headless).
+    private async Task<string?> PromptAsync(string message, string initial)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return null;
+        }
+
+        TaskCompletionSource<string?> tcs = new();
+
+        TextBox input = new() { Text = initial };
+        Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
+        Button cancel = new() { Content = "Cancel" };
+        Window dialog = new()
+        {
+            Title = "Rename",
+            Width = 340,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Panel", Brushes.DimGray),
+        };
+        ok.Click += (_, _) => { tcs.TrySetResult(input.Text?.Trim()); dialog.Close(); };
+        cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+        input.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                tcs.TrySetResult(input.Text?.Trim());
+                dialog.Close();
+                e.Handled = true;
+            }
+        };
+        dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+        StackPanel buttons = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(input);
         content.Children.Add(buttons);
         dialog.Content = content;
 
