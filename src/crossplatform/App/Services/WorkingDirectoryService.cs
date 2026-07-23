@@ -282,6 +282,54 @@ public sealed class WorkingDirectoryService
         return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
     }
 
+    /// <summary>
+    ///  Appends <paramref name="pattern"/> as a new line to <c>&lt;repo&gt;/.gitignore</c>,
+    ///  creating the file when it does not exist. This is a plain file append — no git
+    ///  command is involved. Duplicate lines (matching an existing trimmed line) are
+    ///  skipped, and a trailing newline is always ensured so the pattern lands on its
+    ///  own line. Never throws: I/O failures are returned in the result.
+    /// </summary>
+    public WorkingDirCommitResult AddToGitignore(string repoPath, string pattern)
+    {
+        pattern = (pattern ?? string.Empty).Trim();
+        if (pattern.Length == 0)
+        {
+            return new WorkingDirCommitResult(false, "Empty ignore pattern.");
+        }
+
+        try
+        {
+            string gitignore = System.IO.Path.Combine(repoPath, ".gitignore");
+            string existing = File.Exists(gitignore) ? File.ReadAllText(gitignore) : string.Empty;
+
+            // Dedupe against existing trimmed lines so re-adding the same pattern is a no-op.
+            bool alreadyPresent = existing
+                .Split('\n')
+                .Select(l => l.Trim().TrimEnd('\r'))
+                .Any(l => l == pattern);
+            if (alreadyPresent)
+            {
+                return new WorkingDirCommitResult(true, $"'{pattern}' is already in .gitignore.");
+            }
+
+            // Ensure the existing content ends with a newline before appending, so the
+            // new pattern is on its own line; always end the file with a trailing newline.
+            System.Text.StringBuilder sb = new(existing);
+            if (existing.Length > 0 && !existing.EndsWith('\n'))
+            {
+                sb.Append('\n');
+            }
+
+            sb.Append(pattern).Append('\n');
+            File.WriteAllText(gitignore, sb.ToString());
+            return new WorkingDirCommitResult(true, $"Added '{pattern}' to .gitignore.");
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not update .gitignore: " + ex.Message);
+        }
+    }
+
     // The core stage/unstage helpers key off GitItemStatus.Name and IsDeleted, so
     // re-resolving from a fresh status snapshot keeps those flags accurate rather
     // than reconstructing GitItemStatus objects from the display rows.

@@ -31,6 +31,12 @@ public sealed class WorkingDirectoryView : UserControl
     private readonly Button _cleanButton;
     private readonly TextBlock _status;
 
+    // Context-menu items for ignoring untracked files. Kept as fields so the
+    // menu's Opening handler can show/hide/re-label them per current selection.
+    private readonly MenuItem _ignorePathItem;
+    private readonly MenuItem _ignoreExtItem;
+    private readonly MenuItem _ignoreFolderItem;
+
     private string? _repoPath;
     private bool _busy;
 
@@ -98,7 +104,28 @@ public sealed class WorkingDirectoryView : UserControl
         stageItem.Click += (_, _) => StageSelected();
         MenuItem unstagedCopyItem = new() { Header = "Copy path" };
         unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
-        _unstagedList.ContextMenu = new ContextMenu { ItemsSource = new[] { stageItem, unstagedCopyItem } };
+
+        _ignorePathItem = new MenuItem { Header = "Add to .gitignore" };
+        _ignorePathItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Path);
+        _ignoreExtItem = new MenuItem { Header = "Ignore by extension" };
+        _ignoreExtItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Extension);
+        _ignoreFolderItem = new MenuItem { Header = "Ignore in folder" };
+        _ignoreFolderItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Folder);
+
+        ContextMenu unstagedMenu = new()
+        {
+            ItemsSource = new Control[]
+            {
+                stageItem,
+                unstagedCopyItem,
+                new Separator(),
+                _ignorePathItem,
+                _ignoreExtItem,
+                _ignoreFolderItem,
+            },
+        };
+        unstagedMenu.Opening += OnUnstagedMenuOpening;
+        _unstagedList.ContextMenu = unstagedMenu;
 
         _stagedList = MakeList();
         _stagedList.DoubleTapped += (_, _) => UnstageSelected();
@@ -385,6 +412,113 @@ public sealed class WorkingDirectoryView : UserControl
                     _status.Text = "Resolve failed: " + result.Output.Trim();
                 }
 
+                RefreshStatus();
+            });
+    }
+
+    private enum GitignoreMode
+    {
+        Path,
+        Extension,
+        Folder,
+    }
+
+    // Returns the single selected UNTRACKED (git "??") row, or null when the
+    // selection is not exactly one untracked file. Untracked work-tree files are
+    // reported with status "new" (GitItemStatus.IsNew); tracked-but-modified files
+    // are excluded so ignore actions only apply to files git isn't yet tracking.
+    private WorkingDirFileRow? SingleUntracked()
+    {
+        List<WorkingDirFileRow> rows = SelectedRows(_unstagedList);
+        return rows.Count == 1 && rows[0].Status == "new" ? rows[0] : null;
+    }
+
+    // Configures the ignore items just before the unstaged context menu opens:
+    // they are only visible for a single untracked file, the extension item only
+    // when the file has an extension, and the folder item only when it lives in a
+    // subdirectory. Headers are updated to show the concrete pattern.
+    private void OnUnstagedMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        WorkingDirFileRow? row = SingleUntracked();
+        if (row is null)
+        {
+            _ignorePathItem.IsVisible = false;
+            _ignoreExtItem.IsVisible = false;
+            _ignoreFolderItem.IsVisible = false;
+            return;
+        }
+
+        string path = row.Path.Replace('\\', '/');
+        _ignorePathItem.IsVisible = true;
+
+        string ext = System.IO.Path.GetExtension(path).TrimStart('.');
+        _ignoreExtItem.IsVisible = ext.Length > 0;
+        if (ext.Length > 0)
+        {
+            _ignoreExtItem.Header = $"Ignore by extension (*.{ext})";
+        }
+
+        int slash = path.LastIndexOf('/');
+        string dir = slash > 0 ? path[..slash] : string.Empty;
+        _ignoreFolderItem.IsVisible = dir.Length > 0;
+        if (dir.Length > 0)
+        {
+            _ignoreFolderItem.Header = $"Ignore in folder ({dir}/)";
+        }
+    }
+
+    // Builds the .gitignore pattern for the selected untracked file per mode and
+    // appends it via the service, then refreshes so the now-ignored file drops out
+    // of the untracked list.
+    private void AddSelectedToGitignore(GitignoreMode mode)
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        WorkingDirFileRow? row = SingleUntracked();
+        if (row is null)
+        {
+            return;
+        }
+
+        string path = row.Path.Replace('\\', '/');
+        string pattern;
+        switch (mode)
+        {
+            case GitignoreMode.Extension:
+                string ext = System.IO.Path.GetExtension(path).TrimStart('.');
+                if (ext.Length == 0)
+                {
+                    return;
+                }
+
+                pattern = "*." + ext;
+                break;
+
+            case GitignoreMode.Folder:
+                int slash = path.LastIndexOf('/');
+                if (slash <= 0)
+                {
+                    return;
+                }
+
+                pattern = path[..slash] + "/";
+                break;
+
+            default:
+                // Anchor the exact relative path to the repo root with a leading '/'.
+                pattern = "/" + path;
+                break;
+        }
+
+        _status.Text = $"Adding '{pattern}' to .gitignore…";
+        RunGit(
+            () => _service.AddToGitignore(repo, pattern),
+            result =>
+            {
+                _status.Text = result.Output.Trim();
                 RefreshStatus();
             });
     }
