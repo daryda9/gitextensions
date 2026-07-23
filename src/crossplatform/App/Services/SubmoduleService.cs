@@ -112,6 +112,29 @@ public sealed class SubmoduleService
         return Run(module, args);
     }
 
+    /// <summary>
+    ///  Initializes and updates all submodules recursively. Semantically identical
+    ///  to <see cref="UpdateAll(string)"/> (<c>git submodule update --init --recursive</c>);
+    ///  exposed under an "Init all" label so the manager dialog can offer it as a
+    ///  distinct action.
+    /// </summary>
+    public SubmoduleOpResult InitAll(string repoPath) => UpdateAll(repoPath);
+
+    /// <summary>
+    ///  Synchronizes every submodule's remote URL with the value in
+    ///  <c>.gitmodules</c>, recursively: <c>git submodule sync --recursive</c>.
+    /// </summary>
+    public SubmoduleOpResult SynchronizeAll(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("submodule")
+        {
+            "sync",
+            "--recursive",
+        };
+        return Run(module, args);
+    }
+
     // Parses `git submodule status` lines. Each line is:
     //   <prefix><sha1> <path> (<describe>)
     // where <prefix> is ' ' (in sync), '-' (not initialized), '+' (checked out

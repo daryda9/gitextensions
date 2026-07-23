@@ -407,6 +407,8 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu SubmoduleRootMenu()
     {
         ContextMenu menu = new();
+        menu.Items.Add(MenuItem("Manage submodules…", "SubmodulesManage", () => _ = DoManageSubmodulesAsync()));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Update all", "SubmodulesSync", () => RunSubmodule(() => _submoduleService.UpdateAll(_repoPath!))));
         return menu;
     }
@@ -731,6 +733,29 @@ public sealed class RepoObjectsTree : UserControl
             }
 
             RemotesDialog dialog = new(repo);
+            await dialog.ShowDialog(owner);
+            if (dialog.Changed)
+            {
+                OperationCompleted?.Invoke();
+                Refresh();
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the dialog simply closes.
+        }
+    }
+
+    private async Task DoManageSubmodulesAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            SubmodulesDialog dialog = new(repo);
             await dialog.ShowDialog(owner);
             if (dialog.Changed)
             {
