@@ -660,3 +660,36 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [ ] Shim no-op → implementazioni reali (dialog, clipboard)
 - [x] Persistenza tema + dimensioni pannelli tra avvii (UiStateService, JSON in ~/.config)
 - [x] Credenziali via credential-helper git (env-var, non injection URL, secret non loggato)
+
+---
+
+## Piano modello plugin (per iter. 17-18)
+
+Ricerca su `GitExtensions.Extensibility` + `src/plugins`. Punti chiave:
+
+- **Contratto già portabile**: `IGitPlugin`/`GitPluginBase` e i setting tipizzati
+  (`BoolSetting`/`StringSetting`/`NumberSetting`/`ChoiceSetting`/`PathSetting`)
+  **compilano già** sotto net10.0 nel port (`Core.Extensibility` + shim). Solo il
+  *rendering* dei setting è WinForms (`ISettingControlBinding.GetControl()`) → va
+  ignorato e sostituito con un mapper Avalonia sul tipo runtime del setting (come
+  fa già `SettingsWindow`).
+- **Discovery/loading**: VS-MEF (`Microsoft.VisualStudio.Composition`) è già
+  referenziato e compila (`Core.GitUIPluginInterfaces` → `ManagedExtensibility`).
+  Scansione cartella `plugins/` accanto all'eseguibile + `[Export(typeof(IGitPlugin))]`.
+  Per il prototipo, preferire `ManagedExtensibility.Initialise(assemblies)`
+  in-process (evita fragilità del file-scan / `Application.ExecutablePath` shim).
+- **Adapter host**: `IGitUICommands` è enorme e WinForms-bound → implementare un
+  `AvaloniaGitUICommands` minimo che espone solo `Module` (via `GitContext`),
+  il resto lancia `NotSupportedException`. `GitUIEventArgs.OwnerForm = null`. La
+  maggior parte dei plugin portabili usa solo `args.GitModule`.
+- **Prototipo (slice minima)**: `PluginService` (porta `PluginRegistry` via
+  `GetExports<IGitPlugin>()`), `AvaloniaGitUICommands`, `AvaloniaSettingsContainer`,
+  `PluginSettingsWindow` (mapper setting→controllo), un `SampleGreetPlugin`
+  built-in, menu **Plugins** in `MainMenu` + hook in `MainWindow` (run off-thread,
+  `RefreshAll` se `Execute` → true; settings dialog).
+- **Plugin reali classificati**: portabili subito → BackgroundFetch,
+  AutoCompileSubmodules, Gource/ProxySwitcher (lanciano processi); da ridisegnare
+  (UI WinForms) → Statistics, FindLargeFiles, BuildServerIntegration.
+- **Stub/rischi**: `IGitUICommands.Start*Dialog` (throw), `ISettingControlBinding`
+  (ignora), `Icon` (System.Drawing shim → icona default), `CredentialsSetting`/
+  `PasswordSetting` (esclusi dal build → skip), translations (inglese).
