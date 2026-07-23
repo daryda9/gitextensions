@@ -26,6 +26,7 @@ public sealed class MainMenu : UserControl
 
     // ---- Edit
     public event Action? CopyHashRequested;
+    public event Action? SettingsRequested;
 
     // ---- View
     public event Action? LightThemeRequested;
@@ -64,6 +65,8 @@ public sealed class MainMenu : UserControl
 
         MenuItem edit = new() { Header = "_Edit" };
         edit.Items.Add(Item("Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke()));
+        edit.Items.Add(new Separator());
+        edit.Items.Add(Item("Settings…", "Settings", () => SettingsRequested?.Invoke()));
 
         MenuItem view = new() { Header = "_View" };
         view.Items.Add(Item("Light theme", null, () => LightThemeRequested?.Invoke()));

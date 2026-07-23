@@ -255,6 +255,7 @@ public sealed class MainWindow : Window
             }
         };
         _menu.AboutRequested += () => _ = AboutDialog.ShowAsync(this);
+        _menu.SettingsRequested += () => _ = OpenSettingsAsync();
 
         // Commit-targeted operations on the revision grid.
         _revisions.AddCommitCommand("Checkout this commit",
@@ -431,6 +432,16 @@ public sealed class MainWindow : Window
 
         RunOp($"Create branch {name}",
             () => new BranchTagService().CreateBranch(_repoPath!, name.Trim(), startPoint: "HEAD", checkout: true).Success);
+    }
+
+    // Opens the modal Settings window over the main window, passing the current
+    // repo path. Settings persists its own changes; afterwards we re-sync the
+    // in-memory theme so PersistLayout() on close doesn't overwrite a change
+    // the user made in the dialog.
+    private async Task OpenSettingsAsync()
+    {
+        await SettingsWindow.ShowAsync(this, _repoPath);
+        _uiState.Theme = _uiStateService.Load().Theme;
     }
 
     private async Task PickRepositoryAsync()
