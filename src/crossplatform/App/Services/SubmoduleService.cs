@@ -97,6 +97,28 @@ public sealed class SubmoduleService
     }
 
     /// <summary>
+    ///  Updates a single submodule to the latest commit on its configured remote
+    ///  branch, merging that into the current submodule checkout instead of doing a
+    ///  hard reset: <c>git submodule update --remote --merge -- &lt;path&gt;</c>.
+    ///  This is the reliable "merge" variant run from the super-project working dir
+    ///  (a plain <c>git merge</c> inside the submodule needs a well-defined upstream
+    ///  and is fragile across detached-HEAD submodule checkouts).
+    /// </summary>
+    public SubmoduleOpResult UpdateMerge(string repoPath, string path)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("submodule")
+        {
+            "update",
+            "--remote",
+            "--merge",
+            "--",
+            path.Quote(),
+        };
+        return Run(module, args);
+    }
+
+    /// <summary>
     ///  Initializes and updates all submodules recursively:
     ///  <c>git submodule update --init --recursive</c>.
     /// </summary>

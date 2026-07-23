@@ -345,6 +345,11 @@ public sealed class RepoObjectsTree : UserControl
             menu.Items.Add(MenuItem("Rename branch…", "BranchRename", () => _ = DoRenameBranchAsync(row)));
             menu.Items.Add(MenuItem("Delete", "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
         }
+        else
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(MenuItem("Delete remote branch…", "BranchDelete", () => _ = DoDeleteRemoteBranchAsync(row)));
+        }
 
         return menu;
     }
@@ -398,6 +403,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         ContextMenu menu = new();
         menu.Items.Add(MenuItem("Update", "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
+        menu.Items.Add(MenuItem("Update (merge)…", "Merge", () => _ = DoMergeSubmoduleAsync(row)));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Path)));
         menu.Items.Add(MenuItem("Copy path", "CopyToClipboard", () => CopyText(SubmoduleFullPath(row))));
@@ -685,6 +691,49 @@ public sealed class RepoObjectsTree : UserControl
             if (await ConfirmAsync($"Delete branch '{row.Name}'?"))
             {
                 RunMutation(() => _branchTagService.DeleteBranch(_repoPath!, row.Name, force: false));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
+        }
+    }
+
+    private async Task DoDeleteRemoteBranchAsync(BranchTagRow row)
+    {
+        try
+        {
+            if (!row.IsRemote)
+            {
+                return;
+            }
+
+            string remote = RemoteName(row);
+            string branch = ShortRemoteName(row.Name, remote);
+            if (remote.Length == 0 || branch.Length == 0)
+            {
+                return;
+            }
+
+            // Destructive and affects the remote: confirm before pushing the delete.
+            if (await ConfirmAsync($"Delete branch '{branch}' on remote '{remote}'?\nThis deletes it on the remote and cannot be undone."))
+            {
+                RunMutation(() => _branchTagService.DeleteRemoteBranch(_repoPath!, remote, branch));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
+        }
+    }
+
+    private async Task DoMergeSubmoduleAsync(SubmoduleRow row)
+    {
+        try
+        {
+            if (await ConfirmAsync($"Update submodule '{row.Path}' to its remote branch and merge into the current checkout?"))
+            {
+                RunSubmodule(() => _submoduleService.UpdateMerge(_repoPath!, row.Path));
             }
         }
         catch

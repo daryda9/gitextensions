@@ -212,6 +212,27 @@ public sealed class BranchTagService
     }
 
     /// <summary>
+    ///  Deletes the branch <paramref name="branch"/> on the remote
+    ///  <paramref name="remote"/> via <c>git push &lt;remote&gt; --delete &lt;branch&gt;</c>.
+    ///  <paramref name="branch"/> is the short branch name on the remote (without
+    ///  the leading "&lt;remote&gt;/"). Destructive: this affects the remote.
+    /// </summary>
+    public BranchTagResult DeleteRemoteBranch(string repoPath, string remote, string branch)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string remoteName = remote?.Trim() ?? string.Empty;
+        string branchName = branch?.Trim() ?? string.Empty;
+        if (remoteName.Length == 0 || branchName.Length == 0)
+        {
+            return new BranchTagResult(false, "Remote and branch name cannot be empty.");
+        }
+
+        GitArgumentBuilder args = new("push") { remoteName, "--delete", branchName };
+        return Run(module, args);
+    }
+
+    /// <summary>
     ///  Deletes the tag <paramref name="name"/>.
     /// </summary>
     public BranchTagResult DeleteTag(string repoPath, string name)
