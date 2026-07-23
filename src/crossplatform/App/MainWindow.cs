@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
@@ -224,6 +225,8 @@ public sealed class MainWindow : Window
 
         // Menu actions (mirror the toolbar + menu-only entries).
         _menu.OpenRepoRequested += () => _ = PickRepositoryAsync();
+        _menu.CloneRequested += () => _ = CloneRepositoryAsync();
+        _menu.InitRequested += () => _ = InitRepositoryAsync();
         _menu.OpenRecentRequested += repo => { if (Directory.Exists(repo)) OpenRepository(repo); };
         _menu.ExitRequested += Close;
         _menu.RefreshRequested += RefreshAll;
@@ -462,6 +465,73 @@ public sealed class MainWindow : Window
             OpenRepository(repo);
         };
         await dlg.ShowDialog(this);
+    }
+
+    // Shows the clone dialog; on success opens the freshly cloned repository
+    // through the same path the picker uses (OpenRepository).
+    private async Task CloneRepositoryAsync()
+    {
+        CloneDialog dlg = new();
+        await dlg.ShowDialog(this);
+
+        if (dlg.ClonedRepoPath is { Length: > 0 } repo && Directory.Exists(repo))
+        {
+            _statusBar.SetText($"Cloned into {repo}");
+            OpenRepository(repo);
+        }
+    }
+
+    // Picks a directory, runs git init in it off the UI thread, then opens the
+    // new repository through OpenRepository (same as clone / picker).
+    private async Task InitRepositoryAsync()
+    {
+        TopLevel? top = GetTopLevel(this);
+        if (top is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<IStorageFolder> folders =
+            await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                AllowMultiple = false,
+                Title = "Choose a directory for the new repository",
+            });
+
+        if (folders.Count == 0)
+        {
+            return;
+        }
+
+        string? dir = folders[0].TryGetLocalPath();
+        if (string.IsNullOrEmpty(dir))
+        {
+            _statusBar.SetText("The selected folder has no local path.");
+            return;
+        }
+
+        _statusBar.SetText("Initialising repository…");
+
+        CloneInitResult result;
+        try
+        {
+            result = await Task.Run(() => new CloneInitService().Init(dir));
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText($"Init failed: {ex.Message}");
+            return;
+        }
+
+        if (result.Success && result.RepoPath is not null)
+        {
+            _statusBar.SetText($"Initialised repository at {result.RepoPath}");
+            OpenRepository(result.RepoPath);
+        }
+        else
+        {
+            _statusBar.SetText("Init failed — see output: " + result.Output);
+        }
     }
 
     private void OpenRepository(string repoPath)

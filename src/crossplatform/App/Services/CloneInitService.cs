@@ -1,0 +1,106 @@
+using GitCommands;
+using GitCommands.Git;
+using GitExtensions.Extensibility;
+
+namespace GitExtensions.Avalonia.Services;
+
+/// <summary>
+///  Outcome of a clone / init operation: whether git succeeded, its combined
+///  output (for display in the status bar / error panel), and the resulting
+///  repository working-directory path when known.
+/// </summary>
+public sealed record CloneInitResult(bool Success, string Output, string? RepoPath);
+
+/// <summary>
+///  Creates repositories from the shell: <see cref="Clone"/> runs
+///  <c>git clone &lt;url&gt; &lt;name&gt;</c> inside a chosen parent directory, and
+///  <see cref="Init"/> runs <c>git init</c> in a chosen directory.
+///
+///  Both reuse the Git Extensions core git executable via
+///  <see cref="GitContext.CreateModule"/>. A top-level clone/init does not need an
+///  existing repository — the module's <see cref="IExecutable"/> simply runs git
+///  with its working directory set to the given folder, so we bind a module to the
+///  parent (clone) or target (init) directory and drive its executable. Nothing here
+///  touches the UI; call these off the UI thread.
+/// </summary>
+public sealed class CloneInitService
+{
+    /// <summary>
+    ///  Clones <paramref name="url"/> into a subdirectory of
+    ///  <paramref name="parentDir"/>. The subdirectory name is derived from the URL
+    ///  (its last path segment without a trailing <c>.git</c>) and passed to git
+    ///  explicitly, so the resulting repository path is known up-front and returned
+    ///  in <see cref="CloneInitResult.RepoPath"/> on success.
+    /// </summary>
+    public CloneInitResult Clone(string url, string parentDir)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return new CloneInitResult(false, "No repository URL was given.", null);
+        }
+
+        if (string.IsNullOrWhiteSpace(parentDir) || !Directory.Exists(parentDir))
+        {
+            return new CloneInitResult(false, $"Target directory does not exist: {parentDir}", null);
+        }
+
+        string name = RepositoryNameFromUrl(url);
+        string repoPath = Path.Combine(parentDir, name);
+
+        // Bind a module to the parent directory (need not be a repo) purely to
+        // borrow the core git executable running in that directory.
+        GitModule module = GitContext.CreateModule(parentDir);
+        ArgumentString args = $"clone \"{url.Trim()}\" \"{name}\"";
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+
+        bool ok = result.ExitedSuccessfully && GitModule.IsValidGitWorkingDir(repoPath);
+        return new CloneInitResult(ok, result.AllOutput, ok ? repoPath : null);
+    }
+
+    /// <summary>
+    ///  Initialises a new git repository in <paramref name="dir"/> (created if it
+    ///  does not yet exist), returning the directory as the repository path on
+    ///  success.
+    /// </summary>
+    public CloneInitResult Init(string dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir))
+        {
+            return new CloneInitResult(false, "No directory was given.", null);
+        }
+
+        try
+        {
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            return new CloneInitResult(false, $"Could not create {dir}: {ex.Message}", null);
+        }
+
+        GitModule module = GitContext.CreateModule(dir);
+        ExecutionResult result = module.GitExecutable.Execute("init", throwOnErrorExit: false);
+
+        bool ok = result.ExitedSuccessfully && GitModule.IsValidGitWorkingDir(dir);
+        return new CloneInitResult(ok, result.AllOutput, ok ? dir : null);
+    }
+
+    // Derives the working-directory name git would use for a clone: the last path
+    // segment of the URL with any trailing ".git" (and trailing slashes) removed.
+    // Falls back to "repository" if nothing usable can be extracted.
+    private static string RepositoryNameFromUrl(string url)
+    {
+        string trimmed = url.Trim().TrimEnd('/', '\\');
+
+        // Handle both scp-like (git@host:path) and normal URL / path separators.
+        int slash = trimmed.LastIndexOfAny(['/', '\\', ':']);
+        string segment = slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
+
+        if (segment.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+        {
+            segment = segment[..^4];
+        }
+
+        return string.IsNullOrWhiteSpace(segment) ? "repository" : segment;
+    }
+}

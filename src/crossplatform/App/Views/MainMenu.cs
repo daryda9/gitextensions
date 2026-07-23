@@ -21,6 +21,8 @@ public sealed class MainMenu : UserControl
 
     // ---- File
     public event Action? OpenRepoRequested;
+    public event Action? CloneRequested;
+    public event Action? InitRequested;
     public event Action<string>? OpenRecentRequested;
     public event Action? ExitRequested;
 
@@ -59,6 +61,8 @@ public sealed class MainMenu : UserControl
 
         MenuItem file = new() { Header = "_File" };
         file.Items.Add(Item("Open repository…", "RepoOpen", () => OpenRepoRequested?.Invoke()));
+        file.Items.Add(Item("Clone repository…", "CloneRepoGit", () => CloneRequested?.Invoke()));
+        file.Items.Add(Item("Create new repository…", "RepoCreate", () => InitRequested?.Invoke()));
         file.Items.Add(_openRecent);
         file.Items.Add(new Separator());
         file.Items.Add(Item("Exit", null, () => ExitRequested?.Invoke()));
