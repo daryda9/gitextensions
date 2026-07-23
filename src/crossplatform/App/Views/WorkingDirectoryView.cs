@@ -29,7 +29,12 @@ public sealed class WorkingDirectoryView : UserControl
     private readonly Button _commitButton;
     private readonly Button _undoButton;
     private readonly Button _cleanButton;
+    private readonly Button _resetButton;
     private readonly TextBlock _status;
+
+    // Per-file "Discard changes" item on the unstaged menu; shown only when the
+    // selection is tracked (non-untracked) files.
+    private readonly MenuItem _discardItem;
 
     // Context-menu items for ignoring untracked files. Kept as fields so the
     // menu's Opening handler can show/hide/re-label them per current selection.
@@ -105,6 +110,9 @@ public sealed class WorkingDirectoryView : UserControl
         MenuItem unstagedCopyItem = new() { Header = "Copy path" };
         unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
 
+        _discardItem = new MenuItem { Header = "Discard changes" };
+        _discardItem.Click += (_, _) => _ = DiscardSelectedAsync();
+
         _ignorePathItem = new MenuItem { Header = "Add to .gitignore" };
         _ignorePathItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Path);
         _ignoreExtItem = new MenuItem { Header = "Ignore by extension" };
@@ -118,6 +126,7 @@ public sealed class WorkingDirectoryView : UserControl
             {
                 stageItem,
                 unstagedCopyItem,
+                _discardItem,
                 new Separator(),
                 _ignorePathItem,
                 _ignoreExtItem,
@@ -207,6 +216,9 @@ public sealed class WorkingDirectoryView : UserControl
         _undoButton = new Button { Content = "Undo last commit", Margin = new Thickness(0, 0, 6, 0) };
         _undoButton.Click += (_, _) => UndoLastCommit();
 
+        _resetButton = new Button { Content = "Reset changes…", Margin = new Thickness(0, 0, 6, 0) };
+        _resetButton.Click += (_, _) => _ = ResetChangesAsync();
+
         _cleanButton = new Button { Content = "Clean…" };
         _cleanButton.Click += (_, _) => _ = CleanWorkingDirectoryAsync();
 
@@ -216,6 +228,7 @@ public sealed class WorkingDirectoryView : UserControl
             Margin = new Thickness(0, 0, 0, 4),
         };
         actionsBar.Children.Add(_undoButton);
+        actionsBar.Children.Add(_resetButton);
         actionsBar.Children.Add(_cleanButton);
 
         StackPanel commitPanel = new() { Margin = new Thickness(8, 4, 8, 4) };
@@ -439,6 +452,15 @@ public sealed class WorkingDirectoryView : UserControl
     // subdirectory. Headers are updated to show the concrete pattern.
     private void OnUnstagedMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        // "Discard changes" applies to tracked (non-untracked) files only — untracked
+        // files are handled by Clean / .gitignore, never discarded here.
+        List<WorkingDirFileRow> selected = SelectedRows(_unstagedList);
+        List<WorkingDirFileRow> tracked = SelectedTracked(selected);
+        _discardItem.IsVisible = tracked.Count > 0;
+        _discardItem.Header = tracked.Count > 1
+            ? $"Discard changes ({tracked.Count} files)"
+            : "Discard changes";
+
         WorkingDirFileRow? row = SingleUntracked();
         if (row is null)
         {
@@ -691,9 +713,104 @@ public sealed class WorkingDirectoryView : UserControl
             });
     }
 
+    // Destructive: discards ALL uncommitted changes to tracked files (worktree +
+    // index) via git reset --hard HEAD, after a REQUIRED confirmation. Untracked
+    // files are left untouched (that is Clean's job). Mirrors CleanWorkingDirectoryAsync:
+    // the button is disabled across the confirm window, then RunGit takes over.
+    private async Task ResetChangesAsync()
+    {
+        if (_busy || _repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        _resetButton.IsEnabled = false;
+
+        bool confirmed = await ConfirmAsync(
+            "Discard all uncommitted changes to tracked files? This cannot be undone.",
+            "Confirm reset");
+
+        if (!confirmed)
+        {
+            _status.Text = "Reset cancelled.";
+            _resetButton.IsEnabled = !_busy;
+            return;
+        }
+
+        _status.Text = "Resetting tracked changes…";
+        RunGit(
+            () => _service.ResetChanges(repo, includeStaged: true),
+            result =>
+            {
+                _status.Text = result.Success
+                    ? "Tracked changes discarded."
+                    : "Reset failed: " + result.Output.Trim();
+                RefreshStatus();
+            });
+    }
+
+    // Per-file variant of ResetChangesAsync: discards work-tree changes to the
+    // selected TRACKED files (git checkout -- <path>) after confirmation. Untracked
+    // ("new") files are filtered out.
+    private async Task DiscardSelectedAsync()
+    {
+        if (_busy || _repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        List<WorkingDirFileRow> files = SelectedTracked(SelectedRows(_unstagedList));
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        string list = string.Join('\n', files.Select(f => "  " + f.Path));
+        bool confirmed = await ConfirmAsync(
+            "Discard changes to the following tracked file(s)? This cannot be undone.\n\n"
+            + list,
+            "Confirm discard");
+
+        if (!confirmed)
+        {
+            _status.Text = "Discard cancelled.";
+            return;
+        }
+
+        _status.Text = "Discarding changes…";
+        RunGit(
+            () =>
+            {
+                WorkingDirCommitResult last = new(true, string.Empty);
+                foreach (WorkingDirFileRow file in files)
+                {
+                    last = _service.ResetFile(repo, file.Path);
+                    if (!last.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return last;
+            },
+            result =>
+            {
+                if (!result.Success)
+                {
+                    _status.Text = "Discard failed: " + result.Output.Trim();
+                }
+
+                RefreshStatus();
+            });
+    }
+
+    // Tracked (non-untracked) rows: untracked work-tree files carry status "new".
+    private static List<WorkingDirFileRow> SelectedTracked(List<WorkingDirFileRow> rows)
+        => [.. rows.Where(r => r.Status != "new")];
+
     // Minimal modal confirmation using base Avalonia only (no message-box
     // package), matching the pattern used elsewhere in the app (StashPanel).
-    private async Task<bool> ConfirmAsync(string text)
+    private async Task<bool> ConfirmAsync(string text, string title = "Confirm clean")
     {
         if (TopLevel.GetTopLevel(this) is not Window owner)
         {
@@ -728,7 +845,7 @@ public sealed class WorkingDirectoryView : UserControl
 
         Window dialog = new()
         {
-            Title = "Confirm clean",
+            Title = title,
             Width = 500,
             MaxHeight = 500,
             SizeToContent = SizeToContent.Height,
@@ -839,5 +956,6 @@ public sealed class WorkingDirectoryView : UserControl
         _commitButton.IsEnabled = !busy;
         _undoButton.IsEnabled = !busy;
         _cleanButton.IsEnabled = !busy;
+        _resetButton.IsEnabled = !busy;
     }
 }

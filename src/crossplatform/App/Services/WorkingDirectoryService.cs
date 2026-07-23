@@ -283,6 +283,53 @@ public sealed class WorkingDirectoryService
     }
 
     /// <summary>
+    ///  Discards uncommitted modifications to TRACKED files. Destructive — callers
+    ///  MUST confirm first. Never touches untracked files (that is what
+    ///  <see cref="Clean"/> is for): a hard reset and <c>git checkout -- .</c> both
+    ///  leave files git is not tracking alone.
+    ///  <para>
+    ///  When <paramref name="includeStaged"/> is <see langword="true"/> (the primary
+    ///  action) this resets both the work tree and the index to <c>HEAD</c> via
+    ///  <c>git reset --hard HEAD</c>, so staged and unstaged tracked changes are all
+    ///  discarded. When <see langword="false"/>, only the work tree is reverted to
+    ///  the index (<c>git checkout -- .</c>), leaving anything already staged intact.
+    ///  </para>
+    /// </summary>
+    public WorkingDirCommitResult ResetChanges(string repoPath, bool includeStaged)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        if (includeStaged)
+        {
+            // reset --hard HEAD: discard tracked worktree + index changes, but never
+            // untracked files. Uses the core command builder (as UndoLastCommit does).
+            ArgumentString args = Commands.Reset(ResetMode.Hard, "HEAD");
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+        }
+
+        // Work-tree only: restore tracked files from the index, leaving staged
+        // changes and untracked files untouched.
+        GitArgumentBuilder checkoutArgs = new("checkout") { "--", "." };
+        ExecutionResult checkout = module.GitExecutable.Execute(checkoutArgs, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(checkout.ExitedSuccessfully, checkout.AllOutput);
+    }
+
+    /// <summary>
+    ///  Discards uncommitted modifications to a SINGLE tracked file
+    ///  (<c>git checkout -- &lt;path&gt;</c>), reverting its work-tree content to the
+    ///  index. Destructive — callers MUST confirm first. Does not remove untracked
+    ///  files. Never throws: git errors are returned in the result.
+    /// </summary>
+    public WorkingDirCommitResult ResetFile(string repoPath, string path)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("checkout") { "--", path };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
     ///  Appends <paramref name="pattern"/> as a new line to <c>&lt;repo&gt;/.gitignore</c>,
     ///  creating the file when it does not exist. This is a plain file append — no git
     ///  command is involved. Duplicate lines (matching an existing trimmed line) are
