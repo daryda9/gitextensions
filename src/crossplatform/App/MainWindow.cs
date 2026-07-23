@@ -41,10 +41,14 @@ public sealed class MainWindow : Window
         Title = "Git Extensions (Avalonia / Linux)";
         Width = 1280;
         Height = 820;
-        Background = (IBrush)Resources["App.Window"]!;
+        Background = (IBrush)Application.Current!.Resources["App.Window"]!;
 
         // ---- bottom panel: commit info (detail + diff) / working dir / blame / history
-        Grid commitInfo = new() { RowDefinitions = new RowDefinitions("2*,4,3*") };
+        Grid commitInfo = new()
+        {
+            RowDefinitions = new RowDefinitions("2*,4,3*"),
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+        };
         GridSplitter infoSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
         Grid.SetRow(_detail, 0);
         Grid.SetRow(infoSplit, 1);
@@ -59,13 +63,18 @@ public sealed class MainWindow : Window
         _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
         _bottom = new TabControl
         {
-            Background = (IBrush)Resources["App.Window"]!,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             ClipToBounds = true,
             Items = { _commitInfoTab, _workingDirTab, _blameTab, _historyTab },
         };
 
         // ---- right side: revision grid over the bottom panel
-        Grid right = new() { RowDefinitions = new RowDefinitions("3*,4,2*"), ClipToBounds = true };
+        Grid right = new()
+        {
+            RowDefinitions = new RowDefinitions("3*,4,2*"),
+            ClipToBounds = true,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+        };
         GridSplitter rightSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
         Grid.SetRow(_revisions, 0);
         Grid.SetRow(rightSplit, 1);
@@ -75,7 +84,11 @@ public sealed class MainWindow : Window
         right.Children.Add(_bottom);
 
         // ---- main area: left tree | right side
-        Grid main = new() { ColumnDefinitions = new ColumnDefinitions("260,4,*") };
+        Grid main = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("260,4,*"),
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+        };
         GridSplitter treeSplit = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
         Grid.SetColumn(_tree, 0);
         Grid.SetColumn(treeSplit, 1);
@@ -84,7 +97,7 @@ public sealed class MainWindow : Window
         main.Children.Add(treeSplit);
         main.Children.Add(right);
 
-        DockPanel root = new() { Background = (IBrush)Resources["App.Window"]! };
+        DockPanel root = new() { Background = (IBrush)Application.Current!.Resources["App.Window"]! };
         DockPanel.SetDock(_toolbar, Dock.Top);
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         root.Children.Add(_toolbar);
@@ -258,7 +271,7 @@ public sealed class MainWindow : Window
             Width = 640,
             Height = 460,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = (IBrush)Resources["App.Window"]!,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             Content = picker,
         };
         picker.RepositorySelected += repo =>
@@ -293,7 +306,7 @@ public sealed class MainWindow : Window
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = (IBrush)Resources["App.Window"]!,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             Content = new StackPanel
             {
                 Margin = new Thickness(16),
@@ -329,7 +342,7 @@ public sealed class MainWindow : Window
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = (IBrush)Resources["App.Window"]!,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             Content = new StackPanel
             {
                 Margin = new Thickness(16),
