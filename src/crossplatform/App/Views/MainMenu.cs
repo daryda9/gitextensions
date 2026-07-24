@@ -94,29 +94,31 @@ public sealed class MainMenu : UserControl
         _favorites = new MenuItem { Header = "Favorite repositories" };
         SetFavoriteRepositories(Array.Empty<string>());
 
-        MenuItem file = new() { Header = "_File" };
-        file.Items.Add(Item("Open repository…", "RepoOpen", () => OpenRepoRequested?.Invoke()));
-        file.Items.Add(Item("Clone repository…", "CloneRepoGit", () => CloneRequested?.Invoke()));
-        file.Items.Add(Item("Create new repository…", "RepoCreate", () => InitRequested?.Invoke()));
-        file.Items.Add(_openRecent);
-        file.Items.Add(new Separator());
-        file.Items.Add(_favorites);
-        file.Items.Add(Item("Add current to favorites", null, () => AddFavoriteRequested?.Invoke()));
-        file.Items.Add(new Separator());
-        file.Items.Add(Item("Close (go to Dashboard)", null, () => DashboardRequested?.Invoke()));
-        file.Items.Add(new Separator());
-        file.Items.Add(Item("Exit", null, () => ExitRequested?.Invoke()));
+        MenuItem start = new() { Header = "_Start" };
+        start.Items.Add(Item("Open repository…", "RepoOpen", () => OpenRepoRequested?.Invoke()));
+        start.Items.Add(Item("Clone repository…", "CloneRepoGit", () => CloneRequested?.Invoke()));
+        start.Items.Add(Item("Create new repository…", "RepoCreate", () => InitRequested?.Invoke()));
+        start.Items.Add(_openRecent);
+        start.Items.Add(new Separator());
+        start.Items.Add(_favorites);
+        start.Items.Add(Item("Add current to favorites", null, () => AddFavoriteRequested?.Invoke()));
+        start.Items.Add(new Separator());
+        start.Items.Add(Item("Close (go to Dashboard)", null, () => DashboardRequested?.Invoke()));
+        start.Items.Add(new Separator());
+        start.Items.Add(Item("Exit", null, () => ExitRequested?.Invoke()));
 
-        MenuItem edit = new() { Header = "_Edit" };
-        edit.Items.Add(Item("Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke()));
-        edit.Items.Add(new Separator());
-        edit.Items.Add(Item("Settings…", "Settings", () => SettingsRequested?.Invoke()));
+        // Navigate: navigation-ish items moved here (Copy commit hash from Edit,
+        // Show reflog from View), plus a Refresh entry.
+        MenuItem navigate = new() { Header = "_Navigate" };
+        navigate.Items.Add(Item("Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke()));
+        navigate.Items.Add(new Separator());
+        navigate.Items.Add(Item("Show reflog…", null, () => ShowReflogRequested?.Invoke()));
+        navigate.Items.Add(Item("Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
 
         MenuItem view = new() { Header = "_View" };
         view.Items.Add(Item("Light theme", null, () => LightThemeRequested?.Invoke()));
         view.Items.Add(Item("Dark theme", null, () => DarkThemeRequested?.Invoke()));
         view.Items.Add(new Separator());
-        view.Items.Add(Item("Show reflog…", null, () => ShowReflogRequested?.Invoke()));
         view.Items.Add(Item("Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
 
         MenuItem repository = new() { Header = "_Repository" };
@@ -153,6 +155,13 @@ public sealed class MainMenu : UserControl
         tools.Items.Add(Item("Git GUI", null, () => GitGuiRequested?.Invoke()));
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("Git command log", null, () => GitCommandLogRequested?.Invoke()));
+        tools.Items.Add(new Separator());
+        tools.Items.Add(Item("Settings…", "Settings", () => SettingsRequested?.Invoke()));
+
+        // GitHub: repository-host integration is out of scope for the Linux port,
+        // so this is a disabled placeholder kept for visual parity only.
+        MenuItem github = new() { Header = "_GitHub" };
+        github.Items.Add(new MenuItem { Header = "Repository host (GitHub) — non incluso nel port Linux", IsEnabled = false });
 
         _pluginSettings = new MenuItem { Header = "Plugin settings" };
         _plugins = new MenuItem { Header = "_Plugins" };
@@ -170,7 +179,7 @@ public sealed class MainMenu : UserControl
         {
             Background = toolbar,
             Foreground = text,
-            Items = { file, edit, view, repository, commands, tools, _plugins, help },
+            Items = { start, repository, navigate, view, commands, github, _plugins, tools, help },
         };
 
         Content = menu;
