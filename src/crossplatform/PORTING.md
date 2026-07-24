@@ -954,6 +954,24 @@ Menu + toolbar:
 - [x] **U-TOOLBAR** ✅ M35 — Dropdown path repo + dropdown branch inline nella toolbar, combo
   All branches / Branches / Filter.
 
+### Credenziali / push (fix post-round-3)
+- **M38** — push dalla GUI chiedeva il login **sul terminale** di avvio e falliva.
+  Cause: `GitStreamRunner` eseguiva git ereditando il tty senza disabilitare i prompt,
+  e nessun retry credenziali nel path GUI. Fix: (a) git strettamente non-interattivo
+  (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, stdin chiuso) + askpass ereditato
+  neutralizzato (`GIT_ASKPASS=""`, `SSH_ASKPASS=""`, `SSH_ASKPASS_REQUIRE=never`, la
+  sessione desktop impostava `SSH_ASKPASS=ssh-askpass` inesistente → "cannot run
+  ssh-askpass"); (b) su auth-failure il process dialog si auto-chiude
+  (`closeOnAuthFailure`) e appare il `CredentialsDialog` in-app, che ritenta l'op con
+  le credenziali via credential-helper transitorio (push/pull in PushDialog,
+  fetch/pull in MainWindow); (c) **persistenza**: dopo un'op riuscita con credenziali
+  inserite nel dialog, `RemoteService.ApproveCredentials` le passa a
+  `git credential approve` (stdin, mai in command line) → finiscono nell'helper reale
+  configurato dall'utente, così i push successivi sono silenziosi come con GCM su Windows.
+  *Nota ambiente*: su Linux git non ha helper di default (su Windows Git-for-Windows
+  installa GCM) → configurato `git-credential-libsecret` (compilato dal contrib di git,
+  in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
+
 ### Milestone round 3 (fedeltà visiva, aree: tab inferiori + commit detail + filtri)
 - **M37** (iter. 10) — **U-FILTER** toolbar: menu **All branches ▾** (All/Current/Filtered)
   + casella **Filter:** che pilotano la grid (`RevisionGridView.SetBranchScope`/`ApplyFilter`,
