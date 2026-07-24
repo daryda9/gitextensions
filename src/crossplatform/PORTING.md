@@ -779,19 +779,24 @@ Prossimo blocco di lavoro, in ordine di priorità:
   invece dell'esecuzione silenziosa. Il core `CommandLog` (già usato in
   CommandLogWindow, M23) può alimentare l'output.
 
-- [ ] **T2 — Toolbar dinamica / stateful** (colpo d'occhio sullo stato):
-  - [ ] Push "acceso" con **badge numerico + freccia su** quando ci sono commit
-    ahead non pushati (usare ahead/behind già calcolato per la status bar in M7).
-    Analogo per Pull con commit behind (freccia giù).
-  - [ ] Pulsante **Commit** con icona che cambia colore in base allo stato del
-    working dir: file **staged** / **unstaged** / **nessuna modifica** (conteggi da
-    `WorkingDirectoryService`).
-  - [ ] **Indicatore working directory** sulla toolbar: nome + path della repo
-    attuale (es. `~/programmazione/pluma_orchestrator`), con `~` per la home.
-  *Dove*: `MainToolbar` + `MainWindow` (già ha ahead/behind e refresh); serve un
-  hook che aggiorni badge/colori a ogni `RefreshAll`.
+- [x] **T2 — Toolbar dinamica / stateful** (colpo d'occhio sullo stato): ✅ M29 (render) + M30 (wiring)
+  - [x] Push "acceso" con **badge numerico + freccia su** (`Push ↑N` in App.Accent)
+    quando ci sono commit ahead; analogo Pull `↓N`. ahead/behind calcolati come in
+    StatusBarView (`GetRemoteBranch` + `GetCommitCount`), aggiornati a ogni RefreshAll.
+  - [x] Pulsante **Commit** che cambia colore per stato working dir: verde staged /
+    arancio unstaged / dim pulito, con conteggio `Commit (N)` (verificato: `Commit (1)`
+    arancio con 1 file unstaged).
+  - [x] **Indicatore working directory** sulla toolbar: `nome — ~/path (branch)`,
+    home collassata a `~`. (Nota residua T6: con molti pulsanti l'indicatore finisce
+    a destra fuori vista a 1400px — spostarlo/allineare a destra con DockPanel.)
+  *Fatto*: `MainToolbar.UpdateState(ahead,behind,staged,unstaged,repoPath,branch)` +
+  hook `RefreshToolbarState()` chiamato da `RefreshAll` e `OpenRepository`.
 
-- [ ] **T3 — Commit come modal/dialog, NON tab.** Oggi il porting apre il commit
+- [x] **T3 — Commit come modal/dialog, NON tab.** ✅ M30. Nuovo `CommitDialog` modale
+  (`ShowAsync(owner,repoPath,onCommitted)`) che ospita una `WorkingDirectoryView`
+  (riuso 1:1 di staged/unstaged, stage/unstage, drag&drop, message, amend, commit),
+  lanciato dal pulsante Commit di toolbar+menu. Tab "Working directory" mantenuto
+  (basso rischio). Verificato in GUI. Oggi il porting apriva il commit
   come tab nel pannello inferiore: **sbagliato**. Nell'originale il Commit è un
   **dialog modale** dedicato. *Dove*: nuovo `CommitDialog` (modale) lanciato dal
   pulsante Commit della toolbar; riusa la logica di `WorkingDirectoryView`/
@@ -892,6 +897,31 @@ tab** (Commit=dettaglio+diff / Working directory / Stash / Blame / File history)
   branch)`: badge Push ↑N / Pull ↓N in App.Accent, colore Commit (verde staged / arancio
   unstaged / dim pulito), indicatore repo `nome — ~/path (branch)`. API pronta; **wiring su
   RefreshAll da fare in iter 3** (hub MainWindow, insieme a T3).
+- **M30** (iter. 3/10) — **T3** `CommitDialog` modale (Window che ospita una
+  `WorkingDirectoryView`, riuso 1:1; `ShowAsync`) lanciato da pulsante Commit di
+  toolbar+menu al posto della selezione del tab. **T2 wiring** — `RefreshToolbarState()`
+  fire-and-forget su `RefreshAll`/`OpenRepository`: calcola ahead/behind (come
+  StatusBarView) + staged/unstaged (`WorkingDirectoryService.LoadStatus`) e chiama
+  `MainToolbar.UpdateState`. Verificati in GUI: `Commit (1)` arancio, modale con
+  staged/unstaged/message/amend/commit.
+
+### Riepilogo blocco FEDELTÀ UX (loop dedicato, 3 iterazioni)
+**T1–T5 chiuse e verificate in GUI** (M28–M30, 3 iterazioni, 5 subagent claude in
+worktree isolati, file disgiunti, cherry-pick+build+screenshot per pezzo):
+- **T1** GitProcessDialog: dialog stile FormProcess (comando + output da core
+  CommandLog + esito + auto-close) su fetch/pull/push.
+- **T2** Toolbar dinamica: badge Push↑/Pull↓, colore/conteggio Commit per stato
+  working dir, indicatore repo `nome — ~/path (branch)`, aggiornati a ogni refresh.
+- **T3** Commit MODALE (non più tab), riuso completo di WorkingDirectoryView.
+- **T4** Highlight riga selezionata forte (fill Selection + barra accento sinistra).
+- **T5** Doppia selezione commit → diff automatica nel tab Commit (`DiffView.ShowRange`).
+
+**Residue (T6, non bloccanti)** — differenze minori da rifinire in futuro:
+- Indicatore repo in toolbar può finire fuori vista a destra con larghezza ridotta
+  (allineare a destra con DockPanel invece di append allo StackPanel).
+- Streaming output di GitProcessDialog è a polling del CommandLog (riga comando +
+  output finale), non char-by-char come il ConsoleOutputControl originale.
+- Il tab "Working directory" resta accanto al Commit modale (ridondanza tollerata).
 
 ### Come costruire il pacchetto `.deb`
 ```bash
