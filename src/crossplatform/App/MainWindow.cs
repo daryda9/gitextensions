@@ -1304,7 +1304,7 @@ public sealed class MainWindow : Window
             {
                 res = op(svc, remote, emit, null);
                 return new Views.GitProcessOutcome(res.Success, res.Output);
-            });
+            }, closeOnAuthFailure: true);
 
             // Git ran non-interactively; on an auth failure ask for credentials
             // in-app and retry the SAME op feeding them through a transient

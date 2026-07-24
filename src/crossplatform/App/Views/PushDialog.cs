@@ -382,7 +382,7 @@ public sealed class PushDialog : Window
         {
             res = new RemoteService().PushStreaming(repo, remote, branch, force, emit, null);
             return new GitProcessOutcome(res.Success, res.Output);
-        });
+        }, closeOnAuthFailure: true);
 
         // Git ran non-interactively; if it failed for lack of credentials, ask
         // the user for them in-app and retry the SAME push with the creds fed
@@ -418,7 +418,7 @@ public sealed class PushDialog : Window
         {
             res = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, null);
             return new GitProcessOutcome(res.Success, res.Output);
-        });
+        }, closeOnAuthFailure: true);
 
         if (res is { AuthFailed: true })
         {

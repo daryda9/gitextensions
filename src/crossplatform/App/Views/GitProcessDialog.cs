@@ -177,10 +177,42 @@ public sealed class GitProcessDialog : Window
     ///  <see cref="RunAsync"/>, no CommandLog poll timer runs — the operation (via
     ///  <see cref="Services.GitStreamRunner"/>) emits the command header itself.
     /// </summary>
-    public static Task RunStreamingAsync(Window owner, string label, Func<Action<string>, GitProcessOutcome> operation)
+    public static Task RunStreamingAsync(Window owner, string label, Func<Action<string>, GitProcessOutcome> operation, bool closeOnAuthFailure = false)
     {
-        GitProcessDialog dialog = new(label);
+        GitProcessDialog dialog = new(label) { _closeOnAuthFailure = closeOnAuthFailure };
         return dialog.RunStreamingInternalAsync(owner, operation);
+    }
+
+    // When set, a failure whose output looks like an authentication failure
+    // auto-closes the dialog (like success does) so the caller can immediately
+    // hand off to the in-app credentials prompt instead of the user having to
+    // dismiss a "Failed" dialog first.
+    private bool _closeOnAuthFailure;
+
+    // Authentication-failure markers (mirrors RemoteService.LooksLikeAuthFailure)
+    // so the dialog can decide whether to auto-close and hand off to credentials.
+    private static bool LooksLikeAuthFailure(string? output)
+    {
+        if (string.IsNullOrEmpty(output))
+        {
+            return false;
+        }
+
+        string[] markers =
+        [
+            "Authentication failed", "could not read Username", "could not read Password",
+            "Invalid username or password", "remote: Unauthorized", "fatal: Authentication",
+            "terminal prompts disabled",
+        ];
+        foreach (string marker in markers)
+        {
+            if (output.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private Task RunStreamingInternalAsync(Window owner, Func<Action<string>, GitProcessOutcome> operation)
@@ -307,7 +339,22 @@ public sealed class GitProcessDialog : Window
             _header.Text = $"Process — {_label} (Failed)";
             _status.Text = "Failed";
             _status.Foreground = Brushes.OrangeRed;
-            // On failure always stay open regardless of the checkbox.
+
+            // On an authentication failure, when the caller opted in, auto-close so
+            // it can immediately show the in-app credentials prompt and retry —
+            // otherwise stay open (regardless of the checkbox) to show the error.
+            if (_closeOnAuthFailure && LooksLikeAuthFailure(outcome.Output))
+            {
+                _status.Text = "Authentication required — asking for credentials…";
+                _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+                _closeTimer.Tick += (_, _) =>
+                {
+                    _closeTimer?.Stop();
+                    _closeTimer = null;
+                    Close();
+                };
+                _closeTimer.Start();
+            }
         }
     }
 

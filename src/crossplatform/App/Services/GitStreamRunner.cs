@@ -58,6 +58,13 @@ public static class GitStreamRunner
             // credential helper (env) can still override GCM behaviour.
             psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
             psi.Environment["GCM_INTERACTIVE"] = "never";
+            // Neutralize any inherited askpass helper (desktop sessions often set
+            // SSH_ASKPASS=ssh-askpass, which may not exist → "cannot run ssh-askpass").
+            // Empty values make git skip askpass entirely and fail fast with a clean
+            // auth error that the UI detects to prompt for credentials in-app instead.
+            psi.Environment["GIT_ASKPASS"] = "";
+            psi.Environment["SSH_ASKPASS"] = "";
+            psi.Environment["SSH_ASKPASS_REQUIRE"] = "never";
 
             if (env is not null)
             {
