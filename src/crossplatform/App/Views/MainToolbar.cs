@@ -56,6 +56,14 @@ public sealed class MainToolbar : UserControl
     public event Action? FileExplorerRequested;
     public event Action? OpenTerminalRequested;
 
+    // Right-side branch-scope + text filter, echoing the original FormBrowse
+    // toolbar's "All branches ▾" scope dropdown and "Filter:" combo. The toolbar
+    // performs no filtering itself: choosing a scope raises BranchScopeChanged
+    // (0 = All branches, 1 = Current branch, 2 = Filtered) and typing in the
+    // filter box raises FilterChanged; the host drives the revision grid.
+    public event Action<int>? BranchScopeChanged;
+    public event Action<string>? FilterChanged;
+
     // Submodules / worktrees split buttons. The toolbar itself performs no git
     // work: the host supplies a provider that lists the repo's submodules /
     // worktrees (off the UI thread), and choosing one raises
@@ -183,6 +191,44 @@ public sealed class MainToolbar : UserControl
             () => FileExplorerRequested?.Invoke()));
         bar.Children.Add(MakeButton("Console", "Terminal", "Open a terminal in the repository directory",
             () => OpenTerminalRequested?.Invoke()));
+
+        // ---- branch-scope + filter group (right side) ---------------------------
+        // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
+        // "Filter:" combo. Placed after the buttons and before the (lazily-added)
+        // repo indicator so the two selectors read on the right of the strip.
+        bar.Children.Add(Separator(border));
+        bar.Children.Add(MakeMenuButton("Branch", "All branches", "Which branches the revision grid shows", new[]
+        {
+            ("Branch", "All branches", (Action)(() => BranchScopeChanged?.Invoke(0))),
+            ("Branch", "Current branch", (Action)(() => BranchScopeChanged?.Invoke(1))),
+            ("Branch", "Filtered", (Action)(() => BranchScopeChanged?.Invoke(2))),
+        }));
+
+        bar.Children.Add(new TextBlock
+        {
+            Text = "Filter:",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.TextDim", "#8A8A8A"),
+            FontSize = 12,
+            Margin = new Thickness(8, 0, 4, 0),
+        });
+
+        TextBox filterBox = new()
+        {
+            Width = 180,
+            Watermark = "author / message / hash",
+            Background = Brush("App.Panel", "#252526"),
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            BorderBrush = border,
+            BorderThickness = new Thickness(1),
+            FontSize = 12,
+            Padding = new Thickness(6, 2, 4, 2),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(filterBox, "Filter the revision grid (author / message / hash)");
+        filterBox.TextChanged += (_, _) => FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
+        bar.Children.Add(filterBox);
 
         // Flat/borderless buttons with a subtle hover fill (the Fluent template
         // paints the button's chrome through its inner ContentPresenter, so we

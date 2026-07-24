@@ -391,6 +391,16 @@ public sealed class MainWindow : Window
             if (_repoPath is not null) _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
         };
         _fileHistory.RevisionSelected += OnRevisionSelected;
+        // Parent/child hash links in the commit detail navigate the grid: select the
+        // target row (best-effort) and refresh detail/diff/filetree/gpg for it.
+        _detail.CommitNavigated += h =>
+        {
+            if (_repoPath is not null)
+            {
+                _revisions.SelectCommit(h);
+                OnRevisionSelected(h);
+            }
+        };
         _workingDir.Committed += RefreshAll;
         _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
@@ -428,6 +438,11 @@ public sealed class MainWindow : Window
         _toolbar.CommitInfoPositionChanged += SetCommitInfoPosition;
         _toolbar.FileExplorerRequested += () => WithRepo(p => _externalTools.OpenPath(p));
         _toolbar.OpenTerminalRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
+
+        // Right-side branch-scope + filter selectors: drive the revision grid's own
+        // scope/filter logic (the grid's header menu keeps working independently).
+        _toolbar.BranchScopeChanged += i => { if (_repoPath is not null) _revisions.SetBranchScope((BranchScope)i); };
+        _toolbar.FilterChanged += t => { if (_repoPath is not null) _revisions.ApplyFilter(t); };
 
         // Submodules / worktrees split-button dropdowns. Providers list off the UI
         // thread; choosing an entry opens that path as the active repository. The

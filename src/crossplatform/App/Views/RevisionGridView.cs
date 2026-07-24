@@ -225,7 +225,7 @@ public sealed class RevisionGridView : UserControl
         _search.TextChanged += (_, _) =>
         {
             clearButton.IsVisible = !string.IsNullOrEmpty(_search.Text);
-            ApplyFilter(_search.Text);
+            ApplyFilterCore(_search.Text);
         };
 
         // Esc clears the filter (and keeps focus in the box).
@@ -646,7 +646,7 @@ public sealed class RevisionGridView : UserControl
                     // Recompute HEAD reachability for the relatives/highlight styles.
                     ComputeReachability();
                     // Re-apply any current filter text so a reload keeps the view consistent.
-                    ApplyFilter(_search.Text);
+                    ApplyFilterCore(_search.Text);
                 });
             }
             catch (Exception ex)
@@ -670,8 +670,26 @@ public sealed class RevisionGridView : UserControl
     ///  Applies a case-insensitive substring filter over the already-loaded
     ///  revisions (author name, commit subject, and full/abbreviated hash).
     ///  Empty text shows everything. Runs purely in memory — no git per keystroke.
+    ///
+    ///  Public entry point for host-driven filtering (e.g. the toolbar's Filter
+    ///  box). Drives the same path the grid's own search bar uses by routing
+    ///  through the search TextBox, so both surfaces stay in sync.
     /// </summary>
-    private void ApplyFilter(string? text)
+    public void ApplyFilter(string text)
+    {
+        string value = text ?? string.Empty;
+        if (_search.Text == value)
+        {
+            // Text unchanged (TextChanged would not fire) — apply directly.
+            ApplyFilterCore(value);
+            return;
+        }
+
+        // Setting the box text raises TextChanged, which calls ApplyFilterCore.
+        _search.Text = value;
+    }
+
+    private void ApplyFilterCore(string? text)
     {
         string query = (text ?? string.Empty).Trim();
         bool wasFiltering = _filterActive;
@@ -1137,7 +1155,25 @@ public sealed class RevisionGridView : UserControl
     // re-selection of the same mode does not trigger a redundant reload.
     private void SelectScope(RadioButton radio, BranchScope scope)
     {
-        if (radio.IsChecked != true || _branchScope == scope)
+        // The uncheck half of a radio pair fires too; ignore it and defer to the
+        // shared SetBranchScope so the header menu and the toolbar drive one path.
+        if (radio.IsChecked != true)
+        {
+            return;
+        }
+
+        SetBranchScope(scope);
+    }
+
+    /// <summary>
+    ///  Sets the branch scope (All branches / current branch / filtered) and
+    ///  re-runs the log. Shared by the grid's own header menu and by the host
+    ///  toolbar's scope dropdown. A no-op re-selection of the same scope does
+    ///  nothing.
+    /// </summary>
+    public void SetBranchScope(BranchScope scope)
+    {
+        if (_branchScope == scope)
         {
             return;
         }
@@ -1425,6 +1461,14 @@ public sealed class RevisionGridView : UserControl
     // Selects the commit matching an entered hash (full or abbreviated). Searches
     // the displayed rows first; if a filter hides the target, it is cleared and the
     // full set is retried so the jump still lands.
+    /// <summary>
+    ///  Selects and scrolls to the row whose commit hash matches <paramref name="hash"/>
+    ///  (full or abbreviated). Best-effort: if the target is hidden by an active
+    ///  filter the filter is cleared and the lookup retried; if it is not among the
+    ///  loaded rows this is a no-op. Used by the commit-detail parent/child links.
+    /// </summary>
+    public void SelectCommit(string hash) => GoToCommit(hash);
+
     private void GoToCommit(string? text)
     {
         string query = (text ?? string.Empty).Trim();
