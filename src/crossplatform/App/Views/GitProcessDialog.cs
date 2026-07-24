@@ -19,10 +19,16 @@ public sealed record GitProcessOutcome(bool Success, string Output);
 ///  GitExtensions <c>FormProcess</c>. It shows the operation label, streams the
 ///  git command lines as they are executed (read from the process-global
 ///  <see cref="CommandLog"/>), then appends the operation's captured output and a
-///  success/error result. On success it can auto-close after a short delay.
+///  success/error result.
 ///
-///  Styled from the shared App.* brushes to match the active theme, mirroring
-///  <see cref="CommandLogWindow"/>.
+///  Visually it deliberately mirrors the original Windows "Process" dialog: a
+///  fixed beige/tan console with near-black monospace text (NOT theme-driven),
+///  a <c>Command to be executed:</c> section, and a footer with a
+///  <c>Keep dialog open</c> checkbox plus <c>OK</c> / <c>Abort</c> buttons. Only
+///  the surrounding chrome resolves from the shared App.* brushes.
+///
+///  When the op succeeds it auto-closes unless <c>Keep dialog open</c> is checked;
+///  on failure it always stays open.
 ///
 ///  Usage: <c>await GitProcessDialog.RunAsync(owner, "Push", () =&gt; …)</c>. The
 ///  supplied <paramref name="operation"/> runs on a background thread; all UI
@@ -30,12 +36,20 @@ public sealed record GitProcessOutcome(bool Success, string Output);
 /// </summary>
 public sealed class GitProcessDialog : Window
 {
+    // Fixed console look, matching the original Windows dialog (intentionally
+    // not theme-driven): warm beige background, near-black text.
+    private static readonly IBrush ConsoleBackground = new SolidColorBrush(Color.Parse("#ECE9D8"));
+    private static readonly IBrush ConsoleForeground = new SolidColorBrush(Color.Parse("#101010"));
+
     private readonly string _label;
     private readonly TextBox _output;
     private readonly ScrollViewer _scroll;
     private readonly TextBlock _status;
-    private readonly CheckBox _autoClose;
-    private readonly Button _close;
+    private readonly TextBlock _check;
+    private readonly TextBlock _header;
+    private readonly CheckBox _keepOpen;
+    private readonly Button _ok;
+    private readonly Button _abort;
 
     private DispatcherTimer? _pollTimer;
     private DispatcherTimer? _closeTimer;
@@ -44,18 +58,35 @@ public sealed class GitProcessDialog : Window
     public GitProcessDialog(string label)
     {
         _label = label ?? string.Empty;
-        Title = $"Git — {_label}";
+        Title = $"Process — {_label}";
         Width = 760;
         Height = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
-        TextBlock header = new()
+        _check = new TextBlock
         {
-            Text = $"{_label} — Running…",
+            Text = "✔",
+            Foreground = Brushes.LimeGreen,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0),
+            IsVisible = false,
+        };
+
+        _header = new TextBlock
+        {
+            Text = $"Process — {_label}",
             FontWeight = FontWeight.Bold,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        StackPanel headerRow = new()
+        {
+            Orientation = Orientation.Horizontal,
             Margin = new Thickness(0, 0, 0, 8),
+            Children = { _check, _header },
         };
 
         _output = new TextBox
@@ -64,14 +95,20 @@ public sealed class GitProcessDialog : Window
             IsReadOnly = true,
             TextWrapping = TextWrapping.NoWrap,
             FontFamily = new FontFamily("monospace"),
-            Background = Brush("App.Control", Brushes.Black),
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            Background = ConsoleBackground,
+            Foreground = ConsoleForeground,
+            CaretBrush = ConsoleForeground,
+            BorderThickness = new Thickness(0),
+            Text = "Command to be executed:",
         };
         _scroll = new ScrollViewer
         {
             Content = _output,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Background = ConsoleBackground,
+            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderThickness = new Thickness(1),
         };
 
         _status = new TextBlock
@@ -81,23 +118,27 @@ public sealed class GitProcessDialog : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        _autoClose = new CheckBox
+        _keepOpen = new CheckBox
         {
-            Content = "Auto-close on success",
+            Content = "Keep dialog open",
             IsChecked = true,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        _close = MakeButton("Close");
-        _close.Click += (_, _) => Close();
+        _ok = MakeButton("OK");
+        _ok.Click += (_, _) => Close();
+
+        _abort = MakeButton("Abort");
+        // Ops are short/synchronous; best-effort cancel is simply to close.
+        _abort.Click += (_, _) => Close();
 
         StackPanel footRight = new()
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Spacing = 12,
-            Children = { _autoClose, _close },
+            Children = { _keepOpen, _ok, _abort },
         };
 
         Grid footer = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 10, 0, 0) };
@@ -107,23 +148,20 @@ public sealed class GitProcessDialog : Window
         footer.Children.Add(footRight);
 
         DockPanel body = new() { Margin = new Thickness(12) };
-        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(headerRow, Dock.Top);
         DockPanel.SetDock(footer, Dock.Bottom);
-        body.Children.Add(header);
+        body.Children.Add(headerRow);
         body.Children.Add(footer);
         body.Children.Add(_scroll);
         Content = body;
-
-        _header = header;
     }
-
-    private readonly TextBlock _header;
 
     /// <summary>
     ///  Runs <paramref name="operation"/> on a background thread inside a modal
     ///  process dialog owned by <paramref name="owner"/>, streaming the executed
     ///  git command lines and then the operation's captured output. Completes when
-    ///  the dialog closes (auto-close on success, or the user pressing Close).
+    ///  the dialog closes (auto-close on success unless <c>Keep dialog open</c> is
+    ///  checked, or the user pressing OK/Abort).
     /// </summary>
     public static Task RunAsync(Window owner, string label, Func<GitProcessOutcome> operation)
     {
@@ -154,14 +192,15 @@ public sealed class GitProcessDialog : Window
         return ShowDialog(owner);
     }
 
-    // Appends the ColumnLine of any command-log entries that appeared since the
-    // last poll, so the user sees the actual git command lines as they run.
+    // Appends the clean command line of any command-log entries that appeared
+    // since the last poll, so the user sees the actual git commands as they run,
+    // beneath the "Command to be executed:" header.
     private void DrainNewCommands()
     {
         List<string> lines;
         try
         {
-            lines = CommandLog.Commands.Skip(_consumed).Select(c => c.ColumnLine).ToList();
+            lines = CommandLog.Commands.Skip(_consumed).Select(c => c.CommandLine).ToList();
         }
         catch (Exception)
         {
@@ -190,13 +229,19 @@ public sealed class GitProcessDialog : Window
             Append(outcome.Output);
         }
 
+        // Cosmetic closing hint, echoing the original console.
+        Append(string.Empty);
+        Append("Press Enter or Esc to exit…");
+
         if (outcome.Success)
         {
-            _header.Text = $"{_label} — Done";
+            _header.Text = $"Process — {_label} (Done)";
+            _check.IsVisible = true;
             _status.Text = "Success";
             _status.Foreground = Brushes.LimeGreen;
 
-            if (_autoClose.IsChecked == true)
+            // Keep-open semantics: auto-close only when the box is UNCHECKED.
+            if (_keepOpen.IsChecked != true)
             {
                 _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
                 _closeTimer.Tick += (_, _) =>
@@ -210,9 +255,10 @@ public sealed class GitProcessDialog : Window
         }
         else
         {
-            _header.Text = $"{_label} — Failed";
+            _header.Text = $"Process — {_label} (Failed)";
             _status.Text = "Failed";
             _status.Foreground = Brushes.OrangeRed;
+            // On failure always stay open regardless of the checkbox.
         }
     }
 
