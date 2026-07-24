@@ -923,6 +923,38 @@ worktree isolati, file disgiunti, cherry-pick+build+screenshot per pezzo):
   output finale), non char-by-char come il ConsoleOutputControl originale.
 - Il tab "Working directory" resta accanto al Commit modale (ridondanza tollerata).
 
+## TODO round 2 — fedeltà visiva 1:1 (da screenshot originale Windows)
+Confronto con screenshot dell'originale (Documents/process dialog…). Aree scelte
+dall'utente: **Modali · Griglia revisioni · Menu+toolbar** (tab inferiori rimandati).
+
+Modali:
+- [ ] **U-PROC** Process dialog stile originale: console beige/tan monospace, header
+  "Command to be executed:" + comando git completo, "Current directory:", footer con
+  checkbox **Keep dialog open** + **OK** + **Abort**, titolo "Process (path)" con check.
+- [ ] **U-COMMIT** Commit dialog layout 3-zone: unstaged (alto-sx) + staged (basso-sx)
+  con pulsanti Stage/Unstage a freccia, **diff del file a destra**, messaggio+bottoni
+  in basso (Commit, Commit & push, Amend, Reset all/unstaged, Commit templates,
+  Create branch, Options), status bar committer + "Staged x/y Ln Col".
+- [ ] **U-PUSH** Nuovo Push dialog di configurazione: Push to Remote/Url + Manage
+  remotes, tab Push branches/tags/multiple, Branch to push → to, Show options
+  (force/tags/recursive), bottoni Pull + Push.
+
+Griglia:
+- [ ] **U-GRID-BADGE** Ref come pill *outline* stile originale (bg chiaro, bordo+testo
+  colorati: branch verde, remote rosso/rosa, tag, stash) invece dei pill pieni scuri;
+  branch corrente **grassetto + ▶** e nodo quadrato pieno.
+- [ ] **U-GRID-DATE** Default date **relative** ("2 hours ago").
+- [ ] **U-GRID-TOPROWS** Righe artificiali in cima: **Working directory** + **Commit
+  index** con check verde, cliccabili (mostrano il lavoro pendente).
+- [ ] **U-GRID-SEL** Selezione riga piena blu forte (già parzialmente fatto T4).
+
+Menu + toolbar:
+- [ ] **U-MENU** Top-level come originale: **Start · Repository · Navigate · View ·
+  Commands · GitHub · Plugins · Tools · Help** (rinominare File→Start, aggiungere
+  Navigate e GitHub, riparentare Edit/Settings; wiring eventi invariato).
+- [ ] **U-TOOLBAR** Dropdown path repo + dropdown branch inline nella toolbar, combo
+  All branches / Branches / Filter.
+
 ### Come costruire il pacchetto `.deb`
 ```bash
 cd src/crossplatform
