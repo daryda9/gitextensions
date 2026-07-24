@@ -764,6 +764,59 @@ Ricerca su `GitExtensions.Extensibility` + `src/plugins`. Punti chiave:
 
 ---
 
+## TODO prioritari — feedback visuale & UX (verso porting 1:1)
+
+Obiettivo: **porting 1:1 delle funzionalità di base**. La struttura c'è (98,1%),
+ma mancano feedback visuali che nell'originale sono centrali per l'usabilità.
+Prossimo blocco di lavoro, in ordine di priorità:
+
+- [ ] **T1 — Dialog di esecuzione comando git** (come `FormProcess` dell'originale).
+  Ogni azione che lancia un comando git deve aprire una finestra/dialog che mostra
+  **il comando avviato** e **l'output in streaming**, con esito (successo/errore) e
+  chiusura (auto-close opzionale su successo). Dà feedback tecnico immediato.
+  *Dove*: creare un `GitCommandRunner`/`GitProcessDialog` condiviso e farci passare
+  le operazioni dei service (RemoteService fetch/pull/push, BranchTag, Stash, ecc.)
+  invece dell'esecuzione silenziosa. Il core `CommandLog` (già usato in
+  CommandLogWindow, M23) può alimentare l'output.
+
+- [ ] **T2 — Toolbar dinamica / stateful** (colpo d'occhio sullo stato):
+  - [ ] Push "acceso" con **badge numerico + freccia su** quando ci sono commit
+    ahead non pushati (usare ahead/behind già calcolato per la status bar in M7).
+    Analogo per Pull con commit behind (freccia giù).
+  - [ ] Pulsante **Commit** con icona che cambia colore in base allo stato del
+    working dir: file **staged** / **unstaged** / **nessuna modifica** (conteggi da
+    `WorkingDirectoryService`).
+  - [ ] **Indicatore working directory** sulla toolbar: nome + path della repo
+    attuale (es. `~/programmazione/pluma_orchestrator`), con `~` per la home.
+  *Dove*: `MainToolbar` + `MainWindow` (già ha ahead/behind e refresh); serve un
+  hook che aggiorni badge/colori a ogni `RefreshAll`.
+
+- [ ] **T3 — Commit come modal/dialog, NON tab.** Oggi il porting apre il commit
+  come tab nel pannello inferiore: **sbagliato**. Nell'originale il Commit è un
+  **dialog modale** dedicato. *Dove*: nuovo `CommitDialog` (modale) lanciato dal
+  pulsante Commit della toolbar; riusa la logica di `WorkingDirectoryView`/
+  `WorkingDirectoryService` (staged/unstaged, stage/unstage, drag&drop, message,
+  amend, commit). Valutare se tenere anche il tab "Working directory" o rimuoverlo.
+
+- [ ] **T4 — Selezione commit molto più evidente** nella revision grid. Oggi non si
+  distingue bene la riga selezionata. *Dove*: `RevisionGridView` — highlight riga
+  intera forte (brush `App.Selection`/accento, testo/contrasto adeguati), bordo o
+  barra sul lato, mantenendo leggibilità del grafo DAG e dei badge.
+
+- [ ] **T5 — Multi-selezione di due commit → diff nel pannello inferiore.**
+  Nell'originale selezionando due commit si vede la diff tra i due sotto. Oggi la
+  grid è single-select e il compare è manuale (select BASE → compare). *Dove*:
+  `RevisionGridView` selezione multipla (2 righe) → `MainWindow` mostra
+  automaticamente `DiffView.ShowRange(a, b)` nel tab Commit/Diff.
+
+- [ ] **T6 — (residue minori note in seguito)** altre differenze meno evidenti da
+  raccogliere man mano confrontando con l'originale.
+
+*Nota metodo*: T2/T3/T5 toccano gli "hub" MainWindow/MainToolbar/RevisionGridView —
+un solo subagent per hub per iterazione (regola anti-conflitto del loop).
+
+---
+
 ## Riepilogo finale (loop 20 iterazioni)
 
 **Parità raggiunta: 157/160 = 98,1%** delle voci UI/funzionali di Git Extensions
@@ -777,6 +830,11 @@ self-contained si costruisce e il binario pubblicato supera il self-test.
   come plugin Avalonia (l'infrastruttura plugin c'è, M25–M27), ma non incluso.
 - **Colonna build status** — icona/testo dallo stato di build: richiede
   integrazione con un build-server/CI, fuori scope.
+
+> ⚠️ **Nota fedeltà UX**: il 98,1% misura le *voci* di parità, ma restano gap di
+> feedback visuale rispetto all'originale (dialog comando git, toolbar dinamica,
+> commit come modale, evidenza selezione, diff da doppia selezione). Tracciati in
+> **"## TODO prioritari — feedback visuale & UX"** — prossimo blocco verso il 1:1.
 
 ### Struttura UI (parità con FormBrowse)
 Finestra integrata: **barra menu** (File/Edit/View/Repository/Commands/Tools/
