@@ -955,6 +955,17 @@ Menu + toolbar:
   All branches / Branches / Filter.
 
 ### Milestone round 3 (fedeltà visiva, aree: tab inferiori + commit detail + filtri)
+- **M37** (iter. 10) — **U-FILTER** toolbar: menu **All branches ▾** (All/Current/Filtered)
+  + casella **Filter:** che pilotano la grid (`RevisionGridView.SetBranchScope`/`ApplyFilter`,
+  header radios rifattorizzati per condividere il path). Wiring **CommitNavigated**: link
+  parent/child del commit detail → `SelectCommit(hash)`+OnRevisionSelected (naviga la grid).
+  Console tab già collegato a OpenTerminal. Verificato in GUI (filtro "U-TABS" → 2/200 commit).
+
+**Round 3 COMPLETO** (M36–M37): tab inferiori Commit/Diff/File tree/GPG/Console/Output,
+commit detail ricco (child/parent link, contained-in, describe), combo scope+filtro in
+toolbar. Le 3 aree round-3 scelte dall'utente sono chiuse.
+Residuo noto: le combo toolbar + repo indicator possono finire oltre il bordo destro a
+larghezze piccole (toolbar in StackPanel orizzontale che non fa wrap/scroll).
 - **M36** (iter. 9) — **U-DETAIL** commit detail arricchito (avatar identicon grande,
   Author/Date rel+abs, Committer se diverso, hash, Parent/Child come link → evento
   CommitNavigated, "Contained in branches/tags" a pill, "Derives from tag" via
