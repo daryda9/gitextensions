@@ -413,6 +413,16 @@ comportamento (le guardie sono `false`).
     del gravatar dell'originale) — adattamento Linux.
   Build 0 errori, GUI verificata (xvfb).
 
+- **M27** — plugin folder loader Linux-safe + verifica finale (1 subagent):
+  `PluginService` ora, oltre ai built-in, scansiona
+  `~/.config/GitExtensions.Avalonia/plugins/*.dll` con **reflection pura**
+  (`Assembly.LoadFrom` + ricerca tipi `IGitPlugin`, ctor pubblico senza args),
+  isola ogni fallimento (assembly/tipo/ctor corrotti loggati e saltati, mai un
+  crash), dedupe by `Id` (built-in first). NIENTE MEF (stack-overflow su Linux).
+  Testato: cartella assente → 2 built-in; DLL plugin reale → scoperta; DLL
+  corrotta → saltata. Verifica finale: build 0 errori, `.deb` ricostruito,
+  GUI completa (menu 8 voci / toolbar / avatar / tab).
+
 
 ### Come avviarlo
 
@@ -492,8 +502,9 @@ pannelli~~ ✅ (M12, `UiStateService`).
 10. **Sistema di plugin**: ~~i plugin espongono form WinForms; ripensare il
     modello UI dei plugin~~ ✅ (M25) — modello Avalonia: `IGitPlugin` riusato,
     settings resi per tipo runtime (no `ISettingControlBinding`), loader diretto
-    (MEF ko su Linux). Resta: loader Linux-safe da cartella `plugins/` + portare
-    i plugin reali (BackgroundFetch, Statistics, …).
+    (MEF ko su Linux) + ~~loader Linux-safe da cartella `plugins/`~~ ✅ (M27,
+    reflection) + ~~un plugin reale~~ ✅ (M26, BackgroundFetch). Resta: portare
+    gli altri plugin reali con UI (Statistics, FindLargeFiles, …).
 11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro + chiaro Avalonia con
     switch live (`ThemeManager`, M7/M8) + ~~persistenza~~ ✅ (M12). Resta:
     eventuali varianti/accenti aggiuntivi.
@@ -521,14 +532,14 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 18 / 20** · parità **98.1%** (157/160 voci `[x]`). Questo giro
-> (M26): plugin reale **BackgroundFetch** (timer `PeriodicTimer` + `git fetch`/
-> `--all`, settings tipizzati) che valida il modello con un plugin non banale; e
-> **colonna avatar offline** (identicon FNV-1a da email, HSL, cache per-autore,
-> toggle in "Columns ▾") — adattamento Linux al posto del gravatar di rete.
-> Residue: 3 voci **SKIP** documentate (GitHub hosts ×2 → plugin repository-host
-> fuori scope; build-status → CI). Prossimo: iter. 19 verifica finale, iter. 20
-> riepilogo + stop.
+> **Iterazione: 19 / 20** · parità **98.1%** (157/160 voci `[x]`, invariata:
+> loader e verifiche non sono voci checklist). Questo giro (M27): **plugin folder
+> loader Linux-safe** (reflection puro, no MEF: scansiona
+> `~/.config/GitExtensions.Avalonia/plugins/*.dll`, isola i fallimenti, dedupe by
+> Id, built-in first) — testato con DLL reale/corrotta/cartella assente; +
+> **verifica finale**: build 0 errori, `.deb` ricostruito (~37 MB), screenshot GUI
+> completo (menu 8 voci, toolbar completa, avatar, tab inferiori). Prossimo: iter.
+> 20 = riepilogo finale + stop.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
