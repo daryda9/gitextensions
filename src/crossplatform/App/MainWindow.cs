@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
@@ -385,6 +386,7 @@ public sealed class MainWindow : Window
         _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
+        _tree.OpenRepositoryRequested += OpenRepositoryPath;
 
         _dashboard.RepositorySelected += repo =>
         {
@@ -418,6 +420,48 @@ public sealed class MainWindow : Window
         _toolbar.CommitInfoPositionChanged += SetCommitInfoPosition;
         _toolbar.FileExplorerRequested += () => WithRepo(p => _externalTools.OpenPath(p));
         _toolbar.OpenTerminalRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
+
+        // Submodules / worktrees split-button dropdowns. Providers list off the UI
+        // thread; choosing an entry opens that path as the active repository. The
+        // submodules list is prefixed with a "level-up" entry when the current repo
+        // is itself a submodule/subdir of a parent (super-project).
+        _toolbar.SubmodulesProvider = () => Task.Run<IReadOnlyList<RepoLink>>(() =>
+        {
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return Array.Empty<RepoLink>();
+            }
+
+            List<RepoLink> links = [];
+            if (FindSuperproject(repo) is { Length: > 0 } parent)
+            {
+                links.Add(new RepoLink($"⬆ Parent super-project ({Path.GetFileName(parent.TrimEnd('/', '\\'))})", parent, "NavigateUp"));
+            }
+
+            foreach (SubmoduleRow row in new SubmoduleService().ListSubmodules(repo))
+            {
+                string full = Path.GetFullPath(Path.Combine(repo, row.Path));
+                links.Add(new RepoLink(row.Display, full, "FolderSubmodule"));
+            }
+
+            return links;
+        });
+        _toolbar.WorktreesProvider = () => Task.Run<IReadOnlyList<RepoLink>>(() =>
+        {
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return Array.Empty<RepoLink>();
+            }
+
+            List<RepoLink> links = [];
+            foreach (WorktreeRow row in new WorktreeService().ListWorktrees(repo))
+            {
+                links.Add(new RepoLink(row.Display, row.Path, "WorkTree"));
+            }
+
+            return links;
+        });
+        _toolbar.OpenRepositoryRequested += OpenRepositoryPath;
 
         // Menu actions (mirror the toolbar + menu-only entries).
         _menu.OpenRepoRequested += () => _ = PickRepositoryAsync();
@@ -1474,6 +1518,77 @@ public sealed class MainWindow : Window
         {
             _statusBar.SetText("Init failed — see output: " + result.Output);
         }
+    }
+
+    // Opens a submodule / worktree / super-project path as the active repository
+    // (from the toolbar dropdowns or the tree's "Open" context items), guarding
+    // against a path that has since disappeared.
+    private void OpenRepositoryPath(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            OpenRepository(path);
+        }
+        else
+        {
+            _statusBar.SetText($"Path no longer exists: {path}");
+        }
+    }
+
+    // Resolves the parent super-project of a repository (the "level-up" target),
+    // or null when the repo is standalone. Prefers git's own answer
+    // (`git rev-parse --show-superproject-working-tree`, which is empty for a
+    // normal repo), and falls back to walking up from the parent directory to the
+    // nearest enclosing git repository. Runs synchronously — call off the UI thread.
+    private static string? FindSuperproject(string repo)
+    {
+        try
+        {
+            ProcessStartInfo psi = new("git", "rev-parse --show-superproject-working-tree")
+            {
+                WorkingDirectory = repo,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            using Process? proc = Process.Start(psi);
+            if (proc is not null)
+            {
+                string output = proc.StandardOutput.ReadToEnd();
+                proc.WaitForExit(5000);
+                string line = output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
+                if (line.Length > 0 && Directory.Exists(line))
+                {
+                    return Path.GetFullPath(line);
+                }
+            }
+        }
+        catch
+        {
+            // Fall through to the directory-walk fallback below.
+        }
+
+        try
+        {
+            DirectoryInfo? dir = Directory.GetParent(repo.TrimEnd('/', '\\'));
+            while (dir is not null)
+            {
+                if (GitService.IsGitRepository(dir.FullName))
+                {
+                    return dir.FullName;
+                }
+
+                dir = dir.Parent;
+            }
+        }
+        catch
+        {
+            // No parent repo discoverable.
+        }
+
+        return null;
     }
 
     private void OpenRepository(string repoPath)

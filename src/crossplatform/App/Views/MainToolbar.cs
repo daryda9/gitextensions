@@ -32,6 +32,13 @@ public enum CommitInfoPosition
     RightOfGraph,
 }
 
+/// <summary>
+///  One entry in a toolbar split-button dropdown (a submodule or worktree the
+///  host can open as the active repository). <paramref name="Icon"/> names the
+///  <see cref="IconLoader"/> icon to show; empty falls back to the button icon.
+/// </summary>
+public readonly record struct RepoLink(string Label, string Path, string Icon);
+
 public sealed class MainToolbar : UserControl
 {
     public event Action? OpenRepoRequested;
@@ -48,6 +55,15 @@ public sealed class MainToolbar : UserControl
     public event Action<CommitInfoPosition>? CommitInfoPositionChanged;
     public event Action? FileExplorerRequested;
     public event Action? OpenTerminalRequested;
+
+    // Submodules / worktrees split buttons. The toolbar itself performs no git
+    // work: the host supplies a provider that lists the repo's submodules /
+    // worktrees (off the UI thread), and choosing one raises
+    // OpenRepositoryRequested with that path so the host opens it as the active
+    // repository.
+    public Func<Task<IReadOnlyList<RepoLink>>>? SubmodulesProvider { get; set; }
+    public Func<Task<IReadOnlyList<RepoLink>>>? WorktreesProvider { get; set; }
+    public event Action<string>? OpenRepositoryRequested;
 
     public MainToolbar()
     {
@@ -83,6 +99,15 @@ public sealed class MainToolbar : UserControl
         bar.Children.Add(MakeButton("ReloadRevisions", "Refresh", "Refresh", () => RefreshRequested?.Invoke()));
         bar.Children.Add(Separator(border));
         bar.Children.Add(MakeButton("BranchCreate", "New branch", "Create a new branch", () => NewBranchRequested?.Invoke()));
+
+        // ---- submodules / worktrees split buttons --------------------------------
+        bar.Children.Add(Separator(border));
+        bar.Children.Add(MakeRepoLinkButton("SubmodulesManage", "Submodules",
+            "Open a submodule (or the parent super-project) as the active repository",
+            () => SubmodulesProvider, border));
+        bar.Children.Add(MakeRepoLinkButton("WorkTree", "Worktrees",
+            "Open a worktree as the active repository",
+            () => WorktreesProvider, border));
 
         // ---- view / layout group -------------------------------------------------
         bar.Children.Add(Separator(border));
@@ -242,6 +267,110 @@ public sealed class MainToolbar : UserControl
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, tooltip);
         return button;
+    }
+
+    // A split button (icon + caption + chevron) whose drop-down is populated on
+    // demand from a host-supplied provider (which does its git work off the UI
+    // thread). Each entry opens that path as the active repository via
+    // OpenRepositoryRequested. The provider is read lazily through
+    // <paramref name="provider"/> so the host can wire it after construction.
+    private Button MakeRepoLinkButton(string iconName, string label, string tooltip,
+        Func<Func<Task<IReadOnlyList<RepoLink>>>?> provider, IBrush border)
+    {
+        StackPanel content = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        Image? icon = IconLoader.Image(iconName, 16);
+        if (icon is not null)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            content.Children.Add(icon);
+        }
+
+        content.Children.Add(new TextBlock
+        {
+            Text = label,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = "▾",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 10,
+        });
+
+        MenuFlyout flyout = new();
+        flyout.Opening += (_, _) => _ = PopulateRepoLinksAsync(flyout, iconName, provider());
+
+        Button button = new()
+        {
+            Content = content,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Flyout = flyout,
+        };
+        button.Classes.Add("toolbtn");
+        ToolTip.SetTip(button, tooltip);
+        return button;
+    }
+
+    // Rebuilds a split-button flyout from the host provider. Shows a disabled
+    // placeholder while the (off-thread) provider runs, then lists each entry;
+    // never throws — a provider failure degrades to a disabled "(error)" item.
+    private async Task PopulateRepoLinksAsync(MenuFlyout flyout, string fallbackIcon,
+        Func<Task<IReadOnlyList<RepoLink>>>? provider)
+    {
+        flyout.Items.Clear();
+        if (provider is null)
+        {
+            flyout.Items.Add(new MenuItem { Header = "(no repository open)", IsEnabled = false });
+            return;
+        }
+
+        flyout.Items.Add(new MenuItem { Header = "Loading…", IsEnabled = false });
+
+        IReadOnlyList<RepoLink> links;
+        try
+        {
+            links = await provider();
+        }
+        catch
+        {
+            flyout.Items.Clear();
+            flyout.Items.Add(new MenuItem { Header = "(unable to list)", IsEnabled = false });
+            return;
+        }
+
+        flyout.Items.Clear();
+        if (links.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+            return;
+        }
+
+        foreach (RepoLink link in links)
+        {
+            MenuItem item = new() { Header = link.Label };
+            Image? mIcon = IconLoader.Image(string.IsNullOrEmpty(link.Icon) ? fallbackIcon : link.Icon, 16);
+            if (mIcon is not null)
+            {
+                item.Icon = mIcon;
+            }
+
+            string path = link.Path;
+            item.Click += (_, _) => OpenRepositoryRequested?.Invoke(path);
+            flyout.Items.Add(item);
+        }
     }
 
     private static Control Separator(IBrush brush) => new Border

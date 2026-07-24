@@ -70,6 +70,14 @@ public sealed class RepoObjectsTree : UserControl
     /// </summary>
     public event Action? OperationCompleted;
 
+    /// <summary>
+    ///  Raised on the UI thread when the user chooses "Open" on a submodule or
+    ///  worktree node, carrying the absolute path to open as the active
+    ///  repository. The host (MainWindow) subscribes and routes it to its own
+    ///  OpenRepository — the tree never references MainWindow directly.
+    /// </summary>
+    public event Action<string>? OpenRepositoryRequested;
+
     public RepoObjectsTree()
     {
         _tree = new TreeView
@@ -228,9 +236,8 @@ public sealed class RepoObjectsTree : UserControl
         roots.Add(stashesNode);
 
         // Submodules. The root node carries "Update all"; each leaf carries
-        // "Update" for its own path. No "Open" action is wired: opening a
-        // submodule as the active repository requires MainWindow, which is out
-        // of scope for this control.
+        // "Open" (open the submodule as the active repository, via
+        // OpenRepositoryRequested) plus "Update" for its own path.
         TreeViewItem submodulesNode = Category("Submodules", "SubmodulesManage", submodules.Count);
         submodulesNode.ContextMenu = SubmoduleRootMenu();
         foreach (SubmoduleRow row in submodules)
@@ -249,9 +256,8 @@ public sealed class RepoObjectsTree : UserControl
         roots.Add(submodulesNode);
 
         // Worktrees. The root node carries "Add…" and "Prune"; each leaf carries
-        // "Remove" for its own path. No "Open" action is wired: opening a worktree
-        // as the active repository requires MainWindow, which is out of scope for
-        // this control.
+        // "Open" (open the worktree as the active repository, via
+        // OpenRepositoryRequested) plus "Remove" for its own path.
         TreeViewItem worktreesNode = Category("Worktrees", "WorkTree", worktrees.Count);
         worktreesNode.ContextMenu = WorktreeRootMenu();
         foreach (WorktreeRow row in worktrees)
@@ -382,8 +388,10 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu WorktreeMenu(WorktreeRow row)
     {
         ContextMenu menu = new();
-        // No "Open" action: making a worktree the active repository requires
-        // MainWindow, which is out of scope for this control.
+        // "Open" makes the worktree the active repository, routed to the host via
+        // OpenRepositoryRequested (the tree never references MainWindow directly).
+        menu.Items.Add(MenuItem("Open", "RepoOpen", () => OpenRepositoryRequested?.Invoke(row.Path)));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Branch.Length > 0 ? row.Branch : System.IO.Path.GetFileName(row.Path.TrimEnd('/', '\\')))));
         menu.Items.Add(MenuItem("Copy path", "CopyToClipboard", () => CopyText(row.Path)));
         menu.Items.Add(new Separator());
@@ -404,6 +412,10 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu SubmoduleMenu(SubmoduleRow row)
     {
         ContextMenu menu = new();
+        // "Open" makes the submodule the active repository, routed to the host via
+        // OpenRepositoryRequested (the tree never references MainWindow directly).
+        menu.Items.Add(MenuItem("Open", "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row))));
+        menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("Update", "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
         menu.Items.Add(MenuItem("Update (merge)…", "Merge", () => _ = DoMergeSubmoduleAsync(row)));
         menu.Items.Add(new Separator());
