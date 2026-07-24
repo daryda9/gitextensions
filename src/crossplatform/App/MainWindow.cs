@@ -415,8 +415,7 @@ public sealed class MainWindow : Window
         _toolbar.CommitRequested += OpenCommitDialog;
         _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null));
         _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null));
-        _toolbar.PushRequested += () => RunRemoteOp("Push", (s, r) =>
-            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null));
+        _toolbar.PushRequested += OpenPushDialog;
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
 
@@ -503,8 +502,7 @@ public sealed class MainWindow : Window
         };
         _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null));
         _menu.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null));
-        _menu.PushRequested += () => RunRemoteOp("Push", (s, r) =>
-            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null));
+        _menu.PushRequested += OpenPushDialog;
         _menu.CommitRequested += OpenCommitDialog;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _menu.NewBranchRequested += () => _ = NewBranchAsync();
@@ -1160,6 +1158,20 @@ public sealed class MainWindow : Window
         }
 
         _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+    }
+
+    // Opens the Push configuration dialog (remote/branch/force + Pull/Push),
+    // replacing the previous immediate push. Refreshes the UI once it closes.
+    private void OpenPushDialog()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        _ = PushDialog.ShowAsync(this, _repoPath)
+            .ContinueWith(_ => Dispatcher.UIThread.Post(RefreshAll));
     }
 
     // Recomputes the dynamic toolbar state (ahead/behind, staged/unstaged) off
