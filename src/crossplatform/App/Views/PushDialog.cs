@@ -377,11 +377,29 @@ public sealed class PushDialog : Window
 
         _pushLaunched = true;
         string repo = _repoPath;
+        RemoteOpResult? res = null;
         await GitProcessDialog.RunStreamingAsync(this, "Push", emit =>
         {
-            RemoteOpResult r = new RemoteService().PushStreaming(repo, remote, branch, force, emit, null);
-            return new GitProcessOutcome(r.Success, r.Output);
+            res = new RemoteService().PushStreaming(repo, remote, branch, force, emit, null);
+            return new GitProcessOutcome(res.Success, res.Output);
         });
+
+        // Git ran non-interactively; if it failed for lack of credentials, ask
+        // the user for them in-app and retry the SAME push with the creds fed
+        // through a transient credential helper.
+        if (res is { AuthFailed: true })
+        {
+            GitCredentials? creds = await CredentialsDialog.ShowAsync(this);
+            if (creds is not null)
+            {
+                await GitProcessDialog.RunStreamingAsync(this, "Push (retry)", emit =>
+                {
+                    RemoteOpResult r = new RemoteService().PushStreaming(repo, remote, branch, force, emit, creds);
+                    return new GitProcessOutcome(r.Success, r.Output);
+                });
+            }
+        }
+
         Close();
     }
 
@@ -395,11 +413,26 @@ public sealed class PushDialog : Window
 
         _pushLaunched = true;
         string repo = _repoPath;
+        RemoteOpResult? res = null;
         await GitProcessDialog.RunStreamingAsync(this, "Pull", emit =>
         {
-            RemoteOpResult r = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, null);
-            return new GitProcessOutcome(r.Success, r.Output);
+            res = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, null);
+            return new GitProcessOutcome(res.Success, res.Output);
         });
+
+        if (res is { AuthFailed: true })
+        {
+            GitCredentials? creds = await CredentialsDialog.ShowAsync(this);
+            if (creds is not null)
+            {
+                await GitProcessDialog.RunStreamingAsync(this, "Pull (retry)", emit =>
+                {
+                    RemoteOpResult r = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, creds);
+                    return new GitProcessOutcome(r.Success, r.Output);
+                });
+            }
+        }
+
         Close();
     }
 

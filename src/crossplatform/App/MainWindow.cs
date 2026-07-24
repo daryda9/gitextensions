@@ -427,8 +427,8 @@ public sealed class MainWindow : Window
         _toolbar.OpenRepoRequested += () => _ = PickRepositoryAsync();
         _toolbar.RefreshRequested += RefreshAll;
         _toolbar.CommitRequested += OpenCommitDialog;
-        _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit) => s.FetchStreaming(_repoPath!, r, emit, null));
-        _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r, emit) => s.PullStreaming(_repoPath!, r, rebase: false, emit, null));
+        _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
+        _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
         _toolbar.PushRequested += OpenPushDialog;
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
@@ -549,8 +549,8 @@ public sealed class MainWindow : Window
             _uiState.Theme = "Dark";
             _uiStateService.Save(_uiState);
         };
-        _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit) => s.FetchStreaming(_repoPath!, r, emit, null));
-        _menu.PullRequested += () => RunRemoteOp("Pull", (s, r, emit) => s.PullStreaming(_repoPath!, r, rebase: false, emit, null));
+        _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
+        _menu.PullRequested += () => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
         _menu.PushRequested += OpenPushDialog;
         _menu.CommitRequested += OpenCommitDialog;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
@@ -1281,7 +1281,7 @@ public sealed class MainWindow : Window
     // Picks the remote (first configured, or "origin") and runs a remote op inside
     // a modal GitProcessDialog that shows the git command(s) + output + result,
     // then refreshes. Mirrors the original FormProcess behaviour.
-    private void RunRemoteOp(string label, Func<RemoteService, string, Action<string>, RemoteOpResult> op)
+    private void RunRemoteOp(string label, Func<RemoteService, string, Action<string>, GitCredentials?, RemoteOpResult> op)
     {
         if (_repoPath is null)
         {
@@ -1294,14 +1294,34 @@ public sealed class MainWindow : Window
         async Task RunAsync()
         {
             _statusBar.SetText($"{label}…");
+
+            RemoteService svc = new();
+            var remotes = svc.ListRemotes(_repoPath);
+            string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
+
+            RemoteOpResult? res = null;
             await Views.GitProcessDialog.RunStreamingAsync(this, label, emit =>
             {
-                RemoteService svc = new();
-                var remotes = svc.ListRemotes(_repoPath);
-                string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
-                RemoteOpResult result = op(svc, remote, emit);
-                return new Views.GitProcessOutcome(result.Success, result.Output);
+                res = op(svc, remote, emit, null);
+                return new Views.GitProcessOutcome(res.Success, res.Output);
             });
+
+            // Git ran non-interactively; on an auth failure ask for credentials
+            // in-app and retry the SAME op feeding them through a transient
+            // credential helper — never prompt on the launching terminal.
+            if (res is { AuthFailed: true })
+            {
+                GitCredentials? creds = await CredentialsDialog.ShowAsync(this);
+                if (creds is not null)
+                {
+                    await Views.GitProcessDialog.RunStreamingAsync(this, $"{label} (retry)", emit =>
+                    {
+                        RemoteOpResult r = op(svc, remote, emit, creds);
+                        return new Views.GitProcessOutcome(r.Success, r.Output);
+                    });
+                }
+            }
+
             RefreshAll();
         }
     }

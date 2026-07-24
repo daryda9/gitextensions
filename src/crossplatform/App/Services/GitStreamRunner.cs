@@ -45,11 +45,19 @@ public static class GitStreamRunner
                 WorkingDirectory = repoPath,
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+
+            // Make git strictly non-interactive: it must NEVER prompt on the
+            // controlling terminal where the app was launched. Setting these
+            // BEFORE applying the caller-supplied env means a transient
+            // credential helper (env) can still override GCM behaviour.
+            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            psi.Environment["GCM_INTERACTIVE"] = "never";
 
             if (env is not null)
             {
@@ -77,6 +85,18 @@ public static class GitStreamRunner
             };
 
             proc.Start();
+
+            // Close stdin immediately so git sees EOF and never blocks waiting
+            // for input on the terminal — it fails fast on any auth prompt.
+            try
+            {
+                proc.StandardInput.Close();
+            }
+            catch (Exception)
+            {
+                // Ignore: nothing to do if stdin is already gone.
+            }
+
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
             proc.WaitForExit();
