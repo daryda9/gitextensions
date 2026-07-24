@@ -919,8 +919,7 @@ worktree isolati, file disgiunti, cherry-pick+build+screenshot per pezzo):
 **Residue (T6, non bloccanti)** — differenze minori da rifinire in futuro:
 - Indicatore repo in toolbar può finire fuori vista a destra con larghezza ridotta
   (allineare a destra con DockPanel invece di append allo StackPanel).
-- Streaming output di GitProcessDialog è a polling del CommandLog (riga comando +
-  output finale), non char-by-char come il ConsoleOutputControl originale.
+- ~~Streaming output non char-by-char~~ → RISOLTO in M33 (streaming stdout+stderr live).
 - Il tab "Working directory" resta accanto al Commit modale (ridondanza tollerata).
 
 ## TODO round 2 — fedeltà visiva 1:1 (da screenshot originale Windows)
@@ -973,7 +972,14 @@ Menu + toolbar:
   di config (Remote/Url + Manage remotes, tab Push branches/tags/multiple, Branch→to,
   Show options: force-with-lease/tags/recursive, Pull+Push), push/pull via GitProcessDialog;
   MainWindow apre il dialog invece del push immediato. Verificati in GUI.
-- **M33** (iter. 6, in corso) — streaming output *vero* nel process dialog.
+- **M33** (iter. 6) — **streaming output VERO** nel process dialog. Nuovo
+  `Services/GitStreamRunner.cs` (System.Diagnostics.Process, stdout+stderr redirette e
+  lette async con OutputDataReceived/ErrorDataReceived → callback riga-per-riga; il core
+  bufferizza stderr, quindi git eseguito diretto). `RemoteService.Fetch/Pull/PushStreaming`
+  + `GitProcessDialog.RunStreamingAsync`; fetch/pull (MainWindow) + push/pull (PushDialog)
+  + Commit & push (CommitDialog) rewired. Verificato live in GUI: progress fetch stderr
+  ("Ricezione oggetti 1%→21%…") scorre incrementale mentre lo status è "Running…".
+  Rimane il residuo T6 aggiornato: streaming ora live (non più solo a fine comando).
 
 ### Come costruire il pacchetto `.deb`
 ```bash
