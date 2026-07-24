@@ -401,6 +401,18 @@ comportamento (le guardie sono `false`).
   Build 0 errori/0 warning. GUI verificata: menu Plugins presente, sample plugin
   eseguito (greeting con branch in status bar).
 
+- **M26** — validazione plugin + avatar (2 subagent):
+  - **BackgroundFetch** (plugin reale portato): `Register` avvia un `PeriodicTimer`
+    su task di background che esegue `git fetch`/`git fetch --all` all'intervallo
+    configurato (settings `FetchIntervalMinutes`/`FetchAllRemotes`); `Unregister`
+    cancella; `Execute` fetch immediato. Conferma che il modello plugin regge un
+    plugin non banale con stato/timer.
+  - **Colonna avatar offline**: `Identicon` (hash FNV-1a stabile dell'email →
+    hue HSL + pattern 5x5 simmetrico), `AvatarControl` 18px (ClipToBounds),
+    cache per-autore, toggle "Avatar" in "Columns ▾". Nessuna rete (a differenza
+    del gravatar dell'originale) — adattamento Linux.
+  Build 0 errori, GUI verificata (xvfb).
+
 
 ### Come avviarlo
 
@@ -509,15 +521,14 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 17 / 20** · parità **97.5%** (156/160 voci `[x]`). Questo giro
-> (M25): modello **plugin** Avalonia end-to-end — `PluginService` (loader; MEF
-> inutilizzabile su Linux → registrazione diretta, plugin resta `[Export]`-ready),
-> `AvaloniaGitUICommands` (solo `Module`), `SampleGreetPlugin`, menu **Plugins** +
-> run off-thread, `PluginSettingsWindow` (mapper `ISetting`→controllo Avalonia,
-> senza `ISettingControlBinding`). Verificato: il sample plugin gira e scrive in
-> status bar. Residue: 4 voci **SKIP** (GitHub hosts ×2 → possibili come plugin
-> ma fuori scope base; avatar → gravatar/network; build-status → CI). Prossimo:
-> iter. 18-19 polish + verifica finale, iter. 20 riepilogo.
+> **Iterazione: 18 / 20** · parità **98.1%** (157/160 voci `[x]`). Questo giro
+> (M26): plugin reale **BackgroundFetch** (timer `PeriodicTimer` + `git fetch`/
+> `--all`, settings tipizzati) che valida il modello con un plugin non banale; e
+> **colonna avatar offline** (identicon FNV-1a da email, HSL, cache per-autore,
+> toggle in "Columns ▾") — adattamento Linux al posto del gravatar di rete.
+> Residue: 3 voci **SKIP** documentate (GitHub hosts ×2 → plugin repository-host
+> fuori scope; build-status → CI). Prossimo: iter. 19 verifica finale, iter. 20
+> riepilogo + stop.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -561,7 +572,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Commands ▸ Format patch
 - [x] Commands ▸ Apply patch
 - [x] Commands ▸ View patch file
-- [ ] Repository hosts (GitHub: fork / view-create PR / add upstream)
+- [ ] Repository hosts (GitHub: fork / view-create PR / add upstream) — **SKIP**: realizzabile come plugin repository-host, fuori scope base
 - [x] Plugins menu + Plugins settings (loader diretto + sample plugin + settings render)
 - [x] Tools ▸ Git bash / Git GUI / GitK (PuTTY N/A su Linux)
 - [x] Tools ▸ Git command log (legge core CommandLog)
@@ -605,8 +616,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Colonna autore
 - [x] Colonna data
 - [x] Colonna commit id (SHA)
-- [ ] Colonna avatar
-- [ ] Colonna build status (icona/testo)
+- [x] Colonna avatar (identicon offline da hash email, no rete — adattamento Linux)
+- [ ] Colonna build status (icona/testo) — **SKIP**: richiede integrazione build-server/CI (fuori scope)
 - [x] Colonna git notes (indicatore + tooltip, `git notes list` batch)
 - [x] Menu contestuale: copy hash/subject/author
 - [x] Menu contestuale: checkout commit / cherry-pick / reset (soft·mixed·hard)
@@ -690,7 +701,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Reflog
 - [x] Blame / File history / Diff / Log
 - [x] Compare (working dir / difftool / BASE; branch da fare)
-- [ ] Repository-host (GitHub) ops
+- [ ] Repository-host (GitHub) ops — **SKIP**: come sopra (plugin host)
 
 ### Packaging / distribuzione
 - [x] `.deb` self-contained (linux-x64) + `.desktop` + icona — `packaging/build-deb.sh`
