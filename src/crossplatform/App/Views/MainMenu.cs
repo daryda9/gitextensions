@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using GitExtensions.Avalonia.Theming;
+using GitExtensions.Extensibility.Plugins;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -19,6 +20,8 @@ public sealed class MainMenu : UserControl
 {
     private readonly MenuItem _openRecent;
     private readonly MenuItem _favorites;
+    private readonly MenuItem _plugins;
+    private readonly MenuItem _pluginSettings;
 
     // ---- File
     public event Action? OpenRepoRequested;
@@ -67,6 +70,10 @@ public sealed class MainMenu : UserControl
     public event Action? GitKRequested;
     public event Action? GitGuiRequested;
     public event Action? GitCommandLogRequested;
+
+    // ---- Plugins
+    public event Action<IGitPlugin>? PluginRunRequested;
+    public event Action<IGitPlugin>? PluginSettingsRequested;
 
     // ---- Help
     public event Action? AboutRequested;
@@ -147,6 +154,10 @@ public sealed class MainMenu : UserControl
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("Git command log", null, () => GitCommandLogRequested?.Invoke()));
 
+        _pluginSettings = new MenuItem { Header = "Plugin settings" };
+        _plugins = new MenuItem { Header = "_Plugins" };
+        SetPlugins(Array.Empty<IGitPlugin>());
+
         MenuItem help = new() { Header = "_Help" };
         help.Items.Add(Item("User manual", "GitExtensionsHelp", () => UserManualRequested?.Invoke()));
         help.Items.Add(Item("Report an issue", null, () => ReportIssueRequested?.Invoke()));
@@ -159,7 +170,7 @@ public sealed class MainMenu : UserControl
         {
             Background = toolbar,
             Foreground = text,
-            Items = { file, edit, view, repository, commands, tools, help },
+            Items = { file, edit, view, repository, commands, tools, _plugins, help },
         };
 
         Content = menu;
@@ -206,6 +217,47 @@ public sealed class MainMenu : UserControl
         {
             string path = repo;
             _favorites.Items.Add(Item(path, "RepoOpen", () => OpenFavoriteRequested?.Invoke(path)));
+        }
+    }
+
+    /// <summary>
+    ///  Rebuilds the "Plugins" menu from the loaded plugin list: one run entry per
+    ///  plugin (raising <see cref="PluginRunRequested"/>), plus a "Plugin settings"
+    ///  submenu with one entry per plugin (raising <see cref="PluginSettingsRequested"/>).
+    ///  An empty list shows a disabled "(none)" placeholder. Mirrors the recent /
+    ///  favorite repository builders.
+    /// </summary>
+    public void SetPlugins(IReadOnlyList<IGitPlugin> plugins)
+    {
+        _plugins.Items.Clear();
+        _pluginSettings.Items.Clear();
+
+        if (plugins is null || plugins.Count == 0)
+        {
+            _plugins.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+            return;
+        }
+
+        foreach (IGitPlugin plugin in plugins)
+        {
+            IGitPlugin captured = plugin;
+            string name = plugin.Name ?? plugin.GetType().Name;
+            _plugins.Items.Add(Item(name, "Plugins", () => PluginRunRequested?.Invoke(captured)));
+
+            if (plugin.HasSettings)
+            {
+                _pluginSettings.Items.Add(Item(name, "Settings", () => PluginSettingsRequested?.Invoke(captured)));
+            }
+        }
+
+        _plugins.Items.Add(new Separator());
+        if (_pluginSettings.Items.Count > 0)
+        {
+            _plugins.Items.Add(_pluginSettings);
+        }
+        else
+        {
+            _plugins.Items.Add(new MenuItem { Header = "Plugin settings", IsEnabled = false });
         }
     }
 

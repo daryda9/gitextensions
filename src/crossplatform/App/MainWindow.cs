@@ -7,8 +7,11 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
+using GitExtensions.Avalonia.Plugins;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
+using GitExtensions.Extensibility.Git;
+using GitExtensions.Extensibility.Plugins;
 
 namespace GitExtensions.Avalonia;
 
@@ -516,6 +519,10 @@ public sealed class MainWindow : Window
         };
         _menu.AboutRequested += () => _ = AboutDialog.ShowAsync(this);
         _menu.SettingsRequested += () => _ = OpenSettingsAsync();
+
+        // Plugins: run a plugin (off-thread) / open its settings editor.
+        _menu.PluginRunRequested += plugin => RunPlugin(plugin);
+        _menu.PluginSettingsRequested += plugin => _ = OpenPluginSettingsAsync(plugin);
 
         // Repository: file explorer + edit repo config files (created if absent).
         _menu.FileExplorerRequested += () => WithRepo(p => _externalTools.OpenPath(p));
@@ -1433,6 +1440,95 @@ public sealed class MainWindow : Window
         _uiState.Theme = _uiStateService.Load().Theme;
     }
 
+    // ---- plugins --------------------------------------------------------------------
+
+    // Runs a plugin off the UI thread against the open repository, then — if it
+    // returns true — refreshes the whole view (mirroring the WinForms host's
+    // "Execute → RefreshAll" contract). The plugin's result message (for the sample
+    // plugin, exposed via SampleGreetPlugin.LastResult) is surfaced in the status
+    // bar, standing in for the MessageBox portable plugins would otherwise show.
+    private void RunPlugin(IGitPlugin plugin)
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        string name = plugin.Name ?? plugin.GetType().Name;
+        _ = RunAsync();
+        return;
+
+        async Task RunAsync()
+        {
+            _statusBar.SetText($"Running plugin '{name}'…");
+
+            bool refresh;
+            try
+            {
+                refresh = await Task.Run(() =>
+                {
+                    // Build a minimal host + event args (OwnerForm = null) and register
+                    // the plugin so its settings source is bound before Execute reads it.
+                    AvaloniaGitUICommands commands = new(_repoPath!);
+                    RegisterPlugin(plugin, commands);
+                    GitUIEventArgs args = new(ownerForm: null, gitUICommands: commands);
+                    return plugin.Execute(args);
+                });
+            }
+            catch (Exception ex)
+            {
+                _statusBar.SetText($"Plugin '{name}' failed: {ex.Message}");
+                return;
+            }
+
+            if (refresh)
+            {
+                RefreshAll();
+            }
+
+            string? output = (plugin as SampleGreetPlugin)?.LastResult;
+            _statusBar.SetText(output is { Length: > 0 }
+                ? output
+                : $"Plugin '{name}' finished{(refresh ? " (view refreshed)" : string.Empty)}.");
+        }
+    }
+
+    // Opens the runtime-typed settings editor for a plugin, binding its settings
+    // container to the open repository's effective settings first, then persisting
+    // through the same source on Save.
+    private async Task OpenPluginSettingsAsync(IGitPlugin plugin)
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        AvaloniaGitUICommands commands = new(_repoPath);
+        RegisterPlugin(plugin, commands);
+
+        await PluginSettingsWindow.ShowAsync(this, plugin, commands.GetEffectiveSettings());
+        _statusBar.SetText($"Closed settings for '{plugin.Name ?? plugin.GetType().Name}'.");
+    }
+
+    // Ensures the plugin has a settings container and binds it to the repository's
+    // effective settings via Register (GitPluginBase.Register sets the source).
+    private static void RegisterPlugin(IGitPlugin plugin, AvaloniaGitUICommands commands)
+    {
+        plugin.SettingsContainer ??= new AvaloniaSettingsContainer();
+        try
+        {
+            plugin.Register(commands);
+        }
+        catch
+        {
+            // If a plugin's Register touches unsupported host surface, fall back to
+            // wiring the settings source directly so its settings still work.
+            plugin.SettingsContainer.SetSettingsSource(commands.GetEffectiveSettings());
+        }
+    }
+
     private async Task PickRepositoryAsync()
     {
         RepositoryPickerView picker = new();
@@ -1603,6 +1699,7 @@ public sealed class MainWindow : Window
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
         _menu.SetFavoriteRepositories(_favoritesService.Load());
+        _menu.SetPlugins(PluginService.Instance.Plugins);
         _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
     }
