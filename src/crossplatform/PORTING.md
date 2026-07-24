@@ -954,6 +954,19 @@ Menu + toolbar:
 - [x] **U-TOOLBAR** ✅ M35 — Dropdown path repo + dropdown branch inline nella toolbar, combo
   All branches / Branches / Filter.
 
+### Milestone round 3 (fedeltà visiva, aree: tab inferiori + commit detail + filtri)
+- **M36** (iter. 9) — **U-DETAIL** commit detail arricchito (avatar identicon grande,
+  Author/Date rel+abs, Committer se diverso, hash, Parent/Child come link → evento
+  CommitNavigated, "Contained in branches/tags" a pill, "Derives from tag" via
+  `git describe`). **U-TABS** pannello inferiore ristrutturato in tab
+  **Commit · Diff · File tree · GPG · Console · Output** (+ Working directory · Stash ·
+  Blame · File history): nuove view FileTreeView (`ls-tree`), GpgView (`--show-signature`),
+  OutputView (core CommandLog), ConsoleView (apri terminale); diff scorporato dal tab
+  Commit in tab Diff proprio (toggle Split-view ora cosmetico). Verificati in GUI.
+  Nota: durante l'integrazione il branch del repo principale era stato spostato da un
+  subagent (checkout master/prova) e la prima commit U-TABS era atterrata su `prova`
+  con base sbagliata → recuperato reintegrando `05bf206d7` su HEAD corretto.
+
 ### Milestone round 2 (fedeltà visiva)
 - **M35** (iter. 8) — **U-TOOLBAR** dropdown inline nella toolbar: repo-path
   (`~/path ▾`, flyout recenti → OpenRepository) + branch corrente (`branch ▾`, flyout
