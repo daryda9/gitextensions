@@ -381,6 +381,26 @@ comportamento (le guardie sono `false`).
   toolbar/tree non referenziano MainWindow — usano provider async + evento
   `OpenRepositoryRequested`. Build 0 errori, GUI verificata (xvfb).
 
+- **M25** — modello **plugin** Avalonia (1 subagent, slice verticale):
+  - `PluginService` espone `IReadOnlyList<IGitPlugin>`. **MEF (`ManagedExtensibility`)
+    è inutilizzabile su Linux**: `Initialise` registra un `AssemblyResolve`
+    globale che, caricando un satellite di stringhe d'eccezione, ricorre su sé
+    stesso → **StackOverflow** (non catchabile). Quindi **registrazione diretta**
+    in-code (`new SampleGreetPlugin()`); il plugin conserva `[Export(typeof(
+    IGitPlugin))]` per un futuro loader Linux-safe.
+  - `AvaloniaGitUICommands`: `IGitUICommands` minimo (solo `Module` via
+    `GitContext`), i metodi `Start*Dialog`/WinForms lanciano `NotSupportedException`.
+  - `SampleGreetPlugin` (`GitPluginBase`, 1 `BoolSetting`): `Execute` legge
+    `args.GitModule` (branch) e ritorna un messaggio.
+  - `PluginSettingsWindow`: renderizza `GetSettings()` per **tipo runtime**
+    (`Bool→CheckBox`, `Choice→ComboBox`, `String→TextBox`, `Number→numerico`,
+    `Path→TextBox+Browse`), load/save via l'indexer del setting; **ignora**
+    `ISettingControlBinding` (WinForms).
+  - Menu **Plugins** in `MainMenu` + hook `MainWindow`: run off-thread, `RefreshAll`
+    se `Execute→true`, output in status bar.
+  Build 0 errori/0 warning. GUI verificata: menu Plugins presente, sample plugin
+  eseguito (greeting con branch in status bar).
+
 
 ### Come avviarlo
 
@@ -457,8 +477,11 @@ pannelli~~ ✅ (M12, `UiStateService`).
    identità git, default pull, tema). Resta: coprire più impostazioni (diff/merge
    tool, tab size, ecc.) sopra questa base; il framework WinForms
    `ISettingControlBinding` NON è stato portato (approccio nativo Avalonia).
-10. **Sistema di plugin**: i plugin espongono form WinForms; ripensare il
-    modello UI dei plugin per Avalonia.
+10. **Sistema di plugin**: ~~i plugin espongono form WinForms; ripensare il
+    modello UI dei plugin~~ ✅ (M25) — modello Avalonia: `IGitPlugin` riusato,
+    settings resi per tipo runtime (no `ISettingControlBinding`), loader diretto
+    (MEF ko su Linux). Resta: loader Linux-safe da cartella `plugins/` + portare
+    i plugin reali (BackgroundFetch, Statistics, …).
 11. **Temi**: ~~portare `GitUI/Theming`~~ → tema scuro + chiaro Avalonia con
     switch live (`ThemeManager`, M7/M8) + ~~persistenza~~ ✅ (M12). Resta:
     eventuali varianti/accenti aggiuntivi.
@@ -486,13 +509,15 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 16 / 20** · parità **96.9%** (155/160 voci `[x]`). Questo giro
-> (M24): toolbar split-button **Submodules** (con level-up al super-progetto via
-> `--show-superproject-working-tree`) e **Worktrees** (dropdown → apre come repo
-> attivo) + azione "Open" su nodi submodule/worktree del tree (evento
-> `OpenRepositoryRequested` → `OpenRepository`). Residue: **Plugins** (iter. 17-18,
-> implementa "## Piano modello plugin") + 4 SKIP (GitHub hosts ×2, avatar,
-> build-status).
+> **Iterazione: 17 / 20** · parità **97.5%** (156/160 voci `[x]`). Questo giro
+> (M25): modello **plugin** Avalonia end-to-end — `PluginService` (loader; MEF
+> inutilizzabile su Linux → registrazione diretta, plugin resta `[Export]`-ready),
+> `AvaloniaGitUICommands` (solo `Module`), `SampleGreetPlugin`, menu **Plugins** +
+> run off-thread, `PluginSettingsWindow` (mapper `ISetting`→controllo Avalonia,
+> senza `ISettingControlBinding`). Verificato: il sample plugin gira e scrive in
+> status bar. Residue: 4 voci **SKIP** (GitHub hosts ×2 → possibili come plugin
+> ma fuori scope base; avatar → gravatar/network; build-status → CI). Prossimo:
+> iter. 18-19 polish + verifica finale, iter. 20 riepilogo.
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -537,7 +562,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Commands ▸ Apply patch
 - [x] Commands ▸ View patch file
 - [ ] Repository hosts (GitHub: fork / view-create PR / add upstream)
-- [ ] Plugins menu + Plugins settings
+- [x] Plugins menu + Plugins settings (loader diretto + sample plugin + settings render)
 - [x] Tools ▸ Git bash / Git GUI / GitK (PuTTY N/A su Linux)
 - [x] Tools ▸ Git command log (legge core CommandLog)
 - [x] Tools/Edit ▸ Settings (SettingsWindow Avalonia: identità git, pull, tema)
