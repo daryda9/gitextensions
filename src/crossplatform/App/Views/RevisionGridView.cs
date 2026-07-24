@@ -301,10 +301,34 @@ public sealed class RevisionGridView : UserControl
         {
             Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.PanelAlt")) },
         });
+        // Selected row: strong full-row fill plus a 3px App.Accent bar on the left
+        // edge of the ContentPresenter (outside the row content) so the graph lanes
+        // and ref badges stay untouched and readable. Foreground pinned to App.Text
+        // for high contrast on the Selection fill in both themes.
         _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected")
             .Template().OfType<ContentPresenter>())
         {
-            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")) },
+            Setters =
+            {
+                new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")),
+                new Setter(ContentPresenter.BorderBrushProperty, B("App.Accent")),
+                new Setter(ContentPresenter.BorderThicknessProperty, new Thickness(3, 0, 0, 0)),
+            },
+        });
+        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected"))
+        {
+            Setters = { new Setter(TemplatedControl.ForegroundProperty, B("App.Text")) },
+        });
+        // Keep the selection fill (not the hover wash) when a selected row is hovered.
+        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected").Class(":pointerover")
+            .Template().OfType<ContentPresenter>())
+        {
+            Setters =
+            {
+                new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")),
+                new Setter(ContentPresenter.BorderBrushProperty, B("App.Accent")),
+                new Setter(ContentPresenter.BorderThicknessProperty, new Thickness(3, 0, 0, 0)),
+            },
         });
 
         _list.SelectionChanged += (_, _) =>
