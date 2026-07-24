@@ -7,6 +7,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using GitExtensions.Avalonia.Plugins;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
@@ -411,7 +412,7 @@ public sealed class MainWindow : Window
         // Toolbar actions.
         _toolbar.OpenRepoRequested += () => _ = PickRepositoryAsync();
         _toolbar.RefreshRequested += RefreshAll;
-        _toolbar.CommitRequested += () => _bottom.SelectedItem = _workingDirTab;
+        _toolbar.CommitRequested += OpenCommitDialog;
         _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null));
         _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null));
         _toolbar.PushRequested += () => RunRemoteOp("Push", (s, r) =>
@@ -504,7 +505,7 @@ public sealed class MainWindow : Window
         _menu.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null));
         _menu.PushRequested += () => RunRemoteOp("Push", (s, r) =>
             s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null));
-        _menu.CommitRequested += () => _bottom.SelectedItem = _workingDirTab;
+        _menu.CommitRequested += OpenCommitDialog;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _menu.NewBranchRequested += () => _ = NewBranchAsync();
         _menu.NewTagRequested += () => _ = NewTagAsync();
@@ -1144,6 +1145,68 @@ public sealed class MainWindow : Window
         _stash.LoadRepository(_repoPath);
         _tree.LoadRepository(_repoPath);
         _statusBar.LoadRepository(_repoPath);
+        RefreshToolbarState();
+    }
+
+    // Opens the dedicated modal commit window (mirroring the original Git
+    // Extensions commit form). The bottom "Working directory" tab remains
+    // available; both surfaces drive the same core flow. No-op without a repo.
+    private void OpenCommitDialog()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+    }
+
+    // Recomputes the dynamic toolbar state (ahead/behind, staged/unstaged) off
+    // the UI thread, then pushes it to the toolbar on the UI thread. Fire-and-
+    // forget so it never blocks a refresh; git errors are swallowed.
+    private void RefreshToolbarState()
+    {
+        if (_repoPath is not { Length: > 0 } repoPath)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            int ahead = 0, behind = 0, staged = 0, unstaged = 0;
+            string branch = string.Empty;
+            try
+            {
+                // Mirrors StatusBarView.Compute (StatusBarView.cs lines ~87-104):
+                //   branch   = module.GetSelectedBranch(emptyIfDetached: true)
+                //   upstream = module.GetRemoteBranch(branch)
+                //   ahead    = module.GetCommitCount("HEAD", upstream, throwOnErrorExit: false)
+                //   behind   = module.GetCommitCount(upstream, "HEAD", throwOnErrorExit: false)
+                GitCommands.GitModule module = GitContext.CreateModule(repoPath);
+                branch = module.GetSelectedBranch(emptyIfDetached: true) ?? string.Empty;
+                if (!string.IsNullOrEmpty(branch))
+                {
+                    string upstream = module.GetRemoteBranch(branch);
+                    if (!string.IsNullOrEmpty(upstream))
+                    {
+                        ahead = module.GetCommitCount("HEAD", upstream, throwOnErrorExit: false) ?? 0;
+                        behind = module.GetCommitCount(upstream, "HEAD", throwOnErrorExit: false) ?? 0;
+                    }
+                }
+
+                WorkingDirStatus status = new WorkingDirectoryService().LoadStatus(repoPath);
+                staged = status.Staged.Count;
+                unstaged = status.Unstaged.Count;
+            }
+            catch
+            {
+                // Never throw out of a refresh.
+            }
+
+            Dispatcher.UIThread.Post(() =>
+                _toolbar.UpdateState(ahead, behind, staged, unstaged, repoPath, branch));
+        });
     }
 
     // Picks the remote (first configured, or "origin") and runs a remote op inside
@@ -1726,6 +1789,7 @@ public sealed class MainWindow : Window
         _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
+        RefreshToolbarState();
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _menu.SetPlugins(PluginService.Instance.Plugins);
         _ = RecordRecentAsync(repoPath);
