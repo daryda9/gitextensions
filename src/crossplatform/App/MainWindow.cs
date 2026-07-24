@@ -476,6 +476,36 @@ public sealed class MainWindow : Window
         });
         _toolbar.OpenRepositoryRequested += OpenRepositoryPath;
 
+        // Inline branch dropdown: list the local branch names off the UI thread;
+        // choosing one checks it out (off the UI thread) and refreshes.
+        _toolbar.BranchesProvider = () => Task.Run<IReadOnlyList<string>>(() =>
+        {
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return Array.Empty<string>();
+            }
+
+            BranchTagListing refs = new BranchTagService().LoadRefs(repo);
+            return refs.Branches.Where(b => !b.IsRemote).Select(b => b.Name).ToList();
+        });
+        _toolbar.BranchCheckoutRequested += name =>
+        {
+            if (_repoPath is not null)
+            {
+                RunOp($"Checkout {name}", () => new BranchTagService().Checkout(_repoPath!, name).Success);
+            }
+        };
+
+        // Inline repo-path dropdown: list recent repositories off the UI thread;
+        // choosing one opens it as the active repository.
+        _toolbar.RecentReposProvider = () => Task.Run<IReadOnlyList<RepoLink>>(async () =>
+        {
+            IReadOnlyList<string> recent = await new RecentRepositoriesService().LoadAsync();
+            return recent
+                .Select(p => new RepoLink(Path.GetFileName(p.TrimEnd('/', '\\')), p, "RepoOpen"))
+                .ToList();
+        });
+
         // Menu actions (mirror the toolbar + menu-only entries).
         _menu.OpenRepoRequested += () => _ = PickRepositoryAsync();
         _menu.CloneRequested += () => _ = CloneRepositoryAsync();

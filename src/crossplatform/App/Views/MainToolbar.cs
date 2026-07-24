@@ -65,6 +65,18 @@ public sealed class MainToolbar : UserControl
     public Func<Task<IReadOnlyList<RepoLink>>>? WorktreesProvider { get; set; }
     public event Action<string>? OpenRepositoryRequested;
 
+    // Inline branch dropdown: the host supplies a provider that lists the local
+    // branch names (off the UI thread); choosing one raises BranchCheckoutRequested
+    // so the host performs the checkout. The button caption shows the current
+    // branch (kept current through UpdateState).
+    public Func<Task<IReadOnlyList<string>>>? BranchesProvider { get; set; }
+    public event Action<string>? BranchCheckoutRequested;
+
+    // Inline repo-path dropdown: the host supplies a provider that lists RECENT
+    // repositories (off the UI thread); choosing one raises OpenRepositoryRequested.
+    // The button caption shows the current repository path (home collapsed to ~).
+    public Func<Task<IReadOnlyList<RepoLink>>>? RecentReposProvider { get; set; }
+
     // ---- stateful controls kept for UpdateState() ---------------------------
     // References to the Push / Pull / Commit buttons and their caption TextBlocks
     // (and icon Images, so we can tint them) so UpdateState() can refresh badges
@@ -82,6 +94,16 @@ public sealed class MainToolbar : UserControl
     // Far-right working-directory indicator (repo name + ~-collapsed path); created
     // lazily on the first UpdateState() call and reused thereafter.
     private TextBlock? _repoIndicator;
+
+    // Inline branch dropdown (button + its caption) and repo-path dropdown (button
+    // + its caption), placed near the left of the toolbar to mirror the original
+    // FormBrowse repo-path / branch selectors. Captions are refreshed in place by
+    // UpdateState so they never stack.
+    private TextBlock? _branchCaption;
+    private TextBlock? _repoPathCaption;
+    // Last-known current branch, so the branch flyout can mark/bold it.
+    private string _currentBranch = string.Empty;
+
     private readonly StackPanel _bar;
 
     public MainToolbar()
@@ -107,6 +129,14 @@ public sealed class MainToolbar : UserControl
         _bar = bar;
 
         bar.Children.Add(MakeButton("RepoOpen", "Open", "Open repository", () => OpenRepoRequested?.Invoke()));
+
+        // Inline repo-path + branch dropdowns near the left, echoing the original
+        // FormBrowse toolbar (a repository-path selector and a current-branch
+        // selector inline in the toolbar).
+        bar.Children.Add(Separator(border));
+        bar.Children.Add(MakeRepoPathButton(border));
+        bar.Children.Add(MakeBranchButton(border));
+
         bar.Children.Add(Separator(border));
         bar.Children.Add(MakeButton("PullFetch", "Fetch", "Fetch from remote", () => FetchRequested?.Invoke()));
         _pullButton = MakeButton("Pull", "Pull", "Pull from remote", () => PullRequested?.Invoke(),
@@ -243,6 +273,22 @@ public sealed class MainToolbar : UserControl
             {
                 _commitIcon.Opacity = changes > 0 ? 1.0 : 0.6;
             }
+        }
+
+        // Inline branch dropdown caption: current branch (or "(no branch)").
+        _currentBranch = branch ?? string.Empty;
+        if (_branchCaption is not null)
+        {
+            _branchCaption.Text = string.IsNullOrWhiteSpace(branch) ? "(no branch)" : branch;
+            _branchCaption.Foreground = text;
+        }
+
+        // Inline repo-path dropdown caption: current repo path, home collapsed to ~.
+        if (_repoPathCaption is not null)
+        {
+            _repoPathCaption.Text = string.IsNullOrWhiteSpace(repoPath)
+                ? "(no repository)"
+                : CollapseHome(repoPath);
         }
 
         // Working-directory indicator, created lazily and updated in place.
@@ -524,6 +570,189 @@ public sealed class MainToolbar : UserControl
 
             string path = link.Path;
             item.Click += (_, _) => OpenRepositoryRequested?.Invoke(path);
+            flyout.Items.Add(item);
+        }
+    }
+
+    // Inline branch dropdown: icon + current-branch caption + chevron. The flyout
+    // is populated on demand from BranchesProvider (off the UI thread) using the
+    // same populate-BEFORE-ShowAt pattern as MakeRepoLinkButton, so the popup never
+    // renders empty. Choosing a branch raises BranchCheckoutRequested.
+    private Button MakeBranchButton(IBrush border)
+    {
+        StackPanel content = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        Image? icon = IconLoader.Image("Branch", 16);
+        if (icon is not null)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            content.Children.Add(icon);
+        }
+
+        _branchCaption = new TextBlock
+        {
+            Text = "(no branch)",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 220,
+        };
+        content.Children.Add(_branchCaption);
+        content.Children.Add(new TextBlock
+        {
+            Text = "▾",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 10,
+        });
+
+        MenuFlyout flyout = new();
+
+        Button button = new()
+        {
+            Content = content,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        button.Classes.Add("toolbtn");
+        ToolTip.SetTip(button, "Checkout a local branch");
+        button.Click += async (_, _) =>
+        {
+            await PopulateBranchesAsync(flyout, BranchesProvider);
+            flyout.ShowAt(button);
+        };
+        return button;
+    }
+
+    // Inline repo-path dropdown: icon + ~-collapsed current path + chevron. When a
+    // RecentReposProvider is wired, the flyout lists recent repositories (choosing
+    // one raises OpenRepositoryRequested). When no provider is wired the button
+    // falls back to opening the repository picker via OpenRepoRequested on click.
+    private Button MakeRepoPathButton(IBrush border)
+    {
+        StackPanel content = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        Image? icon = IconLoader.Image("RepoOpen", 16);
+        if (icon is not null)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            content.Children.Add(icon);
+        }
+
+        _repoPathCaption = new TextBlock
+        {
+            Text = "(no repository)",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 320,
+        };
+        content.Children.Add(_repoPathCaption);
+        content.Children.Add(new TextBlock
+        {
+            Text = "▾",
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 10,
+        });
+
+        MenuFlyout flyout = new();
+
+        Button button = new()
+        {
+            Content = content,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        button.Classes.Add("toolbtn");
+        ToolTip.SetTip(button, "Open a recent repository");
+        button.Click += async (_, _) =>
+        {
+            if (RecentReposProvider is null)
+            {
+                // Fallback: no recent-repos source wired — open the picker instead.
+                OpenRepoRequested?.Invoke();
+                return;
+            }
+
+            await PopulateRepoLinksAsync(flyout, "RepoOpen", RecentReposProvider);
+            flyout.ShowAt(button);
+        };
+        return button;
+    }
+
+    // Rebuilds the branch flyout from the host provider using the same
+    // populate-before-ShowAt discipline as PopulateRepoLinksAsync (Avalonia 11.3.x
+    // does not re-measure an already-visible MenuFlyout). Marks the current branch
+    // (bold) and never throws — a provider failure degrades to "(unable to list)".
+    private async Task PopulateBranchesAsync(MenuFlyout flyout,
+        Func<Task<IReadOnlyList<string>>>? provider)
+    {
+        flyout.Items.Clear();
+        if (provider is null)
+        {
+            flyout.Items.Add(new MenuItem { Header = "(no repository)", IsEnabled = false });
+            return;
+        }
+
+        flyout.Items.Add(new MenuItem { Header = "Loading…", IsEnabled = false });
+
+        IReadOnlyList<string> branches;
+        try
+        {
+            branches = await provider();
+        }
+        catch
+        {
+            flyout.Items.Clear();
+            flyout.Items.Add(new MenuItem { Header = "(unable to list)", IsEnabled = false });
+            return;
+        }
+
+        flyout.Items.Clear();
+        if (branches.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+            return;
+        }
+
+        Image? currentIcon = IconLoader.Image("Branch", 16);
+        foreach (string name in branches)
+        {
+            bool isCurrent = string.Equals(name, _currentBranch, StringComparison.Ordinal);
+            MenuItem item = new()
+            {
+                Header = new TextBlock
+                {
+                    Text = name,
+                    FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
+                },
+            };
+            if (isCurrent && currentIcon is not null)
+            {
+                item.Icon = currentIcon;
+            }
+
+            string branch = name;
+            item.Click += (_, _) => BranchCheckoutRequested?.Invoke(branch);
             flyout.Items.Add(item);
         }
     }
