@@ -375,6 +375,13 @@ comportamento (le guardie sono `false`).
   - **Piano plugin** documentato (vedi "## Piano modello plugin") per iter. 17-18.
   Build 0 errori.
 
+- **M24** — toolbar split-button + open (1 subagent): "Submodules ▾" (dropdown
+  dei submodule + level-up al super-progetto) e "Worktrees ▾" (dropdown), ognuno
+  apre il path come repo attivo; "Open" sui nodi submodule/worktree del tree. Il
+  toolbar/tree non referenziano MainWindow — usano provider async + evento
+  `OpenRepositoryRequested`. Build 0 errori, GUI verificata (xvfb).
+
+
 ### Come avviarlo
 
 ```bash
@@ -479,12 +486,13 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ## Parità con Git Extensions
 
-> **Iterazione: 15 / 20** · parità **95.6%** (153/160 voci `[x]`). Questo giro
-> (M23): Command log (legge il `CommandLog` reale del core) + Compare-to-branch
-> (riusa DiffView) + Sparse working copy (`git sparse-checkout`); in parallelo
-> ricerca+piano del modello plugin (vedi "Piano modello plugin"). Residue: Plugins
-> (iter. 17-18), 2 toolbar split-button (iter. 16), 4 SKIP (GitHub hosts ×2,
-> avatar, build-status — N/A o dipendenti da plugin/CI).
+> **Iterazione: 16 / 20** · parità **96.9%** (155/160 voci `[x]`). Questo giro
+> (M24): toolbar split-button **Submodules** (con level-up al super-progetto via
+> `--show-superproject-working-tree`) e **Worktrees** (dropdown → apre come repo
+> attivo) + azione "Open" su nodi submodule/worktree del tree (evento
+> `OpenRepositoryRequested` → `OpenRepository`). Residue: **Plugins** (iter. 17-18,
+> implementa "## Piano modello plugin") + 4 SKIP (GitHub hosts ×2, avatar,
+> build-status).
 > Riferimento originale: `src/app/GitUI` (FormBrowse, RepoObjectsTree,
 > RevisionGrid). Stato: `[x]` fatto nel port Avalonia · `[ ]` mancante.
 
@@ -542,8 +550,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Toggle left panel
 - [x] Toggle split-view layout (stacked ↔ side-by-side)
 - [x] Commit-info position (below/left/right)
-- [ ] Level-up / Submodules split button
-- [ ] Worktrees split button
+- [x] Level-up / Submodules split button (dropdown + open)
+- [x] Worktrees split button (dropdown + open)
 - [x] Working directory / recent-repo picker (Open)
 - [x] Branch select (checkout)
 - [x] Pull (+ merge/rebase/fetch/fetch-all varianti)
@@ -561,8 +569,8 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Nodo Remotes + fetch/pull/push/manage
 - [x] Nodo Tags + checkout/create-branch/merge/reset/delete
 - [x] Nodo Stashes + apply/pop/open/drop/manage
-- [x] Nodo Submodules + list/update/update-all (open/commit/reset da fare)
-- [x] Nodo Worktrees + add/remove/prune (open rinviato: richiede MainWindow)
+- [x] Nodo Submodules + list/update/update-all/open (commit/reset da fare)
+- [x] Nodo Worktrees + add/remove/prune/open
 - [x] Ordinamento ref (sort-by name/data + asc/desc) + move up/down (branch)
 - [x] Copy to clipboard (nome) / copy path (submodule/worktree)
 
