@@ -339,12 +339,12 @@ public sealed class CommitDialog : Window
     private async Task PushAsync()
     {
         string repo = _repoPath;
-        await GitProcessDialog.RunAsync(this, "Push", () =>
+        await GitProcessDialog.RunStreamingAsync(this, "Push", emit =>
         {
             var remotes = new RemoteService().ListRemotes(repo);
             string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
             string branch = new RemoteService().GetCurrentBranch(repo);
-            var r = new RemoteService().Push(repo, remote, branch, false, null);
+            var r = new RemoteService().PushStreaming(repo, remote, branch, false, emit, null);
             return new GitProcessOutcome(r.Success, r.Output);
         });
     }

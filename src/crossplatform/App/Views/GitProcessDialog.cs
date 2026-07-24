@@ -169,6 +169,49 @@ public sealed class GitProcessDialog : Window
         return dialog.RunInternalAsync(owner, operation);
     }
 
+    /// <summary>
+    ///  Runs <paramref name="operation"/> on a background thread, streaming git
+    ///  output <em>truly live</em>: the operation is handed an <c>emit</c> callback
+    ///  and every line it emits is appended to the console the instant git produces
+    ///  it (stdout AND stderr, including fetch/push transfer progress). Unlike
+    ///  <see cref="RunAsync"/>, no CommandLog poll timer runs — the operation (via
+    ///  <see cref="Services.GitStreamRunner"/>) emits the command header itself.
+    /// </summary>
+    public static Task RunStreamingAsync(Window owner, string label, Func<Action<string>, GitProcessOutcome> operation)
+    {
+        GitProcessDialog dialog = new(label);
+        return dialog.RunStreamingInternalAsync(owner, operation);
+    }
+
+    private Task RunStreamingInternalAsync(Window owner, Func<Action<string>, GitProcessOutcome> operation)
+    {
+        Opened += (_, _) =>
+        {
+            _ = Task.Run(() =>
+            {
+                GitProcessOutcome outcome;
+                try
+                {
+                    // Marshal every emitted line to the UI thread; the runner calls
+                    // this from threadpool threads (OutputDataReceived/ErrorDataReceived).
+                    outcome = operation(line => Dispatcher.UIThread.Post(() => AppendLine(line)));
+                }
+                catch (Exception ex)
+                {
+                    outcome = new GitProcessOutcome(false, ex.GetBaseException().Message ?? "Operation failed.");
+                }
+
+                Dispatcher.UIThread.Post(() => Complete(outcome, streaming: true));
+            });
+        };
+
+        return ShowDialog(owner);
+    }
+
+    // Appends a single already-produced line to the beige console and scrolls to
+    // the end. Used by the streaming path (called on the UI thread).
+    private void AppendLine(string line) => Append(line ?? string.Empty);
+
     private Task RunInternalAsync(Window owner, Func<GitProcessOutcome> operation)
     {
         // Snapshot the log length so we only stream entries produced by this op.
@@ -216,17 +259,23 @@ public sealed class GitProcessDialog : Window
         Append(string.Join(Environment.NewLine, lines));
     }
 
-    private void Complete(GitProcessOutcome outcome)
+    private void Complete(GitProcessOutcome outcome) => Complete(outcome, streaming: false);
+
+    private void Complete(GitProcessOutcome outcome, bool streaming)
     {
         _pollTimer?.Stop();
         _pollTimer = null;
 
-        // Flush any final command entries, then the captured operation output.
-        DrainNewCommands();
-
-        if (!string.IsNullOrEmpty(outcome.Output))
+        if (!streaming)
         {
-            Append(outcome.Output);
+            // Non-streaming: flush any final command entries, then the captured
+            // operation output. (Streaming already emitted every line live.)
+            DrainNewCommands();
+
+            if (!string.IsNullOrEmpty(outcome.Output))
+            {
+                Append(outcome.Output);
+            }
         }
 
         // Cosmetic closing hint, echoing the original console.

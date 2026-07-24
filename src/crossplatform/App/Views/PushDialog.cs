@@ -377,9 +377,9 @@ public sealed class PushDialog : Window
 
         _pushLaunched = true;
         string repo = _repoPath;
-        await GitProcessDialog.RunAsync(this, "Push", () =>
+        await GitProcessDialog.RunStreamingAsync(this, "Push", emit =>
         {
-            RemoteOpResult r = new RemoteService().Push(repo, remote, branch, force, null);
+            RemoteOpResult r = new RemoteService().PushStreaming(repo, remote, branch, force, emit, null);
             return new GitProcessOutcome(r.Success, r.Output);
         });
         Close();
@@ -395,9 +395,9 @@ public sealed class PushDialog : Window
 
         _pushLaunched = true;
         string repo = _repoPath;
-        await GitProcessDialog.RunAsync(this, "Pull", () =>
+        await GitProcessDialog.RunStreamingAsync(this, "Pull", emit =>
         {
-            RemoteOpResult r = new RemoteService().Pull(repo, remote, rebase: false, null);
+            RemoteOpResult r = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, null);
             return new GitProcessOutcome(r.Success, r.Output);
         });
         Close();

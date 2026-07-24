@@ -1,3 +1,4 @@
+using System.Text;
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
@@ -189,6 +190,91 @@ public sealed class RemoteService
             recursiveSubmodules: 0);
 
         return Run(module, remote, args, credentials, forPush: true);
+    }
+
+    /// <summary>
+    ///  Streaming variant of <see cref="Fetch"/>: emits every git output line
+    ///  (stdout AND stderr, including transfer progress) through
+    ///  <paramref name="onOutput"/> as it is produced, and also accumulates the full
+    ///  text into the returned <see cref="RemoteOpResult.Output"/>.
+    /// </summary>
+    public RemoteOpResult FetchStreaming(string repoPath, string remote, Action<string> onOutput, GitCredentials? credentials = null)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ArgumentString args = module.FetchCmd(remote, remoteBranch: null, localBranch: null);
+        return RunStreaming(module, remote, args, onOutput, credentials, forPush: false);
+    }
+
+    /// <summary>
+    ///  Streaming variant of <see cref="Pull"/> — see <see cref="FetchStreaming"/>.
+    /// </summary>
+    public RemoteOpResult PullStreaming(string repoPath, string remote, bool rebase, Action<string> onOutput, GitCredentials? credentials = null)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ArgumentString args = module.PullCmd(remote, remoteBranch: null, rebase: rebase);
+        return RunStreaming(module, remote, args, onOutput, credentials, forPush: false);
+    }
+
+    /// <summary>
+    ///  Streaming variant of <see cref="Push"/> — see <see cref="FetchStreaming"/>.
+    /// </summary>
+    public RemoteOpResult PushStreaming(string repoPath, string remote, string branch, bool force, Action<string> onOutput, GitCredentials? credentials = null)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        if (string.IsNullOrEmpty(branch))
+        {
+            branch = module.GetSelectedBranch(emptyIfDetached: true) ?? string.Empty;
+        }
+
+        if (string.IsNullOrEmpty(branch))
+        {
+            return new RemoteOpResult(false, "No branch to push (detached HEAD?).", AuthFailed: false);
+        }
+
+        ArgumentString args = Commands.Push(
+            remote: remote,
+            fromBranch: branch,
+            toBranch: branch,
+            force: force ? ForcePushOptions.ForceWithLease : ForcePushOptions.DoNotForce,
+            track: true,
+            recursiveSubmodules: 0);
+
+        return RunStreaming(module, remote, args, onOutput, credentials, forPush: true);
+    }
+
+    // Streaming counterpart of the private Run overloads: builds the same argument
+    // string (optionally wrapped with the transient credential helper for http/https
+    // remotes), runs it through GitStreamRunner emitting each line live, and returns
+    // the accumulated output. onOutput may be called from a background thread.
+    private RemoteOpResult RunStreaming(GitModule module, string remote, ArgumentString args, Action<string> onOutput, GitCredentials? credentials, bool forPush)
+    {
+        string argString = args.Arguments ?? string.Empty;
+        IReadOnlyDictionary<string, string?>? env = null;
+
+        if (credentials is not null && IsHttpRemote(module, remote, forPush))
+        {
+            // Mirror RunWithCredentials: a one-shot inline credential helper that
+            // reads the secret from env vars, prepended to the argument string. The
+            // secret itself is never on the command line.
+            string helper = $"!f() {{ test $1 = get && echo username=${UserEnvVar} && echo password=${PassEnvVar}; }}; f";
+            argString = $"-c credential.helper= -c \"credential.helper={helper}\" {argString}";
+            env = new Dictionary<string, string?>
+            {
+                [UserEnvVar] = credentials.Username,
+                [PassEnvVar] = credentials.Password,
+            };
+        }
+
+        StringBuilder sb = new();
+        int exit = GitStreamRunner.Run(repoPath: module.WorkingDir, arguments: argString, onLine: line =>
+        {
+            sb.AppendLine(line);
+            onOutput(line);
+        }, env: env);
+
+        string output = sb.ToString();
+        return new RemoteOpResult(exit == 0, output, LooksLikeAuthFailure(output));
     }
 
     // Runs a remote command. Without credentials (or for non-http/https remotes)
