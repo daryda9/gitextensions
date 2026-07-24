@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using GitCommands;
 using GitCommands.Git;
@@ -274,7 +275,69 @@ public sealed class RemoteService
         }, env: env);
 
         string output = sb.ToString();
+
+        // Credentials supplied by the in-app dialog worked → hand them to git's own
+        // configured credential helper (keyring / store) via `git credential approve`
+        // so subsequent operations resolve silently, the way Git Credential Manager
+        // behaves on Windows. Best-effort: a missing/failing helper changes nothing.
+        if (exit == 0 && credentials is not null)
+        {
+            ApproveCredentials(module, remote, forPush, credentials, onOutput);
+        }
+
         return new RemoteOpResult(exit == 0, output, LooksLikeAuthFailure(output));
+    }
+
+    // Persists working credentials in git's configured credential helper by piping a
+    // credential description to `git credential approve` on stdin. The secret goes
+    // through stdin only — never the command line — and no transient helper override
+    // is passed, so git routes it to the user's real helper (e.g. libsecret/keyring).
+    private void ApproveCredentials(GitModule module, string remote, bool forPush, GitCredentials credentials, Action<string> onOutput)
+    {
+        try
+        {
+            RemoteRow? row = ListRemotesFrom(module).FirstOrDefault(r => r.Name == remote);
+            string? url = forPush ? row?.PushUrl : row?.FetchUrl;
+            if (string.IsNullOrEmpty(url)
+                || !Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
+                || uri.Scheme is not ("http" or "https"))
+            {
+                return;
+            }
+
+            ProcessStartInfo psi = new()
+            {
+                FileName = "git",
+                Arguments = "credential approve",
+                WorkingDirectory = module.WorkingDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+
+            using Process proc = new() { StartInfo = psi };
+            proc.Start();
+            proc.StandardInput.NewLine = "\n";
+            proc.StandardInput.WriteLine($"protocol={uri.Scheme}");
+            proc.StandardInput.WriteLine($"host={uri.Host}");
+            proc.StandardInput.WriteLine($"username={credentials.Username}");
+            proc.StandardInput.WriteLine($"password={credentials.Password}");
+            proc.StandardInput.WriteLine();
+            proc.StandardInput.Close();
+            proc.WaitForExit(5000);
+
+            if (proc.HasExited && proc.ExitCode == 0)
+            {
+                onOutput("Credentials saved to the configured git credential helper.");
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort only: never fail the operation because saving failed.
+        }
     }
 
     // Runs a remote command. Without credentials (or for non-http/https remotes)
