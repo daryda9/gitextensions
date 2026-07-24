@@ -42,10 +42,19 @@ public sealed class MainWindow : Window
     private readonly RevisionGridView _revisions = new();
     private readonly CommitDetailView _detail = new();
     private readonly DiffView _diff = new();
+    private readonly FileTreeView _fileTree = new();
+    private readonly GpgView _gpg = new();
+    private readonly ConsoleView _console = new();
+    private readonly OutputView _output = new();
     private readonly WorkingDirectoryView _workingDir = new();
 
     private readonly TabControl _bottom;
     private readonly TabItem _commitInfoTab;
+    private readonly TabItem _diffTab;
+    private readonly TabItem _fileTreeTab;
+    private readonly TabItem _gpgTab;
+    private readonly TabItem _consoleTab;
+    private readonly TabItem _outputTab;
     private readonly TabItem _workingDirTab;
     private readonly TabItem _stashTab;
     private readonly TabItem _blameTab;
@@ -118,17 +127,36 @@ public sealed class MainWindow : Window
         _revRow = new RowDefinition(new GridLength(_uiState.RevisionsStar, GridUnitType.Star));
         _bottomRow = new RowDefinition(new GridLength(_uiState.BottomStar, GridUnitType.Star));
 
-        // ---- bottom panel: commit info (detail + diff) / working dir / stash / blame / history
+        // ---- bottom panel: the original FormBrowse tab strip
+        //   Commit · Diff · File tree · GPG · Console · Output
+        // followed by the extra Avalonia panels
+        //   Working directory · Stash · Blame · File history.
+        // The Commit tab shows the commit DETAIL; the diff moved out to its own
+        // Diff tab so both are visible at once.
         _commitInfoTab = new TabItem { Header = "Commit" };
+        _diffTab = new TabItem { Header = "Diff", Content = _diff };
+        _fileTreeTab = new TabItem { Header = "File tree", Content = _fileTree };
+        _gpgTab = new TabItem { Header = "GPG", Content = _gpg };
+        _consoleTab = new TabItem { Header = "Console", Content = _console };
+        _outputTab = new TabItem { Header = "Output", Content = _output };
         _workingDirTab = new TabItem { Header = "Working directory", Content = _workingDir };
         _stashTab = new TabItem { Header = "Stash", Content = _stash };
         _blameTab = new TabItem { Header = "Blame", Content = _blame };
         _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
+
+        // The Console tab's "Open terminal here" button reuses the external-tool
+        // terminal launcher against the current repository.
+        _console.OpenTerminalRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
+
         _bottom = new TabControl
         {
             Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             ClipToBounds = true,
-            Items = { _commitInfoTab, _workingDirTab, _stashTab, _blameTab, _historyTab },
+            Items =
+            {
+                _commitInfoTab, _diffTab, _fileTreeTab, _gpgTab, _consoleTab, _outputTab,
+                _workingDirTab, _stashTab, _blameTab, _historyTab,
+            },
         };
 
         // ---- right side: revision grid + bottom panel, with the commit-info panel
@@ -221,12 +249,12 @@ public sealed class MainWindow : Window
     {
         Detach(_revisions);
         Detach(_detail);
-        Detach(_diff);
         Detach(_bottom);
 
-        // The Commit tab hosts the detail+diff only when the commit info sits below
-        // the graph; otherwise the detail moves beside the grid and the tab shows
-        // just the diff.
+        // The Commit tab hosts the commit detail only when the commit info sits
+        // below the graph; otherwise the detail moves beside the grid and the tab
+        // shows a hint. The diff always lives in its own Diff tab, so it is never
+        // reparented here.
         bool detailBelow = _commitInfoPosition == CommitInfoPosition.BelowGraph;
         _commitInfoTab.Content = BuildCommitTabContent(detailBelow);
 
@@ -280,61 +308,28 @@ public sealed class MainWindow : Window
         return grid;
     }
 
-    // Builds the Commit tab body. When the detail belongs here it is arranged with
-    // the diff either stacked (vertical split) or side by side (horizontal split);
-    // otherwise the detail lives beside the grid and the tab shows only the diff.
+    // Builds the Commit tab body. When the commit info sits below the graph the
+    // tab shows the commit detail; otherwise the detail lives beside the grid and
+    // the tab shows a short hint. The diff is always in its own Diff tab. The
+    // detail/diff row definitions are kept in sync so persisted split sizes remain
+    // valid across a rebuild.
     private Control BuildCommitTabContent(bool includeDetail)
     {
-        if (!includeDetail)
-        {
-            return _diff;
-        }
-
         _detailRow = new RowDefinition(new GridLength(_detailRow.Height.Value, GridUnitType.Star));
         _diffRow = new RowDefinition(new GridLength(_diffRow.Height.Value, GridUnitType.Star));
 
-        Grid grid = new()
+        if (includeDetail)
         {
-            ClipToBounds = true,
-            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            return _detail;
+        }
+
+        return new TextBlock
+        {
+            Text = "Commit info is shown beside the graph. The diff is in the Diff tab.",
+            Margin = new Thickness(16),
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
         };
-
-        if (_splitHorizontal)
-        {
-            // Side-by-side: detail | diff, split by a vertical gutter.
-            grid.ColumnDefinitions = new ColumnDefinitions
-            {
-                new ColumnDefinition(new GridLength(_detailRow.Height.Value, GridUnitType.Star)),
-                new ColumnDefinition(new GridLength(4, GridUnitType.Pixel)),
-                new ColumnDefinition(new GridLength(_diffRow.Height.Value, GridUnitType.Star)),
-            };
-            GridSplitter split = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
-            Grid.SetColumn(_detail, 0);
-            Grid.SetColumn(split, 1);
-            Grid.SetColumn(_diff, 2);
-            grid.Children.Add(_detail);
-            grid.Children.Add(split);
-            grid.Children.Add(_diff);
-        }
-        else
-        {
-            // Stacked: detail over diff, split by a horizontal gutter.
-            grid.RowDefinitions = new RowDefinitions
-            {
-                _detailRow,
-                new RowDefinition(new GridLength(4, GridUnitType.Pixel)),
-                _diffRow,
-            };
-            GridSplitter split = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
-            Grid.SetRow(_detail, 0);
-            Grid.SetRow(split, 1);
-            Grid.SetRow(_diff, 2);
-            grid.Children.Add(_detail);
-            grid.Children.Add(split);
-            grid.Children.Add(_diff);
-        }
-
-        return grid;
     }
 
     // Detaches a control from its current parent so it can be re-hosted elsewhere
@@ -952,6 +947,8 @@ public sealed class MainWindow : Window
         _lastSelectedHash = commitHash;
         _detail.ShowCommit(_repoPath, commitHash);
         _diff.ShowCommit(_repoPath, commitHash);
+        _fileTree.ShowCommit(_repoPath, commitHash);
+        _gpg.ShowCommit(_repoPath, commitHash);
         _bottom.SelectedItem = _commitInfoTab;
     }
 
@@ -965,7 +962,7 @@ public sealed class MainWindow : Window
         }
 
         _diff.ShowRange(_repoPath, baseHash, otherHash);
-        _bottom.SelectedItem = _commitInfoTab;
+        _bottom.SelectedItem = _diffTab;
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;
         _statusBar.SetText($"Comparing {shortBase}..{shortOther}");
@@ -1001,7 +998,7 @@ public sealed class MainWindow : Window
         }
 
         _diff.ShowRange(_repoPath, baseHash, hash);
-        _bottom.SelectedItem = _commitInfoTab;
+        _bottom.SelectedItem = _diffTab;
 
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
@@ -1018,7 +1015,7 @@ public sealed class MainWindow : Window
         }
 
         _diff.ShowAgainstWorkingDirectory(_repoPath, hash);
-        _bottom.SelectedItem = _commitInfoTab;
+        _bottom.SelectedItem = _diffTab;
 
         string shortHash = hash.Length > 8 ? hash[..8] : hash;
         _statusBar.SetText($"Comparing {shortHash} .. working tree");
@@ -1065,7 +1062,7 @@ public sealed class MainWindow : Window
         string baseRef = chosen.ObjectId is { Length: > 0 } oid ? oid : chosen.Name;
 
         _diff.ShowRange(_repoPath, baseRef, hash);
-        _bottom.SelectedItem = _commitInfoTab;
+        _bottom.SelectedItem = _diffTab;
 
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
         _statusBar.SetText($"Comparing {chosen.Name} .. {shortOther}");
