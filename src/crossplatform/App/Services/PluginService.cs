@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Reflection;
 using GitExtensions.Avalonia.Plugins;
 using GitExtensions.Extensibility.Plugins;
 
@@ -18,11 +20,17 @@ namespace GitExtensions.Avalonia.Services;
 ///  <see cref="StackOverflowException"/> is uncatchable, so the MEF path cannot even
 ///  be attempted safely — the act of initialising it crashes the app.</para>
 ///
-///  <para>The service therefore uses a hard-coded in-code registration of the
-///  built-in plugins. This keeps the whole pipeline (menu → run off-thread →
-///  settings editor → persistence) fully working; wiring real file-scan discovery
-///  is left for when a Linux-safe loader replaces <c>ManagedExtensibility</c>.
-///  <see cref="LoadStrategy"/> records the path used.</para>
+///  <para>The service therefore registers the built-in plugins directly in code and
+///  then discovers any external plugins with a <b>Linux-safe, reflection-based folder
+///  loader</b> — no MEF. It scans <c>GitExtensions.Avalonia/plugins/</c> under the XDG
+///  config directory for <c>*.dll</c> files, loads each with
+///  <see cref="Assembly.LoadFrom(string)"/> inside a try/catch, and reflects for public
+///  non-abstract types that implement <see cref="IGitPlugin"/> and expose a public
+///  parameterless constructor. Any assembly or type that fails to load is logged and
+///  skipped, so a broken plugin can never take down the app. This keeps the whole
+///  pipeline (menu → run off-thread → settings editor → persistence) fully working for
+///  both built-in and folder-loaded plugins. <see cref="LoadStrategy"/> records the path
+///  used.</para>
 /// </summary>
 public sealed class PluginService
 {
@@ -51,10 +59,143 @@ public sealed class PluginService
 
     private static (IReadOnlyList<IGitPlugin>, string) Discover()
     {
-        // Direct in-code registration. VS-MEF (ManagedExtensibility) is deliberately
-        // NOT used: initialising it overflows the stack in this environment (see the
-        // class remarks), and a StackOverflowException cannot be caught.
-        IGitPlugin[] plugins = [new SampleGreetPlugin(), new BackgroundFetchPlugin()];
-        return (plugins, $"direct in-code registration ({plugins.Length} plugin(s))");
+        // 1. Built-in plugins, registered directly in code. VS-MEF
+        //    (ManagedExtensibility) is deliberately NOT used anywhere here: initialising
+        //    it overflows the stack in this environment (see the class remarks), and a
+        //    StackOverflowException cannot be caught.
+        var plugins = new List<IGitPlugin> { new SampleGreetPlugin(), new BackgroundFetchPlugin() };
+        int builtInCount = plugins.Count;
+
+        // De-dupe by Id: built-ins are added first and win (first-wins policy).
+        var seenIds = new HashSet<Guid>(plugins.Select(p => p.Id));
+
+        // 2. External plugins, discovered from the folder via pure System.Reflection.
+        string pluginsDir = GetPluginsDirectory();
+        int folderCount = 0;
+        foreach (IGitPlugin plugin in LoadFolderPlugins(pluginsDir))
+        {
+            if (seenIds.Add(plugin.Id))
+            {
+                plugins.Add(plugin);
+                folderCount++;
+            }
+            else
+            {
+                Log($"skipping duplicate plugin Id {plugin.Id} ({plugin.GetType().FullName})");
+            }
+        }
+
+        string strategy =
+            $"reflection folder loader (no MEF): {builtInCount} built-in + {folderCount} from '{pluginsDir}'";
+        return (plugins, strategy);
+    }
+
+    /// <summary>
+    ///  Resolves the external plugins directory:
+    ///  <c>$XDG_CONFIG_HOME</c> (or <c>~/.config</c>) / <c>GitExtensions.Avalonia/plugins</c>.
+    /// </summary>
+    private static string GetPluginsDirectory()
+    {
+        string? xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        string configHome = !string.IsNullOrWhiteSpace(xdg)
+            ? xdg!
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".config");
+
+        return Path.Combine(configHome, "GitExtensions.Avalonia", "plugins");
+    }
+
+    /// <summary>
+    ///  Scans <paramref name="pluginsDir"/> for <c>*.dll</c> files and instantiates every
+    ///  public, non-abstract <see cref="IGitPlugin"/> with a public parameterless
+    ///  constructor. Failures at every level (missing folder, bad assembly, reflection
+    ///  fault, constructor throw) are logged and skipped — never rethrown — so one broken
+    ///  plugin can never bring down the host.
+    /// </summary>
+    private static IEnumerable<IGitPlugin> LoadFolderPlugins(string pluginsDir)
+    {
+        if (!Directory.Exists(pluginsDir))
+        {
+            Log($"plugins directory absent, loading built-ins only: '{pluginsDir}'");
+            yield break;
+        }
+
+        string[] dllPaths;
+        try
+        {
+            dllPaths = Directory.GetFiles(pluginsDir, "*.dll", SearchOption.TopDirectoryOnly);
+        }
+        catch (Exception ex)
+        {
+            Log($"failed to enumerate '{pluginsDir}': {ex.Message}");
+            yield break;
+        }
+
+        foreach (string dllPath in dllPaths)
+        {
+            // Enumerate candidate types per-assembly with full isolation, then yield
+            // outside the try/catch (you cannot 'yield' from inside a try with a catch).
+            foreach (IGitPlugin plugin in InstantiatePluginsFromAssembly(dllPath))
+            {
+                yield return plugin;
+            }
+        }
+    }
+
+    private static IReadOnlyList<IGitPlugin> InstantiatePluginsFromAssembly(string dllPath)
+    {
+        Type[] types;
+        try
+        {
+            Assembly assembly = Assembly.LoadFrom(dllPath);
+            types = assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            // Partial success: keep the types that did load, skip the rest.
+            types = ex.Types.Where(t => t is not null).Cast<Type>().ToArray();
+            Log($"partial type-load for '{dllPath}': {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            Log($"failed to load assembly '{dllPath}': {ex.Message}");
+            return [];
+        }
+
+        var result = new List<IGitPlugin>();
+        foreach (Type type in types)
+        {
+            if (!typeof(IGitPlugin).IsAssignableFrom(type)
+                || !type.IsClass
+                || !type.IsPublic
+                || type.IsAbstract
+                || type.GetConstructor(Type.EmptyTypes) is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (Activator.CreateInstance(type) is IGitPlugin plugin)
+                {
+                    result.Add(plugin);
+                    Log($"loaded plugin '{type.FullName}' from '{dllPath}'");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"failed to instantiate '{type.FullName}' from '{dllPath}': {ex.Message}");
+            }
+        }
+
+        return result;
+    }
+
+    private static void Log(string message)
+    {
+        string line = $"[PluginService] {message}";
+        Console.WriteLine(line);
+        Debug.WriteLine(line);
     }
 }
