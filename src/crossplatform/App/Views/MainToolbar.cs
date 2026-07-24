@@ -65,6 +65,25 @@ public sealed class MainToolbar : UserControl
     public Func<Task<IReadOnlyList<RepoLink>>>? WorktreesProvider { get; set; }
     public event Action<string>? OpenRepositoryRequested;
 
+    // ---- stateful controls kept for UpdateState() ---------------------------
+    // References to the Push / Pull / Commit buttons and their caption TextBlocks
+    // (and icon Images, so we can tint them) so UpdateState() can refresh badges
+    // and colours in place without rebuilding the toolbar.
+    private Button? _pushButton;
+    private TextBlock? _pushCaption;
+    private Image? _pushIcon;
+    private Button? _pullButton;
+    private TextBlock? _pullCaption;
+    private Image? _pullIcon;
+    private Button? _commitButton;
+    private TextBlock? _commitCaption;
+    private Image? _commitIcon;
+
+    // Far-right working-directory indicator (repo name + ~-collapsed path); created
+    // lazily on the first UpdateState() call and reused thereafter.
+    private TextBlock? _repoIndicator;
+    private readonly StackPanel _bar;
+
     public MainToolbar()
     {
         IBrush toolbar = Brush("App.Toolbar", "#333337");
@@ -85,14 +104,21 @@ public sealed class MainToolbar : UserControl
             Spacing = 2,
             Margin = new Thickness(6, 3),
         };
+        _bar = bar;
 
         bar.Children.Add(MakeButton("RepoOpen", "Open", "Open repository", () => OpenRepoRequested?.Invoke()));
         bar.Children.Add(Separator(border));
         bar.Children.Add(MakeButton("PullFetch", "Fetch", "Fetch from remote", () => FetchRequested?.Invoke()));
-        bar.Children.Add(MakeButton("Pull", "Pull", "Pull from remote", () => PullRequested?.Invoke()));
-        bar.Children.Add(MakeButton("Push", "Push", "Push to remote", () => PushRequested?.Invoke()));
+        _pullButton = MakeButton("Pull", "Pull", "Pull from remote", () => PullRequested?.Invoke(),
+            out _pullCaption, out _pullIcon);
+        bar.Children.Add(_pullButton);
+        _pushButton = MakeButton("Push", "Push", "Push to remote", () => PushRequested?.Invoke(),
+            out _pushCaption, out _pushIcon);
+        bar.Children.Add(_pushButton);
         bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("CommitSummary", "Commit", "Commit changes", () => CommitRequested?.Invoke()));
+        _commitButton = MakeButton("CommitSummary", "Commit", "Commit changes", () => CommitRequested?.Invoke(),
+            out _commitCaption, out _commitIcon);
+        bar.Children.Add(_commitButton);
         bar.Children.Add(Separator(border));
         bar.Children.Add(MakeButton("stash", "Stash", "Stash changes", () => StashRequested?.Invoke()));
         bar.Children.Add(Separator(border));
@@ -163,7 +189,124 @@ public sealed class MainToolbar : UserControl
         Content = bar;
     }
 
+    /// <summary>
+    ///  Refreshes the toolbar's live indicators from the current repository state.
+    ///  Call on every refresh, from the UI thread. Idempotent: repeated calls
+    ///  update the same captions / indicator text in place — badges never stack.
+    /// </summary>
+    /// <param name="ahead">Commits the local branch is ahead of its upstream.</param>
+    /// <param name="behind">Commits the local branch is behind its upstream.</param>
+    /// <param name="staged">Number of staged (index) changes.</param>
+    /// <param name="unstaged">Number of unstaged working-tree changes.</param>
+    /// <param name="repoPath">Absolute path of the active repository (may be empty).</param>
+    /// <param name="branch">Current branch name (may be empty).</param>
+    public void UpdateState(int ahead, int behind, int staged, int unstaged, string repoPath, string branch)
+    {
+        IBrush text = Brush("App.Text", "#DCDCDC");
+        IBrush dim = Brush("App.TextDim", "#8A8A8A");
+        IBrush accent = Brush("App.Accent", "#007ACC");
+        IBrush green = Brush("App.GraphGreen", "#3FB950");
+        IBrush orange = new SolidColorBrush(Color.Parse("#E6A700"));
+
+        // Push: light up with an "ahead" badge when there are commits to push.
+        if (_pushCaption is not null)
+        {
+            bool lit = ahead > 0;
+            _pushCaption.Text = lit ? $"Push ↑{ahead}" : "Push";
+            _pushCaption.Foreground = lit ? accent : text;
+            if (_pushIcon is not null)
+            {
+                _pushIcon.Opacity = lit ? 1.0 : 0.85;
+            }
+        }
+
+        // Pull: light up with a "behind" badge when there are commits to pull.
+        if (_pullCaption is not null)
+        {
+            bool lit = behind > 0;
+            _pullCaption.Text = lit ? $"Pull ↓{behind}" : "Pull";
+            _pullCaption.Foreground = lit ? accent : text;
+            if (_pullIcon is not null)
+            {
+                _pullIcon.Opacity = lit ? 1.0 : 0.85;
+            }
+        }
+
+        // Commit: colour by working-directory state and show a change count.
+        if (_commitCaption is not null)
+        {
+            int changes = staged + unstaged;
+            IBrush commitColour = staged > 0 ? green : unstaged > 0 ? orange : dim;
+            _commitCaption.Text = changes > 0 ? $"Commit ({changes})" : "Commit";
+            _commitCaption.Foreground = commitColour;
+            if (_commitIcon is not null)
+            {
+                _commitIcon.Opacity = changes > 0 ? 1.0 : 0.6;
+            }
+        }
+
+        // Working-directory indicator, created lazily and updated in place.
+        if (_repoIndicator is null)
+        {
+            _repoIndicator = new TextBlock
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Foreground = dim,
+                FontSize = 11,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 480,
+                Margin = new Thickness(16, 0, 4, 0),
+            };
+            _bar.Children.Add(_repoIndicator);
+        }
+
+        if (string.IsNullOrWhiteSpace(repoPath))
+        {
+            _repoIndicator.Text = "(no repository)";
+            _repoIndicator.Foreground = dim;
+            ToolTip.SetTip(_repoIndicator, null);
+        }
+        else
+        {
+            string name = System.IO.Path.GetFileName(repoPath.TrimEnd('/', '\\'));
+            if (string.IsNullOrEmpty(name))
+            {
+                name = repoPath;
+            }
+
+            string shown = CollapseHome(repoPath);
+            string label = $"{name} — {shown}";
+            if (!string.IsNullOrWhiteSpace(branch))
+            {
+                label += $" ({branch})";
+            }
+
+            _repoIndicator.Text = label;
+            _repoIndicator.Foreground = dim;
+            ToolTip.SetTip(_repoIndicator, label);
+        }
+    }
+
+    // Replaces a leading user-home prefix with "~" for a compact path display.
+    private static string CollapseHome(string path)
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(home) && path.StartsWith(home, StringComparison.Ordinal))
+        {
+            return "~" + path.Substring(home.Length);
+        }
+
+        return path;
+    }
+
     private Button MakeButton(string iconName, string label, string tooltip, Action onClick)
+        => MakeButton(iconName, label, tooltip, onClick, out _, out _);
+
+    // Variant that hands back the caption TextBlock and (optional) icon Image so
+    // callers can keep references for later restyling (see UpdateState).
+    private Button MakeButton(string iconName, string label, string tooltip, Action onClick,
+        out TextBlock caption, out Image? icon)
     {
         StackPanel content = new()
         {
@@ -172,7 +315,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        Image? icon = IconLoader.Image(iconName, 16);
+        icon = IconLoader.Image(iconName, 16);
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -180,13 +323,14 @@ public sealed class MainToolbar : UserControl
         }
 
         // Show the label always when there's no icon, otherwise as a short caption.
-        content.Children.Add(new TextBlock
+        caption = new TextBlock
         {
             Text = label,
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
-        });
+        };
+        content.Children.Add(caption);
 
         Button button = new()
         {
