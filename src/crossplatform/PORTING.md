@@ -943,7 +943,7 @@ Griglia:
   colorati: branch verde, remote rosso/rosa, tag, stash) invece dei pill pieni scuri;
   branch corrente **grassetto + ▶** e nodo quadrato pieno.
 - [x] **U-GRID-DATE** ✅ M31 — Default date **relative** ("2 hours ago").
-- [ ] **U-GRID-TOPROWS** Righe artificiali in cima: **Working directory** + **Commit
+- [x] **U-GRID-TOPROWS** ✅ M34 — Righe artificiali in cima: **Working directory** + **Commit
   index** con check verde, cliccabili (mostrano il lavoro pendente).
 - [ ] **U-GRID-SEL** Selezione riga piena blu forte (già parzialmente fatto T4).
 
@@ -955,6 +955,12 @@ Menu + toolbar:
   All branches / Branches / Filter.
 
 ### Milestone round 2 (fedeltà visiva)
+- **M34** (iter. 7) — **U-GRID-TOPROWS** righe artificiali "Working directory" +
+  "Commit index" in cima alla grid (pannello fisso docked Top sopra la ListBox, non
+  tocca RevisionRow/ItemsSource): ✔ verde+conteggi quando ci sono modifiche, dim se
+  pulito; click apre CommitDialog. `RevisionGridView.SetWorkingState(unstaged,staged)`
+  + eventi WorkingDirectorySelected/CommitIndexSelected, alimentati da MainWindow
+  (RefreshToolbarState). Verificato in GUI.
 - **M31** (iter. 4) — **U-MENU** menu top-level ristrutturato in Start · Repository ·
   Navigate · View · Commands · GitHub · Plugins · Tools · Help (File→Start, Edit rimosso
   e voci riparentate, GitHub placeholder disabilitato). **U-GRID-BADGE** ref come pill
