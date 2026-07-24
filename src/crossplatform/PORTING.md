@@ -951,10 +951,21 @@ Menu + toolbar:
 - [x] **U-MENU** ✅ M31 — Top-level come originale: **Start · Repository · Navigate · View ·
   Commands · GitHub · Plugins · Tools · Help** (rinominare File→Start, aggiungere
   Navigate e GitHub, riparentare Edit/Settings; wiring eventi invariato).
-- [ ] **U-TOOLBAR** Dropdown path repo + dropdown branch inline nella toolbar, combo
+- [x] **U-TOOLBAR** ✅ M35 — Dropdown path repo + dropdown branch inline nella toolbar, combo
   All branches / Branches / Filter.
 
 ### Milestone round 2 (fedeltà visiva)
+- **M35** (iter. 8) — **U-TOOLBAR** dropdown inline nella toolbar: repo-path
+  (`~/path ▾`, flyout recenti → OpenRepository) + branch corrente (`branch ▾`, flyout
+  branch locali, corrente in grassetto → checkout via BranchTagService), subito dopo
+  Open come nell'originale; popola-prima-di-aprire (no sliver vuoto). `BranchesProvider`
+  /`BranchCheckoutRequested`/`RecentReposProvider` + caption aggiornate in UpdateState.
+  Verificato in GUI.
+
+**Round 2 COMPLETO** per le aree scelte (Modali · Griglia · Menu+toolbar): M31–M35.
+Resta fuori scope (non scelto): tab inferiori originali Console/Output/File tree/GPG,
+combo All-branches/Filter in toolbar (la grid ha già filtro+scope), righe artificiali
+integrate nel grafo DAG (ora sono un pannello sopra la lista).
 - **M34** (iter. 7) — **U-GRID-TOPROWS** righe artificiali "Working directory" +
   "Commit index" in cima alla grid (pannello fisso docked Top sopra la ListBox, non
   tocca RevisionRow/ItemsSource): ✔ verde+conteggi quando ci sono modifiche, dim se
