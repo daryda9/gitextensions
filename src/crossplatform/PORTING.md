@@ -803,7 +803,7 @@ Prossimo blocco di lavoro, in ordine di priorità:
   intera forte (brush `App.Selection`/accento, testo/contrasto adeguati), bordo o
   barra sul lato, mantenendo leggibilità del grafo DAG e dei badge.
 
-- [ ] **T5 — Multi-selezione di due commit → diff nel pannello inferiore.**
+- [x] **T5 — Multi-selezione di due commit → diff nel pannello inferiore.** ✅ M29
   Nell'originale selezionando due commit si vede la diff tra i due sotto. Oggi la
   grid è single-select e il compare è manuale (select BASE → compare). *Dove*:
   `RevisionGridView` selezione multipla (2 righe) → `MainWindow` mostra
@@ -885,6 +885,13 @@ tab** (Commit=dettaglio+diff / Working directory / Stash / Blame / File history)
   (`RunRemoteOp`). **T4** highlight riga selezionata forte nella revision grid
   (fill App.Selection + barra accento sinistra App.Accent, testo App.Text ad alto
   contrasto, `:selected:pointerover`), grafo DAG/badge intatti. Verificati in GUI.
+- **M29** (iter. 2/10) — **T5** multi-selezione 2 commit nella grid (`SelectionMode.Multiple`,
+  evento `RangeSelected(older,newer)`) → MainWindow chiama `DiffView.ShowRange` nel tab
+  Commit + hint status bar; verificato in GUI (2 righe con barra accento, tab Commit).
+  **T2 (parte rendering)** — `MainToolbar.UpdateState(ahead,behind,staged,unstaged,repoPath,
+  branch)`: badge Push ↑N / Pull ↓N in App.Accent, colore Commit (verde staged / arancio
+  unstaged / dim pulito), indicatore repo `nome — ~/path (branch)`. API pronta; **wiring su
+  RefreshAll da fare in iter 3** (hub MainWindow, insieme a T3).
 
 ### Come costruire il pacchetto `.deb`
 ```bash
