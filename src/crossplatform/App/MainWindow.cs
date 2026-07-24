@@ -411,10 +411,10 @@ public sealed class MainWindow : Window
         _toolbar.OpenRepoRequested += () => _ = PickRepositoryAsync();
         _toolbar.RefreshRequested += RefreshAll;
         _toolbar.CommitRequested += () => _bottom.SelectedItem = _workingDirTab;
-        _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null).Success);
-        _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null).Success);
+        _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null));
+        _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null));
         _toolbar.PushRequested += () => RunRemoteOp("Push", (s, r) =>
-            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null).Success);
+            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null));
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
 
@@ -499,10 +499,10 @@ public sealed class MainWindow : Window
             _uiState.Theme = "Dark";
             _uiStateService.Save(_uiState);
         };
-        _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null).Success);
-        _menu.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null).Success);
+        _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r) => s.Fetch(_repoPath!, r, null));
+        _menu.PullRequested += () => RunRemoteOp("Pull", (s, r) => s.Pull(_repoPath!, r, rebase: false, null));
         _menu.PushRequested += () => RunRemoteOp("Push", (s, r) =>
-            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null).Success);
+            s.Push(_repoPath!, r, new RemoteService().GetCurrentBranch(_repoPath!), force: false, null));
         _menu.CommitRequested += () => _bottom.SelectedItem = _workingDirTab;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _menu.NewBranchRequested += () => _ = NewBranchAsync();
@@ -1129,21 +1129,32 @@ public sealed class MainWindow : Window
         _statusBar.LoadRepository(_repoPath);
     }
 
-    // Picks the remote (first configured, or "origin") and runs a remote op.
-    private void RunRemoteOp(string label, Func<RemoteService, string, bool> op)
+    // Picks the remote (first configured, or "origin") and runs a remote op inside
+    // a modal GitProcessDialog that shows the git command(s) + output + result,
+    // then refreshes. Mirrors the original FormProcess behaviour.
+    private void RunRemoteOp(string label, Func<RemoteService, string, RemoteOpResult> op)
     {
         if (_repoPath is null)
         {
             return;
         }
 
-        RunOp(label, () =>
+        _ = RunAsync();
+        return;
+
+        async Task RunAsync()
         {
-            RemoteService svc = new();
-            var remotes = svc.ListRemotes(_repoPath);
-            string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
-            return op(svc, remote);
-        });
+            _statusBar.SetText($"{label}…");
+            await Views.GitProcessDialog.RunAsync(this, label, () =>
+            {
+                RemoteService svc = new();
+                var remotes = svc.ListRemotes(_repoPath);
+                string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
+                RemoteOpResult result = op(svc, remote);
+                return new Views.GitProcessOutcome(result.Success, result.Output);
+            });
+            RefreshAll();
+        }
     }
 
     private void RunOp(string label, Func<bool> op, bool confirm = false)

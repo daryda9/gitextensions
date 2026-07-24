@@ -1,0 +1,252 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Threading;
+using GitCommands.Logging;
+
+namespace GitExtensions.Avalonia.Views;
+
+/// <summary>
+///  Outcome of a git operation surfaced through <see cref="GitProcessDialog"/>:
+///  whether it succeeded and the full textual output git produced.
+/// </summary>
+public sealed record GitProcessOutcome(bool Success, string Output);
+
+/// <summary>
+///  Shared modal runner for a single git operation, modelled on the original
+///  GitExtensions <c>FormProcess</c>. It shows the operation label, streams the
+///  git command lines as they are executed (read from the process-global
+///  <see cref="CommandLog"/>), then appends the operation's captured output and a
+///  success/error result. On success it can auto-close after a short delay.
+///
+///  Styled from the shared App.* brushes to match the active theme, mirroring
+///  <see cref="CommandLogWindow"/>.
+///
+///  Usage: <c>await GitProcessDialog.RunAsync(owner, "Push", () =&gt; …)</c>. The
+///  supplied <paramref name="operation"/> runs on a background thread; all UI
+///  mutation happens on the UI thread.
+/// </summary>
+public sealed class GitProcessDialog : Window
+{
+    private readonly string _label;
+    private readonly TextBox _output;
+    private readonly ScrollViewer _scroll;
+    private readonly TextBlock _status;
+    private readonly CheckBox _autoClose;
+    private readonly Button _close;
+
+    private DispatcherTimer? _pollTimer;
+    private DispatcherTimer? _closeTimer;
+    private int _consumed;
+
+    public GitProcessDialog(string label)
+    {
+        _label = label ?? string.Empty;
+        Title = $"Git — {_label}";
+        Width = 760;
+        Height = 460;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Background = Brush("App.Window", Brushes.DimGray);
+
+        TextBlock header = new()
+        {
+            Text = $"{_label} — Running…",
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+
+        _output = new TextBox
+        {
+            AcceptsReturn = true,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.NoWrap,
+            FontFamily = new FontFamily("monospace"),
+            Background = Brush("App.Control", Brushes.Black),
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        };
+        _scroll = new ScrollViewer
+        {
+            Content = _output,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+
+        _status = new TextBlock
+        {
+            Text = "Running…",
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        _autoClose = new CheckBox
+        {
+            Content = "Auto-close on success",
+            IsChecked = true,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        _close = MakeButton("Close");
+        _close.Click += (_, _) => Close();
+
+        StackPanel footRight = new()
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 12,
+            Children = { _autoClose, _close },
+        };
+
+        Grid footer = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 10, 0, 0) };
+        Grid.SetColumn(_status, 0);
+        Grid.SetColumn(footRight, 1);
+        footer.Children.Add(_status);
+        footer.Children.Add(footRight);
+
+        DockPanel body = new() { Margin = new Thickness(12) };
+        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(footer, Dock.Bottom);
+        body.Children.Add(header);
+        body.Children.Add(footer);
+        body.Children.Add(_scroll);
+        Content = body;
+
+        _header = header;
+    }
+
+    private readonly TextBlock _header;
+
+    /// <summary>
+    ///  Runs <paramref name="operation"/> on a background thread inside a modal
+    ///  process dialog owned by <paramref name="owner"/>, streaming the executed
+    ///  git command lines and then the operation's captured output. Completes when
+    ///  the dialog closes (auto-close on success, or the user pressing Close).
+    /// </summary>
+    public static Task RunAsync(Window owner, string label, Func<GitProcessOutcome> operation)
+    {
+        GitProcessDialog dialog = new(label);
+        return dialog.RunInternalAsync(owner, operation);
+    }
+
+    private Task RunInternalAsync(Window owner, Func<GitProcessOutcome> operation)
+    {
+        // Snapshot the log length so we only stream entries produced by this op.
+        _consumed = SafeCommandCount();
+
+        Opened += (_, _) =>
+        {
+            _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+            _pollTimer.Tick += (_, _) => DrainNewCommands();
+            _pollTimer.Start();
+
+            _ = Task.Run(operation).ContinueWith(t =>
+            {
+                GitProcessOutcome outcome = t.IsFaulted
+                    ? new GitProcessOutcome(false, t.Exception?.GetBaseException().Message ?? "Operation failed.")
+                    : t.Result;
+                Dispatcher.UIThread.Post(() => Complete(outcome));
+            }, TaskScheduler.Default);
+        };
+
+        return ShowDialog(owner);
+    }
+
+    // Appends the ColumnLine of any command-log entries that appeared since the
+    // last poll, so the user sees the actual git command lines as they run.
+    private void DrainNewCommands()
+    {
+        List<string> lines;
+        try
+        {
+            lines = CommandLog.Commands.Skip(_consumed).Select(c => c.ColumnLine).ToList();
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        _consumed += lines.Count;
+        Append(string.Join(Environment.NewLine, lines));
+    }
+
+    private void Complete(GitProcessOutcome outcome)
+    {
+        _pollTimer?.Stop();
+        _pollTimer = null;
+
+        // Flush any final command entries, then the captured operation output.
+        DrainNewCommands();
+
+        if (!string.IsNullOrEmpty(outcome.Output))
+        {
+            Append(outcome.Output);
+        }
+
+        if (outcome.Success)
+        {
+            _header.Text = $"{_label} — Done";
+            _status.Text = "Success";
+            _status.Foreground = Brushes.LimeGreen;
+
+            if (_autoClose.IsChecked == true)
+            {
+                _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+                _closeTimer.Tick += (_, _) =>
+                {
+                    _closeTimer?.Stop();
+                    _closeTimer = null;
+                    Close();
+                };
+                _closeTimer.Start();
+            }
+        }
+        else
+        {
+            _header.Text = $"{_label} — Failed";
+            _status.Text = "Failed";
+            _status.Foreground = Brushes.OrangeRed;
+        }
+    }
+
+    private void Append(string text)
+    {
+        _output.Text = string.IsNullOrEmpty(_output.Text)
+            ? text
+            : _output.Text + Environment.NewLine + text;
+        Dispatcher.UIThread.Post(() => _scroll.ScrollToEnd(), DispatcherPriority.Background);
+    }
+
+    private static int SafeCommandCount()
+    {
+        try
+        {
+            return CommandLog.Commands.Count();
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    private Button MakeButton(string text) => new()
+    {
+        Content = text,
+        MinWidth = 90,
+        HorizontalContentAlignment = HorizontalAlignment.Center,
+        Background = Brush("App.Control", Brushes.DimGray),
+        Foreground = Brush("App.Text", Brushes.Gainsboro),
+    };
+
+    private static IBrush Brush(string key, IBrush fallback)
+        => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b
+            ? b
+            : fallback;
+}
