@@ -770,7 +770,7 @@ Obiettivo: **porting 1:1 delle funzionalità di base**. La struttura c'è (98,1%
 ma mancano feedback visuali che nell'originale sono centrali per l'usabilità.
 Prossimo blocco di lavoro, in ordine di priorità:
 
-- [ ] **T1 — Dialog di esecuzione comando git** (come `FormProcess` dell'originale).
+- [x] **T1 — Dialog di esecuzione comando git** (come `FormProcess` dell'originale). ✅ M28
   Ogni azione che lancia un comando git deve aprire una finestra/dialog che mostra
   **il comando avviato** e **l'output in streaming**, con esito (successo/errore) e
   chiusura (auto-close opzionale su successo). Dà feedback tecnico immediato.
@@ -798,7 +798,7 @@ Prossimo blocco di lavoro, in ordine di priorità:
   `WorkingDirectoryService` (staged/unstaged, stage/unstage, drag&drop, message,
   amend, commit). Valutare se tenere anche il tab "Working directory" o rimuoverlo.
 
-- [ ] **T4 — Selezione commit molto più evidente** nella revision grid. Oggi non si
+- [x] **T4 — Selezione commit molto più evidente** nella revision grid. ✅ M28. Oggi non si
   distingue bene la riga selezionata. *Dove*: `RevisionGridView` — highlight riga
   intera forte (brush `App.Selection`/accento, testo/contrasto adeguati), bordo o
   barra sul lato, mantenendo leggibilità del grafo DAG e dei badge.
@@ -877,6 +877,14 @@ tab** (Commit=dettaglio+diff / Working directory / Stash / Blame / File history)
   settings render senza ISettingControlBinding).
 - **M26** — plugin reale BackgroundFetch (valida il modello) + colonna avatar offline.
 - **M27** — plugin folder loader Linux-safe (reflection, no MEF) + verifica finale.
+
+#### Blocco FEDELTÀ UX (loop dedicato, contatore iterazioni)
+- **M28** (iter. 1/10) — **T1** GitProcessDialog: runner/dialog modale condiviso
+  (comando + output da core CommandLog in polling + esito successo/errore +
+  auto-close opzionale), wiring di RemoteService fetch/pull/push in MainWindow
+  (`RunRemoteOp`). **T4** highlight riga selezionata forte nella revision grid
+  (fill App.Selection + barra accento sinistra App.Accent, testo App.Text ad alto
+  contrasto, `:selected:pointerover`), grafo DAG/badge intatti. Verificati in GUI.
 
 ### Come costruire il pacchetto `.deb`
 ```bash
