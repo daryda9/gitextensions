@@ -931,11 +931,11 @@ Modali:
 - [x] **U-PROC** ✅ M31 — Process dialog stile originale: console beige/tan monospace, header
   "Command to be executed:" + comando git completo, "Current directory:", footer con
   checkbox **Keep dialog open** + **OK** + **Abort**, titolo "Process (path)" con check.
-- [ ] **U-COMMIT** Commit dialog layout 3-zone: unstaged (alto-sx) + staged (basso-sx)
+- [x] **U-COMMIT** ✅ M32 — Commit dialog layout 3-zone: unstaged (alto-sx) + staged (basso-sx)
   con pulsanti Stage/Unstage a freccia, **diff del file a destra**, messaggio+bottoni
   in basso (Commit, Commit & push, Amend, Reset all/unstaged, Commit templates,
   Create branch, Options), status bar committer + "Staged x/y Ln Col".
-- [ ] **U-PUSH** Nuovo Push dialog di configurazione: Push to Remote/Url + Manage
+- [x] **U-PUSH** ✅ M32 — Nuovo Push dialog di configurazione: Push to Remote/Url + Manage
   remotes, tab Push branches/tags/multiple, Branch to push → to, Show options
   (force/tags/recursive), bottoni Pull + Push.
 
@@ -964,6 +964,16 @@ Menu + toolbar:
   **U-GRID-DATE** default date relative. **U-PROC** process dialog stile originale
   (console beige `#ECE9D8`, "Command to be executed:", footer Keep-dialog-open + OK +
   Abort, ✔ verde su successo). Tutti verificati in GUI (screenshot).
+
+- **M32** (iter. 5) — **U-COMMIT** CommitDialog ricostruito 3-zone (liste unstaged/staged
+  + Stage/Unstage/all a sinistra, **diff del file selezionato** a destra via `git diff
+  [--cached]`, messaggio+bottoni sotto: Commit, Commit & push, Amend, Reset all/unstaged;
+  Stash/templates/Create branch/Options placeholder v1); parla diretto a
+  WorkingDirectoryService (tab "Working directory" invariato). **U-PUSH** nuovo PushDialog
+  di config (Remote/Url + Manage remotes, tab Push branches/tags/multiple, Branch→to,
+  Show options: force-with-lease/tags/recursive, Pull+Push), push/pull via GitProcessDialog;
+  MainWindow apre il dialog invece del push immediato. Verificati in GUI.
+- **M33** (iter. 6, in corso) — streaming output *vero* nel process dialog.
 
 ### Come costruire il pacchetto `.deb`
 ```bash
