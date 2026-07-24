@@ -96,7 +96,7 @@ public sealed class RevisionGridView : UserControl
     private enum DateSource { Commit, Author }
 
     private DateSource _dateSource = DateSource.Commit;
-    private bool _relativeDates;
+    private bool _relativeDates = true; // default to relative ("2 hours ago"), matching original GitExtensions
 
     // Which refs the log walks (All branches / current branch only / filtered).
     // Session-local; changing it re-runs the log via the existing load path.
@@ -1588,7 +1588,11 @@ public sealed class RevisionGridView : UserControl
                 continue;
             }
 
-            subject.Children.Add(BuildRefBadge(refName));
+            // Best-effort current-branch emphasis: on the HEAD row, a local branch
+            // ref (not remote, not tag) is the checked-out branch — render it bold
+            // with a small green ▶ marker, echoing the original GitExtensions look.
+            bool isCurrent = row.IsHead && !IsRemoteRef(refName) && !IsTagRef(refName);
+            subject.Children.Add(BuildRefBadge(refName, isCurrent));
         }
 
         subject.Children.Add(new TextBlock
@@ -1620,26 +1624,54 @@ public sealed class RevisionGridView : UserControl
         return 0;
     }
 
-    // A rounded, muted "pill" for a ref name, coloured by kind: local branch,
-    // remote-tracking branch, or tag — echoing the original GitExtensions look.
-    private static Border BuildRefBadge(string refName)
+    // A rounded, OUTLINE "pill" for a ref name, coloured by kind: local branch,
+    // remote-tracking branch, or tag — echoing the original GitExtensions look
+    // (light background, 1px coloured border, coloured text). When isCurrent, the
+    // pill is bold and prefixed by a small green ▶ marker for the checked-out branch.
+    private static Control BuildRefBadge(string refName, bool isCurrent = false)
     {
-        (Color bg, Color fg) = RefColors(refName);
+        Color kind = RefColor(refName);
 
-        return new Border
+        Border pill = new()
         {
-            Background = new SolidColorBrush(bg),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(6, 0, 6, 1),
+            Background = B("App.Panel"), // light/adaptive tint, readable in both themes
+            BorderBrush = new SolidColorBrush(kind),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(7, 0, 7, 1),
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
                 Text = refName,
-                Foreground = new SolidColorBrush(fg),
+                Foreground = new SolidColorBrush(kind),
                 FontSize = 11,
+                FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
                 VerticalAlignment = VerticalAlignment.Center,
             },
         };
+
+        if (!isCurrent)
+        {
+            return pill;
+        }
+
+        // ▶ triangle marker in green before the current-branch pill.
+        StackPanel wrap = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        wrap.Children.Add(new TextBlock
+        {
+            Text = "▶",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x3F, 0xAE, 0x5A)),
+            FontSize = 10,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        wrap.Children.Add(pill);
+        return wrap;
     }
 
     // Ref-kind heuristics (shared by badge coloring and the remote/tag toggles):
@@ -1650,21 +1682,24 @@ public sealed class RevisionGridView : UserControl
     private static bool IsTagRef(string refName)
         => !IsRemoteRef(refName) && Regex.IsMatch(refName, @"^v?\d");
 
+    // Kind colour used for BOTH the outline border and the text of a ref pill.
     // Remote-tracking refs contain a "/" (e.g. origin/main); simple version-like
     // names (v1.2, 2.0) are treated as tags; everything else is a local branch.
-    private static (Color Bg, Color Fg) RefColors(string refName)
+    // Tuned toward the original GitExtensions palette and readable on the light
+    // App.Panel background in both light and dark themes.
+    private static Color RefColor(string refName)
     {
         if (refName.Contains('/'))
         {
-            return (Color.FromRgb(0x3A, 0x4A, 0x5C), Color.FromRgb(0xAF, 0xCB, 0xE3)); // remote: muted blue
+            return Color.FromRgb(0xC0, 0x39, 0x2B); // remote-tracking: red/pink
         }
 
         if (Regex.IsMatch(refName, @"^v?\d"))
         {
-            return (Color.FromRgb(0x5A, 0x4B, 0x2E), Color.FromRgb(0xE3, 0xCB, 0x95)); // tag: muted amber
+            return Color.FromRgb(0xB8, 0x86, 0x0B); // tag: amber/olive
         }
 
-        return (Color.FromRgb(0x37, 0x50, 0x3A), Color.FromRgb(0xB6, 0xE0, 0xB9)); // local branch: muted green
+        return Color.FromRgb(0x2E, 0x7D, 0x32); // local branch: green
     }
 
     // Right-click menu: copy details of the row that was clicked.
