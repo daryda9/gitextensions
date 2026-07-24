@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git -c commit.gpgsign=false commit -q -m \"docs\\(crossplatform\\): add priority TODO \\(git command dialog, dynamic toolbar, commit modal, selection, dual-select diff\\)\")",
+      "Bash(git checkout *)",
+      "Bash(git merge *)"
+    ]
+  }
+}
