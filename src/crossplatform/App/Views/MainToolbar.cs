@@ -450,8 +450,15 @@ public sealed class MainToolbar : UserControl
             FontSize = 10,
         });
 
+        // NOTE: we deliberately do NOT assign this flyout to button.Flyout and
+        // populate it lazily via the Opening event. Under Avalonia 11.3.x the
+        // MenuFlyout presenter measures its content when the popup is shown, and
+        // mutating flyout.Items during/after Opening does not re-measure the
+        // already-visible popup — so it collapses to a thin, empty sliver.
+        // Instead we handle Click ourselves: populate the flyout FIRST (awaiting
+        // the off-thread provider), then ShowAt the button so the popup measures
+        // with its real content already in place.
         MenuFlyout flyout = new();
-        flyout.Opening += (_, _) => _ = PopulateRepoLinksAsync(flyout, iconName, provider());
 
         Button button = new()
         {
@@ -461,10 +468,14 @@ public sealed class MainToolbar : UserControl
             Padding = new Thickness(8, 4),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
-            Flyout = flyout,
         };
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, tooltip);
+        button.Click += async (_, _) =>
+        {
+            await PopulateRepoLinksAsync(flyout, iconName, provider());
+            flyout.ShowAt(button);
+        };
         return button;
     }
 
