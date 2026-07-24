@@ -70,6 +70,18 @@ public sealed class RevisionGridView : UserControl
     private readonly DispatcherTimer _quickSearchTimer;
     private string _quickSearch = string.Empty;
 
+    // The two artificial rows shown ABOVE the commit list ("Working directory"
+    // and "Commit index"), mirroring the original Git Extensions grid. These are
+    // a fixed panel docked at the top of the grid — deliberately NOT part of the
+    // RevisionRow model or the ListBox ItemsSource — so the commit list, its
+    // selection, graph and range-diff stay untouched. Fed counts by MainWindow
+    // via SetWorkingState; this view never queries git itself for them.
+    private readonly StackPanel _topRows;
+    private readonly TextBlock _wdCheck;
+    private readonly TextBlock _wdCount;
+    private readonly TextBlock _idxCheck;
+    private readonly TextBlock _idxCount;
+
     // The full, graph-built revision set as loaded from git; filtering selects a
     // subset from this without re-running git or touching the underlying model.
     private IReadOnlyList<RevisionRow> _allRows = [];
@@ -146,6 +158,12 @@ public sealed class RevisionGridView : UserControl
     // Raised when exactly two rows are selected (ctrl/shift multi-select). Carries
     // (baseHash, otherHash) = (older, newer) so a diff between the two can be shown.
     public event Action<string, string>? RangeSelected;
+
+    /// <summary>Raised when the artificial "Working directory" row is clicked.</summary>
+    public event Action? WorkingDirectorySelected;
+
+    /// <summary>Raised when the artificial "Commit index" row is clicked.</summary>
+    public event Action? CommitIndexSelected;
 
     // Host-registered commit-targeted actions (checkout, cherry-pick, reset, …),
     // appended to each row's context menu. Each handler receives the full hash.
@@ -466,16 +484,112 @@ public sealed class RevisionGridView : UserControl
         listHost.Children.Add(_list);
         listHost.Children.Add(_quickSearchOverlay);
 
+        // --- Artificial top rows ("Working directory" / "Commit index"). ---
+        // A dumb, fixed two-row panel that sits directly above the commit list
+        // and lines up with it visually. Counts + check glyphs are pushed in by
+        // MainWindow through SetWorkingState; clicking a row raises an event.
+        _wdCheck = TopRowGlyph();
+        _wdCount = TopRowCount();
+        _idxCheck = TopRowGlyph();
+        _idxCount = TopRowCount();
+        Border wdRow = BuildTopRow(_wdCheck, "Working directory", _wdCount,
+            () => WorkingDirectorySelected?.Invoke());
+        Border idxRow = BuildTopRow(_idxCheck, "Commit index", _idxCount,
+            () => CommitIndexSelected?.Invoke());
+        _topRows = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Background = B("App.Panel"),
+        };
+        _topRows.Children.Add(wdRow);
+        _topRows.Children.Add(idxRow);
+        // Start in the "clean" look until MainWindow reports the working state.
+        SetWorkingState(0, 0);
+
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(searchBar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_headerHost, Dock.Top);
+        DockPanel.SetDock(_topRows, Dock.Top);
         root.Children.Add(searchBar);
         root.Children.Add(_status);
         root.Children.Add(_headerHost);
+        root.Children.Add(_topRows);
         root.Children.Add(listHost);
 
         Content = root;
+    }
+
+    // Green check glyph for a top row; hidden/hollow when the row is clean.
+    private static TextBlock TopRowGlyph() => new()
+    {
+        Text = "✔",
+        FontSize = 12,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(0, 0, 6, 0),
+    };
+
+    // Trailing count label for a top row (e.g. "3 modified" / "+2 staged").
+    private static TextBlock TopRowCount() => new()
+    {
+        FontSize = 11,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(8, 0, 0, 0),
+    };
+
+    // Builds one clickable artificial row: [check] label … count, styled to
+    // match a grid row (App.Panel background, subtle border). ClipToBounds keeps
+    // any glyph inside the row box.
+    private Border BuildTopRow(TextBlock check, string label, TextBlock count, Action onClick)
+    {
+        DockPanel content = new() { Margin = new Thickness(10, 0, 10, 0) };
+        TextBlock text = new()
+        {
+            Text = label,
+            FontSize = 12,
+            Foreground = B("App.Text"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        DockPanel.SetDock(check, Dock.Left);
+        DockPanel.SetDock(count, Dock.Right);
+        content.Children.Add(check);
+        content.Children.Add(count);
+        content.Children.Add(text);
+
+        Border row = new()
+        {
+            Background = B("App.Panel"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0, 4, 0, 4),
+            MinHeight = 24,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            ClipToBounds = true,
+            Child = content,
+        };
+        row.PointerPressed += (_, _) => onClick();
+        return row;
+    }
+
+    /// <summary>
+    ///  Feeds the two artificial top rows their pending-work counts. When a count
+    ///  is &gt; 0 the row shows a bright green check and a count label; when 0 it
+    ///  takes on a dim, "clean" look. Fed by MainWindow (which already computes
+    ///  these); this view never queries git for them itself.
+    /// </summary>
+    public void SetWorkingState(int unstaged, int staged)
+    {
+        bool wdDirty = unstaged > 0;
+        _wdCheck.Foreground = wdDirty ? Brushes.MediumSeaGreen : B("App.TextDim");
+        _wdCheck.Opacity = wdDirty ? 1.0 : 0.35;
+        _wdCount.Text = wdDirty ? $"{unstaged} modified" : string.Empty;
+        _wdCount.Foreground = B("App.TextDim");
+
+        bool idxDirty = staged > 0;
+        _idxCheck.Foreground = idxDirty ? Brushes.MediumSeaGreen : B("App.TextDim");
+        _idxCheck.Opacity = idxDirty ? 1.0 : 0.35;
+        _idxCount.Text = idxDirty ? $"+{staged} staged" : string.Empty;
+        _idxCount.Foreground = idxDirty ? Brushes.MediumSeaGreen : B("App.TextDim");
     }
 
     /// <summary>

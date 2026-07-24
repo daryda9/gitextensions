@@ -386,6 +386,15 @@ public sealed class MainWindow : Window
     {
         _revisions.RevisionSelected += OnRevisionSelected;
         _revisions.RangeSelected += OnRangeSelected;
+        // The two artificial top rows both open the commit dialog on the repo.
+        _revisions.WorkingDirectorySelected += () =>
+        {
+            if (_repoPath is not null) _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+        };
+        _revisions.CommitIndexSelected += () =>
+        {
+            if (_repoPath is not null) _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+        };
         _fileHistory.RevisionSelected += OnRevisionSelected;
         _workingDir.Committed += RefreshAll;
         _stash.OperationCompleted += RefreshAll;
@@ -1216,8 +1225,14 @@ public sealed class MainWindow : Window
                 // Never throw out of a refresh.
             }
 
+            int fStaged = staged, fUnstaged = unstaged;
             Dispatcher.UIThread.Post(() =>
-                _toolbar.UpdateState(ahead, behind, staged, unstaged, repoPath, branch));
+            {
+                _toolbar.UpdateState(ahead, behind, fStaged, fUnstaged, repoPath, branch);
+                // Feed the artificial "Working directory" / "Commit index" rows
+                // atop the revision grid the same pending-work counts.
+                _revisions.SetWorkingState(fUnstaged, fStaged);
+            });
         });
     }
 
