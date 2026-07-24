@@ -384,6 +384,7 @@ public sealed class MainWindow : Window
     private void WireEvents()
     {
         _revisions.RevisionSelected += OnRevisionSelected;
+        _revisions.RangeSelected += OnRangeSelected;
         _fileHistory.RevisionSelected += OnRevisionSelected;
         _workingDir.Committed += RefreshAll;
         _stash.OperationCompleted += RefreshAll;
@@ -914,6 +915,22 @@ public sealed class MainWindow : Window
         _detail.ShowCommit(_repoPath, commitHash);
         _diff.ShowCommit(_repoPath, commitHash);
         _bottom.SelectedItem = _commitInfoTab;
+    }
+
+    // Two commits selected in the grid: show the diff between them (baseHash is the
+    // older side, otherHash the newer) in the shared DiffView and reveal the tab.
+    private void OnRangeSelected(string baseHash, string otherHash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        _diff.ShowRange(_repoPath, baseHash, otherHash);
+        _bottom.SelectedItem = _commitInfoTab;
+        string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
+        string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;
+        _statusBar.SetText($"Comparing {shortBase}..{shortOther}");
     }
 
     // Remembers the chosen commit as the comparison BASE (the "old" side of a

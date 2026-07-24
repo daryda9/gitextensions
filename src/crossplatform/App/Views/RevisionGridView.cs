@@ -143,6 +143,10 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     public event Action<string>? RevisionSelected;
 
+    // Raised when exactly two rows are selected (ctrl/shift multi-select). Carries
+    // (baseHash, otherHash) = (older, newer) so a diff between the two can be shown.
+    public event Action<string, string>? RangeSelected;
+
     // Host-registered commit-targeted actions (checkout, cherry-pick, reset, …),
     // appended to each row's context menu. Each handler receives the full hash.
     private readonly List<(string Header, Action<string> Handler)> _commitCommands = [];
@@ -282,6 +286,9 @@ public sealed class RevisionGridView : UserControl
             FontSize = RowFontSize,
             BorderThickness = new Thickness(0),
             ClipToBounds = true,
+            // Multiple allows ctrl/shift extend while a plain click still replaces the
+            // selection with a single row (so single-select behaviour is preserved).
+            SelectionMode = SelectionMode.Multiple,
             ItemTemplate = new FuncDataTemplate<RevisionRow>((row, _) => BuildRow(row), supportsRecycling: true),
         };
 
@@ -333,7 +340,19 @@ public sealed class RevisionGridView : UserControl
 
         _list.SelectionChanged += (_, _) =>
         {
-            if (_list.SelectedItem is RevisionRow row)
+            // Two rows selected => diff the range. The grid is newest-first, so the
+            // row with the higher index in Items is the OLDER commit (= baseHash);
+            // the lower index is the NEWER commit (= otherHash).
+            if (_list.SelectedItems is { Count: 2 } sel
+                && sel[0] is RevisionRow a && sel[1] is RevisionRow b)
+            {
+                int ia = _list.Items.IndexOf(a);
+                int ib = _list.Items.IndexOf(b);
+                RevisionRow older = ia >= ib ? a : b;
+                RevisionRow newer = ia >= ib ? b : a;
+                RangeSelected?.Invoke(older.Hash, newer.Hash);
+            }
+            else if (_list.SelectedItem is RevisionRow row)
             {
                 RevisionSelected?.Invoke(row.Hash);
             }
