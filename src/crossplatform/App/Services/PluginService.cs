@@ -54,7 +54,7 @@ public sealed class PluginService
         // Direct in-code registration. VS-MEF (ManagedExtensibility) is deliberately
         // NOT used: initialising it overflows the stack in this environment (see the
         // class remarks), and a StackOverflowException cannot be caught.
-        IGitPlugin[] plugins = [new SampleGreetPlugin()];
+        IGitPlugin[] plugins = [new SampleGreetPlugin(), new BackgroundFetchPlugin()];
         return (plugins, $"direct in-code registration ({plugins.Length} plugin(s))");
     }
 }
