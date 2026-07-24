@@ -761,3 +761,85 @@ Ricerca su `GitExtensions.Extensibility` + `src/plugins`. Punti chiave:
 - **Stub/rischi**: `IGitUICommands.Start*Dialog` (throw), `ISettingControlBinding`
   (ignora), `Icon` (System.Drawing shim → icona default), `CredentialsSetting`/
   `PasswordSetting` (esclusi dal build → skip), translations (inglese).
+
+---
+
+## Riepilogo finale (loop 20 iterazioni)
+
+**Parità raggiunta: 157/160 = 98,1%** delle voci UI/funzionali di Git Extensions
+(riferimento `src/app/GitUI`: FormBrowse, RepoObjectsTree, RevisionGrid, menu,
+toolbar, dialoghi, comandi git). Build cross-platform: **0 errori**. Il `.deb`
+self-contained si costruisce e il binario pubblicato supera il self-test.
+
+### Voci residue (3, tutte SKIP consapevoli — restano `[ ]`)
+- **Repository hosts (GitHub) ×2** — fork / view-create PR / add upstream. Fuori
+  scope base: nel modello originale è un plugin repository-host; ora *realizzabile*
+  come plugin Avalonia (l'infrastruttura plugin c'è, M25–M27), ma non incluso.
+- **Colonna build status** — icona/testo dallo stato di build: richiede
+  integrazione con un build-server/CI, fuori scope.
+
+### Struttura UI (parità con FormBrowse)
+Finestra integrata: **barra menu** (File/Edit/View/Repository/Commands/Tools/
+Plugins/Help) · **toolbar** (Open/Fetch/Pull/Push/Commit/Stash/Refresh/New branch/
+Submodules▾/Worktrees▾/Split view/Commit info▾/File Explorer/Terminal) · **albero
+sinistro** (Branches/Remotes/Tags/Stashes/Submodules/Worktrees + menu contestuali)
+· **revision grid DAG** (colonne graph/avatar/hash/autore/data/oggetto + git-notes,
+filtro, quick-search, Go-to/Branches/View/Date/Columns) · **pannello inferiore a
+tab** (Commit=dettaglio+diff / Working directory / Stash / Blame / File history)
+· **status bar**. Tema chiaro/scuro con persistenza.
+
+### Milestone
+- M1–M8 — fondazione: core portabile net10.0, shell Avalonia, slice verticale,
+  4 viste ad alta priorità, grafo DAG, operazioni git (branch/remote/stash/blame),
+  restyle FormBrowse (toolbar+albero+grid+tab), barra menu + tema live + About.
+- **M9** — packaging `.deb` self-contained (`packaging/build-deb.sh`) + `.desktop`
+  + icona.
+- **M10** — debito tecnico: Ctrl+C SIGINT su Linux, bump Avalonia 11.3.14 (NU1903),
+  fix VSTHRD100 async-void.
+- **M11** — push `--force-with-lease`, credenziali via credential-helper (no URL
+  injection, segreto non loggato), filtro/ricerca grid.
+- **M12** — persistenza tema+dimensioni pannelli, create branch/tag da grid,
+  undo last commit, clean working directory.
+- **M13** — SettingsWindow (identità git/pull/tema), rename branch, stash staged.
+- **M14** — Clone/Init, nodo Submodules, grid git-notes+toggle data+show/hide colonne.
+- **M15** — revert+archive commit, remotes manager, difftool+compare-to-working-dir.
+- **M16** — menu Repository/Tools/Help (file explorer, editor dotfile, gitk/git-gui,
+  link), nodo Worktrees + checkout tag, grid navigate (parent/child/go-to).
+- **M17** — reflog browser, bisect, resolve conflicts, grid scope branch.
+- **M18** — compare commits (BASE/working-dir), tree sort/copy, add-to-.gitignore.
+- **M19** — commit-edit (reword/squash/fixup), grid view-toggles, stash message+diff.
+- **M20** — toolbar (split-view/commit-info-position/file-explorer/shell) + stash
+  tab, submodules manager dialog, reset changes.
+- **M21** — favorite repos + dashboard + git maintenance (gc/fsck/lock/config),
+  delete remote branch + merge submodule, grid quick-search.
+- **M22** — patch (format/apply/view), manage worktrees dialog, drag&drop stage/unstage.
+- **M23** — command log (core CommandLog), compare-to-branch, sparse working copy.
+- **M24** — toolbar Submodules/Worktrees split-button + Open come repo attivo.
+- **M25** — modello plugin Avalonia (loader diretto, sample plugin, menu Plugins,
+  settings render senza ISettingControlBinding).
+- **M26** — plugin reale BackgroundFetch (valida il modello) + colonna avatar offline.
+- **M27** — plugin folder loader Linux-safe (reflection, no MEF) + verifica finale.
+
+### Come costruire il pacchetto `.deb`
+```bash
+cd src/crossplatform
+export PATH="$HOME/.dotnet:$PATH"
+bash packaging/build-deb.sh
+# → packaging/out/gitextensions_5.0.0-linux1_amd64.deb  (self-contained, dip: git)
+sudo apt install ./packaging/out/gitextensions_5.0.0-linux1_amd64.deb
+```
+
+### Nota sulla build Windows
+NON toccata. Tutto il lavoro è in `src/crossplatform/` (albero separato + shim);
+la soluzione Windows originale non lo referenzia → rischio zero. Unica modifica al
+sorgente condiviso: guardie `OperatingSystem.IsWindows()` in `AppSettings.cs`
+(registro) e in `ProcessExtensions.cs` (Ctrl+C → SIGINT), a comportamento Windows
+invariato.
+
+### Metodo del loop
+20 iterazioni, ognuna: scelta pezzo → delega a subagent Claude in worktree isolati
+(2–3 paralleli, file disgiunti) → cherry-pick dei tip + build check → integrazione
+minima in MainWindow → verifica GUI headless (xvfb + screenshot) → commit
+(Conventional, senza firma) → aggiornamento di questa checklist. Regola anti-conflitto:
+un solo subagent per iterazione tocca ciascun file "hub" (MainWindow/MainMenu/
+MainToolbar/RepoObjectsTree/RevisionGridView/DiffView/WorkingDirectoryView/StashPanel).
