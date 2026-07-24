@@ -30,8 +30,12 @@ public sealed class RevisionGridView : UserControl
 {
     // Shared column widths so the header and every row line up.
     private const double HashWidth = 90;
+    private const double AvatarWidth = 28;
     private const double AuthorWidth = 170;
     private const double DateWidth = 130;
+
+    // Size of the identicon square drawn inside the avatar cell (centred).
+    private const double AvatarSize = 18;
 
     // Graph rendering metrics.
     private const double LaneWidth = 14;
@@ -104,6 +108,7 @@ public sealed class RevisionGridView : UserControl
 
     // Column visibility toggles (the graph + Subject columns always stay).
     private bool _showHash = true;
+    private bool _showAvatar = true;   // offline identicon avatar; default ON
     private bool _showAuthor = true;
     private bool _showDate = true;
 
@@ -891,6 +896,13 @@ public sealed class RevisionGridView : UserControl
             RefreshView();
         };
 
+        CheckBox avatar = MakeCheck("Avatar", _showAvatar);
+        avatar.IsCheckedChanged += (_, _) =>
+        {
+            _showAvatar = avatar.IsChecked == true;
+            RefreshView();
+        };
+
         CheckBox author = MakeCheck("Author", _showAuthor);
         author.IsCheckedChanged += (_, _) =>
         {
@@ -906,6 +918,7 @@ public sealed class RevisionGridView : UserControl
         };
 
         panel.Children.Add(hash);
+        panel.Children.Add(avatar);
         panel.Children.Add(author);
         panel.Children.Add(date);
 
@@ -1393,13 +1406,15 @@ public sealed class RevisionGridView : UserControl
         // Hidden columns collapse to zero width; their content is simply not added
         // (see BuildHeader/BuildRow) so nothing overflows into the neighbouring cell.
         double hash = _showHash ? HashWidth : 0;
+        double avatar = _showAvatar ? AvatarWidth : 0;
         double author = _showAuthor ? AuthorWidth : 0;
         double date = _showDate ? DateWidth : 0;
 
+        // Columns: 0 graph, 1 hash, 2 avatar, 3 author, 4 date, 5 subject.
         return new Grid
         {
             ColumnDefinitions = new ColumnDefinitions(
-                $"{EffectiveGraphWidth},{hash},{author},{date},*"),
+                $"{EffectiveGraphWidth},{hash},{avatar},{author},{date},*"),
         };
     }
 
@@ -1414,17 +1429,18 @@ public sealed class RevisionGridView : UserControl
             AddCell(grid, 1, "Commit ID", B("App.TextDim"), bold: true);
         }
 
+        // Column 2 (avatar) has no textual header — the identicons speak for themselves.
         if (_showAuthor)
         {
-            AddCell(grid, 2, "Author", B("App.TextDim"), bold: true);
+            AddCell(grid, 3, "Author", B("App.TextDim"), bold: true);
         }
 
         if (_showDate)
         {
-            AddCell(grid, 3, _relativeDates ? "Date (rel.)" : "Date", B("App.TextDim"), bold: true);
+            AddCell(grid, 4, _relativeDates ? "Date (rel.)" : "Date", B("App.TextDim"), bold: true);
         }
 
-        AddCell(grid, 4, "Subject", B("App.TextDim"), bold: true);
+        AddCell(grid, 5, "Subject", B("App.TextDim"), bold: true);
 
         return new Border
         {
@@ -1477,14 +1493,31 @@ public sealed class RevisionGridView : UserControl
             AddCell(grid, 1, row.ShortHash, hashBrush, bold: onBranch, monospace: true);
         }
 
+        // Avatar (column 2): a deterministic offline identicon per author, cached.
+        if (_showAvatar)
+        {
+            AvatarControl avatar = new(GetIdenticon(row.AuthorEmail, row.Author))
+            {
+                Width = AvatarSize,
+                Height = AvatarSize,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                [ToolTip.TipProperty] = string.IsNullOrEmpty(row.AuthorEmail)
+                    ? row.Author
+                    : $"{row.Author} <{row.AuthorEmail}>",
+            };
+            Grid.SetColumn(avatar, 2);
+            grid.Children.Add(avatar);
+        }
+
         if (_showAuthor)
         {
-            AddCell(grid, 2, row.Author, B("App.TextDim"));
+            AddCell(grid, 3, row.Author, B("App.TextDim"));
         }
 
         if (_showDate)
         {
-            AddCell(grid, 3, FormatDate(row), B("App.TextDim"));
+            AddCell(grid, 4, FormatDate(row), B("App.TextDim"));
         }
 
         // Subject cell: an optional git-notes indicator, then ref badges, then the
@@ -1524,7 +1557,7 @@ public sealed class RevisionGridView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         });
 
-        Grid.SetColumn(subject, 4);
+        Grid.SetColumn(subject, 5);
         grid.Children.Add(subject);
 
         grid.ContextMenu = BuildRowContextMenu(row);
@@ -1655,6 +1688,163 @@ public sealed class RevisionGridView : UserControl
 
         Grid.SetColumn(block, column);
         grid.Children.Add(block);
+    }
+
+    // --- Offline author avatars (identicons) ---------------------------------
+    //
+    // The original Git Extensions fetches gravatar images over the network. On
+    // Linux we avoid any network call and instead synthesise a deterministic
+    // "identicon" per author entirely offline: a 5x5, left/right-mirrored block
+    // pattern with a hue, both derived from a stable hash of the author's email
+    // (or name when no email is present). The computed pattern is cached per
+    // author key so building it is a dictionary lookup across all 200 rows.
+
+    // Per-author identicon cache, keyed by lower-cased email (or name fallback).
+    private static readonly Dictionary<string, Identicon> _avatarCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    // Returns the cached identicon for an author, computing it once on first use.
+    private static Identicon GetIdenticon(string? email, string? author)
+    {
+        string key = !string.IsNullOrWhiteSpace(email)
+            ? email!.Trim().ToLowerInvariant()
+            : (author ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (_avatarCache.TryGetValue(key, out Identicon cached))
+        {
+            return cached;
+        }
+
+        Identicon icon = Identicon.Create(key);
+        _avatarCache[key] = icon;
+        return icon;
+    }
+
+    // A precomputed identicon "recipe": a 5x5 on/off block grid (already mirrored)
+    // plus a foreground colour, both derived deterministically from a hash of the
+    // author key. Cached and rendered by <see cref="AvatarControl"/>.
+    private readonly struct Identicon
+    {
+        public bool[,] Cells { get; }
+
+        public Color Foreground { get; }
+
+        private Identicon(bool[,] cells, Color foreground)
+        {
+            Cells = cells;
+            Foreground = foreground;
+        }
+
+        public static Identicon Create(string key)
+        {
+            ulong h = Fnv1a64(key);
+
+            // Hue from the high bits; keep saturation/lightness fixed for a
+            // consistent, readable look on the dark theme.
+            double hue = (h >> 40) % 360;
+            Color fg = FromHsl(hue, 0.55, 0.60);
+
+            // 5x5 grid, mirrored left-to-right: decide the left 3 columns
+            // (indices 0..2, index 2 being the centre) from 15 hash bits, then
+            // mirror columns 0/1 onto 4/3.
+            bool[,] cells = new bool[5, 5];
+            for (int r = 0; r < 5; r++)
+            {
+                for (int c = 0; c < 3; c++)
+                {
+                    bool on = ((h >> ((r * 3) + c)) & 1UL) == 1UL;
+                    cells[r, c] = on;
+                    cells[r, 4 - c] = on;
+                }
+            }
+
+            return new Identicon(cells, fg);
+        }
+
+        // FNV-1a 64-bit hash — process-stable (unlike string.GetHashCode), so the
+        // same author always maps to the same identicon across runs.
+        private static ulong Fnv1a64(string s)
+        {
+            const ulong offset = 14695981039346656037UL;
+            const ulong prime = 1099511628211UL;
+            ulong hash = offset;
+            foreach (byte b in System.Text.Encoding.UTF8.GetBytes(s))
+            {
+                hash ^= b;
+                hash *= prime;
+            }
+
+            return hash;
+        }
+
+        // Minimal HSL -> RGB (h in [0,360), s/l in [0,1]).
+        private static Color FromHsl(double h, double s, double l)
+        {
+            double c = (1 - Math.Abs((2 * l) - 1)) * s;
+            double x = c * (1 - Math.Abs(((h / 60) % 2) - 1));
+            double m = l - (c / 2);
+            double r1, g1, b1;
+            if (h < 60) { r1 = c; g1 = x; b1 = 0; }
+            else if (h < 120) { r1 = x; g1 = c; b1 = 0; }
+            else if (h < 180) { r1 = 0; g1 = c; b1 = x; }
+            else if (h < 240) { r1 = 0; g1 = x; b1 = c; }
+            else if (h < 300) { r1 = x; g1 = 0; b1 = c; }
+            else { r1 = c; g1 = 0; b1 = x; }
+
+            return Color.FromRgb(
+                (byte)Math.Round((r1 + m) * 255),
+                (byte)Math.Round((g1 + m) * 255),
+                (byte)Math.Round((b1 + m) * 255));
+        }
+    }
+
+    // Draws a cached identicon: a subtly tinted rounded background with the 5x5
+    // colored block pattern on top. Custom-drawn Controls do not clip by default,
+    // so ClipToBounds is set to keep the drawing inside the tiny avatar cell.
+    private sealed class AvatarControl : Control
+    {
+        private readonly Identicon _icon;
+
+        public AvatarControl(Identicon icon)
+        {
+            _icon = icon;
+            ClipToBounds = true;
+        }
+
+        public override void Render(DrawingContext context)
+        {
+            double w = Bounds.Width;
+            double hgt = Bounds.Height;
+            double side = Math.Min(w, hgt);
+            if (side <= 0)
+            {
+                return;
+            }
+
+            double ox = (w - side) / 2;
+            double oy = (hgt - side) / 2;
+
+            // A faint tile of the author's own hue as the backdrop, so empty cells
+            // still read as part of the avatar rather than the row background.
+            Color bg = _icon.Foreground;
+            IBrush bgBrush = new SolidColorBrush(Color.FromArgb(0x33, bg.R, bg.G, bg.B));
+            context.DrawRectangle(bgBrush, null, new RoundedRect(new Rect(ox, oy, side, side), 3));
+
+            IBrush fg = new SolidColorBrush(_icon.Foreground);
+            double cell = side / 5.0;
+            for (int r = 0; r < 5; r++)
+            {
+                for (int c = 0; c < 5; c++)
+                {
+                    if (_icon.Cells[r, c])
+                    {
+                        context.FillRectangle(
+                            fg,
+                            new Rect(ox + (c * cell), oy + (r * cell), cell + 0.5, cell + 0.5));
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>

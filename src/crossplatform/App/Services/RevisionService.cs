@@ -41,6 +41,13 @@ public sealed record RevisionRow(
     IReadOnlyList<string> RefNames)
 {
     /// <summary>
+    ///  The commit author's email address, used to derive a deterministic, offline
+    ///  identicon avatar in the grid (no network / gravatar). Empty when the core
+    ///  did not report one, in which case the avatar falls back to the author name.
+    /// </summary>
+    public string AuthorEmail { get; init; } = string.Empty;
+
+    /// <summary>
     ///  True when this commit has a git note attached (loaded cheaply via a single
     ///  <c>git notes list</c> for the whole repository — see
     ///  <see cref="RevisionService.LoadNotes"/>). Shown as an indicator in the grid.
@@ -263,6 +270,7 @@ public sealed class RevisionService
                 ParentHashes: parents,
                 RefNames: refNames)
             {
+                AuthorEmail = revision.AuthorEmail ?? string.Empty,
                 HasNotes = commitsWithNotes.Contains(hash),
                 IsHead = headHash.Length > 0 && hash.Equals(headHash, StringComparison.OrdinalIgnoreCase),
             });
