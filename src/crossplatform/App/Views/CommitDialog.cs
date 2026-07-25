@@ -28,6 +28,7 @@ public sealed class CommitDialog : Window
 {
     private readonly string _repoPath;
     private readonly WorkingDirectoryService _service = new();
+    private readonly CommitActionsService _actions = new();
 
     private readonly ListBox _unstagedList = MakeList();
     private readonly ListBox _stagedList = MakeList();
@@ -38,6 +39,13 @@ public sealed class CommitDialog : Window
     private readonly TextBlock _statusText;
 
     private bool _busy;
+
+    // Options-menu state (mirrors the original commit form's Options dropdown).
+    // Amend lives in _amendBox so the visible checkbox and the menu stay in sync.
+    private bool _signOff;
+    private bool _noVerify;
+    private bool _resetAuthor;
+    private bool _closeAfterCommit;
 
     /// <summary>Raised on each successful commit so the owner can refresh.</summary>
     public event Action? Committed;
@@ -134,12 +142,17 @@ public sealed class CommitDialog : Window
 
         Button commitBtn = MakeButton("Commit", () => DoCommit(push: false));
         Button commitPushBtn = MakeButton("Commit & push", () => DoCommit(push: true));
-        Button stashBtn = MakeButton("Stash staged changes", () => { }); stashBtn.IsEnabled = false;
+        Button stashBtn = MakeButton("Stash staged changes", DoStashStaged);
         Button resetAllBtn = MakeButton("Reset all changes", () => DoReset(includeStaged: true));
         Button resetUnstagedBtn = MakeButton("Reset unstaged changes", () => DoReset(includeStaged: false));
-        Button templatesBtn = MakeButton("Commit templates", () => { }); templatesBtn.IsEnabled = false;
-        Button createBranchBtn = MakeButton("Create branch", () => { }); createBranchBtn.IsEnabled = false;
-        Button optionsBtn = MakeButton("Options", () => { }); optionsBtn.IsEnabled = false;
+
+        Button templatesBtn = new() { Content = "Commit templates ▾" };
+        templatesBtn.Click += async (_, _) => await ShowTemplatesMenuAsync(templatesBtn);
+
+        Button createBranchBtn = MakeButton("Create branch", PromptCreateBranch);
+
+        Button optionsBtn = new() { Content = "Options ▾" };
+        optionsBtn.Click += (_, _) => ShowOptionsMenu(optionsBtn);
 
         WrapPanel buttonRow = new()
         {
@@ -174,6 +187,7 @@ public sealed class CommitDialog : Window
         Content = root;
 
         Reload();
+        RefreshBranchCaption();
     }
 
     public static async Task ShowAsync(Window owner, string repoPath, Action onCommitted)
@@ -296,11 +310,20 @@ public sealed class CommitDialog : Window
 
     // ---------- commit / reset ----------
 
+    private CommitOptions CurrentOptions() => new(
+        Amend: _amendBox.IsChecked == true,
+        SignOff: _signOff,
+        NoVerify: _noVerify,
+        ResetAuthor: _resetAuthor,
+        CloseAfterCommit: _closeAfterCommit);
+
     private void DoCommit(bool push)
     {
         int staged = _stagedList.Items.Count;
         string message = _messageBox.Text ?? string.Empty;
-        if (staged == 0)
+        CommitOptions options = CurrentOptions();
+
+        if (staged == 0 && !options.Amend)
         {
             SetStatus("Nothing staged to commit.");
             return;
@@ -312,9 +335,9 @@ public sealed class CommitDialog : Window
             return;
         }
 
-        bool amend = _amendBox.IsChecked == true;
-        RunGitResult(
-            () => _service.Commit(_repoPath, message, amend),
+        SetStatus("Running " + CommitActionsService.DescribeCommit(options) + " …");
+        RunActionResult(
+            () => _actions.Commit(_repoPath, message, options),
             async result =>
             {
                 if (!result.Success)
@@ -326,12 +349,17 @@ public sealed class CommitDialog : Window
                 _messageBox.Text = string.Empty;
                 _amendBox.IsChecked = false;
                 Committed?.Invoke();
-                SetStatus("Committed.");
+                SetStatus("Committed (" + CommitActionsService.DescribeCommit(options) + ").");
                 Reload();
 
                 if (push)
                 {
                     await PushAsync();
+                }
+
+                if (options.CloseAfterCommit)
+                {
+                    Close();
                 }
             });
     }
@@ -360,6 +388,268 @@ public sealed class CommitDialog : Window
         }
 
         RunGit(() => _service.ResetChanges(_repoPath, includeStaged: false));
+    }
+
+    // ---------- stash staged ----------
+
+    // `git stash push --staged -m <message>` (with a plumbing fallback for git < 2.35,
+    // see CommitActionsService). Only the staged changes go to the stash; unstaged
+    // edits stay in the working tree, so both lists are refreshed afterwards.
+    private void DoStashStaged()
+    {
+        if (_stagedList.Items.Count == 0)
+        {
+            SetStatus("There are no staged changes to stash.");
+            return;
+        }
+
+        string message = (_messageBox.Text ?? string.Empty).Trim();
+        string stashMessage = message.Length > 0 ? FirstLine(message) : "Staged changes";
+
+        SetStatus("Running git stash push --staged …");
+        RunActionResult(
+            () => _actions.StashStaged(_repoPath, stashMessage),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? "Stashed staged changes: " + stashMessage
+                    : "Stash failed: " + FirstLine(result.Output));
+                Reload();
+            });
+    }
+
+    // ---------- commit templates ----------
+
+    // Templates are discovered off the UI thread (git config + repository scan),
+    // and the MenuFlyout is fully populated BEFORE ShowAt — mutating Items while
+    // the popup is open leaves it unmeasured (see HANDOFF §3).
+    private async Task ShowTemplatesMenuAsync(Button anchor)
+    {
+        string repo = _repoPath;
+        IReadOnlyList<CommitTemplate> templates = await Task.Run(() =>
+        {
+            try
+            {
+                return _actions.ListTemplates(repo);
+            }
+            catch
+            {
+                return (IReadOnlyList<CommitTemplate>)Array.Empty<CommitTemplate>();
+            }
+        });
+
+        MenuFlyout flyout = new();
+        if (templates.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem
+            {
+                Header = "No commit templates found",
+                IsEnabled = false,
+            });
+        }
+        else
+        {
+            foreach (CommitTemplate template in templates)
+            {
+                CommitTemplate captured = template;
+                // Avalonia menu headers treat '_' as an access-key marker, so it
+                // must be doubled to survive in file names like PULL_REQUEST_TEMPLATE.md.
+                MenuItem item = new() { Header = Escape($"{captured.Name}  ({captured.Source})") };
+                ToolTip.SetTip(item, captured.Path);
+                item.Click += (_, _) => ApplyTemplate(captured);
+                flyout.Items.Add(item);
+            }
+        }
+
+        flyout.Items.Add(new Separator());
+        MenuItem clear = new() { Header = "Clear message" };
+        clear.Click += (_, _) =>
+        {
+            _messageBox.Text = string.Empty;
+            SetStatus("Commit message cleared.");
+        };
+        flyout.Items.Add(clear);
+
+        flyout.ShowAt(anchor);
+    }
+
+    private void ApplyTemplate(CommitTemplate template)
+    {
+        _ = Task.Run(() => CommitActionsService.ReadTemplate(template))
+            .ContinueWith(t => Dispatcher.UIThread.Post(() =>
+            {
+                _messageBox.Text = t.Result;
+                _messageBox.Focus();
+                SetStatus("Applied commit template " + template.Name + ".");
+            }), TaskScheduler.Default);
+    }
+
+    // ---------- create branch ----------
+
+    // Prompts for a name, validates it with `git check-ref-format --branch` (plus a
+    // duplicate check), then runs `git checkout -b <name> HEAD`, carrying the staged
+    // and unstaged changes over to the new branch, exactly like the original form.
+    private async void PromptCreateBranch()
+    {
+        Window prompt = new()
+        {
+            Title = "Create branch",
+            Width = 440,
+            Height = 190,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Window", Brushes.DimGray),
+        };
+
+        TextBox nameBox = new() { Watermark = "new-branch-name", Width = 400 };
+        CheckBox checkoutBox = new() { Content = "Checkout after create", IsChecked = true };
+        TextBlock error = new()
+        {
+            Foreground = Brushes.OrangeRed,
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        string? chosen = null;
+        bool checkout = true;
+
+        Button create = new() { Content = "Create branch", IsDefault = true };
+        Button cancel = MakeButton("Cancel", prompt.Close);
+        create.Click += async (_, _) =>
+        {
+            string name = (nameBox.Text ?? string.Empty).Trim();
+            create.IsEnabled = false;
+            string? problem = await Task.Run(() =>
+            {
+                try
+                {
+                    return _actions.ValidateBranchName(_repoPath, name);
+                }
+                catch (Exception ex)
+                {
+                    return ex.Message;
+                }
+            });
+
+            create.IsEnabled = true;
+            if (problem is not null)
+            {
+                error.Text = problem;
+                return;
+            }
+
+            chosen = name;
+            checkout = checkoutBox.IsChecked == true;
+            prompt.Close();
+        };
+
+        prompt.Content = new StackPanel
+        {
+            Margin = new Thickness(16),
+            Spacing = 10,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Create a new branch at the current HEAD:",
+                    Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+                },
+                nameBox,
+                checkoutBox,
+                error,
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Children = { create, cancel },
+                },
+            },
+        };
+
+        await prompt.ShowDialog(this);
+        if (chosen is null)
+        {
+            return;
+        }
+
+        string branch = chosen;
+        bool doCheckout = checkout;
+        SetStatus($"Running git {(doCheckout ? "checkout -b" : "branch")} {branch} HEAD …");
+        RunActionResult(
+            () => _actions.CreateBranch(_repoPath, branch, doCheckout),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? (doCheckout ? $"Created and checked out branch '{branch}'." : $"Created branch '{branch}'.")
+                    : "Create branch failed: " + FirstLine(result.Output));
+                RefreshBranchCaption();
+                Reload();
+            });
+    }
+
+    // ---------- options ----------
+
+    // Every entry maps to a real `git commit` flag (except "Close dialog after
+    // commit"), applied by CommitActionsService.Commit. The menu is rebuilt on each
+    // click so the check marks always reflect the current state.
+    private void ShowOptionsMenu(Button anchor)
+    {
+        MenuFlyout flyout = new();
+
+        flyout.Items.Add(Toggle(
+            "Amend last commit  (--amend)",
+            _amendBox.IsChecked == true,
+            v => _amendBox.IsChecked = v));
+        flyout.Items.Add(Toggle(
+            "Add sign-off  (--signoff)",
+            _signOff,
+            v => _signOff = v));
+        flyout.Items.Add(Toggle(
+            "Skip hooks  (--no-verify)",
+            _noVerify,
+            v => _noVerify = v));
+        flyout.Items.Add(Toggle(
+            "Reset author  (--reset-author, needs amend)",
+            _resetAuthor,
+            v => _resetAuthor = v));
+        flyout.Items.Add(new Separator());
+        flyout.Items.Add(Toggle(
+            "Close dialog after commit",
+            _closeAfterCommit,
+            v => _closeAfterCommit = v));
+
+        flyout.ShowAt(anchor);
+
+        MenuItem Toggle(string text, bool value, Action<bool> set)
+        {
+            MenuItem item = new() { Header = (value ? "☑  " : "☐  ") + text };
+            item.Click += (_, _) =>
+            {
+                set(!value);
+                SetStatus("Commit command: " + CommitActionsService.DescribeCommit(CurrentOptions()));
+            };
+            return item;
+        }
+    }
+
+    private void RefreshBranchCaption()
+    {
+        string repo = _repoPath;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                return _actions.CurrentBranch(repo);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        {
+            Title = t.Result.Length > 0
+                ? $"Commit to {t.Result} ({repo})"
+                : "Commit";
+        }), TaskScheduler.Default);
     }
 
     // Simple in-dialog confirmation flyout on the status line via a modal child window.
@@ -419,6 +709,33 @@ public sealed class CommitDialog : Window
             Reload();
         });
 
+    // Same contract as RunGitResult for the CommitActionsService result type: the
+    // work runs on the thread pool, the callback on the UI thread.
+    private void RunActionResult(Func<CommitActionResult> work, Action<CommitActionResult> onResult)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                return work();
+            }
+            catch (Exception ex)
+            {
+                return new CommitActionResult(false, ex.Message);
+            }
+        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        {
+            _busy = false;
+            onResult(t.Result);
+        }), TaskScheduler.Default);
+    }
+
     private void RunGitResult(Func<WorkingDirCommitResult> work, Action<WorkingDirCommitResult> onResult)
     {
         if (_busy)
@@ -462,17 +779,28 @@ public sealed class CommitDialog : Window
             WorkingDirStatus status = t.Result;
             _unstagedList.ItemsSource = status.Unstaged;
             _stagedList.ItemsSource = status.Staged;
-            int staged = status.Staged.Count;
-            int total = staged + status.Unstaged.Count;
-            _statusText.Text = $"Staged {staged}/{total}";
+            RenderStatus();
         }), TaskScheduler.Default);
     }
 
+    // The last action message. It is kept across refreshes so the outcome of
+    // stash / create-branch / commit is not wiped out by Reload's "Staged x/y".
+    private string _statusHint = string.Empty;
+
     private void SetStatus(string text)
     {
-        // Preserve the Staged x/y suffix by prefixing the hint.
-        _statusText.Text = text;
+        _statusHint = text ?? string.Empty;
+        RenderStatus();
     }
+
+    private void RenderStatus()
+    {
+        string counts = $"Staged {_stagedList.Items.Count}/{_stagedList.Items.Count + _unstagedList.Items.Count}";
+        _statusText.Text = _statusHint.Length > 0 ? $"{_statusHint}   —   {counts}" : counts;
+    }
+
+    // '_' in a menu header is an access-key marker in Avalonia; double it to show it.
+    private static string Escape(string text) => text.Replace("_", "__");
 
     private static string FirstLine(string s)
     {
@@ -481,8 +809,17 @@ public sealed class CommitDialog : Window
             return string.Empty;
         }
 
-        int i = s.IndexOf('\n');
-        return (i < 0 ? s : s[..i]).Trim();
+        // git often starts its output with a blank line (or with the hook's own
+        // output), so return the first line that actually carries text.
+        foreach (string line in s.Replace("\r\n", "\n").Split('\n'))
+        {
+            if (line.Trim().Length > 0)
+            {
+                return line.Trim();
+            }
+        }
+
+        return string.Empty;
     }
 
     // ---------- ui helpers ----------
