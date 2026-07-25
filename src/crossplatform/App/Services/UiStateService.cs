@@ -35,6 +35,10 @@ public sealed class UiState
     /// <summary>Commit-info: diff row star weight (bottom of the info/diff split).</summary>
     public double DiffStar { get; set; } = 3;
 
+    /// <summary>Whether the bottom panel shows commit detail and diff side by
+    /// side (split view on) instead of the diff in its own tab.</summary>
+    public bool SplitView { get; set; }
+
     /// <summary>"Light" or "Dark".</summary>
     public string Theme { get; set; } = "Dark";
 }

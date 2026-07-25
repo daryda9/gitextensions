@@ -104,6 +104,11 @@ public sealed class MainToolbar : UserControl
     private TextBlock? _commitCaption;
     private Image? _commitIcon;
 
+    // The "Split view" toggle and its caption, so SetSplitView can reflect the
+    // host's current layout state (checked caption + highlighted chrome).
+    private Button? _splitButton;
+    private TextBlock? _splitCaption;
+
     // Far-right working-directory indicator (repo name + ~-collapsed path); created
     // lazily on the first UpdateState() call and reused thereafter.
     private TextBlock? _repoIndicator;
@@ -189,9 +194,13 @@ public sealed class MainToolbar : UserControl
 
         // ---- view / layout group -------------------------------------------------
         bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("LayoutFooter", "Split view",
-            "Toggle the Commit tab layout between side-by-side and stacked (detail + diff)",
-            () => SplitViewToggleRequested?.Invoke()));
+        // Split view is a TOGGLE: the caption carries a check mark while it is on,
+        // which also labels the entry the overflow menu builds from LiveCaption.
+        _splitButton = MakeButton("LayoutFooter", "Split view",
+            "Show the commit detail and the diff side by side in the Commit tab",
+            () => SplitViewToggleRequested?.Invoke(),
+            out _splitCaption, out _);
+        bar.AddItem(_splitButton);
         bar.AddItem(MakeMenuButton("LayoutSidebarLeft", "Commit info", "Commit-info position", new[]
         {
             ("LayoutFooter", "Below graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.BelowGraph))),
@@ -418,6 +427,28 @@ public sealed class MainToolbar : UserControl
         }
 
         return path;
+    }
+
+    /// <summary>
+    ///  Reflects the host's split-view state on the toggle: a checked, accented
+    ///  caption while the commit detail and the diff are shown side by side. The
+    ///  overflow menu picks the same caption up through the entry's LiveCaption.
+    /// </summary>
+    public void SetSplitView(bool on)
+    {
+        if (_splitCaption is null)
+        {
+            return;
+        }
+
+        _splitCaption.Text = on ? "Split view ✓" : "Split view";
+        _splitCaption.Foreground = on ? Brush("App.Accent", "#3399FF") : Brush("App.Text", "#DCDCDC");
+        if (_splitButton is not null)
+        {
+            ToolTip.SetTip(_splitButton, on
+                ? "Split view on: commit detail and diff side by side in the Commit tab"
+                : "Show the commit detail and the diff side by side in the Commit tab");
+        }
     }
 
     private Button MakeButton(string iconName, string label, string tooltip, Action onClick)

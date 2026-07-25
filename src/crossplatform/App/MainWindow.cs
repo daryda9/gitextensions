@@ -88,6 +88,13 @@ public sealed class MainWindow : Window
     private RowDefinition _detailRow;
     private RowDefinition _diffRow;
 
+    // While split view is on the detail/diff pair is laid out in COLUMNS, so the
+    // live sizes come from these definitions instead of the rows above; they are
+    // folded back into _detailRow/_diffRow (the persistence carriers) whenever the
+    // layout is rebuilt or saved. Null while split view is off.
+    private ColumnDefinition? _detailCol;
+    private ColumnDefinition? _diffCol;
+
     // The rebuildable right-hand region (revision grid + bottom panel, with the
     // commit-info panel positioned relative to the grid) and its layout state.
     private readonly Grid _right = new();
@@ -113,12 +120,11 @@ public sealed class MainWindow : Window
         Height = _uiState.WindowHeight;
         Background = (IBrush)Application.Current!.Resources["App.Window"]!;
 
-        // View toggles are session-local: commit info below the graph, detail
-        // stacked over the diff (the original FormBrowse defaults). Persisting
-        // them would need extra UiState fields, which live in a service we do not
-        // own here, so they simply reset each session.
+        // Commit-info position is session-local (the original FormBrowse default:
+        // below the graph). Split view IS persisted, so the bottom panel comes
+        // back in the same shape the user left it in.
         _commitInfoPosition = CommitInfoPosition.BelowGraph;
-        _splitHorizontal = false;
+        _splitHorizontal = _uiState.SplitView;
 
         // Detail/diff definitions are (re)created by RebuildRightRegion; seed them
         // here so PersistLayout has valid references before the first rebuild.
@@ -204,6 +210,7 @@ public sealed class MainWindow : Window
         KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.O, KeyModifiers.Control), Command = new RelayCommand(() => _ = PickRepositoryAsync()) });
 
         WireEvents();
+        _toolbar.SetSplitView(_splitHorizontal);
 
         Opened += (_, _) =>
         {
@@ -227,6 +234,8 @@ public sealed class MainWindow : Window
     {
         try
         {
+            CaptureSplitStars();
+            _uiState.SplitView = _splitHorizontal;
             _uiState.WindowWidth = Width;
             _uiState.WindowHeight = Height;
             _uiState.TreeWidth = _treeCol.Width.Value;
@@ -247,16 +256,20 @@ public sealed class MainWindow : Window
     // them from their previous parents first so they can be safely re-hosted.
     private void RebuildRightRegion()
     {
+        CaptureSplitStars();
         Detach(_revisions);
         Detach(_detail);
+        Detach(_diff);
         Detach(_bottom);
 
         // The Commit tab hosts the commit detail only when the commit info sits
         // below the graph; otherwise the detail moves beside the grid and the tab
-        // shows a hint. The diff always lives in its own Diff tab, so it is never
-        // reparented here.
+        // shows a hint. With split view ON (and the detail below the graph) the
+        // Commit tab hosts detail AND diff side by side, so the diff is pulled out
+        // of its own tab for as long as that lasts.
         bool detailBelow = _commitInfoPosition == CommitInfoPosition.BelowGraph;
         _commitInfoTab.Content = BuildCommitTabContent(detailBelow);
+        SyncDiffTab();
 
         _right.Children.Clear();
         _right.ColumnDefinitions.Clear();
@@ -308,15 +321,46 @@ public sealed class MainWindow : Window
         return grid;
     }
 
-    // Builds the Commit tab body. When the commit info sits below the graph the
-    // tab shows the commit detail; otherwise the detail lives beside the grid and
-    // the tab shows a short hint. The diff is always in its own Diff tab. The
-    // detail/diff row definitions are kept in sync so persisted split sizes remain
-    // valid across a rebuild.
+    // Builds the Commit tab body:
+    //  * split view ON  (and the detail below the graph) → commit detail and diff
+    //    side by side, separated by a draggable GridSplitter (the diff tab is
+    //    removed while this lasts, see SyncDiffTab);
+    //  * split view OFF → just the commit detail, the diff in its own tab;
+    //  * detail beside the graph → a short hint (nothing to split here).
+    // The detail/diff definitions are recreated from the current sizes so the
+    // persisted split stays valid across a rebuild.
     private Control BuildCommitTabContent(bool includeDetail)
     {
         _detailRow = new RowDefinition(new GridLength(_detailRow.Height.Value, GridUnitType.Star));
         _diffRow = new RowDefinition(new GridLength(_diffRow.Height.Value, GridUnitType.Star));
+        _detailCol = null;
+        _diffCol = null;
+
+        if (includeDetail && _splitHorizontal)
+        {
+            _detailCol = new ColumnDefinition(new GridLength(_detailRow.Height.Value, GridUnitType.Star));
+            _diffCol = new ColumnDefinition(new GridLength(_diffRow.Height.Value, GridUnitType.Star));
+
+            Grid split = new()
+            {
+                ColumnDefinitions = new ColumnDefinitions
+                {
+                    _detailCol,
+                    new ColumnDefinition(new GridLength(4, GridUnitType.Pixel)),
+                    _diffCol,
+                },
+                ClipToBounds = true,
+                Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            };
+            GridSplitter bar = new() { Width = 4, VerticalAlignment = VerticalAlignment.Stretch };
+            Grid.SetColumn(_detail, 0);
+            Grid.SetColumn(bar, 1);
+            Grid.SetColumn(_diff, 2);
+            split.Children.Add(_detail);
+            split.Children.Add(bar);
+            split.Children.Add(_diff);
+            return split;
+        }
 
         if (includeDetail)
         {
@@ -330,6 +374,60 @@ public sealed class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
         };
+    }
+
+    // True when the diff currently lives in the Commit tab's side-by-side split
+    // rather than in its own Diff tab.
+    private bool DiffInSplit => _detailCol is not null;
+
+    // Adds or removes the Diff tab to match the current layout: while the diff is
+    // shown next to the detail it must not also be a tab (one visual parent), and
+    // when it goes back to being a tab the tab is restored in its original slot
+    // (right after Commit). Every other tab is left untouched.
+    private void SyncDiffTab()
+    {
+        if (DiffInSplit)
+        {
+            _diffTab.Content = null;
+            if (_bottom.Items.Contains(_diffTab))
+            {
+                bool wasSelected = ReferenceEquals(_bottom.SelectedItem, _diffTab);
+                _bottom.Items.Remove(_diffTab);
+                if (wasSelected)
+                {
+                    _bottom.SelectedItem = _commitInfoTab;
+                }
+            }
+
+            return;
+        }
+
+        _diffTab.Content = _diff;
+        if (!_bottom.Items.Contains(_diffTab))
+        {
+            int at = _bottom.Items.IndexOf(_commitInfoTab);
+            _bottom.Items.Insert(at < 0 ? 0 : at + 1, _diffTab);
+        }
+    }
+
+    // Brings the diff into view: its own tab normally, the Commit tab when the
+    // diff is sharing that tab with the commit detail in split view.
+    private void FocusDiff() => _bottom.SelectedItem = DiffInSplit ? _commitInfoTab : _diffTab;
+
+    // Folds the live column sizes of an active split back into the row definitions
+    // that PersistLayout saves, so a drag of the split bar survives a rebuild and
+    // the next app start.
+    private void CaptureSplitStars()
+    {
+        if (_detailCol is not null)
+        {
+            _detailRow = new RowDefinition(new GridLength(_detailCol.Width.Value, GridUnitType.Star));
+        }
+
+        if (_diffCol is not null)
+        {
+            _diffRow = new RowDefinition(new GridLength(_diffCol.Width.Value, GridUnitType.Star));
+        }
     }
 
     // Detaches a control from its current parent so it can be re-hosted elsewhere
@@ -350,13 +448,21 @@ public sealed class MainWindow : Window
         }
     }
 
-    // Flips the Commit tab between stacked and side-by-side detail/diff.
+    // Flips the bottom panel between "detail and diff side by side in the Commit
+    // tab" and "diff in its own tab". The choice is persisted (UiState.SplitView)
+    // and restored on the next start.
     private void ToggleSplitView()
     {
         _splitHorizontal = !_splitHorizontal;
         RebuildRightRegion();
         _bottom.SelectedItem = _commitInfoTab;
-        _statusBar.SetText(_splitHorizontal ? "Split view: side by side" : "Split view: stacked");
+        _toolbar.SetSplitView(_splitHorizontal);
+        _uiState.SplitView = _splitHorizontal;
+        _statusBar.SetText(_splitHorizontal
+            ? (DiffInSplit
+                ? "Split view: commit detail and diff side by side"
+                : "Split view on (applies with the commit info below the graph)")
+            : "Split view off: the diff is in its own tab");
     }
 
     // Repositions the commit-info (detail) panel relative to the revision grid.
@@ -978,7 +1084,7 @@ public sealed class MainWindow : Window
         }
 
         _diff.ShowRange(_repoPath, baseHash, otherHash);
-        _bottom.SelectedItem = _diffTab;
+        FocusDiff();
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;
         _statusBar.SetText($"Comparing {shortBase}..{shortOther}");
@@ -1014,7 +1120,7 @@ public sealed class MainWindow : Window
         }
 
         _diff.ShowRange(_repoPath, baseHash, hash);
-        _bottom.SelectedItem = _diffTab;
+        FocusDiff();
 
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
@@ -1031,7 +1137,7 @@ public sealed class MainWindow : Window
         }
 
         _diff.ShowAgainstWorkingDirectory(_repoPath, hash);
-        _bottom.SelectedItem = _diffTab;
+        FocusDiff();
 
         string shortHash = hash.Length > 8 ? hash[..8] : hash;
         _statusBar.SetText($"Comparing {shortHash} .. working tree");
@@ -1078,7 +1184,7 @@ public sealed class MainWindow : Window
         string baseRef = chosen.ObjectId is { Length: > 0 } oid ? oid : chosen.Name;
 
         _diff.ShowRange(_repoPath, baseRef, hash);
-        _bottom.SelectedItem = _diffTab;
+        FocusDiff();
 
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
         _statusBar.SetText($"Comparing {chosen.Name} .. {shortOther}");
