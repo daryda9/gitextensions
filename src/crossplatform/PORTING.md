@@ -974,8 +974,50 @@ Menu + toolbar:
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
 ### Blocco RIFINITURE (round 4) — chiusura residui A/B/C
-> **Iterazione rifiniture: 2 / 20.** Metodo invariato (delega a subagent Claude in
+> **Iterazione rifiniture: 3 / 20.** Metodo invariato (delega a subagent Claude in
 > worktree isolati, file disgiunti, cherry-pick uno alla volta + build check).
+
+- **M41** (iter. 3) — B6 + B7 + C9:
+  - **B6 righe artificiali come nodi del DAG** (`RevisionGridView.cs`, `e9e5a49a5`): eliminato
+    il pannello fisso `_topRows`; **Working directory** e **Commit index** sono ora veri
+    `RevisionRow` in testa alla stessa `ListBox`, con hash sentinella `2222…`/`1111…`
+    (come `WorkTreeId`/`IndexId` del core), parent vuoti e data vuota. Il grafo li ancora
+    nella lane di HEAD (`ArtificialSegments` + `WithHeadConnector`) così la lane arriva
+    ininterrotta al nodo HEAD, e `RevisionGraphControl` disegna per loro un **quadrato
+    vuoto** invece del pallino. Non partecipano al range-diff né emettono
+    `RevisionSelected` (il CommitDialog si apre su click esplicito o da menu contestuale,
+    così scorrere con le frecce non apre più un modale); nascosti quando un filtro
+    testuale è attivo; compaiono solo con conteggi > 0.
+  - **B7 tab "Working directory" rimosso** (`MainWindow.cs`, `3c31fad94`): l'originale
+    FormBrowse non ha quel tab e il nucleo stage/unstage/diff/commit è duplicato dal
+    `CommitDialog`. **Ma** il pannello non era pura duplicazione: è l'unico posto del port
+    con risoluzione conflitti (mergetool / take ours / take theirs / mark resolved),
+    `git clean` con preview, "Discard changes" per file, le tre voci .gitignore, "Copy
+    path" e "Undo last commit". Quindi la view sopravvive come **finestra utility
+    on-demand** (non modale) aperta da **Commands → "Working directory…"** e
+    **Ctrl+Shift+W**; la voce di menu è agganciata a runtime da `MainWindow` cercando il
+    `MenuItem` `_Commands` (nessuna modifica a `MainMenu.cs`). `LoadRepository` per quel
+    pannello gira solo a finestra aperta (un `git status` in meno per refresh).
+    *Follow-up*: spostare conflitti / clean / discard+gitignore dentro `CommitDialog` e
+    aggiungere "Reset changes…" / "Clean working directory…" a `MainMenu` (dove stanno
+    nell'originale); solo allora la utility window e `WorkingDirectoryView` si possono
+    cancellare del tutto.
+  - **C9 PushDialog completo** (`PushDialog.cs` + nuovo `Services/PushRefsService.cs`,
+    `1f0163425`): tab **Push tags** (lista tag con checkbox e OID breve, select all/none,
+    `--tags`, force-with-lease), tab **Push multiple branches** (griglia con checkbox,
+    branch di destinazione editabile, colonna ahead/behind da `%(upstream:track)`, push
+    multiplo in un solo `git push` multi-refspec), **Manage remotes** che apre il
+    `RemotesDialog` esistente e ricarica le combo fuori dall'UI thread, **push per Url**
+    con combo pre-riempita dai push-URL dei remote + Browse…. Tutto passa dal path
+    esistente `GitProcessDialog.RunStreamingAsync` + retry `CredentialsDialog`.
+    Due bug trovati in verifica: `TargetIsUrl()` veniva valutato **dentro** la lambda di
+    background (accesso a un control fuori dall'UI thread → eccezione e console vuota;
+    ora i valori sono snapshottati sull'UI thread), e i branch senza upstream risultavano
+    "up to date" (`%(upstream:track)` vuoto letto come 0/0 → ora "new"). Verificato su
+    remote bare locale, nessun remote reale toccato.
+  - Verifica GUI di integrazione: tab strip senza "Working directory"; su repo sporco le
+    due righe artificiali compaiono in cima con nodo quadrato e lane continua fino a HEAD.
+    Build `Errori: 0`.
 
 - **M40** (iter. 2) — altri tre residui chiusi in parallelo:
   - **A2 Split view reale** (`MainWindow.cs`, `MainToolbar.cs`, +1 proprietà in

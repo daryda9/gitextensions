@@ -163,18 +163,17 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 ### B. Fedeltà visiva rimanente (priorità media)
 4. ✅ **CHIUSO M39/B4** — toolbar Diff completa (`DiffView.cs` + `Services/DiffTextService.cs`).
 5. ✅ **CHIUSO M40/B5** — riga selezionata blu pieno a tutta larghezza, pill e DAG leggibili.
-6. **Righe artificiali integrate nel grafo** — oggi "Working directory" / "Commit index"
-   sono un pannello fisso sopra la lista; nell'originale sono nodi del DAG collegati al
-   grafo. *File*: `App/Views/RevisionGridView.cs`.
-7. **Tab "Working directory" ridondante** con il `CommitDialog` modale: decidere se
-   rimuoverlo (l'originale non lo ha) o tenerlo. *File*: `App/MainWindow.cs`.
+6. ✅ **CHIUSO M41/B6** — "Working directory"/"Commit index" sono nodi del DAG in griglia.
+7. ✅ **CHIUSO M41/B7** — tab rimosso; la view resta come finestra utility
+   (Commands → "Working directory…", Ctrl+Shift+W) perché è l'unico posto con
+   risoluzione conflitti / clean / discard per file / .gitignore / undo last commit.
+   *Follow-up*: spostare quelle azioni in `CommitDialog` + `MainMenu`, poi cancellare
+   `WorkingDirectoryView`.
 
 ### C. Funzioni placeholder da completare (priorità media/bassa)
 8. ✅ **CHIUSO M40/C8** — CommitDialog: stash staged, templates, create branch, options
    (amend/signoff/no-verify/reset-author/close-after-commit) tutti funzionanti.
-9. **PushDialog**: tab `Push tags` e `Push multiple branches` sono placeholder; pulsante
-   `Manage remotes` disabilitato; push per `Url` disabilitato.
-   *File*: `App/Views/PushDialog.cs`.
+9. ✅ **CHIUSO M41/C9** — PushDialog: tags, multi-branch, Manage remotes, push per Url.
 10. **Console tab**: nessun terminale realmente incorporato (solo "Open terminal here").
     Valutare un PTY embedded. *File*: `App/Views/ConsoleView.cs`.
 
