@@ -974,8 +974,75 @@ Menu + toolbar:
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
 ### Blocco RIFINITURE (round 4) — chiusura residui A/B/C
-> **Iterazione rifiniture: 3 / 20.** Metodo invariato (delega a subagent Claude in
-> worktree isolati, file disgiunti, cherry-pick uno alla volta + build check).
+> **Iterazione rifiniture: 4 / 20 — BLOCCO CHIUSO** (stop anticipato: tutti i residui
+> A1–C10 + D11/D12 esauriti). Metodo invariato (delega a subagent Claude in worktree
+> isolati, file disgiunti, cherry-pick uno alla volta + build check).
+
+**Riepilogo del blocco rifiniture (round 4, iter. 1–4, M39–M42).** Chiusi tutti e dodici
+i residui elencati nell'HANDOFF: A1 toolbar overflow, A2 split view, A3 repo recenti,
+B4 toolbar diff, B5 selezione grid, B6 nodi DAG, B7 tab Working directory, C8 CommitDialog,
+C9 PushDialog, C10 terminale PTY, D11 traduzioni (verificate → debito documentato, non
+implementabile in piccolo), D12 shim Compat. 12 commit di feature + 4 di documentazione,
+build sempre `Errori: 0`, ogni cambiamento verificato con screenshot GUI headless.
+**Follow-up noti, non eseguiti**: (1) spostare risoluzione conflitti / clean / discard per
+file / .gitignore / undo-last-commit da `WorkingDirectoryView` dentro `CommitDialog` +
+`MainMenu`, poi cancellare la finestra utility e la view; (2) traduzioni = copia MSBuild
+degli `.xlf` + layer `ITranslate` sulle view + selettore lingua; (3) il core condiviso
+riscrive `HOME` all'avvio (`SetEnvironmentVariables` → `~/Documents`), quindi i processi
+git figli possono ereditare un `HOME` sbagliato — fix non fatto perché tocca il codice
+condiviso con la build Windows. **SKIP confermati fuori scope**: repository-host GitHub,
+colonna build status.
+
+- **M42** (iter. 4) — C10 + D11 + D12, chiusura del blocco:
+  - **C10 terminale PTY realmente embedded** (nuovi `Services/PtyProcess.cs`,
+    `Services/TerminalEmulator.cs`, `Views/TerminalControl.cs` + `Views/ConsoleView.cs`,
+    `001c505b1`): niente NuGet, solo P/Invoke su libc
+    (`posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r`/`read`/`write`/`ioctl(TIOCSWINSZ)`).
+    Nessun `fork()` dal runtime .NET (pericoloso con molti thread): il figlio è
+    `setsid -w /bin/sh -c 'exec 0</dev/pts/N 1>/dev/pts/N 2>&1; exec $SHELL -i'`, così il
+    pts diventa il terminale **di controllo** della shell → job control, `isatty()`, colori.
+    Parser VT100/xterm con SGR completo (16/bright/256/truecolor), CUP/ED/EL/IL/DL/ICH/DCH/
+    SU/SD/DECSTBM, save/restore cursore, autowrap, DECCKM, bracketed paste, **alternate
+    screen** (`less`, `top`), OSC 0/1/2, scrollback 5000 righe; tastiera completa (frecce,
+    Home/End/Del/PgUp/PgDn, F1–F4, Ctrl+/Alt+lettera, Backspace 0x7f) e resize via
+    `TIOCSWINSZ`. **Bug non ovvio trovato**: la shell ereditava `SigIgn` con SIGINT/SIGQUIT/
+    SIGPIPE ignorati dal processo GUI (le disposizioni "ignora" sopravvivono a `execve`) →
+    **Ctrl+C non uccideva nulla**; risolto rimettendo `SIG_DFL` attorno a `Process.Start`.
+    Verificato in GUI: `ls --color`, `git log --decorate` a colori, Ctrl+C su `sleep 100`,
+    history con frecce, Tab completion, `less` e `top` sull'alternate screen, `stty size`
+    coerente dopo resize, nessun processo zombie alla chiusura.
+  - **D11 traduzioni — verificate, NON funzionanti per costruzione** (`e1d8fee09` per la
+    parte di fix): il motore XLIFF del core gira benissimo su Linux (32 lingue caricate,
+    `GetTranslation("Italian")` → 146 categorie, nessun problema di case-sensitivity), ma
+    (a) nessun csproj crossplatform copia `src/app/GitUI/Translation/*.xlf` in output o nel
+    `.deb`, (b) non esiste un'implementazione `ITranslate` né una sola chiamata
+    `Translator.Translate` nelle view Avalonia — ogni stringa è un letterale inglese —, e
+    (c) non c'è selettore lingua né chiave persistita. Impostare `translation=Italian` non
+    cambia nulla: **il port è inglese per costruzione**. Registrato come debito; non è un
+    fix piccolo. Nel commit è invece incluso il fix del **path repo abbreviato con `~`**:
+    la causa non era l'abbreviazione (esisteva già) ma il core che riscrive `HOME` a
+    `~/Documents` da un thread di background mentre la shell si costruisce → risolto con
+    uno snapshot della home in `[ModuleInitializer]` (gira prima di `Main`), collasso solo
+    su confine di directory reale.
+  - **D12 shim `Compat/` reali** (nuovi `Compat/AvaloniaHost.cs`, `MessageBoxWindow.cs`,
+    `ClipboardShim.cs`, `FileDialogs.cs`, + `SystemWindowsFormsShims.cs` e il csproj,
+    `8b84ce91`): censiti tutti i no-op e implementati quelli **davvero raggiunti**.
+    L'unico no-op vivo era `MessageBox.Show` (raggiunto da `GitVersion.CurrentVersion` per
+    la versione di git non supportata e da `ConfigFile.Save` → `ExceptionUtils.ShowException`):
+    ora è un modale Avalonia a tema con glifi, ordine bottoni WinForms, default-button e
+    `DialogResult` fedeli, Ctrl+C che copia il messaggio, Escape → Cancel. Aggiunti anche
+    clipboard reale (`IClipboard` via `TopLevel`) e file/folder picker (`IStorageProvider`).
+    Il bridge async→sync (`AvaloniaHost.Run`) non blocca mai l'UI thread: sull'UI thread
+    pompa un `DispatcherFrame` annidato (come fa il modal loop di WinForms), fuori posta
+    sull'UI thread e blocca solo il chiamante. Lasciati no-op, con motivazione, quelli
+    irraggiungibili (`Icon.ExtractAssociatedIcon`, `TextRenderer.MeasureText`,
+    `Graphics.MeasureString`, i type-filler WinForms, i path Registry già OS-guarded).
+    *Limite noto*: sotto Xvfb il clipboard X11 di Avalonia è inerte (verificato con
+    controprova `xclip`), quindi headless si verifica solo fino al confine Avalonia; i
+    file picker richiedono un portal XDG (senza, servirebbe `UseManagedSystemDialogs()`,
+    scelta che spetta all'app).
+  - Verifica finale sull'albero integrato: `--selftest` exit 0, GUI senza eccezioni,
+    terminale embedded funzionante, toolbar `~/git_ext_mod`. Build `Errori: 0`.
 
 - **M41** (iter. 3) — B6 + B7 + C9:
   - **B6 righe artificiali come nodi del DAG** (`RevisionGridView.cs`, `e9e5a49a5`): eliminato
