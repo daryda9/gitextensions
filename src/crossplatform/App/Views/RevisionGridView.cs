@@ -10,6 +10,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -321,38 +322,19 @@ public sealed class RevisionGridView : UserControl
                 new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent),
             },
         });
-        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":pointerover")
-            .Template().OfType<ContentPresenter>())
-        {
-            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.PanelAlt")) },
-        });
-        // Selected row: strong full-row fill plus a 3px App.Accent bar on the left
-        // edge of the ContentPresenter (outside the row content) so the graph lanes
-        // and ref badges stay untouched and readable. Foreground pinned to App.Text
-        // for high contrast on the Selection fill in both themes.
-        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected")
+        // Row backgrounds (alternating stripe, hover wash and — above all — the solid
+        // full-width selection fill) are NOT painted by the ListBoxItem template any
+        // more: the row content itself is opaque (alternating App.Panel/App.PanelAlt),
+        // so anything drawn behind it would be invisible. Instead every row root is a
+        // RevisionRowView, which watches its ListBoxItem and repaints itself plus its
+        // text / ref pills / DAG lanes for the selected state (see BuildRow).
+        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>()
             .Template().OfType<ContentPresenter>())
         {
             Setters =
             {
-                new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")),
-                new Setter(ContentPresenter.BorderBrushProperty, B("App.Accent")),
-                new Setter(ContentPresenter.BorderThicknessProperty, new Thickness(3, 0, 0, 0)),
-            },
-        });
-        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected"))
-        {
-            Setters = { new Setter(TemplatedControl.ForegroundProperty, B("App.Text")) },
-        });
-        // Keep the selection fill (not the hover wash) when a selected row is hovered.
-        _list.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected").Class(":pointerover")
-            .Template().OfType<ContentPresenter>())
-        {
-            Setters =
-            {
-                new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")),
-                new Setter(ContentPresenter.BorderBrushProperty, B("App.Accent")),
-                new Setter(ContentPresenter.BorderThicknessProperty, new Thickness(3, 0, 0, 0)),
+                new Setter(ContentPresenter.BackgroundProperty, Brushes.Transparent),
+                new Setter(ContentPresenter.BorderThicknessProperty, new Thickness(0)),
             },
         });
 
@@ -1659,9 +1641,11 @@ public sealed class RevisionGridView : UserControl
         grid.Margin = new Thickness(10, 0, 10, 0);
         grid.MinHeight = 20;
 
-        // Subtle alternating-row background (App.Panel / App.PanelAlt).
+        // Subtle alternating-row background (App.Panel / App.PanelAlt). It lives on
+        // the RevisionRowView wrapper (full row width, no margin) so the selection
+        // fill can cover every column edge to edge, like the original grid.
         int index = _rows is List<RevisionRow> list ? list.IndexOf(row) : IndexOf(_rows, row);
-        grid.Background = (index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt");
+        RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
 
         // Graph cell (column 0): the DAG lanes for this row. While a filter is
         // active the rows shown are a non-contiguous subset, so the precomputed
@@ -1673,6 +1657,7 @@ public sealed class RevisionGridView : UserControl
             RevisionGraphControl graph = new(row.GraphSegments, row.NodeLane, LaneWidth);
             Grid.SetColumn(graph, 0);
             grid.Children.Add(graph);
+            view.TrackGraph(graph);
         }
 
         // Render-time "View" highlight styles (no reload):
@@ -1691,7 +1676,7 @@ public sealed class RevisionGridView : UserControl
         // Hash: monospace + accent so it reads as a code identifier.
         if (_showHash)
         {
-            AddCell(grid, 1, row.ShortHash, hashBrush, bold: onBranch, monospace: true);
+            view.TrackText(AddCell(grid, 1, row.ShortHash, hashBrush, bold: onBranch, monospace: true));
         }
 
         // Avatar (column 2): a deterministic offline identicon per author, cached.
@@ -1713,12 +1698,12 @@ public sealed class RevisionGridView : UserControl
 
         if (_showAuthor)
         {
-            AddCell(grid, 3, row.Author, B("App.TextDim"));
+            view.TrackText(AddCell(grid, 3, row.Author, B("App.TextDim")), dim: true);
         }
 
         if (_showDate)
         {
-            AddCell(grid, 4, FormatDate(row), B("App.TextDim"));
+            view.TrackText(AddCell(grid, 4, FormatDate(row), B("App.TextDim")), dim: true);
         }
 
         // Subject cell: an optional git-notes indicator, then ref badges, then the
@@ -1750,23 +1735,25 @@ public sealed class RevisionGridView : UserControl
             // ref (not remote, not tag) is the checked-out branch — render it bold
             // with a small green ▶ marker, echoing the original GitExtensions look.
             bool isCurrent = row.IsHead && !IsRemoteRef(refName) && !IsTagRef(refName);
-            subject.Children.Add(BuildRefBadge(refName, isCurrent));
+            subject.Children.Add(BuildRefBadge(refName, isCurrent, view));
         }
 
-        subject.Children.Add(new TextBlock
+        TextBlock subjectText = new()
         {
             Text = row.Subject,
             Foreground = subjectBrush,
             FontWeight = onBranch ? FontWeight.Bold : FontWeight.Normal,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
-        });
+        };
+        view.TrackText(subjectText);
+        subject.Children.Add(subjectText);
 
         Grid.SetColumn(subject, 5);
         grid.Children.Add(subject);
 
-        grid.ContextMenu = BuildRowContextMenu(row);
-        return grid;
+        view.ContextMenu = BuildRowContextMenu(row);
+        return view;
     }
 
     private static int IndexOf(IReadOnlyList<RevisionRow> rows, RevisionRow row)
@@ -1786,7 +1773,7 @@ public sealed class RevisionGridView : UserControl
     // remote-tracking branch, or tag — echoing the original GitExtensions look
     // (light background, 1px coloured border, coloured text). When isCurrent, the
     // pill is bold and prefixed by a small green ▶ marker for the checked-out branch.
-    private static Control BuildRefBadge(string refName, bool isCurrent = false)
+    private static Control BuildRefBadge(string refName, bool isCurrent = false, RevisionRowView? view = null)
     {
         Color kind = RefColor(refName);
 
@@ -1808,6 +1795,11 @@ public sealed class RevisionGridView : UserControl
             },
         };
 
+        // On a selected (solid blue) row the pill keeps its kind colour but swaps its
+        // backdrop to opaque white, so branch/remote/tag pills stay readable instead
+        // of drowning in the fill. The row view restores App.Panel when deselected.
+        view?.TrackPill(pill);
+
         if (!isCurrent)
         {
             return pill;
@@ -1820,14 +1812,16 @@ public sealed class RevisionGridView : UserControl
             Spacing = 2,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        wrap.Children.Add(new TextBlock
+        TextBlock marker = new()
         {
             Text = "▶",
             Foreground = new SolidColorBrush(Color.FromRgb(0x3F, 0xAE, 0x5A)),
             FontSize = 10,
             FontWeight = FontWeight.Bold,
             VerticalAlignment = VerticalAlignment.Center,
-        });
+        };
+        view?.TrackMarker(marker);
+        wrap.Children.Add(marker);
         wrap.Children.Add(pill);
         return wrap;
     }
@@ -1906,7 +1900,7 @@ public sealed class RevisionGridView : UserControl
         _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
     }
 
-    private static void AddCell(Grid grid, int column, string text, IBrush? foreground = null, bool bold = false, bool monospace = false)
+    private static TextBlock AddCell(Grid grid, int column, string text, IBrush? foreground = null, bool bold = false, bool monospace = false)
     {
         TextBlock block = new()
         {
@@ -1924,6 +1918,7 @@ public sealed class RevisionGridView : UserControl
 
         Grid.SetColumn(block, column);
         grid.Children.Add(block);
+        return block;
     }
 
     // --- Offline author avatars (identicons) ---------------------------------
@@ -2034,6 +2029,177 @@ public sealed class RevisionGridView : UserControl
         }
     }
 
+    /// <summary>
+    ///  Root visual of one revision row. It owns the row background so the fill can
+    ///  span the full grid width (all columns, no margin) and repaints itself — and
+    ///  the cells, ref pills and DAG lanes it tracks — whenever its
+    ///  <see cref="ListBoxItem"/> becomes selected / focused / hovered.
+    ///  <para>
+    ///  Selected rows are filled with solid <c>App.Accent</c> blue and their text is
+    ///  switched to white, matching the original Windows grid. When the grid does not
+    ///  own the keyboard focus the fill is muted (accent mixed toward gray) so an
+    ///  inactive selection still reads as blue but is clearly less loud; within a
+    ///  multi-selection the row that has focus additionally gets a light focus
+    ///  rectangle, keeping "focused row" and "selected row" distinguishable.
+    ///  </para>
+    /// </summary>
+    private sealed class RevisionRowView : Border
+    {
+        private static readonly IBrush SelectedText = new SolidColorBrush(Colors.White);
+        private static readonly IBrush SelectedTextDim = new SolidColorBrush(Color.FromRgb(0xDF, 0xEC, 0xFA));
+        private static readonly IBrush SelectedPillBg = new SolidColorBrush(Colors.White);
+        private static readonly IBrush SelectedMarker = new SolidColorBrush(Color.FromRgb(0x9C, 0xF0, 0xB8));
+        private static readonly IBrush FocusRect = new SolidColorBrush(Color.FromArgb(0xB0, 0xFF, 0xFF, 0xFF));
+
+        // Fallbacks used only when the themed brushes are missing/non-solid.
+        private static readonly Color AccentFallback = Color.FromRgb(0x00, 0x7A, 0xCC);
+        private static readonly Color SelectionFallback = Color.FromRgb(0x09, 0x47, 0x71);
+
+        private readonly IBrush _normalBg;
+        private readonly Border _focusRect;
+        private readonly List<(TextBlock Block, IBrush Normal, IBrush Selected)> _texts = [];
+        private readonly List<(Border Pill, IBrush Normal)> _pills = [];
+        private readonly List<(TextBlock Marker, IBrush Normal)> _markers = [];
+        private readonly List<RevisionGraphControl> _graphs = [];
+
+        private ListBoxItem? _item;
+        private ListBox? _owner;
+
+        public RevisionRowView(IBrush normalBackground, Control content)
+        {
+            _normalBg = normalBackground;
+            Background = normalBackground;
+
+            _focusRect = new Border
+            {
+                BorderThickness = new Thickness(1),
+                BorderBrush = Brushes.Transparent,
+                IsHitTestVisible = false,
+            };
+
+            Child = new Panel { Children = { content, _focusRect } };
+        }
+
+        public void TrackText(TextBlock block, bool dim = false)
+            => _texts.Add((block, block.Foreground ?? B("App.Text"), dim ? SelectedTextDim : SelectedText));
+
+        public void TrackPill(Border pill)
+            => _pills.Add((pill, pill.Background ?? B("App.Panel")));
+
+        public void TrackMarker(TextBlock marker)
+            => _markers.Add((marker, marker.Foreground ?? B("App.Text")));
+
+        public void TrackGraph(RevisionGraphControl graph) => _graphs.Add(graph);
+
+        protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            base.OnAttachedToVisualTree(e);
+
+            _item = this.FindAncestorOfType<ListBoxItem>();
+            _owner = this.FindAncestorOfType<ListBox>();
+            if (_item is not null)
+            {
+                _item.PropertyChanged += OnStateChanged;
+            }
+
+            // The grid losing/gaining focus switches every selected row between the
+            // active and the muted fill, so listen on the ListBox as well.
+            if (_owner is not null)
+            {
+                _owner.PropertyChanged += OnStateChanged;
+            }
+
+            Sync();
+        }
+
+        protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            if (_item is not null)
+            {
+                _item.PropertyChanged -= OnStateChanged;
+                _item = null;
+            }
+
+            if (_owner is not null)
+            {
+                _owner.PropertyChanged -= OnStateChanged;
+                _owner = null;
+            }
+
+            base.OnDetachedFromVisualTree(e);
+        }
+
+        private static Color ColorOf(string key, Color fallback)
+            => Application.Current?.Resources[key] is ISolidColorBrush b ? b.Color : fallback;
+
+        // Mixes two colours (t = 0 → a, t = 1 → b).
+        private static Color Mix(Color a, Color b, double t)
+            => Color.FromRgb(
+                (byte)Math.Round(a.R + ((b.R - a.R) * t)),
+                (byte)Math.Round(a.G + ((b.G - a.G) * t)),
+                (byte)Math.Round(a.B + ((b.B - a.B) * t)));
+
+        private void OnStateChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+        {
+            if (e.Property == ListBoxItem.IsSelectedProperty
+                || e.Property == InputElement.IsFocusedProperty
+                || e.Property == InputElement.IsKeyboardFocusWithinProperty
+                || e.Property == InputElement.IsPointerOverProperty)
+            {
+                Sync();
+            }
+        }
+
+        private void Sync()
+        {
+            bool selected = _item?.IsSelected == true;
+            bool gridActive = _owner?.IsKeyboardFocusWithin == true || _item?.IsKeyboardFocusWithin == true;
+            bool focusedRow = selected && (_item?.IsFocused == true || _item?.IsKeyboardFocusWithin == true);
+            bool hover = _item?.IsPointerOver == true;
+
+            Color accent = ColorOf("App.Accent", AccentFallback);
+            Color selection = ColorOf("App.Selection", SelectionFallback);
+
+            if (selected)
+            {
+                // Active: full-strength accent blue. Inactive: the same blue pulled a
+                // third of the way toward the theme's selection tint, still solidly
+                // blue but visibly calmer.
+                Background = new SolidColorBrush(gridActive ? accent : Mix(accent, Mix(selection, Colors.Gray, 0.35), 0.45));
+            }
+            else if (hover)
+            {
+                Background = B("App.PanelAlt");
+            }
+            else
+            {
+                Background = _normalBg;
+            }
+
+            _focusRect.BorderBrush = focusedRow ? FocusRect : Brushes.Transparent;
+
+            foreach ((TextBlock block, IBrush normal, IBrush sel) in _texts)
+            {
+                block.Foreground = selected ? sel : normal;
+            }
+
+            foreach ((Border pill, IBrush normal) in _pills)
+            {
+                pill.Background = selected ? SelectedPillBg : normal;
+            }
+
+            foreach ((TextBlock marker, IBrush normal) in _markers)
+            {
+                marker.Foreground = selected ? SelectedMarker : normal;
+            }
+
+            foreach (RevisionGraphControl graph in _graphs)
+            {
+                graph.RowSelected = selected;
+            }
+        }
+    }
+
     // Draws a cached identicon: a subtly tinted rounded background with the 5x5
     // colored block pattern on top. Custom-drawn Controls do not clip by default,
     // so ClipToBounds is set to keep the drawing inside the tiny avatar cell.
@@ -2109,6 +2275,7 @@ public sealed class RevisionGridView : UserControl
         private readonly IReadOnlyList<RevisionGraphSegment> _segments;
         private readonly int _nodeLane;
         private readonly double _laneWidth;
+        private bool _rowSelected;
 
         public RevisionGraphControl(IReadOnlyList<RevisionGraphSegment> segments, int nodeLane, double laneWidth)
         {
@@ -2122,8 +2289,41 @@ public sealed class RevisionGridView : UserControl
             ClipToBounds = true;
         }
 
-        private static IBrush Brush(int lane)
-            => LaneBrushes[((lane % LaneBrushes.Length) + LaneBrushes.Length) % LaneBrushes.Length];
+        /// <summary>
+        ///  Set while the row is selected: the DAG is then drawn over a solid blue
+        ///  fill, so the lane colours are lightened toward white (keeping their hue,
+        ///  hence still telling the lanes apart) and the node gets a white ring.
+        /// </summary>
+        public bool RowSelected
+        {
+            get => _rowSelected;
+            set
+            {
+                if (_rowSelected != value)
+                {
+                    _rowSelected = value;
+                    InvalidateVisual();
+                }
+            }
+        }
+
+        private static Color LaneColor(int lane)
+            => LaneColors[((lane % LaneColors.Length) + LaneColors.Length) % LaneColors.Length];
+
+        private IBrush Brush(int lane)
+        {
+            int i = ((lane % LaneBrushes.Length) + LaneBrushes.Length) % LaneBrushes.Length;
+            return _rowSelected
+                ? new SolidColorBrush(Lighten(LaneColor(lane), 0.55))
+                : LaneBrushes[i];
+        }
+
+        // Mixes a colour toward white by t (0 = unchanged, 1 = white).
+        private static Color Lighten(Color c, double t)
+            => Color.FromRgb(
+                (byte)Math.Round(c.R + ((255 - c.R) * t)),
+                (byte)Math.Round(c.G + ((255 - c.G) * t)),
+                (byte)Math.Round(c.B + ((255 - c.B) * t)));
 
         public override void Render(DrawingContext context)
         {
@@ -2145,7 +2345,8 @@ public sealed class RevisionGridView : UserControl
             }
 
             IBrush nodeBrush = Brush(_nodeLane);
-            context.DrawEllipse(nodeBrush, null, new Point(X(_nodeLane), h / 2), 4, 4);
+            IPen? ring = _rowSelected ? new Pen(Brushes.White, 1.5) : null;
+            context.DrawEllipse(nodeBrush, ring, new Point(X(_nodeLane), h / 2), 4, 4);
         }
     }
 }
