@@ -154,18 +154,15 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ### A. Difetti noti / regressioni da chiudere (priorità alta)
 1. ✅ **CHIUSO M39/A1** — toolbar overflow `»` (`OverflowPanel` in `MainToolbar.cs`).
-2. **Toggle "Split view" ora cosmetico** — dopo U-TABS il diff è in un tab proprio,
-   quindi il pulsante non cambia più layout (aggiorna solo lo status). Decidere:
-   ridargli significato (es. split dentro il tab Diff) o rimuoverlo dalla toolbar.
-   *File*: `App/MainWindow.cs` (`ToggleSplitView`, `_splitHorizontal`), `MainToolbar.cs`.
+2. ✅ **CHIUSO M40/A2** — Split view reale: detail | splitter | diff nel tab Commit,
+   persistito in `UiState.SplitView`.
 3. ✅ **CHIUSO M39/A3** — repo recenti filtrati/normalizzati/potati in modo persistente.
    *Residuo minore*: il dropdown mostra ora il path assoluto completo invece di `~/…` →
    riabbreviare con `~` (`App/Views/MainToolbar.cs` o il provider in `MainWindow.cs`).
 
 ### B. Fedeltà visiva rimanente (priorità media)
 4. ✅ **CHIUSO M39/B4** — toolbar Diff completa (`DiffView.cs` + `Services/DiffTextService.cs`).
-5. **U-GRID-SEL** — rifinire ancora la riga selezionata (l'originale la riempie di blu
-   pieno su tutta la larghezza, testo bianco). *File*: `App/Views/RevisionGridView.cs`.
+5. ✅ **CHIUSO M40/B5** — riga selezionata blu pieno a tutta larghezza, pill e DAG leggibili.
 6. **Righe artificiali integrate nel grafo** — oggi "Working directory" / "Commit index"
    sono un pannello fisso sopra la lista; nell'originale sono nodi del DAG collegati al
    grafo. *File*: `App/Views/RevisionGridView.cs`.
@@ -173,8 +170,8 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
    rimuoverlo (l'originale non lo ha) o tenerlo. *File*: `App/MainWindow.cs`.
 
 ### C. Funzioni placeholder da completare (priorità media/bassa)
-8. **CommitDialog**: `Stash staged changes`, `Commit templates`, `Create branch`,
-   `Options` sono presenti ma no-op/disabilitati. *File*: `App/Views/CommitDialog.cs`.
+8. ✅ **CHIUSO M40/C8** — CommitDialog: stash staged, templates, create branch, options
+   (amend/signoff/no-verify/reset-author/close-after-commit) tutti funzionanti.
 9. **PushDialog**: tab `Push tags` e `Push multiple branches` sono placeholder; pulsante
    `Manage remotes` disabilitato; push per `Url` disabilitato.
    *File*: `App/Views/PushDialog.cs`.

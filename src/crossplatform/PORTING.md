@@ -945,7 +945,8 @@ Griglia:
 - [x] **U-GRID-DATE** ✅ M31 — Default date **relative** ("2 hours ago").
 - [x] **U-GRID-TOPROWS** ✅ M34 — Righe artificiali in cima: **Working directory** + **Commit
   index** con check verde, cliccabili (mostrano il lavoro pendente).
-- [ ] **U-GRID-SEL** Selezione riga piena blu forte (già parzialmente fatto T4).
+- [x] **U-GRID-SEL** ✅ M40 — Selezione riga piena blu forte a tutta larghezza, testo
+  bianco, pill e grafo DAG resi leggibili sopra il fill.
 
 Menu + toolbar:
 - [x] **U-MENU** ✅ M31 — Top-level come originale: **Start · Repository · Navigate · View ·
@@ -973,8 +974,39 @@ Menu + toolbar:
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
 ### Blocco RIFINITURE (round 4) — chiusura residui A/B/C
-> **Iterazione rifiniture: 1 / 20.** Metodo invariato (delega a subagent Claude in
+> **Iterazione rifiniture: 2 / 20.** Metodo invariato (delega a subagent Claude in
 > worktree isolati, file disgiunti, cherry-pick uno alla volta + build check).
+
+- **M40** (iter. 2) — altri tre residui chiusi in parallelo:
+  - **A2 Split view reale** (`MainWindow.cs`, `MainToolbar.cs`, +1 proprietà in
+    `Services/UiStateService.cs`, `7865c8df8`): il toggle torna a cambiare davvero il
+    layout. ON → il tab **Commit** ospita commit-detail | `GridSplitter` trascinabile |
+    diff completo (file list + testo + toolbar diff), e il tab Diff sparisce finché dura
+    (un control ha un solo parent visuale); OFF → detail da solo e tab Diff reinserito
+    nella sua posizione. Posizione dello splitter salvata in `DetailStar`/`DiffStar`,
+    toggle persistito come `UiState.SplitView` e ripristinato all'avvio; caption
+    "Split view ✓" in accent, coerente anche nella voce del menu overflow `»`. I 4 punti
+    che forzavano il tab Diff passano ora da `FocusDiff()`.
+  - **B5 selezione riga** (`RevisionGridView.cs`, `59d5e9d63`): il background della riga
+    era dipinto dal `Grid` interno (opaco, con margine) e copriva il fill di selezione →
+    si vedeva solo la barra accento. Ora la radice riga è un `RevisionRowView : Border`
+    a piena larghezza che osserva `IsSelected`/`IsFocused`/`IsPointerOver` del
+    `ListBoxItem` (template ridotto a trasparente). Selezione = **`App.Accent` pieno da
+    bordo a bordo**, testo bianco; selezione inattiva virata verso `App.Selection`; riga
+    focus dentro una multi-selezione con rettangolo bianco 1px. Leggibilità sopra il blu:
+    pill con sfondo bianco e colore-tipo su bordo+testo, ▶ verde chiaro, lane del DAG
+    schiarite del 55% verso il bianco e nodo con anello bianco.
+  - **C8 CommitDialog completo** (`CommitDialog.cs` + nuovo `Services/CommitActionsService.cs`,
+    `b471524b0`): **Stash staged changes** = `git stash push --staged` con fallback
+    manuale per git < 2.35 (`write-tree`/`commit-tree`/`apply --reverse --index`/
+    `stash store`, con la fase distruttiva dopo lo store); **Commit templates** = union di
+    `commit.template` e scansione repo (`.gitmessage*`, `.github/*TEMPLATE*`, …), la voce
+    scelta riempie il messaggio; **Create branch** = `check-ref-format` +
+    `show-ref --verify` poi `checkout -b`/`branch`; **Options** = amend / `--signoff` /
+    `--no-verify` / `--reset-author` / chiudi-dopo-commit, composti nel `git commit … -F`
+    realmente eseguito e mostrati nella status line.
+  - Verifica GUI di integrazione a 1400px: riga selezionata blu pieno con pill e grafo
+    leggibili; split ON mostra detail+diff affiancati con la toolbar B4. Build `Errori: 0`.
 
 - **M39** (iter. 1) — tre residui chiusi in parallelo su file disgiunti:
   - **A1 toolbar overflow** (`MainToolbar.cs`, `008075276`): lo `StackPanel` orizzontale è
