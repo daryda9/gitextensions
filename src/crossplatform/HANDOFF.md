@@ -153,22 +153,17 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 ## 4. Cosa resta da fare
 
 ### A. Difetti noti / regressioni da chiudere (priorità alta)
-1. **Toolbar senza overflow** — è uno `StackPanel` orizzontale che non fa wrap: a
-   larghezze piccole le combo `All branches ▾` / `Filter:` e l'indicatore repo finiscono
-   **oltre il bordo destro**. Servono wrap, `ScrollViewer` orizzontale o un menu
-   "overflow" (`»`) come l'originale. *File*: `App/Views/MainToolbar.cs`.
+1. ✅ **CHIUSO M39/A1** — toolbar overflow `»` (`OverflowPanel` in `MainToolbar.cs`).
 2. **Toggle "Split view" ora cosmetico** — dopo U-TABS il diff è in un tab proprio,
    quindi il pulsante non cambia più layout (aggiorna solo lo status). Decidere:
    ridargli significato (es. split dentro il tab Diff) o rimuoverlo dalla toolbar.
    *File*: `App/MainWindow.cs` (`ToggleSplitView`, `_splitHorizontal`), `MainToolbar.cs`.
-3. **Dropdown "repo recenti" sporco** — elenca vecchi path `agent-*` dei worktree
-   cancellati. Filtrare i path inesistenti / sotto `.claude/worktrees`.
-   *File*: `App/MainWindow.cs` (`RecentReposProvider`), `App/Services/RecentRepositoriesService.cs`.
+3. ✅ **CHIUSO M39/A3** — repo recenti filtrati/normalizzati/potati in modo persistente.
+   *Residuo minore*: il dropdown mostra ora il path assoluto completo invece di `~/…` →
+   riabbreviare con `~` (`App/Views/MainToolbar.cs` o il provider in `MainWindow.cs`).
 
 ### B. Fedeltà visiva rimanente (priorità media)
-4. **Toolbar del Diff ricca** (come l'originale): naviga change su/giù, zoom, ignora
-   whitespace, mostra caratteri non stampabili, `<div>`/word-diff, encoding
-   (`Unicode (UTF-8)`), impostazioni. *File*: `App/Views/DiffView.cs`.
+4. ✅ **CHIUSO M39/B4** — toolbar Diff completa (`DiffView.cs` + `Services/DiffTextService.cs`).
 5. **U-GRID-SEL** — rifinire ancora la riga selezionata (l'originale la riempie di blu
    pieno su tutta la larghezza, testo bianco). *File*: `App/Views/RevisionGridView.cs`.
 6. **Righe artificiali integrate nel grafo** — oggi "Working directory" / "Commit index"

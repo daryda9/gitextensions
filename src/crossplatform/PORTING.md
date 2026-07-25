@@ -972,6 +972,39 @@ Menu + toolbar:
   installa GCM) → configurato `git-credential-libsecret` (compilato dal contrib di git,
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
+### Blocco RIFINITURE (round 4) — chiusura residui A/B/C
+> **Iterazione rifiniture: 1 / 20.** Metodo invariato (delega a subagent Claude in
+> worktree isolati, file disgiunti, cherry-pick uno alla volta + build check).
+
+- **M39** (iter. 1) — tre residui chiusi in parallelo su file disgiunti:
+  - **A1 toolbar overflow** (`MainToolbar.cs`, `008075276`): lo `StackPanel` orizzontale è
+    sostituito da un `OverflowPanel : Panel` che misura ogni item a larghezza infinita,
+    tiene quelli che entrano e parcheggia gli altri fuori schermo (`ClipToBounds`), senza
+    toccare `IsVisible` dal measure. Pulsante **`»`** ancorato a destra, visibile solo
+    quando serve; flyout ricostruito da `HiddenItems` **prima** di `ShowAt`. I dropdown
+    con provider (Repository/Branch/Submodules/Worktrees) sono `LazyMenu` e riaprono il
+    proprio flyout ancorato a `»`; la casella Filter nel menu è un TextBox mirror che
+    riscrive nel reale. Verificato a 1400px (layout inline invariato) e 1200px (niente
+    oltre il bordo, tutti gli item raggiungibili dal menu).
+  - **A3 repo recenti** (`RecentRepositoriesService.cs` + `RecentReposProvider`, `4c7eab2b1`):
+    normalizzazione path (`GetFullPath`, trailing separator), dedup ordinale MRU-safe,
+    scarto dei path inesistenti o senza `.git`, scarto dei worktree effimeri
+    (`.claude/worktrees`, anche in `AddAsync`). La potatura è **persistita**
+    (`SaveRecentHistoryAsync`), non solo nascosta a display; tutto dentro `Task.Run`
+    (nessuno `stat` sul thread UI). Verificato in GUI con lista seminata di voci morte.
+  - **B4 toolbar del Diff** (`DiffView.cs` + nuovo `Services/DiffTextService.cs`, `229fd8143`):
+    prev/next change (▲▼ con scroll all'hunk e "Change N of M"), zoom `A+`/`A−`/reset
+    (6–32pt), toggle **`-w`**, **`¶`** caratteri non stampabili (`·`/`→`/`␍`, render-side),
+    **`<div>`** `--word-diff=plain`, selettore encoding con default **Unicode (UTF-8)**
+    (git letto come byte grezzi, decodifica lato client), menu **`⚙`**. I toggle
+    ri-eseguono davvero git e persistono nella sessione (`DiffTextService.Session`); la
+    status line mostra il comando git che ha prodotto la patch visibile. Git sempre
+    off-UI-thread.
+  - Verifica GUI di integrazione a 1400px con config isolata: `»` presente, nessun
+    elemento oltre il bordo destro, app senza eccezioni. Build `Errori: 0`.
+  - *Residuo minore introdotto*: il dropdown repo in toolbar ora mostra il path assoluto
+    completo invece di `~/…` (effetto della normalizzazione A3) → riabbreviare con `~`.
+
 ### Milestone round 3 (fedeltà visiva, aree: tab inferiori + commit detail + filtri)
 - **M37** (iter. 10) — **U-FILTER** toolbar: menu **All branches ▾** (All/Current/Filtered)
   + casella **Filter:** che pilotano la grid (`RevisionGridView.SetBranchScope`/`ApplyFilter`,
@@ -982,8 +1015,8 @@ Menu + toolbar:
 **Round 3 COMPLETO** (M36–M37): tab inferiori Commit/Diff/File tree/GPG/Console/Output,
 commit detail ricco (child/parent link, contained-in, describe), combo scope+filtro in
 toolbar. Le 3 aree round-3 scelte dall'utente sono chiuse.
-Residuo noto: le combo toolbar + repo indicator possono finire oltre il bordo destro a
-larghezze piccole (toolbar in StackPanel orizzontale che non fa wrap/scroll).
+Residuo noto (chiuso in **M39/A1**: overflow `»`): le combo toolbar + repo indicator
+finivano oltre il bordo destro a larghezze piccole.
 - **M36** (iter. 9) — **U-DETAIL** commit detail arricchito (avatar identicon grande,
   Author/Date rel+abs, Committer se diverso, hash, Parent/Child come link → evento
   CommitNavigated, "Contained in branches/tags" a pill, "Derives from tag" via
