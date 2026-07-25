@@ -120,17 +120,8 @@ public class ListBox : Control
 {
 }
 
-// No native folder picker in the shim; the Avalonia UI provides one. Returns
-// Cancel so back-end callers behave as if the user dismissed the dialog.
-public sealed class FolderBrowserDialog : IDisposable
-{
-    public string SelectedPath { get; set; } = string.Empty;
-    public string Description { get; set; } = string.Empty;
-    public bool ShowNewFolderButton { get; set; } = true;
-    public DialogResult ShowDialog() => DialogResult.Cancel;
-    public DialogResult ShowDialog(IWin32Window? owner) => DialogResult.Cancel;
-    public void Dispose() { }
-}
+// FolderBrowserDialog / OpenFileDialog / SaveFileDialog now live in
+// Compat/FileDialogs.cs, backed by Avalonia's IStorageProvider.
 
 public class Form : Control
 {
@@ -173,25 +164,32 @@ public class DataGridViewColumn
 
 public static class MessageBox
 {
-    // On Linux there is no WinForms message box; the Avalonia UI shows dialogs.
-    // These stand-ins keep non-interactive/back-end call sites working.
+    // Shows a real Avalonia modal (Compat/MessageBoxWindow.cs) over the active
+    // window. With no UI available (headless --selftest, code running before the
+    // main window exists) it degrades to the historic non-interactive default
+    // instead of throwing.
     public static DialogResult Show(IWin32Window? owner, string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon, MessageBoxDefaultButton defaultButton)
-        => DefaultFor(buttons);
+        => ShowCore(text, caption, buttons, icon, defaultButton);
 
     public static DialogResult Show(IWin32Window? owner, string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
-        => DefaultFor(buttons);
+        => ShowCore(text, caption, buttons, icon, MessageBoxDefaultButton.Button1);
 
     public static DialogResult Show(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon, MessageBoxDefaultButton defaultButton)
-        => DefaultFor(buttons);
+        => ShowCore(text, caption, buttons, icon, defaultButton);
 
     public static DialogResult Show(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
-        => DefaultFor(buttons);
+        => ShowCore(text, caption, buttons, icon, MessageBoxDefaultButton.Button1);
 
     public static DialogResult Show(string text, string caption, MessageBoxButtons buttons)
-        => DefaultFor(buttons);
+        => ShowCore(text, caption, buttons, MessageBoxIcon.None, MessageBoxDefaultButton.Button1);
 
     public static DialogResult Show(string text)
-        => DialogResult.OK;
+        => ShowCore(text, string.Empty, MessageBoxButtons.OK, MessageBoxIcon.None, MessageBoxDefaultButton.Button1);
+
+    private static DialogResult ShowCore(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon, MessageBoxDefaultButton defaultButton)
+        => GitExtensions.Compat.AvaloniaHost.Run(
+            owner => GitExtensions.Compat.MessageBoxWindow.ShowAsync(owner, text, caption, buttons, icon, defaultButton),
+            fallback: DefaultFor(buttons));
 
     private static DialogResult DefaultFor(MessageBoxButtons buttons) => buttons switch
     {

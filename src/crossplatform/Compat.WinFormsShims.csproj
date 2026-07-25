@@ -9,4 +9,11 @@
     <Compile Include="Compat\**\*.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The dialog/clipboard shims are backed by real Avalonia UI. Only the
+         core Avalonia package is needed (Window, IStorageProvider, IClipboard,
+         Dispatcher); the theme/desktop packages stay with the app. -->
+    <PackageReference Include="Avalonia" />
+  </ItemGroup>
+
 </Project>
