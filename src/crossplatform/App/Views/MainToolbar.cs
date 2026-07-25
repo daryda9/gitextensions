@@ -5,7 +5,12 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using GitExtensions.Avalonia.Theming;
+
+// The toolbar has its own Separator(IBrush) factory for the inline group rules,
+// so the menu-level separator control is aliased to keep the two apart.
+using MenuSeparator = Avalonia.Controls.Separator;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -112,7 +117,13 @@ public sealed class MainToolbar : UserControl
     // Last-known current branch, so the branch flyout can mark/bold it.
     private string _currentBranch = string.Empty;
 
-    private readonly StackPanel _bar;
+    private readonly OverflowPanel _bar;
+
+    // Overflow ("»") button + its flyout, and the per-item descriptors used to
+    // rebuild that flyout from the items the panel could not fit.
+    private readonly Button _overflowButton;
+    private readonly MenuFlyout _overflowFlyout = new();
+    private readonly Dictionary<Control, OverflowEntry> _overflow = new();
 
     public MainToolbar()
     {
@@ -127,58 +138,61 @@ public sealed class MainToolbar : UserControl
         BorderBrush = border;
         BorderThickness = new Thickness(0, 0, 0, 1);
 
-        StackPanel bar = new()
+        // The "»" overflow button: shown by OverflowPanel only when the strip is
+        // too narrow for every item, and dropping a menu with the items left out.
+        _overflowButton = MakeOverflowButton();
+
+        OverflowPanel bar = new(_overflowButton)
         {
-            Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
             Spacing = 2,
             Margin = new Thickness(6, 3),
         };
         _bar = bar;
 
-        bar.Children.Add(MakeButton("RepoOpen", "Open", "Open repository", () => OpenRepoRequested?.Invoke()));
+        bar.AddItem(MakeButton("RepoOpen", "Open", "Open repository", () => OpenRepoRequested?.Invoke()));
 
         // Inline repo-path + branch dropdowns near the left, echoing the original
         // FormBrowse toolbar (a repository-path selector and a current-branch
         // selector inline in the toolbar).
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeRepoPathButton(border));
-        bar.Children.Add(MakeBranchButton(border));
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeRepoPathButton(border));
+        bar.AddItem(MakeBranchButton(border));
 
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("PullFetch", "Fetch", "Fetch from remote", () => FetchRequested?.Invoke()));
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("PullFetch", "Fetch", "Fetch from remote", () => FetchRequested?.Invoke()));
         _pullButton = MakeButton("Pull", "Pull", "Pull from remote", () => PullRequested?.Invoke(),
             out _pullCaption, out _pullIcon);
-        bar.Children.Add(_pullButton);
+        bar.AddItem(_pullButton);
         _pushButton = MakeButton("Push", "Push", "Push to remote", () => PushRequested?.Invoke(),
             out _pushCaption, out _pushIcon);
-        bar.Children.Add(_pushButton);
-        bar.Children.Add(Separator(border));
+        bar.AddItem(_pushButton);
+        bar.AddItem(Separator(border));
         _commitButton = MakeButton("CommitSummary", "Commit", "Commit changes", () => CommitRequested?.Invoke(),
             out _commitCaption, out _commitIcon);
-        bar.Children.Add(_commitButton);
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("stash", "Stash", "Stash changes", () => StashRequested?.Invoke()));
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("ReloadRevisions", "Refresh", "Refresh", () => RefreshRequested?.Invoke()));
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("BranchCreate", "New branch", "Create a new branch", () => NewBranchRequested?.Invoke()));
+        bar.AddItem(_commitButton);
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("stash", "Stash", "Stash changes", () => StashRequested?.Invoke()));
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("ReloadRevisions", "Refresh", "Refresh", () => RefreshRequested?.Invoke()));
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("BranchCreate", "New branch", "Create a new branch", () => NewBranchRequested?.Invoke()));
 
         // ---- submodules / worktrees split buttons --------------------------------
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeRepoLinkButton("SubmodulesManage", "Submodules",
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeRepoLinkButton("SubmodulesManage", "Submodules",
             "Open a submodule (or the parent super-project) as the active repository",
             () => SubmodulesProvider, border));
-        bar.Children.Add(MakeRepoLinkButton("WorkTree", "Worktrees",
+        bar.AddItem(MakeRepoLinkButton("WorkTree", "Worktrees",
             "Open a worktree as the active repository",
             () => WorktreesProvider, border));
 
         // ---- view / layout group -------------------------------------------------
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("LayoutFooter", "Split view",
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("LayoutFooter", "Split view",
             "Toggle the Commit tab layout between side-by-side and stacked (detail + diff)",
             () => SplitViewToggleRequested?.Invoke()));
-        bar.Children.Add(MakeMenuButton("LayoutSidebarLeft", "Commit info", "Commit-info position", new[]
+        bar.AddItem(MakeMenuButton("LayoutSidebarLeft", "Commit info", "Commit-info position", new[]
         {
             ("LayoutFooter", "Below graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.BelowGraph))),
             ("LayoutSidebarTopLeft", "Left of graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.LeftOfGraph))),
@@ -186,32 +200,34 @@ public sealed class MainToolbar : UserControl
         }));
 
         // ---- external tools group ------------------------------------------------
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeButton("BrowseFileExplorer", "File Explorer", "Open the repository in the file manager",
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("BrowseFileExplorer", "File Explorer", "Open the repository in the file manager",
             () => FileExplorerRequested?.Invoke()));
-        bar.Children.Add(MakeButton("Console", "Terminal", "Open a terminal in the repository directory",
+        bar.AddItem(MakeButton("Console", "Terminal", "Open a terminal in the repository directory",
             () => OpenTerminalRequested?.Invoke()));
 
         // ---- branch-scope + filter group (right side) ---------------------------
         // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
         // "Filter:" combo. Placed after the buttons and before the (lazily-added)
         // repo indicator so the two selectors read on the right of the strip.
-        bar.Children.Add(Separator(border));
-        bar.Children.Add(MakeMenuButton("Branch", "All branches", "Which branches the revision grid shows", new[]
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeMenuButton("Branch", "All branches", "Which branches the revision grid shows", new[]
         {
             ("Branch", "All branches", (Action)(() => BranchScopeChanged?.Invoke(0))),
             ("Branch", "Current branch", (Action)(() => BranchScopeChanged?.Invoke(1))),
             ("Branch", "Filtered", (Action)(() => BranchScopeChanged?.Invoke(2))),
         }));
 
-        bar.Children.Add(new TextBlock
+        TextBlock filterLabel = new()
         {
             Text = "Filter:",
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.TextDim", "#8A8A8A"),
             FontSize = 12,
             Margin = new Thickness(8, 0, 4, 0),
-        });
+        };
+        bar.AddItem(filterLabel);
+        _overflow[filterLabel] = new OverflowEntry { Kind = OverflowKind.Skip };
 
         TextBox filterBox = new()
         {
@@ -228,7 +244,14 @@ public sealed class MainToolbar : UserControl
         };
         ToolTip.SetTip(filterBox, "Filter the revision grid (author / message / hash)");
         filterBox.TextChanged += (_, _) => FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
-        bar.Children.Add(filterBox);
+        bar.AddItem(filterBox);
+        _overflow[filterBox] = new OverflowEntry
+        {
+            Kind = OverflowKind.Filter,
+            Label = "Filter",
+            Icon = "ViewFilter",
+            FilterBox = filterBox,
+        };
 
         // Flat/borderless buttons with a subtle hover fill (the Fluent template
         // paints the button's chrome through its inner ContentPresenter, so we
@@ -350,7 +373,12 @@ public sealed class MainToolbar : UserControl
                 MaxWidth = 480,
                 Margin = new Thickness(16, 0, 4, 0),
             };
-            _bar.Children.Add(_repoIndicator);
+            _bar.AddItem(_repoIndicator);
+            _overflow[_repoIndicator] = new OverflowEntry
+            {
+                Kind = OverflowKind.Text,
+                TextSource = _repoIndicator,
+            };
         }
 
         if (string.IsNullOrWhiteSpace(repoPath))
@@ -438,6 +466,14 @@ public sealed class MainToolbar : UserControl
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, tooltip);
         button.Click += (_, _) => onClick();
+        _overflow[button] = new OverflowEntry
+        {
+            Kind = OverflowKind.Command,
+            Label = label,
+            Icon = iconName,
+            Invoke = onClick,
+            LiveCaption = caption,
+        };
         return button;
     }
 
@@ -502,6 +538,13 @@ public sealed class MainToolbar : UserControl
         };
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, tooltip);
+        _overflow[button] = new OverflowEntry
+        {
+            Kind = OverflowKind.Menu,
+            Label = label,
+            Icon = iconName,
+            SubItems = items,
+        };
         return button;
     }
 
@@ -567,6 +610,17 @@ public sealed class MainToolbar : UserControl
         {
             await PopulateRepoLinksAsync(flyout, iconName, provider());
             flyout.ShowAt(button);
+        };
+        _overflow[button] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = label,
+            Icon = iconName,
+            ShowMenu = async anchor =>
+            {
+                await PopulateRepoLinksAsync(flyout, iconName, provider());
+                flyout.ShowAt(anchor);
+            },
         };
         return button;
     }
@@ -676,6 +730,18 @@ public sealed class MainToolbar : UserControl
             await PopulateBranchesAsync(flyout, BranchesProvider);
             flyout.ShowAt(button);
         };
+        _overflow[button] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = "Branch",
+            Icon = "Branch",
+            LiveCaption = _branchCaption,
+            ShowMenu = async anchor =>
+            {
+                await PopulateBranchesAsync(flyout, BranchesProvider);
+                flyout.ShowAt(anchor);
+            },
+        };
         return button;
     }
 
@@ -742,6 +808,24 @@ public sealed class MainToolbar : UserControl
             await PopulateRepoLinksAsync(flyout, "RepoOpen", RecentReposProvider);
             flyout.ShowAt(button);
         };
+        _overflow[button] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = "Repository",
+            Icon = "RepoOpen",
+            LiveCaption = _repoPathCaption,
+            ShowMenu = async anchor =>
+            {
+                if (RecentReposProvider is null)
+                {
+                    OpenRepoRequested?.Invoke();
+                    return;
+                }
+
+                await PopulateRepoLinksAsync(flyout, "RepoOpen", RecentReposProvider);
+                flyout.ShowAt(anchor);
+            },
+        };
         return button;
     }
 
@@ -803,13 +887,391 @@ public sealed class MainToolbar : UserControl
         }
     }
 
-    private static Control Separator(IBrush brush) => new Border
+    private Control Separator(IBrush brush)
     {
-        Width = 1,
-        // Extra horizontal margin gives each button group some breathing room.
-        Margin = new Thickness(6, 4),
-        Background = brush,
-    };
+        Border sep = new()
+        {
+            Width = 1,
+            // Extra horizontal margin gives each button group some breathing room.
+            Margin = new Thickness(6, 4),
+            Background = brush,
+            Tag = OverflowPanel.SeparatorTag,
+        };
+        _overflow[sep] = new OverflowEntry { Kind = OverflowKind.Separator };
+        return sep;
+    }
+
+    // ---- overflow ("»") ------------------------------------------------------
+
+    private enum OverflowKind
+    {
+        /// <summary>Plain command: a menu item that runs the button's action.</summary>
+        Command,
+
+        /// <summary>Group rule: rendered as a menu separator.</summary>
+        Separator,
+
+        /// <summary>Static drop-down: rendered as a submenu with fixed entries.</summary>
+        Menu,
+
+        /// <summary>Provider-backed drop-down: re-shows the button's own flyout.</summary>
+        LazyMenu,
+
+        /// <summary>The revision filter box, mirrored into the menu.</summary>
+        Filter,
+
+        /// <summary>A read-only indicator, rendered as a disabled menu item.</summary>
+        Text,
+
+        /// <summary>Decoration that carries no meaning on its own (e.g. a caption).</summary>
+        Skip,
+    }
+
+    /// <summary>
+    ///  How one toolbar item is represented inside the overflow menu when the
+    ///  strip is too narrow to show it inline.
+    /// </summary>
+    private sealed class OverflowEntry
+    {
+        public OverflowKind Kind { get; init; } = OverflowKind.Command;
+        public string Label { get; init; } = string.Empty;
+        public string Icon { get; init; } = string.Empty;
+        public Action? Invoke { get; init; }
+        public (string Icon, string Text, Action OnClick)[]? SubItems { get; init; }
+        public Func<Control, Task>? ShowMenu { get; init; }
+        public TextBlock? TextSource { get; init; }
+        public TextBox? FilterBox { get; init; }
+
+        /// <summary>Caption TextBlock to read the live label from, when set.</summary>
+        public TextBlock? LiveCaption { get; init; }
+    }
+
+    // The "»" button. Its flyout is rebuilt (populated BEFORE ShowAt — Avalonia
+    // 11.3.x does not re-measure an already-visible MenuFlyout) from whatever the
+    // panel had to leave out, so nothing ever becomes unreachable.
+    private Button MakeOverflowButton()
+    {
+        Button button = new()
+        {
+            Content = new TextBlock
+            {
+                Text = "»",
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 15,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(7, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        button.Classes.Add("toolbtn");
+        ToolTip.SetTip(button, "More toolbar commands");
+        button.Click += (_, _) =>
+        {
+            BuildOverflowMenu();
+            _overflowFlyout.ShowAt(button);
+        };
+        return button;
+    }
+
+    // Fills _overflowFlyout with one entry per item the panel could not fit,
+    // in toolbar order. Called immediately before ShowAt.
+    private void BuildOverflowMenu()
+    {
+        _overflowFlyout.Items.Clear();
+
+        bool lastWasSeparator = true; // suppress a leading separator
+        foreach (Control item in _bar.HiddenItems)
+        {
+            if (!_overflow.TryGetValue(item, out OverflowEntry? entry) || entry.Kind == OverflowKind.Skip)
+            {
+                continue;
+            }
+
+            if (entry.Kind == OverflowKind.Separator)
+            {
+                if (!lastWasSeparator)
+                {
+                    _overflowFlyout.Items.Add(new MenuSeparator());
+                    lastWasSeparator = true;
+                }
+
+                continue;
+            }
+
+            object? menuItem = MakeOverflowItem(entry);
+            if (menuItem is null)
+            {
+                continue;
+            }
+
+            _overflowFlyout.Items.Add(menuItem);
+            lastWasSeparator = false;
+        }
+
+        // Drop a dangling trailing separator.
+        while (_overflowFlyout.Items.Count > 0 && _overflowFlyout.Items[^1] is MenuSeparator)
+        {
+            _overflowFlyout.Items.RemoveAt(_overflowFlyout.Items.Count - 1);
+        }
+
+        if (_overflowFlyout.Items.Count == 0)
+        {
+            _overflowFlyout.Items.Add(new MenuItem { Header = "(nothing hidden)", IsEnabled = false });
+        }
+    }
+
+    private object? MakeOverflowItem(OverflowEntry entry)
+    {
+        string label = entry.LiveCaption?.Text is { Length: > 0 } live ? live : entry.Label;
+
+        switch (entry.Kind)
+        {
+            case OverflowKind.Text:
+                return new MenuItem
+                {
+                    Header = entry.TextSource?.Text ?? label,
+                    IsEnabled = false,
+                };
+
+            case OverflowKind.Filter:
+            {
+                // The real (hidden) TextBox cannot live in two visual trees, so the
+                // menu hosts a mirror that writes straight back into it — which in
+                // turn raises FilterChanged exactly as inline typing does.
+                TextBox? source = entry.FilterBox;
+                TextBox mirror = new()
+                {
+                    Width = 200,
+                    Text = source?.Text ?? string.Empty,
+                    Watermark = source?.Watermark,
+                    Background = Brush("App.Panel", "#252526"),
+                    Foreground = Brush("App.Text", "#DCDCDC"),
+                    BorderBrush = Brush("App.Border", "#3F3F46"),
+                    BorderThickness = new Thickness(1),
+                    FontSize = 12,
+                    Padding = new Thickness(6, 2, 4, 2),
+                    VerticalContentAlignment = VerticalAlignment.Center,
+                };
+                if (source is not null)
+                {
+                    mirror.TextChanged += (_, _) => source.Text = mirror.Text ?? string.Empty;
+                }
+
+                StackPanel host = new()
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "Filter:",
+                            VerticalAlignment = VerticalAlignment.Center,
+                            Foreground = Brush("App.TextDim", "#8A8A8A"),
+                            FontSize = 12,
+                        },
+                        mirror,
+                    },
+                };
+
+                // StaysOpenOnClick keeps the menu up while the user types.
+                MenuItem filterItem = new() { Header = host, StaysOpenOnClick = true };
+                return filterItem;
+            }
+
+            case OverflowKind.Menu:
+            {
+                MenuItem parent = new() { Header = label, Icon = IconLoader.Image(entry.Icon, 16) };
+                foreach ((string ic, string text, Action onClick) in entry.SubItems ?? [])
+                {
+                    MenuItem child = new() { Header = text, Icon = IconLoader.Image(ic, 16) };
+                    child.Click += (_, _) => onClick();
+                    parent.Items.Add(child);
+                }
+
+                return parent;
+            }
+
+            case OverflowKind.LazyMenu:
+            {
+                // The entries come from an off-thread provider, so we do not build a
+                // submenu here: choosing this item closes the overflow menu and then
+                // re-opens the item's own (freshly populated) flyout at the "»"
+                // button — the same populate-before-ShowAt discipline used inline.
+                MenuItem lazy = new() { Header = label + " …", Icon = IconLoader.Image(entry.Icon, 16) };
+                Func<Control, Task>? show = entry.ShowMenu;
+                if (show is not null)
+                {
+                    lazy.Click += (_, _) => Dispatcher.UIThread.Post(async () =>
+                    {
+                        try
+                        {
+                            await show(_overflowButton);
+                        }
+                        catch
+                        {
+                            // A drop-down that cannot be listed must never break the toolbar.
+                        }
+                    });
+                }
+
+                return lazy;
+            }
+
+            default:
+            {
+                MenuItem command = new() { Header = label, Icon = IconLoader.Image(entry.Icon, 16) };
+                Action? invoke = entry.Invoke;
+                if (invoke is not null)
+                {
+                    command.Click += (_, _) => invoke();
+                }
+
+                return command;
+            }
+        }
+    }
+
+    /// <summary>
+    ///  A single-line toolbar strip that lays its items out left to right and,
+    ///  when they do not all fit, keeps as many as will fit and parks the rest
+    ///  off-screen, pinning an overflow button at the right edge instead — the
+    ///  behaviour of the original Windows toolbar's "»" chevron.
+    ///
+    ///  Items are never hidden through <c>IsVisible</c> (mutating visibility from
+    ///  a measure pass re-invalidates layout); they are arranged outside the
+    ///  panel's clip rectangle, which is cheap and cannot loop.
+    /// </summary>
+    private sealed class OverflowPanel : Panel
+    {
+        internal const string SeparatorTag = "toolbar-separator";
+
+        private readonly Control _overflowButton;
+        private int _visibleCount;
+
+        public OverflowPanel(Control overflowButton)
+        {
+            _overflowButton = overflowButton;
+            ClipToBounds = true;
+            Children.Add(overflowButton);
+        }
+
+        /// <summary>Gap between adjacent items, matching the old StackPanel spacing.</summary>
+        public double Spacing { get; set; }
+
+        /// <summary>True while some items are parked in the overflow menu.</summary>
+        public bool IsOverflowing { get; private set; }
+
+        /// <summary>The toolbar items, in order, excluding the overflow button.</summary>
+        public IEnumerable<Control> Items
+            => Children.Where(c => !ReferenceEquals(c, _overflowButton));
+
+        /// <summary>The items the last layout pass could not fit, in order.</summary>
+        public IEnumerable<Control> HiddenItems => Items.Skip(_visibleCount);
+
+        /// <summary>Appends a toolbar item, keeping the overflow button last.</summary>
+        public void AddItem(Control item) => Children.Insert(Children.Count - 1, item);
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            double height = 0;
+            foreach (Control child in Children)
+            {
+                child.Measure(Size.Infinity);
+                height = Math.Max(height, child.DesiredSize.Height);
+            }
+
+            List<Control> items = Items.ToList();
+            double total = 0;
+            for (int i = 0; i < items.Count; i++)
+            {
+                total += items[i].DesiredSize.Width + (i > 0 ? Spacing : 0);
+            }
+
+            double available = availableSize.Width;
+            if (double.IsInfinity(available) || double.IsNaN(available) || total <= available)
+            {
+                _visibleCount = items.Count;
+                IsOverflowing = false;
+                return new Size(total, height);
+            }
+
+            // Reserve room for the "»" button, then keep items from the left while
+            // they fit; the remainder goes to the overflow menu.
+            double budget = Math.Max(0, available - _overflowButton.DesiredSize.Width - Spacing);
+            double used = 0;
+            int fitting = 0;
+            for (int i = 0; i < items.Count; i++)
+            {
+                double step = items[i].DesiredSize.Width + (i > 0 ? Spacing : 0);
+                if (used + step > budget)
+                {
+                    break;
+                }
+
+                used += step;
+                fitting++;
+            }
+
+            // Never end the visible run on a group rule.
+            while (fitting > 0 && IsSeparator(items[fitting - 1]))
+            {
+                fitting--;
+            }
+
+            _visibleCount = fitting;
+            IsOverflowing = true;
+            return new Size(available, height);
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            // Parked items go far off to the left; the panel clips to its bounds,
+            // so they are neither drawn nor hit-testable.
+            const double Parked = -10000;
+
+            double x = 0;
+            int index = 0;
+            foreach (Control item in Items)
+            {
+                Size desired = item.DesiredSize;
+                if (index < _visibleCount)
+                {
+                    item.Arrange(new Rect(x, Center(finalSize.Height, desired.Height), desired.Width, desired.Height));
+                    x += desired.Width + Spacing;
+                }
+                else
+                {
+                    item.Arrange(new Rect(Parked, 0, desired.Width, desired.Height));
+                }
+
+                index++;
+            }
+
+            Size overflowSize = _overflowButton.DesiredSize;
+            if (IsOverflowing)
+            {
+                double ox = Math.Max(x, finalSize.Width - overflowSize.Width);
+                _overflowButton.Arrange(new Rect(
+                    ox, Center(finalSize.Height, overflowSize.Height), overflowSize.Width, overflowSize.Height));
+            }
+            else
+            {
+                _overflowButton.Arrange(new Rect(Parked, 0, overflowSize.Width, overflowSize.Height));
+            }
+
+            return finalSize;
+        }
+
+        private static double Center(double outer, double inner) => Math.Max(0, (outer - inner) / 2);
+
+        private static bool IsSeparator(Control item)
+            => item.Tag as string == SeparatorTag;
+    }
 
     private static IBrush Brush(string key, string fallback)
         => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b
