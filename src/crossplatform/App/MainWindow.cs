@@ -29,8 +29,8 @@ internal sealed class RelayCommand(Action execute) : ICommand
 /// <summary>
 ///  Integrated main window modelled on the original GitExtensions FormBrowse:
 ///  a top toolbar, a left repository-objects tree (branches/remotes/tags/
-///  stashes), the revision-grid DAG in the centre, a bottom detail/diff +
-///  working-directory panel, and a status bar. All views are self-contained
+///  stashes), the revision-grid DAG in the centre, a bottom detail/diff panel,
+///  and a status bar. All views are self-contained
 ///  <see cref="UserControl"/>s driven over the reused core via <see cref="GitContext"/>.
 /// </summary>
 public sealed class MainWindow : Window
@@ -46,7 +46,12 @@ public sealed class MainWindow : Window
     private readonly GpgView _gpg = new();
     private readonly ConsoleView _console = new();
     private readonly OutputView _output = new();
+    // No longer a bottom tab (the original FormBrowse has no "Working directory"
+    // tab and the stage/commit flow lives in the modal commit form). It survives
+    // as an on-demand utility window for the things the commit dialog does not
+    // cover: merge-conflict resolution, clean, per-file discard/.gitignore.
     private readonly WorkingDirectoryView _workingDir = new();
+    private Window? _workingDirWindow;
 
     private readonly TabControl _bottom;
     private readonly TabItem _commitInfoTab;
@@ -55,7 +60,6 @@ public sealed class MainWindow : Window
     private readonly TabItem _gpgTab;
     private readonly TabItem _consoleTab;
     private readonly TabItem _outputTab;
-    private readonly TabItem _workingDirTab;
     private readonly TabItem _stashTab;
     private readonly TabItem _blameTab;
     private readonly TabItem _historyTab;
@@ -136,7 +140,7 @@ public sealed class MainWindow : Window
         // ---- bottom panel: the original FormBrowse tab strip
         //   Commit · Diff · File tree · GPG · Console · Output
         // followed by the extra Avalonia panels
-        //   Working directory · Stash · Blame · File history.
+        //   Stash · Blame · File history.
         // The Commit tab shows the commit DETAIL; the diff moved out to its own
         // Diff tab so both are visible at once.
         _commitInfoTab = new TabItem { Header = "Commit" };
@@ -145,7 +149,6 @@ public sealed class MainWindow : Window
         _gpgTab = new TabItem { Header = "GPG", Content = _gpg };
         _consoleTab = new TabItem { Header = "Console", Content = _console };
         _outputTab = new TabItem { Header = "Output", Content = _output };
-        _workingDirTab = new TabItem { Header = "Working directory", Content = _workingDir };
         _stashTab = new TabItem { Header = "Stash", Content = _stash };
         _blameTab = new TabItem { Header = "Blame", Content = _blame };
         _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
@@ -161,7 +164,7 @@ public sealed class MainWindow : Window
             Items =
             {
                 _commitInfoTab, _diffTab, _fileTreeTab, _gpgTab, _consoleTab, _outputTab,
-                _workingDirTab, _stashTab, _blameTab, _historyTab,
+                _stashTab, _blameTab, _historyTab,
             },
         };
 
@@ -208,6 +211,12 @@ public sealed class MainWindow : Window
         // Global shortcuts: F5 refresh, Ctrl+O open.
         KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.F5), Command = new RelayCommand(RefreshAll) });
         KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.O, KeyModifiers.Control), Command = new RelayCommand(() => _ = PickRepositoryAsync()) });
+        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.W, KeyModifiers.Control | KeyModifiers.Shift), Command = new RelayCommand(OpenWorkingDirectoryWindow) });
+
+        // The working-directory panel is not a tab any more; expose it from the
+        // Commands menu, next to Commit, the way the original keeps "Reset
+        // changes…" / "Clean working directory…" there.
+        AddWorkingDirectoryMenuEntry();
 
         WireEvents();
         _toolbar.SetSplitView(_splitHorizontal);
@@ -1297,7 +1306,11 @@ public sealed class MainWindow : Window
 
         WarmUpCore(_repoPath);
         _revisions.LoadRepository(_repoPath);
-        _workingDir.LoadRepository(_repoPath);
+        if (_workingDirWindow is not null)
+        {
+            _workingDir.LoadRepository(_repoPath);
+        }
+
         _stash.LoadRepository(_repoPath);
         _tree.LoadRepository(_repoPath);
         _statusBar.LoadRepository(_repoPath);
@@ -1305,8 +1318,9 @@ public sealed class MainWindow : Window
     }
 
     // Opens the dedicated modal commit window (mirroring the original Git
-    // Extensions commit form). The bottom "Working directory" tab remains
-    // available; both surfaces drive the same core flow. No-op without a repo.
+    // Extensions commit form). This is now the ONLY staging/commit surface:
+    // the redundant bottom "Working directory" tab was dropped. No-op without
+    // a repo.
     private void OpenCommitDialog()
     {
         if (_repoPath is null)
@@ -1316,6 +1330,71 @@ public sealed class MainWindow : Window
         }
 
         _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+    }
+
+    // Appends "Working directory…" to the existing Commands menu (found by
+    // header so MainMenu itself stays untouched). If the menu is ever
+    // restructured the lookup simply no-ops and the Ctrl+Shift+W shortcut
+    // remains.
+    private void AddWorkingDirectoryMenuEntry()
+    {
+        if (_menu.Content is not Menu bar)
+        {
+            return;
+        }
+
+        foreach (object? item in bar.Items)
+        {
+            if (item is MenuItem top && top.Header as string == "_Commands")
+            {
+                MenuItem entry = new() { Header = "Working directory…" };
+                entry.Click += (_, _) => OpenWorkingDirectoryWindow();
+                top.Items.Add(new Separator());
+                top.Items.Add(entry);
+                return;
+            }
+        }
+    }
+
+    // Shows the working-directory panel in an on-demand utility window. It is
+    // NOT a second commit surface for its own sake: it carries the operations
+    // the commit dialog does not implement (merge-conflict resolution via
+    // mergetool / take ours / take theirs / mark resolved, clean untracked
+    // files, per-file discard and .gitignore entries, undo last commit).
+    private void OpenWorkingDirectoryWindow()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText("No repository is open.");
+            return;
+        }
+
+        if (_workingDirWindow is not null)
+        {
+            _workingDirWindow.Activate();
+            _workingDir.LoadRepository(_repoPath);
+            return;
+        }
+
+        Window window = new()
+        {
+            Title = "Working directory",
+            Width = 1000,
+            Height = 680,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = _workingDir,
+        };
+        window.Closed += (_, _) =>
+        {
+            // Detach so the panel can be re-hosted the next time it is opened.
+            window.Content = null;
+            _workingDirWindow = null;
+        };
+
+        _workingDirWindow = window;
+        _workingDir.LoadRepository(_repoPath);
+        window.Show(this);
     }
 
     // Opens the Push configuration dialog (remote/branch/force + Pull/Push),
@@ -1981,7 +2060,11 @@ public sealed class MainWindow : Window
         WarmUpCore(repoPath);
 
         _revisions.LoadRepository(repoPath);
-        _workingDir.LoadRepository(repoPath);
+        if (_workingDirWindow is not null)
+        {
+            _workingDir.LoadRepository(repoPath);
+        }
+
         _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
