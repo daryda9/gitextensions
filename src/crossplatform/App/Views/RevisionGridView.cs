@@ -71,17 +71,32 @@ public sealed class RevisionGridView : UserControl
     private readonly DispatcherTimer _quickSearchTimer;
     private string _quickSearch = string.Empty;
 
-    // The two artificial rows shown ABOVE the commit list ("Working directory"
-    // and "Commit index"), mirroring the original Git Extensions grid. These are
-    // a fixed panel docked at the top of the grid — deliberately NOT part of the
-    // RevisionRow model or the ListBox ItemsSource — so the commit list, its
-    // selection, graph and range-diff stay untouched. Fed counts by MainWindow
-    // via SetWorkingState; this view never queries git itself for them.
-    private readonly StackPanel _topRows;
-    private readonly TextBlock _wdCheck;
-    private readonly TextBlock _wdCount;
-    private readonly TextBlock _idxCheck;
-    private readonly TextBlock _idxCount;
+    // --- Artificial rows ("Working directory" / "Commit index") ---------------
+    //
+    // Like the original Windows grid, the pending work is shown as the FIRST TWO
+    // NODES OF THE DAG: they are real items of the same ListBox (same columns,
+    // same selection model), carried as RevisionRow records with the sentinel
+    // hashes below (mirroring the core's ObjectId.WorkTreeId / IndexId), and the
+    // graph column draws them in HEAD's lane with a distinct hollow-square node
+    // and a continuous lane line down to the HEAD commit.
+    //
+    // They are synthesised by the view (never by the git walk), appear only when
+    // there is something to show (dirty working dir / non-empty index), and are
+    // hidden while a text filter is active (the graph column is collapsed then).
+    private const string WorkTreeHash = "2222222222222222222222222222222222222222";
+    private const string IndexHash = "1111111111111111111111111111111111111111";
+
+    // Pending-work counts, pushed in by MainWindow via SetWorkingState; this view
+    // never queries git for them itself.
+    private int _unstaged;
+    private int _staged;
+
+    // Graph geometry for the artificial rows, recomputed whenever the displayed
+    // set is rebuilt: the lane the artificial nodes live in (HEAD's lane) and the
+    // displayed index of the HEAD row, so the lane line can be carried down to it.
+    private int _artificialLane;
+    private int _artificialCount;
+    private int _headDisplayIndex = -1;
 
     // The full, graph-built revision set as loaded from git; filtering selects a
     // subset from this without re-running git or touching the underlying model.
@@ -340,11 +355,21 @@ public sealed class RevisionGridView : UserControl
 
         _list.SelectionChanged += (_, _) =>
         {
+            // An artificial row (working directory / commit index) is not a commit:
+            // it never fires RevisionSelected and never takes part in a range diff.
+            // Its own event is raised by an explicit click on the row (see
+            // BuildArtificialRow), so merely arrowing past it does not open a dialog.
+            if (_list.SelectedItems is { Count: 1 } one && one[0] is RevisionRow art && IsArtificial(art))
+            {
+                return;
+            }
+
             // Two rows selected => diff the range. The grid is newest-first, so the
             // row with the higher index in Items is the OLDER commit (= baseHash);
             // the lower index is the NEWER commit (= otherHash).
             if (_list.SelectedItems is { Count: 2 } sel
-                && sel[0] is RevisionRow a && sel[1] is RevisionRow b)
+                && sel[0] is RevisionRow a && sel[1] is RevisionRow b
+                && !IsArtificial(a) && !IsArtificial(b))
             {
                 int ia = _list.Items.IndexOf(a);
                 int ib = _list.Items.IndexOf(b);
@@ -352,7 +377,7 @@ public sealed class RevisionGridView : UserControl
                 RevisionRow newer = ia >= ib ? b : a;
                 RangeSelected?.Invoke(older.Hash, newer.Hash);
             }
-            else if (_list.SelectedItem is RevisionRow row)
+            else if (_list.SelectedItem is RevisionRow row && !IsArtificial(row))
             {
                 RevisionSelected?.Invoke(row.Hash);
             }
@@ -466,112 +491,119 @@ public sealed class RevisionGridView : UserControl
         listHost.Children.Add(_list);
         listHost.Children.Add(_quickSearchOverlay);
 
-        // --- Artificial top rows ("Working directory" / "Commit index"). ---
-        // A dumb, fixed two-row panel that sits directly above the commit list
-        // and lines up with it visually. Counts + check glyphs are pushed in by
-        // MainWindow through SetWorkingState; clicking a row raises an event.
-        _wdCheck = TopRowGlyph();
-        _wdCount = TopRowCount();
-        _idxCheck = TopRowGlyph();
-        _idxCount = TopRowCount();
-        Border wdRow = BuildTopRow(_wdCheck, "Working directory", _wdCount,
-            () => WorkingDirectorySelected?.Invoke());
-        Border idxRow = BuildTopRow(_idxCheck, "Commit index", _idxCount,
-            () => CommitIndexSelected?.Invoke());
-        _topRows = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Background = B("App.Panel"),
-        };
-        _topRows.Children.Add(wdRow);
-        _topRows.Children.Add(idxRow);
-        // Start in the "clean" look until MainWindow reports the working state.
-        SetWorkingState(0, 0);
-
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(searchBar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_headerHost, Dock.Top);
-        DockPanel.SetDock(_topRows, Dock.Top);
         root.Children.Add(searchBar);
         root.Children.Add(_status);
         root.Children.Add(_headerHost);
-        root.Children.Add(_topRows);
         root.Children.Add(listHost);
 
         Content = root;
     }
 
-    // Green check glyph for a top row; hidden/hollow when the row is clean.
-    private static TextBlock TopRowGlyph() => new()
-    {
-        Text = "✔",
-        FontSize = 12,
-        VerticalAlignment = VerticalAlignment.Center,
-        Margin = new Thickness(0, 0, 6, 0),
-    };
-
-    // Trailing count label for a top row (e.g. "3 modified" / "+2 staged").
-    private static TextBlock TopRowCount() => new()
-    {
-        FontSize = 11,
-        VerticalAlignment = VerticalAlignment.Center,
-        Margin = new Thickness(8, 0, 0, 0),
-    };
-
-    // Builds one clickable artificial row: [check] label … count, styled to
-    // match a grid row (App.Panel background, subtle border). ClipToBounds keeps
-    // any glyph inside the row box.
-    private Border BuildTopRow(TextBlock check, string label, TextBlock count, Action onClick)
-    {
-        DockPanel content = new() { Margin = new Thickness(10, 0, 10, 0) };
-        TextBlock text = new()
-        {
-            Text = label,
-            FontSize = 12,
-            Foreground = B("App.Text"),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        DockPanel.SetDock(check, Dock.Left);
-        DockPanel.SetDock(count, Dock.Right);
-        content.Children.Add(check);
-        content.Children.Add(count);
-        content.Children.Add(text);
-
-        Border row = new()
-        {
-            Background = B("App.Panel"),
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Padding = new Thickness(0, 4, 0, 4),
-            MinHeight = 24,
-            Cursor = new Cursor(StandardCursorType.Hand),
-            ClipToBounds = true,
-            Child = content,
-        };
-        row.PointerPressed += (_, _) => onClick();
-        return row;
-    }
+    /// <summary>
+    ///  True for the two synthesised rows ("Working directory" / "Commit index"),
+    ///  identified by their sentinel hashes. They are list items like any other
+    ///  row but are not commits: no range diff, no parent/child navigation, no
+    ///  commit context menu.
+    /// </summary>
+    private static bool IsArtificial(RevisionRow row)
+        => row.Hash is WorkTreeHash or IndexHash;
 
     /// <summary>
-    ///  Feeds the two artificial top rows their pending-work counts. When a count
-    ///  is &gt; 0 the row shows a bright green check and a count label; when 0 it
-    ///  takes on a dim, "clean" look. Fed by MainWindow (which already computes
-    ///  these); this view never queries git for them itself.
+    ///  Feeds the artificial DAG rows their pending-work counts. A row exists only
+    ///  while its count is &gt; 0 (dirty working directory / non-empty index), so a
+    ///  change in the counts rebuilds the displayed set. Fed by MainWindow (which
+    ///  already computes these); this view never queries git for them itself.
     /// </summary>
     public void SetWorkingState(int unstaged, int staged)
     {
-        bool wdDirty = unstaged > 0;
-        _wdCheck.Foreground = wdDirty ? Brushes.MediumSeaGreen : B("App.TextDim");
-        _wdCheck.Opacity = wdDirty ? 1.0 : 0.35;
-        _wdCount.Text = wdDirty ? $"{unstaged} modified" : string.Empty;
-        _wdCount.Foreground = B("App.TextDim");
+        if (_unstaged == unstaged && _staged == staged)
+        {
+            return;
+        }
 
-        bool idxDirty = staged > 0;
-        _idxCheck.Foreground = idxDirty ? Brushes.MediumSeaGreen : B("App.TextDim");
-        _idxCheck.Opacity = idxDirty ? 1.0 : 0.35;
-        _idxCount.Text = idxDirty ? $"+{staged} staged" : string.Empty;
-        _idxCount.Foreground = idxDirty ? Brushes.MediumSeaGreen : B("App.TextDim");
+        _unstaged = unstaged;
+        _staged = staged;
+
+        // Rebuild the displayed rows so the artificial nodes appear/disappear (and
+        // their counts refresh) without re-running git. Keeps the current filter.
+        if (_allRows.Count > 0)
+        {
+            ApplyFilterCore(_search.Text);
+        }
+    }
+
+    // Builds one synthesised row. Dates are DateTime.MaxValue so FormatDate renders
+    // the Date cell blank, and the parent list is empty so DAG navigation never
+    // walks into (or out of) an artificial node — the lane line to HEAD is drawn
+    // by the graph column instead.
+    private static RevisionRow MakeArtificial(string hash, string subject, int lane, int laneCount)
+        => new(
+            Hash: hash,
+            ShortHash: string.Empty,
+            Author: string.Empty,
+            AuthorDate: DateTime.MaxValue,
+            CommitDate: DateTime.MaxValue,
+            Subject: subject,
+            ParentHashes: [],
+            RefNames: [])
+        {
+            NodeLane = lane,
+            LaneCount = laneCount,
+        };
+
+    // Prepends the artificial rows to the filtered commit rows, recording the graph
+    // geometry (lane + HEAD position) the row builder needs to link them to HEAD.
+    // While a text filter is active the rows shown are a non-contiguous subset and
+    // the graph column is collapsed, so no artificial node is added.
+    private IReadOnlyList<RevisionRow> BuildDisplayRows(IReadOnlyList<RevisionRow> commits)
+    {
+        _artificialCount = 0;
+        _artificialLane = 0;
+        _headDisplayIndex = -1;
+
+        bool wanted = (_unstaged > 0 || _staged > 0) && !_filterActive && commits.Count > 0;
+        if (!wanted)
+        {
+            return commits;
+        }
+
+        // Anchor the nodes in HEAD's lane (falling back to the topmost row's lane
+        // when HEAD is outside the loaded window), so the connector lands on the
+        // checked-out commit exactly like the original grid.
+        int lane = commits[0].NodeLane;
+        int headIndex = -1;
+        for (int i = 0; i < commits.Count; i++)
+        {
+            if (commits[i].IsHead)
+            {
+                headIndex = i;
+                lane = commits[i].NodeLane;
+                break;
+            }
+        }
+
+        int laneCount = commits[0].LaneCount;
+        List<RevisionRow> display = [];
+        if (_unstaged > 0)
+        {
+            display.Add(MakeArtificial(WorkTreeHash, "Working directory", lane, laneCount));
+        }
+
+        if (_staged > 0)
+        {
+            display.Add(MakeArtificial(IndexHash, "Commit index", lane, laneCount));
+        }
+
+        _artificialCount = display.Count;
+        _artificialLane = lane;
+        _headDisplayIndex = headIndex >= 0 ? headIndex + _artificialCount : -1;
+
+        display.AddRange(commits);
+        return display;
     }
 
     /// <summary>
@@ -696,7 +728,10 @@ public sealed class RevisionGridView : UserControl
             filtered = matches;
         }
 
-        _rows = filtered;
+        // The artificial rows ("Working directory" / "Commit index") are the first
+        // items of the very same list, so they take part in the grid's columns,
+        // graph and selection model.
+        _rows = BuildDisplayRows(filtered);
 
         // The graph column width changes with the filter state; rebuild the
         // header so its columns stay aligned with the (re-templated) rows.
@@ -705,7 +740,7 @@ public sealed class RevisionGridView : UserControl
         // Reassign the source so every visible row is rebuilt against the current
         // filter/graph state (and stale selection is dropped).
         _list.ItemsSource = null;
-        _list.ItemsSource = filtered;
+        _list.ItemsSource = _rows;
 
         if (_filterActive)
         {
@@ -1635,8 +1670,49 @@ public sealed class RevisionGridView : UserControl
         };
     }
 
+    // --- Graph geometry for the artificial nodes ------------------------------
+    //
+    // The artificial rows sit in HEAD's lane and are chained downward: each of
+    // them draws the half-lane below its node (and, from the second one on, the
+    // half above it), and the commit rows between the top of the list and HEAD
+    // carry the same lane through, so the line reaches the HEAD node unbroken —
+    // exactly the continuous lane the original Windows grid shows.
+    private IReadOnlyList<RevisionGraphSegment> ArtificialSegments(int displayIndex)
+    {
+        List<RevisionGraphSegment> segments =
+        [
+            new(_artificialLane, 0.5, _artificialLane, 1.0, _artificialLane),
+        ];
+        if (displayIndex > 0)
+        {
+            segments.Add(new(_artificialLane, 0.0, _artificialLane, 0.5, _artificialLane));
+        }
+
+        return segments;
+    }
+
+    // Segments added to a COMMIT row so the artificial lane reaches HEAD: a full
+    // pass-through above HEAD, and the upper half on the HEAD row itself.
+    private IReadOnlyList<RevisionGraphSegment> WithHeadConnector(RevisionRow row, int displayIndex)
+    {
+        if (_artificialCount == 0 || _headDisplayIndex < 0 || displayIndex > _headDisplayIndex)
+        {
+            return row.GraphSegments;
+        }
+
+        List<RevisionGraphSegment> segments = [.. row.GraphSegments];
+        double toY = displayIndex == _headDisplayIndex ? 0.5 : 1.0;
+        segments.Add(new(_artificialLane, 0.0, _artificialLane, toY, _artificialLane));
+        return segments;
+    }
+
     private Control BuildRow(RevisionRow row)
     {
+        if (IsArtificial(row))
+        {
+            return BuildArtificialRow(row);
+        }
+
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(10, 0, 10, 0);
         grid.MinHeight = 20;
@@ -1654,7 +1730,7 @@ public sealed class RevisionGridView : UserControl
         // to avoid rendering a garbled DAG. It returns in full once the filter clears.
         if (!_filterActive)
         {
-            RevisionGraphControl graph = new(row.GraphSegments, row.NodeLane, LaneWidth);
+            RevisionGraphControl graph = new(WithHeadConnector(row, index), row.NodeLane, LaneWidth);
             Grid.SetColumn(graph, 0);
             grid.Children.Add(graph);
             view.TrackGraph(graph);
@@ -1753,6 +1829,121 @@ public sealed class RevisionGridView : UserControl
         grid.Children.Add(subject);
 
         view.ContextMenu = BuildRowContextMenu(row);
+        return view;
+    }
+
+    // Builds one artificial row ("Working directory" / "Commit index"): the same
+    // column grid as a commit row, with the DAG node in HEAD's lane and, in the
+    // Subject column, the original's boxed label followed by a green check and the
+    // pending-work count. Selecting it raises the matching event (see the
+    // SelectionChanged handler), which opens the commit dialog.
+    private Control BuildArtificialRow(RevisionRow row)
+    {
+        Grid grid = MakeColumns();
+        grid.Margin = new Thickness(10, 0, 10, 0);
+        grid.MinHeight = 20;
+
+        int index = IndexOf(_rows, row);
+        RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
+
+        if (!_filterActive)
+        {
+            RevisionGraphControl graph = new(
+                ArtificialSegments(index), _artificialLane, LaneWidth, artificialNode: true);
+            Grid.SetColumn(graph, 0);
+            grid.Children.Add(graph);
+            view.TrackGraph(graph);
+        }
+
+        StackPanel subject = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        // The boxed label, matching the original's outlined "Working directory" /
+        // "Commit index" cell. Unlike a ref pill the label uses the themed text
+        // brush, so on a selected (solid blue) row the box KEEPS its dark backdrop
+        // and only the text switches to white — swapping the box to white would
+        // leave light-on-light text.
+        TextBlock labelText = new()
+        {
+            Text = row.Subject,
+            Foreground = B("App.Text"),
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Border box = new()
+        {
+            Background = B("App.Panel"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(7, 0, 7, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = labelText,
+        };
+        view.TrackText(labelText);
+        subject.Children.Add(box);
+
+        bool isWorkTree = row.Hash == WorkTreeHash;
+        int count = isWorkTree ? _unstaged : _staged;
+
+        TextBlock check = new()
+        {
+            Text = isWorkTree ? "✔" : "✚",
+            Foreground = Brushes.MediumSeaGreen,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        view.TrackMarker(check);
+        subject.Children.Add(check);
+
+        TextBlock countText = new()
+        {
+            Text = isWorkTree ? $"{count} modified" : $"{count} staged",
+            Foreground = B("App.TextDim"),
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        view.TrackText(countText, dim: true);
+        subject.Children.Add(countText);
+
+        Grid.SetColumn(subject, 5);
+        grid.Children.Add(subject);
+
+        // Clicking the row shows the pending work (the host opens the commit
+        // dialog), exactly as the old fixed top panel did. Bound to the click and
+        // not to selection, so keyboard navigation can pass over the row freely.
+        void Raise()
+        {
+            if (isWorkTree)
+            {
+                WorkingDirectorySelected?.Invoke();
+            }
+            else
+            {
+                CommitIndexSelected?.Invoke();
+            }
+        }
+
+        view.Cursor = new Cursor(StandardCursorType.Hand);
+        view.AddHandler(
+            InputElement.PointerReleasedEvent,
+            (_, e) =>
+            {
+                if (e.InitialPressMouseButton == MouseButton.Left)
+                {
+                    Raise();
+                }
+            },
+            RoutingStrategies.Bubble);
+
+        // A commit context menu makes no sense here; offer the one useful action.
+        MenuItem open = new() { Header = isWorkTree ? "Show working directory changes" : "Show staged changes" };
+        open.Click += (_, _) => Raise();
+        view.ContextMenu = new ContextMenu { Items = { open } };
         return view;
     }
 
@@ -2275,13 +2466,19 @@ public sealed class RevisionGridView : UserControl
         private readonly IReadOnlyList<RevisionGraphSegment> _segments;
         private readonly int _nodeLane;
         private readonly double _laneWidth;
+        private readonly bool _artificialNode;
         private bool _rowSelected;
 
-        public RevisionGraphControl(IReadOnlyList<RevisionGraphSegment> segments, int nodeLane, double laneWidth)
+        public RevisionGraphControl(
+            IReadOnlyList<RevisionGraphSegment> segments,
+            int nodeLane,
+            double laneWidth,
+            bool artificialNode = false)
         {
             _segments = segments;
             _nodeLane = nodeLane;
             _laneWidth = laneWidth;
+            _artificialNode = artificialNode;
 
             // Custom-drawn Controls do NOT clip by default: lane lines/edges can
             // paint outside the row's bounds and smear into neighbours / the
@@ -2345,8 +2542,22 @@ public sealed class RevisionGridView : UserControl
             }
 
             IBrush nodeBrush = Brush(_nodeLane);
+            double cx = X(_nodeLane);
+            double cy = h / 2;
+
+            if (_artificialNode)
+            {
+                // Artificial rows (working directory / commit index) get a distinct
+                // node: a hollow square in the lane colour, echoing the special
+                // marker the original Windows grid uses for pending work.
+                const double half = 4.0;
+                Pen outline = new(nodeBrush, 2);
+                context.DrawRectangle(null, outline, new Rect(cx - half, cy - half, half * 2, half * 2));
+                return;
+            }
+
             IPen? ring = _rowSelected ? new Pen(Brushes.White, 1.5) : null;
-            context.DrawEllipse(nodeBrush, ring, new Point(X(_nodeLane), h / 2), 4, 4);
+            context.DrawEllipse(nodeBrush, ring, new Point(cx, cy), 4, 4);
         }
     }
 }
