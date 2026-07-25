@@ -507,12 +507,13 @@ public sealed class MainWindow : Window
         };
 
         // Inline repo-path dropdown: list recent repositories off the UI thread;
-        // choosing one opens it as the active repository.
+        // choosing one opens it as the active repository. The service already
+        // normalises, de-duplicates and prunes dead/ephemeral entries.
         _toolbar.RecentReposProvider = () => Task.Run<IReadOnlyList<RepoLink>>(async () =>
         {
             IReadOnlyList<string> recent = await new RecentRepositoriesService().LoadAsync();
             return recent
-                .Select(p => new RepoLink(Path.GetFileName(p.TrimEnd('/', '\\')), p, "RepoOpen"))
+                .Select(p => new RepoLink(Path.GetFileName(p) is { Length: > 0 } name ? name : p, p, "RepoOpen"))
                 .ToList();
         });
 
