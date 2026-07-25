@@ -45,12 +45,29 @@ public sealed class DiffView : UserControl
     private readonly ListBox _files;
     private readonly SelectableTextBlock _diff;
     private readonly TextBlock _status;
+    private readonly ScrollViewer _diffScroll;
+
+    // Diff-toolbar state (session-persisted in DiffTextService.Session).
+    private readonly DiffDisplayOptions _options = DiffTextService.Session;
+    private readonly ToggleButton _ignoreWhitespaceButton;
+    private readonly ToggleButton _nonPrintingButton;
+    private readonly ToggleButton _wordDiffButton;
+    private readonly ComboBox _encodingBox;
+
+    // Line indices (into the currently rendered diff) of each hunk header, and
+    // where the ▲/▼ navigation currently sits.
+    private readonly List<int> _hunkLines = [];
+    private int _hunkIndex = -1;
 
     private string? _repoPath;
     private string? _commitHash;   // the (right/"new") commit; also the "other" side in Range mode
     private string? _baseHash;     // the ("old"/left) commit in Range mode
     private CompareMode _mode = CompareMode.Commit;
     private CancellationTokenSource? _diffCts;
+
+    // Whether the last file diff was loaded as "commit vs working tree" through
+    // the context-menu command, so a toggle re-runs the same comparison.
+    private bool _forceWorkingTreeCompare;
 
     // The raw unified-diff text currently displayed (the SelectableTextBlock's
     // Text is cleared while inlines are rendered, so keep our own copy to copy).
@@ -131,13 +148,111 @@ public sealed class DiffView : UserControl
         selectAllCopyItem.Click += (_, _) => SelectAllAndCopy();
         _diff.ContextMenu = new ContextMenu { ItemsSource = new[] { copyDiffItem, selectAllCopyItem } };
 
-        ScrollViewer diffScroll = new()
+        _diff.FontSize = _options.FontSize;
+
+        _diffScroll = new ScrollViewer
         {
             Content = _diff,
             Background = B("App.Window"),
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+
+        // ---- diff toolbar (mirrors the Windows diff viewer's right-hand strip) ----
+        AddToolbarStyles();
+
+        Button prevChange = ToolButton("▲", "Go to previous change (hunk)", GoToPreviousChange);
+        Button nextChange = ToolButton("▼", "Go to next change (hunk)", GoToNextChange);
+        Button zoomIn = ToolButton("A+", "Increase text size", () => Zoom(+1));
+        Button zoomOut = ToolButton("A−", "Decrease text size", () => Zoom(-1));
+
+        _ignoreWhitespaceButton = ToggleTool(
+            "-w", "Ignore whitespace changes (git diff -w)", _options.IgnoreWhitespace,
+            v =>
+            {
+                _options.IgnoreWhitespace = v;
+                ReloadDiff();
+            });
+
+        _nonPrintingButton = ToggleTool(
+            "¶", "Show nonprinting characters (spaces, tabs, CR)", _options.ShowNonPrinting,
+            v =>
+            {
+                _options.ShowNonPrinting = v;
+                RenderDiff(_currentDiffText);
+            });
+
+        _wordDiffButton = ToggleTool(
+            "<div>", "Word diff (git diff --word-diff)", _options.WordDiff,
+            v =>
+            {
+                _options.WordDiff = v;
+                ReloadDiff();
+            });
+
+        _encodingBox = new ComboBox
+        {
+            ItemsSource = DiffTextService.EncodingNames,
+            SelectedItem = DiffTextService.EncodingNames.Contains(_options.EncodingName)
+                ? _options.EncodingName
+                : DiffTextService.DefaultEncodingName,
+            Width = 190,
+            FontSize = 12,
+            Padding = new Thickness(6, 1, 4, 1),
+            MinHeight = 0,
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(_encodingBox, "Encoding used to decode the diff text");
+        _encodingBox.SelectionChanged += (_, _) =>
+        {
+            if (_encodingBox.SelectedItem is not string name)
+            {
+                return;
+            }
+
+            _options.EncodingName = name;
+            ReloadDiff();
+        };
+
+        Button settings = ToolButton("⚙", "Diff view settings", null);
+        settings.Click += (_, _) => ShowSettingsMenu(settings);
+
+        StackPanel toolbar = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(4, 2, 6, 2),
+        };
+        toolbar.Children.Add(nextChange);
+        toolbar.Children.Add(prevChange);
+        toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(zoomIn);
+        toolbar.Children.Add(zoomOut);
+        toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(_ignoreWhitespaceButton);
+        toolbar.Children.Add(_nonPrintingButton);
+        toolbar.Children.Add(_wordDiffButton);
+        toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(_encodingBox);
+        toolbar.Children.Add(settings);
+
+        Border toolbarBar = new()
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = toolbar,
+        };
+
+        DockPanel diffPane = new();
+        DockPanel.SetDock(toolbarBar, Dock.Top);
+        diffPane.Children.Add(toolbarBar);
+        diffPane.Children.Add(_diffScroll);
 
         _status = new TextBlock
         {
@@ -166,11 +281,11 @@ public sealed class DiffView : UserControl
         };
         Grid.SetColumn(splitter, 1);
 
-        Grid.SetColumn(diffScroll, 2);
+        Grid.SetColumn(diffPane, 2);
 
         split.Children.Add(_files);
         split.Children.Add(splitter);
-        split.Children.Add(diffScroll);
+        split.Children.Add(diffPane);
 
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
@@ -290,58 +405,14 @@ public sealed class DiffView : UserControl
     // working-tree version and renders it in the shared coloured diff pane.
     private void CompareSelectedToWorkingDirectory()
     {
-        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        if (_files.SelectedItem is not DiffFileRow || _repoPath is null || _commitHash is null)
         {
             return;
         }
 
-        // Supersede any in-flight per-file diff load, matching OnFileSelected.
-        _diffCts?.Cancel();
-        _diffCts?.Dispose();
-        _diffCts = new CancellationTokenSource();
-        CancellationToken token = _diffCts.Token;
-
-        string repoPath = _repoPath;
-        string commitHash = _commitHash;
-
-        _diff.Inlines?.Clear();
-        _diff.Text = "Loading diff against working directory…";
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                string text = await DiffService.GetFileDiffAgainstWorkingTreeAsync(
-                    repoPath, commitHash, row, token);
-                if (token.IsCancellationRequested)
-                {
-                    return;
-                }
-
-                Dispatcher.UIThread.Post(() =>
-                {
-                    if (!token.IsCancellationRequested)
-                    {
-                        RenderDiff(text);
-                    }
-                });
-            }
-            catch (OperationCanceledException)
-            {
-                // Superseded by another selection/compare; ignore.
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    if (!token.IsCancellationRequested)
-                    {
-                        _diff.Inlines?.Clear();
-                        _diff.Text = "Error: " + ex.Message;
-                    }
-                });
-            }
-        });
+        // Sticky, so a toolbar toggle re-runs the same comparison.
+        _forceWorkingTreeCompare = true;
+        LoadSelectedFileDiff();
     }
 
     private void CopySelectedFilePath()
@@ -466,21 +537,258 @@ public sealed class DiffView : UserControl
 
     private void OnFileSelected(object? sender, SelectionChangedEventArgs e)
     {
+        // A plain selection always shows the comparison the file list belongs to.
+        _forceWorkingTreeCompare = false;
+        LoadSelectedFileDiff();
+    }
+
+    // ---------------------------------------------------------------- toolbar
+
+    // Flat toolbar chrome: the Fluent templates paint a button's background
+    // through their inner ContentPresenter, so style that part directly.
+    private void AddToolbarStyles()
+    {
+        IBrush hover = B("App.PanelAlt");
+        IBrush border = B("App.Border");
+        IBrush selection = B("App.Selection");
+
+        // Each style is "difftool" plus zero or more pseudo-classes; they must be
+        // chained as separate Class(...) calls (a single "a:b" string would be read
+        // as one class name and never match).
+        void Chrome<T>(string[] pseudo, IBrush background, IBrush stroke)
+            where T : TemplatedControl =>
+            Styles.Add(new Style(x =>
+            {
+                Selector s = x.OfType<T>().Class("difftool");
+                foreach (string cls in pseudo)
+                {
+                    s = s.Class(cls);
+                }
+
+                return s.Template().OfType<ContentPresenter>().Name("PART_ContentPresenter");
+            })
+            {
+                Setters =
+                {
+                    new Setter(ContentPresenter.BackgroundProperty, background),
+                    new Setter(ContentPresenter.BorderBrushProperty, stroke),
+                    new Setter(ContentPresenter.CornerRadiusProperty, new CornerRadius(3)),
+                },
+            });
+
+        Chrome<Button>([], Brushes.Transparent, Brushes.Transparent);
+        Chrome<Button>([":pointerover"], hover, border);
+        Chrome<ToggleButton>([], Brushes.Transparent, Brushes.Transparent);
+        Chrome<ToggleButton>([":pointerover"], hover, border);
+        Chrome<ToggleButton>([":checked"], selection, B("App.Accent"));
+        Chrome<ToggleButton>([":checked", ":pointerover"], selection, B("App.Accent"));
+    }
+
+    private Button ToolButton(string glyph, string tip, Action? onClick)
+    {
+        Button button = new()
+        {
+            Content = new TextBlock
+            {
+                Text = glyph,
+                FontSize = 12,
+                Foreground = B("App.Text"),
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+            Padding = new Thickness(6, 2),
+            MinWidth = 0,
+            MinHeight = 0,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.Classes.Add("difftool");
+        ToolTip.SetTip(button, tip);
+
+        if (onClick is not null)
+        {
+            button.Click += (_, _) => onClick();
+        }
+
+        return button;
+    }
+
+    private ToggleButton ToggleTool(string glyph, string tip, bool isChecked, Action<bool> onChanged)
+    {
+        ToggleButton button = new()
+        {
+            Content = new TextBlock
+            {
+                Text = glyph,
+                FontSize = 12,
+                Foreground = B("App.Text"),
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+            Padding = new Thickness(6, 2),
+            MinWidth = 0,
+            MinHeight = 0,
+            IsChecked = isChecked,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.Classes.Add("difftool");
+        ToolTip.SetTip(button, tip);
+        button.IsCheckedChanged += (_, _) => onChanged(button.IsChecked == true);
+
+        return button;
+    }
+
+    private Control ToolSeparator() => new Border
+    {
+        Width = 1,
+        Margin = new Thickness(3, 4),
+        Background = B("App.Border"),
+    };
+
+    // The gear menu: the same options as the toolbar, plus the zoom commands.
+    // The flyout's items are built in full BEFORE ShowAt (mutating them from
+    // Opening leaves the popup mis-measured).
+    private void ShowSettingsMenu(Control anchor)
+    {
+        MenuItem ignore = new()
+        {
+            Header = "Ignore whitespace changes  (-w)",
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _options.IgnoreWhitespace,
+        };
+        ignore.Click += (_, _) => _ignoreWhitespaceButton.IsChecked = !_options.IgnoreWhitespace;
+
+        MenuItem nonPrinting = new()
+        {
+            Header = "Show nonprinting characters",
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _options.ShowNonPrinting,
+        };
+        nonPrinting.Click += (_, _) => _nonPrintingButton.IsChecked = !_options.ShowNonPrinting;
+
+        MenuItem word = new()
+        {
+            Header = "Word diff  (--word-diff)",
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _options.WordDiff,
+        };
+        word.Click += (_, _) => _wordDiffButton.IsChecked = !_options.WordDiff;
+
+        MenuItem zoomIn = new() { Header = "Increase text size" };
+        zoomIn.Click += (_, _) => Zoom(+1);
+        MenuItem zoomOut = new() { Header = "Decrease text size" };
+        zoomOut.Click += (_, _) => Zoom(-1);
+        MenuItem zoomReset = new() { Header = "Reset text size" };
+        zoomReset.Click += (_, _) => Zoom(0);
+
+        MenuItem encodingReset = new() { Header = "Reset encoding to " + DiffTextService.DefaultEncodingName };
+        encodingReset.Click += (_, _) => _encodingBox.SelectedItem = DiffTextService.DefaultEncodingName;
+
+        MenuFlyout flyout = new()
+        {
+            ItemsSource = new Control[]
+            {
+                ignore,
+                nonPrinting,
+                word,
+                new Separator(),
+                zoomIn,
+                zoomOut,
+                zoomReset,
+                new Separator(),
+                encodingReset,
+            },
+            Placement = PlacementMode.BottomEdgeAlignedRight,
+        };
+
+        flyout.ShowAt(anchor);
+    }
+
+    // direction: +1 larger, -1 smaller, 0 reset to the default size.
+    private void Zoom(int direction)
+    {
+        double size = direction == 0
+            ? DiffDisplayOptions.DefaultFontSize
+            : Math.Clamp(_options.FontSize + direction, 6, 32);
+
+        _options.FontSize = size;
+        _diff.FontSize = size;
+        _status.Text = $"Text size {size:0}pt";
+    }
+
+    // ------------------------------------------------------- hunk navigation
+
+    private void GoToNextChange() => GoToChange(+1);
+
+    private void GoToPreviousChange() => GoToChange(-1);
+
+    private void GoToChange(int step)
+    {
+        if (_hunkLines.Count == 0)
+        {
+            _status.Text = "No changes to navigate in this file.";
+            return;
+        }
+
+        int next = _hunkIndex < 0
+            ? (step > 0 ? 0 : _hunkLines.Count - 1)
+            : Math.Clamp(_hunkIndex + step, 0, _hunkLines.Count - 1);
+
+        _hunkIndex = next;
+        ScrollToLine(_hunkLines[next]);
+        _status.Text = $"Change {next + 1} of {_hunkLines.Count}";
+    }
+
+    // The diff pane is a uniform monospace block, so a line's offset is simply
+    // its index times the measured average line height.
+    private void ScrollToLine(int line)
+    {
+        int lineCount = Math.Max(1, _currentDiffText.Split('\n').Length);
+        double height = _diff.Bounds.Height;
+        double lineHeight = height > 0 ? height / lineCount : _diff.FontSize * 1.4;
+        double y = Math.Max(0, (line * lineHeight) + _diff.Margin.Top - (lineHeight * 2));
+
+        _diffScroll.Offset = new Vector(_diffScroll.Offset.X, y);
+    }
+
+    // ---------------------------------------------------------- diff loading
+
+    // Re-runs the diff of the currently selected file with the current options
+    // (called by every toolbar toggle that maps onto a git argument).
+    private void ReloadDiff() => LoadSelectedFileDiff();
+
+    // Loads the selected file's patch through DiffTextService, so the toolbar
+    // options (-w, --word-diff, encoding) become real git arguments.
+    private void LoadSelectedFileDiff()
+    {
         if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
         {
             return;
         }
 
-        // Cancel any in-flight diff load for a previously selected file.
         _diffCts?.Cancel();
         _diffCts?.Dispose();
         _diffCts = new CancellationTokenSource();
         CancellationToken token = _diffCts.Token;
 
-        string repoPath = _repoPath;
-        string commitHash = _commitHash;
-        string? baseHash = _baseHash;
-        CompareMode mode = _mode;
+        DiffTextKind kind = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree
+            ? DiffTextKind.WorkingTree
+            : _mode == CompareMode.Range
+                ? DiffTextKind.Range
+                : DiffTextKind.Commit;
+
+        DiffTextRequest request = new(kind, _repoPath, _commitHash, _baseHash, row.Name, row.OldName);
+
+        // Snapshot the options: they live on the UI thread and the git run does not.
+        DiffDisplayOptions options = new()
+        {
+            IgnoreWhitespace = _options.IgnoreWhitespace,
+            ShowNonPrinting = _options.ShowNonPrinting,
+            WordDiff = _options.WordDiff,
+            EncodingName = _options.EncodingName,
+            FontSize = _options.FontSize,
+        };
 
         _diff.Inlines?.Clear();
         _diff.Text = "Loading diff…";
@@ -489,15 +797,7 @@ public sealed class DiffView : UserControl
         {
             try
             {
-                string text = mode switch
-                {
-                    CompareMode.Range =>
-                        await DiffService.GetFileDiffBetweenAsync(repoPath, baseHash!, commitHash, row, token),
-                    CompareMode.WorkingTree =>
-                        await DiffService.GetFileDiffAgainstWorkingTreeAsync(repoPath, commitHash, row, token),
-                    _ =>
-                        await DiffService.GetFileDiffAsync(repoPath, commitHash, row, token),
-                };
+                string text = await DiffTextService.GetDiffTextAsync(request, options, token);
                 if (token.IsCancellationRequested)
                 {
                     return;
@@ -508,12 +808,16 @@ public sealed class DiffView : UserControl
                     if (!token.IsCancellationRequested)
                     {
                         RenderDiff(text);
+
+                        // Show the command that produced the patch, so the effect of
+                        // the toolbar toggles (-w, --word-diff) is visible.
+                        _status.Text = DiffTextService.DescribeCommand(request, options);
                     }
                 });
             }
             catch (OperationCanceledException)
             {
-                // Superseded by another selection; ignore.
+                // Superseded by another selection/toggle; ignore.
             }
             catch (Exception ex)
             {
@@ -529,6 +833,12 @@ public sealed class DiffView : UserControl
         });
     }
 
+    // Renders spaces/tabs/CR as visible symbols when the ¶ toggle is on.
+    private static string ApplyNonPrinting(string line) => line
+        .Replace("\r", "␍", StringComparison.Ordinal)
+        .Replace("\t", "→   ", StringComparison.Ordinal)
+        .Replace(" ", "·", StringComparison.Ordinal);
+
     // Colour each diff line: added green, removed red, hunk headers blue,
     // file/meta headers gray.
     private void RenderDiff(string diffText)
@@ -537,9 +847,14 @@ public sealed class DiffView : UserControl
         _diff.Text = string.Empty;
         InlineCollection inlines = _diff.Inlines ??= [];
         inlines.Clear();
+        _hunkLines.Clear();
+        _hunkIndex = -1;
 
-        foreach (string line in diffText.Split('\n'))
+        int lineNumber = -1;
+        foreach (string rawLine in diffText.Split('\n'))
         {
+            lineNumber++;
+            string line = rawLine;
             IBrush? brush = null;
 
             if (line.StartsWith("+++", StringComparison.Ordinal) ||
@@ -557,6 +872,7 @@ public sealed class DiffView : UserControl
             else if (line.StartsWith("@@", StringComparison.Ordinal))
             {
                 brush = B("App.Accent");
+                _hunkLines.Add(lineNumber);
             }
             else if (line.StartsWith('+'))
             {
@@ -565,6 +881,11 @@ public sealed class DiffView : UserControl
             else if (line.StartsWith('-'))
             {
                 brush = RemovedBrush;
+            }
+
+            if (_options.ShowNonPrinting)
+            {
+                line = ApplyNonPrinting(line);
             }
 
             Run run = new(line + "\n");
