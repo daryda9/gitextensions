@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 
@@ -11,17 +12,28 @@ namespace GitExtensions.Avalonia.Views;
 /// <summary>
 ///  Push configuration dialog modelled on the original Git Extensions
 ///  <c>FormPush</c>. Rather than pushing immediately, it lets the user pick the
-///  target remote and branch mapping, optionally force-with-lease, then runs the
-///  actual push (or a pull) through the shared <see cref="GitProcessDialog"/> so
-///  the git output is visible.
+///  target (a configured remote OR an arbitrary URL) and what to push, then runs
+///  the actual push (or a pull) through the shared <see cref="GitProcessDialog"/>
+///  so the git output is visible live, with the same credential-prompt-and-retry
+///  flow on authentication failure.
 ///
 ///  Layout mirrors the Windows dialog: a <c>Push to</c> group (Remote combo +
-///  Manage remotes, and a disabled Url row for visual parity), a
-///  <c>Push branches | Push tags | Push multiple branches</c> tab strip (only the
-///  first is functional), a <c>Branch to push</c> row (local branch → remote
-///  target), a <c>Show options</c> expander with Force-with-lease / Push all tags
-///  / Recursive submodules, and a footer with <c>Pull</c> (left) and the accented
-///  <c>Push</c> (right).
+///  Manage remotes, Url combo + Browse…), a
+///  <c>Push branches | Push tags | Push multiple branches</c> tab strip, and a
+///  footer with <c>Pull</c> (left) and the accented <c>Push</c> (right).
+///
+///  Tabs:
+///  <list type="bullet">
+///   <item>Push branches — one local branch → one remote branch, plus options.</item>
+///   <item>Push tags — every local tag listed with a checkbox, or <c>--tags</c>.</item>
+///   <item>Push multiple branches — grid of local branches (select, destination
+///    branch, ahead/behind) pushed with a single <c>git push</c>.</item>
+///  </list>
+///
+///  Threading: every git call is made off the UI thread. The repository data
+///  (remotes, branches, tags) is pre-loaded in <see cref="ShowAsync"/> and handed
+///  to the constructor, because the git services block synchronously on async
+///  work and deadlock when touched from the UI thread.
 ///
 ///  Only the chrome resolves from the shared App.* brushes via <see cref="Brush"/>.
 /// </summary>
@@ -30,12 +42,38 @@ public sealed class PushDialog : Window
     private readonly string _repoPath;
 
     private readonly RadioButton _remoteRadio;
+    private readonly RadioButton _urlRadio;
     private readonly ComboBox _remoteCombo;
+    private readonly ComboBox _urlCombo;
+    private readonly Button _browseBtn;
+
+    private readonly TabControl _tabs;
+
+    // Push branches tab.
     private readonly ComboBox _localBranchCombo;
     private readonly ComboBox _remoteBranchCombo;
     private readonly CheckBox _forceWithLease;
+    private readonly CheckBox _pushAllTagsOption;
+    private readonly CheckBox _recursiveSubmodules;
+
+    // Push tags tab.
+    private readonly CheckBox _tagsAll;
+    private readonly CheckBox _tagsForce;
+    private readonly StackPanel _tagsPanel;
+    private readonly List<(string Name, CheckBox Check)> _tagChecks = [];
+    private readonly TextBlock _tagsEmpty;
+
+    // Push multiple branches tab.
+    private readonly CheckBox _multiForce;
+    private readonly CheckBox _multiSelectAll;
+    private readonly StackPanel _multiPanel;
+    private readonly List<MultiBranchRow> _multiRows = [];
 
     private bool _pushLaunched;
+    private bool _suppressSelectAll;
+
+    /// <summary>A row of the "Push multiple branches" grid.</summary>
+    private sealed record MultiBranchRow(string Local, CheckBox Check, TextBox Destination);
 
     /// <summary>
     ///  Repository data the dialog needs, loaded OFF the UI thread before the
@@ -44,21 +82,22 @@ public sealed class PushDialog : Window
     ///  pre-load in <see cref="ShowAsync"/>.
     /// </summary>
     private sealed record PushData(
-        IReadOnlyList<string> Remotes,
+        IReadOnlyList<RemoteRow> Remotes,
         string CurrentBranch,
-        IReadOnlyList<string> LocalBranches);
+        IReadOnlyList<string> LocalBranches,
+        IReadOnlyList<PushTagRow> Tags,
+        IReadOnlyList<PushBranchRow> BranchRows);
 
     private PushDialog(string repoPath, PushData data)
     {
         _repoPath = repoPath ?? string.Empty;
 
         Title = $"Push ({_repoPath})";
-        Width = 620;
-        Height = 430;
+        Width = 660;
+        Height = 520;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
-        IReadOnlyList<string> remoteRows = data.Remotes;
         string currentBranch = data.CurrentBranch;
         IReadOnlyList<string> localBranches = data.LocalBranches;
 
@@ -78,74 +117,50 @@ public sealed class PushDialog : Window
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        foreach (string r in remoteRows)
-        {
-            _remoteCombo.Items.Add(r);
-        }
-
-        // Default to "origin" if present, otherwise the first remote.
-        int originIndex = -1;
-        for (int i = 0; i < remoteRows.Count; i++)
-        {
-            if (string.Equals(remoteRows[i], "origin", StringComparison.Ordinal))
-            {
-                originIndex = i;
-                break;
-            }
-        }
-        if (_remoteCombo.Items.Count > 0)
-        {
-            _remoteCombo.SelectedIndex = originIndex >= 0 ? originIndex : 0;
-        }
 
         Button manageRemotes = MakeButton("Manage remotes");
-        // No trivial cross-file event exists to open a remotes editor here; keep
-        // the control present for visual parity with a no-op.
-        manageRemotes.IsEnabled = false;
+        manageRemotes.Click += (_, _) => _ = OnManageRemotesAsync();
 
-        RadioButton urlRadio = new()
+        _urlRadio = new RadioButton
         {
             Content = "Url",
             GroupName = "PushTo",
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        TextBox urlBox = new()
+
+        // Editable: the user may type any URL, and the dropdown offers the URLs
+        // of the configured remotes as a starting point.
+        _urlCombo = new ComboBox
         {
-            IsEnabled = false, // Url push is out of scope; present for parity.
+            IsEditable = true,
             MinWidth = 240,
-            Watermark = "git@host:owner/repo.git",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Button browseBtn = MakeButton("Browse…");
-        browseBtn.IsEnabled = false;
+
+        _browseBtn = MakeButton("Browse…");
+        _browseBtn.Click += (_, _) => _ = OnBrowseAsync();
+
+        PopulateRemotes(data.Remotes);
+
+        _remoteRadio.IsCheckedChanged += (_, _) => UpdateTargetEnabled();
+        _urlRadio.IsCheckedChanged += (_, _) => UpdateTargetEnabled();
 
         Grid pushToGrid = new()
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
             RowDefinitions = new RowDefinitions("Auto,Auto"),
+            ColumnSpacing = 10,
+            RowSpacing = 8,
         };
-        pushToGrid.ColumnSpacing = 10;
-        pushToGrid.RowSpacing = 8;
 
-        Grid.SetRow(_remoteRadio, 0);
-        Grid.SetColumn(_remoteRadio, 0);
-        Grid.SetRow(_remoteCombo, 0);
-        Grid.SetColumn(_remoteCombo, 1);
-        Grid.SetRow(manageRemotes, 0);
-        Grid.SetColumn(manageRemotes, 2);
-        Grid.SetRow(urlRadio, 1);
-        Grid.SetColumn(urlRadio, 0);
-        Grid.SetRow(urlBox, 1);
-        Grid.SetColumn(urlBox, 1);
-        Grid.SetRow(browseBtn, 1);
-        Grid.SetColumn(browseBtn, 2);
-        pushToGrid.Children.Add(_remoteRadio);
-        pushToGrid.Children.Add(_remoteCombo);
-        pushToGrid.Children.Add(manageRemotes);
-        pushToGrid.Children.Add(urlRadio);
-        pushToGrid.Children.Add(urlBox);
-        pushToGrid.Children.Add(browseBtn);
+        AddAt(pushToGrid, _remoteRadio, 0, 0);
+        AddAt(pushToGrid, _remoteCombo, 0, 1);
+        AddAt(pushToGrid, manageRemotes, 0, 2);
+        AddAt(pushToGrid, _urlRadio, 1, 0);
+        AddAt(pushToGrid, _urlCombo, 1, 1);
+        AddAt(pushToGrid, _browseBtn, 1, 2);
 
         HeaderedContentControl pushToGroup = new()
         {
@@ -158,7 +173,7 @@ public sealed class PushDialog : Window
             Foreground = Brush("App.Text", Brushes.Gainsboro),
         };
 
-        // ---- Tab strip ----------------------------------------------------
+        // ---- Tab 1: Push branches ------------------------------------------
         _localBranchCombo = new ComboBox { MinWidth = 220, VerticalAlignment = VerticalAlignment.Center };
         foreach (string b in localBranches)
         {
@@ -208,40 +223,27 @@ public sealed class PushDialog : Window
             Margin = new Thickness(0, 4, 0, 0),
             Children =
             {
-                new TextBlock
-                {
-                    Text = "Branch to push",
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Foreground = Brush("App.Text", Brushes.Gainsboro),
-                },
+                Label("Branch to push"),
                 _localBranchCombo,
-                new TextBlock
-                {
-                    Text = "to",
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Foreground = Brush("App.Text", Brushes.Gainsboro),
-                },
+                Label("to"),
                 _remoteBranchCombo,
             },
         };
 
-        // ---- Show options -------------------------------------------------
         _forceWithLease = MakeCheck("Force with lease (safe force)");
-        CheckBox pushAllTags = MakeCheck("Push all tags");
-        CheckBox recursiveSubmodules = MakeCheck("Recursive submodules");
-
-        StackPanel optionsPanel = new()
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 4,
-            Margin = new Thickness(0, 6, 0, 0),
-            Children = { _forceWithLease, pushAllTags, recursiveSubmodules },
-        };
+        _pushAllTagsOption = MakeCheck("Push all tags");
+        _recursiveSubmodules = MakeCheck("Recursive submodules");
 
         Expander showOptions = new()
         {
             Header = "Show options",
-            Content = optionsPanel,
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Spacing = 4,
+                Margin = new Thickness(0, 6, 0, 0),
+                Children = { _forceWithLease, _pushAllTagsOption, _recursiveSubmodules },
+            },
             Margin = new Thickness(0, 8, 0, 0),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
         };
@@ -253,32 +255,143 @@ public sealed class PushDialog : Window
             Children = { branchRow, showOptions },
         };
 
-        TabControl tabs = new()
+        // ---- Tab 2: Push tags ----------------------------------------------
+        _tagsAll = MakeCheck("Push all tags (--tags)");
+        _tagsForce = MakeCheck("Force with lease (safe force)");
+        _tagsAll.IsCheckedChanged += (_, _) => UpdateTagsEnabled();
+
+        _tagsPanel = new StackPanel { Orientation = Orientation.Vertical };
+        foreach (PushTagRow tag in data.Tags)
+        {
+            CheckBox cb = MakeCheck(string.IsNullOrEmpty(tag.ObjectId) ? tag.Name : $"{tag.Name}   {tag.ObjectId}");
+            cb.Margin = new Thickness(2);
+            _tagChecks.Add((tag.Name, cb));
+            _tagsPanel.Children.Add(cb);
+        }
+
+        _tagsEmpty = new TextBlock
+        {
+            Text = "This repository has no local tags.",
+            Margin = new Thickness(4),
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            IsVisible = _tagChecks.Count == 0,
+        };
+        _tagsPanel.Children.Insert(0, _tagsEmpty);
+
+        Button tagsSelectAll = MakeButton("Select all");
+        Button tagsSelectNone = MakeButton("Select none");
+        tagsSelectAll.Click += (_, _) => SetAllTags(true);
+        tagsSelectNone.Click += (_, _) => SetAllTags(false);
+
+        DockPanel tagsTabContent = new() { Margin = new Thickness(6) };
+        StackPanel tagsFooter = new()
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 4,
+            Margin = new Thickness(0, 8, 0, 0),
+            Children =
+            {
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    Children = { tagsSelectAll, tagsSelectNone },
+                },
+                _tagsAll,
+                _tagsForce,
+            },
+        };
+        DockPanel.SetDock(tagsFooter, Dock.Bottom);
+        StackPanel tagsHeader = new()
+        {
+            Orientation = Orientation.Vertical,
+            Children = { Label("Tags to push") },
+        };
+        DockPanel.SetDock(tagsHeader, Dock.Top);
+        tagsTabContent.Children.Add(tagsHeader);
+        tagsTabContent.Children.Add(tagsFooter);
+        tagsTabContent.Children.Add(Scroll(_tagsPanel));
+
+        // ---- Tab 3: Push multiple branches ---------------------------------
+        _multiPanel = new StackPanel { Orientation = Orientation.Vertical };
+        foreach (PushBranchRow row in data.BranchRows)
+        {
+            CheckBox cb = new()
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                IsChecked = string.Equals(row.Local, currentBranch, StringComparison.Ordinal),
+            };
+            cb.IsCheckedChanged += (_, _) => SyncSelectAll();
+
+            TextBox dest = new()
+            {
+                Text = string.IsNullOrEmpty(row.Upstream) ? row.Local : StripRemote(row.Upstream),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 1, 4, 1),
+            };
+
+            Grid grid = MultiGrid();
+            AddAt(grid, cb, 0, 0);
+            AddAt(grid, Label(row.Local), 0, 1);
+            AddAt(grid, dest, 0, 2);
+            AddAt(grid, Label(row.Track), 0, 3);
+            _multiPanel.Children.Add(grid);
+
+            _multiRows.Add(new MultiBranchRow(row.Local, cb, dest));
+        }
+
+        if (_multiRows.Count == 0)
+        {
+            _multiPanel.Children.Add(new TextBlock
+            {
+                Text = "This repository has no local branches.",
+                Margin = new Thickness(4),
+                Foreground = Brush("App.TextDim", Brushes.Gray),
+            });
+        }
+
+        _multiSelectAll = new CheckBox { VerticalAlignment = VerticalAlignment.Center };
+        _multiSelectAll.IsCheckedChanged += (_, _) =>
+        {
+            if (_suppressSelectAll)
+            {
+                return;
+            }
+
+            bool on = _multiSelectAll.IsChecked == true;
+            foreach (MultiBranchRow row in _multiRows)
+            {
+                row.Check.IsChecked = on;
+            }
+        };
+
+        Grid multiHeader = MultiGrid();
+        AddAt(multiHeader, _multiSelectAll, 0, 0);
+        AddAt(multiHeader, Header("Local branch"), 0, 1);
+        AddAt(multiHeader, Header("Remote branch"), 0, 2);
+        AddAt(multiHeader, Header("Ahead/behind"), 0, 3);
+        multiHeader.Margin = new Thickness(0, 0, 0, 4);
+
+        _multiForce = MakeCheck("Force with lease (safe force)");
+
+        DockPanel multiTabContent = new() { Margin = new Thickness(6) };
+        DockPanel.SetDock(multiHeader, Dock.Top);
+        DockPanel.SetDock(_multiForce, Dock.Bottom);
+        _multiForce.Margin = new Thickness(0, 8, 0, 0);
+        multiTabContent.Children.Add(multiHeader);
+        multiTabContent.Children.Add(_multiForce);
+        multiTabContent.Children.Add(Scroll(_multiPanel));
+
+        SyncSelectAll();
+
+        _tabs = new TabControl
         {
             Margin = new Thickness(0, 0, 0, 10),
             Items =
             {
                 new TabItem { Header = "Push branches", Content = branchesTabContent },
-                new TabItem
-                {
-                    Header = "Push tags",
-                    Content = new TextBlock
-                    {
-                        Text = "Tag push is not yet available.",
-                        Margin = new Thickness(10),
-                        Foreground = Brush("App.TextDim", Brushes.Gray),
-                    },
-                },
-                new TabItem
-                {
-                    Header = "Push multiple branches",
-                    Content = new TextBlock
-                    {
-                        Text = "Multiple-branch push is not yet available.",
-                        Margin = new Thickness(10),
-                        Foreground = Brush("App.TextDim", Brushes.Gray),
-                    },
-                },
+                new TabItem { Header = "Push tags", Content = tagsTabContent },
+                new TabItem { Header = "Push multiple branches", Content = multiTabContent },
             },
         };
 
@@ -303,8 +416,11 @@ public sealed class PushDialog : Window
         DockPanel.SetDock(pushToGroup, Dock.Top);
         body.Children.Add(footer);
         body.Children.Add(pushToGroup);
-        body.Children.Add(tabs);
+        body.Children.Add(_tabs);
         Content = body;
+
+        UpdateTargetEnabled();
+        UpdateTagsEnabled();
     }
 
     /// <summary>
@@ -314,7 +430,7 @@ public sealed class PushDialog : Window
     /// </summary>
     public static async Task<bool> ShowAsync(Window owner, string repoPath)
     {
-        // Load remotes / branches OFF the UI thread; the git services block
+        // Load remotes / branches / tags OFF the UI thread; the git services block
         // synchronously on async work and would deadlock the UI thread.
         PushData data = await Task.Run(() => LoadData(repoPath));
         PushDialog dialog = new(repoPath, data);
@@ -326,14 +442,14 @@ public sealed class PushDialog : Window
     {
         RemoteService remotes = new();
 
-        IReadOnlyList<string> remoteNames;
+        IReadOnlyList<RemoteRow> remoteRows;
         try
         {
-            remoteNames = [.. remotes.ListRemotes(repoPath).Select(r => r.Name)];
+            remoteRows = remotes.ListRemotes(repoPath);
         }
         catch (Exception)
         {
-            remoteNames = [];
+            remoteRows = [];
         }
 
         string current;
@@ -358,43 +474,324 @@ public sealed class PushDialog : Window
             locals = [];
         }
 
-        return new PushData(remoteNames, current, locals);
+        PushRefsListing listing;
+        try
+        {
+            listing = new PushRefsService().Load(repoPath);
+        }
+        catch (Exception)
+        {
+            listing = new PushRefsListing([], []);
+        }
+
+        return new PushData(remoteRows, current, locals, listing.Tags, listing.Branches);
     }
 
-    private async Task OnPushAsync()
-    {
-        string remote = _remoteCombo.SelectedItem as string ?? string.Empty;
-        string branch = _remoteBranchCombo.SelectedItem as string
-            ?? (_remoteBranchCombo.SelectedItem?.ToString())
-            ?? (_localBranchCombo.SelectedItem as string)
-            ?? string.Empty;
-        bool force = _forceWithLease.IsChecked == true;
+    // --- Target (remote / url) -------------------------------------------
 
-        if (string.IsNullOrEmpty(remote) || string.IsNullOrEmpty(branch))
+    private void PopulateRemotes(IReadOnlyList<RemoteRow> remotes)
+    {
+        string? keepRemote = _remoteCombo.SelectedItem as string;
+
+        _remoteCombo.Items.Clear();
+        _urlCombo.Items.Clear();
+
+        foreach (RemoteRow r in remotes)
+        {
+            _remoteCombo.Items.Add(r.Name);
+            string url = string.IsNullOrEmpty(r.PushUrl) ? r.FetchUrl : r.PushUrl;
+            if (!string.IsNullOrEmpty(url) && !_urlCombo.Items.Contains(url))
+            {
+                _urlCombo.Items.Add(url);
+            }
+        }
+
+        if (_remoteCombo.Items.Count == 0)
         {
             return;
         }
 
-        _pushLaunched = true;
-        string repo = _repoPath;
-        RemoteOpResult? res = null;
-        await GitProcessDialog.RunStreamingAsync(this, "Push", emit =>
+        // Restore the previous selection, else default to "origin", else first.
+        int index = keepRemote is null ? -1 : _remoteCombo.Items.IndexOf(keepRemote);
+        if (index < 0)
         {
-            res = new RemoteService().PushStreaming(repo, remote, branch, force, emit, null);
+            index = _remoteCombo.Items.IndexOf("origin");
+        }
+
+        _remoteCombo.SelectedIndex = index >= 0 ? index : 0;
+    }
+
+    private void UpdateTargetEnabled()
+    {
+        bool byRemote = _remoteRadio.IsChecked == true;
+        _remoteCombo.IsEnabled = byRemote;
+        _urlCombo.IsEnabled = !byRemote;
+        _browseBtn.IsEnabled = !byRemote;
+    }
+
+    /// <summary>The push target: the selected remote name, or the typed URL.</summary>
+    private string Target()
+        => _urlRadio.IsChecked == true
+            ? (_urlCombo.SelectedItem as string ?? _urlCombo.Text ?? string.Empty).Trim()
+            : (_remoteCombo.SelectedItem as string ?? string.Empty);
+
+    /// <summary>True when the target is a URL rather than a configured remote.</summary>
+    private bool TargetIsUrl() => _urlRadio.IsChecked == true;
+
+    private async Task OnManageRemotesAsync()
+    {
+        try
+        {
+            RemotesDialog dialog = new(_repoPath);
+            await dialog.ShowDialog(this);
+
+            // Remotes may have been added / renamed / removed → reload the list
+            // OFF the UI thread and repopulate both target combos.
+            string repo = _repoPath;
+            IReadOnlyList<RemoteRow> rows = await Task.Run(() =>
+            {
+                try
+                {
+                    return new RemoteService().ListRemotes(repo);
+                }
+                catch (Exception)
+                {
+                    return (IReadOnlyList<RemoteRow>)[];
+                }
+            });
+
+            PopulateRemotes(rows);
+        }
+        catch (Exception)
+        {
+            // Never let the remotes editor break the push dialog.
+        }
+    }
+
+    // "Browse…" picks a local directory (a bare repository / clone on disk) and
+    // uses its path as the push URL — the same thing the Windows dialog does.
+    private async Task OnBrowseAsync()
+    {
+        try
+        {
+            IReadOnlyList<IStorageFolder> picked = await StorageProvider.OpenFolderPickerAsync(
+                new FolderPickerOpenOptions { Title = "Select repository to push to", AllowMultiple = false });
+
+            if (picked.Count == 0)
+            {
+                return;
+            }
+
+            string? path = picked[0].TryGetLocalPath();
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+
+            if (!_urlCombo.Items.Contains(path))
+            {
+                _urlCombo.Items.Add(path);
+            }
+
+            _urlCombo.SelectedItem = path;
+            _urlRadio.IsChecked = true;
+        }
+        catch (Exception)
+        {
+            // Picker unavailable (headless) → leave the URL as typed.
+        }
+    }
+
+    // --- Tags tab ---------------------------------------------------------
+
+    private void SetAllTags(bool value)
+    {
+        foreach ((_, CheckBox cb) in _tagChecks)
+        {
+            cb.IsChecked = value;
+        }
+    }
+
+    private void UpdateTagsEnabled()
+    {
+        // "--tags" pushes every tag, so the per-tag selection is meaningless then.
+        bool individual = _tagsAll.IsChecked != true;
+        foreach ((_, CheckBox cb) in _tagChecks)
+        {
+            cb.IsEnabled = individual;
+        }
+    }
+
+    // --- Multiple branches tab -------------------------------------------
+
+    private static Grid MultiGrid() => new()
+    {
+        ColumnDefinitions = new ColumnDefinitions("30,*,*,110"),
+    };
+
+    private void SyncSelectAll()
+    {
+        if (_multiRows.Count == 0)
+        {
+            return;
+        }
+
+        bool all = _multiRows.All(r => r.Check.IsChecked == true);
+        _suppressSelectAll = true;
+        _multiSelectAll.IsChecked = all;
+        _suppressSelectAll = false;
+    }
+
+    // "origin/main" → "main": the destination column holds the branch name only.
+    private static string StripRemote(string upstream)
+    {
+        int slash = upstream.IndexOf('/');
+        return slash >= 0 && slash + 1 < upstream.Length ? upstream[(slash + 1)..] : upstream;
+    }
+
+    // --- Push / pull ------------------------------------------------------
+
+    private async Task OnPushAsync()
+    {
+        string target = Target();
+        if (string.IsNullOrEmpty(target))
+        {
+            return;
+        }
+
+        switch (_tabs.SelectedIndex)
+        {
+            case 1:
+                await PushTagsAsync(target);
+                break;
+            case 2:
+                await PushMultipleBranchesAsync(target);
+                break;
+            default:
+                await PushSingleBranchAsync(target);
+                break;
+        }
+    }
+
+    private async Task PushSingleBranchAsync(string target)
+    {
+        string local = _localBranchCombo.SelectedItem as string ?? string.Empty;
+        string remoteBranch = _remoteBranchCombo.SelectedItem as string
+            ?? _remoteBranchCombo.Text
+            ?? local;
+
+        if (string.IsNullOrEmpty(remoteBranch))
+        {
+            remoteBranch = local;
+        }
+
+        if (string.IsNullOrEmpty(local) && string.IsNullOrEmpty(remoteBranch))
+        {
+            return;
+        }
+
+        bool force = _forceWithLease.IsChecked == true;
+        bool allTags = _pushAllTagsOption.IsChecked == true;
+        bool recurse = _recursiveSubmodules.IsChecked == true;
+        string repo = _repoPath;
+
+        // Read every control value HERE, on the UI thread: the operation lambda
+        // below runs on a background thread and Avalonia throws on cross-thread
+        // property access (the failure would surface as an empty "Failed" console).
+        bool isUrl = TargetIsUrl();
+
+        // The plain "push this branch to this remote" case keeps using the
+        // long-standing RemoteService path; anything extra (URL target, --tags,
+        // submodule recursion, a renamed destination) goes through the refspec
+        // service, which builds the single equivalent `git push`.
+        if (!isUrl && !allTags && !recurse
+            && string.Equals(local, remoteBranch, StringComparison.Ordinal))
+        {
+            await RunPushAsync("Push", (emit, creds) =>
+                new RemoteService().PushStreaming(repo, target, remoteBranch, force, emit, creds));
+            return;
+        }
+
+        string refspec = string.IsNullOrEmpty(local) ? remoteBranch : $"{local}:refs/heads/{remoteBranch}";
+        await RunPushAsync("Push", (emit, creds) => new PushRefsService().PushRefsStreaming(
+            repo, target, [refspec], force, allTags, setUpstream: !isUrl, recurse, emit, creds));
+    }
+
+    private async Task PushTagsAsync(string target)
+    {
+        bool all = _tagsAll.IsChecked == true;
+        List<string> refspecs = all
+            ? []
+            : [.. _tagChecks.Where(t => t.Check.IsChecked == true).Select(t => $"refs/tags/{t.Name}")];
+
+        if (!all && refspecs.Count == 0)
+        {
+            return;
+        }
+
+        bool force = _tagsForce.IsChecked == true;
+        string repo = _repoPath;
+        await RunPushAsync("Push tags", (emit, creds) => new PushRefsService().PushRefsStreaming(
+            repo, target, refspecs, force, allTags: all, setUpstream: false, recurseSubmodules: false, emit, creds));
+    }
+
+    private async Task PushMultipleBranchesAsync(string target)
+    {
+        List<string> refspecs = [];
+        foreach (MultiBranchRow row in _multiRows)
+        {
+            if (row.Check.IsChecked != true)
+            {
+                continue;
+            }
+
+            string dest = (row.Destination.Text ?? string.Empty).Trim();
+            if (dest.Length == 0)
+            {
+                dest = row.Local;
+            }
+
+            refspecs.Add($"{row.Local}:refs/heads/{dest}");
+        }
+
+        if (refspecs.Count == 0)
+        {
+            return;
+        }
+
+        // Snapshot the control values on the UI thread (see PushSingleBranchAsync).
+        bool force = _multiForce.IsChecked == true;
+        bool isUrl = TargetIsUrl();
+        string repo = _repoPath;
+        await RunPushAsync("Push branches", (emit, creds) => new PushRefsService().PushRefsStreaming(
+            repo, target, refspecs, force, allTags: false, setUpstream: !isUrl, recurseSubmodules: false, emit, creds));
+    }
+
+    /// <summary>
+    ///  Runs <paramref name="operation"/> through the shared process dialog (live
+    ///  git output). Git runs strictly non-interactively, so when it fails for
+    ///  lack of credentials the user is asked in-app and the SAME operation is
+    ///  retried once with the credentials fed through a transient helper.
+    /// </summary>
+    private async Task RunPushAsync(string label, Func<Action<string>, GitCredentials?, RemoteOpResult> operation)
+    {
+        _pushLaunched = true;
+        RemoteOpResult? res = null;
+
+        await GitProcessDialog.RunStreamingAsync(this, label, emit =>
+        {
+            res = operation(emit, null);
             return new GitProcessOutcome(res.Success, res.Output);
         }, closeOnAuthFailure: true);
 
-        // Git ran non-interactively; if it failed for lack of credentials, ask
-        // the user for them in-app and retry the SAME push with the creds fed
-        // through a transient credential helper.
         if (res is { AuthFailed: true })
         {
             GitCredentials? creds = await CredentialsDialog.ShowAsync(this);
             if (creds is not null)
             {
-                await GitProcessDialog.RunStreamingAsync(this, "Push (retry)", emit =>
+                await GitProcessDialog.RunStreamingAsync(this, $"{label} (retry)", emit =>
                 {
-                    RemoteOpResult r = new RemoteService().PushStreaming(repo, remote, branch, force, emit, creds);
+                    RemoteOpResult r = operation(emit, creds);
                     return new GitProcessOutcome(r.Success, r.Output);
                 });
             }
@@ -405,36 +802,49 @@ public sealed class PushDialog : Window
 
     private async Task OnPullAsync()
     {
+        // Pull always goes to a configured remote (a bare URL has no tracking
+        // configuration to merge into), so it ignores the Url radio.
         string remote = _remoteCombo.SelectedItem as string ?? string.Empty;
         if (string.IsNullOrEmpty(remote))
         {
             return;
         }
 
-        _pushLaunched = true;
         string repo = _repoPath;
-        RemoteOpResult? res = null;
-        await GitProcessDialog.RunStreamingAsync(this, "Pull", emit =>
-        {
-            res = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, null);
-            return new GitProcessOutcome(res.Success, res.Output);
-        }, closeOnAuthFailure: true);
-
-        if (res is { AuthFailed: true })
-        {
-            GitCredentials? creds = await CredentialsDialog.ShowAsync(this);
-            if (creds is not null)
-            {
-                await GitProcessDialog.RunStreamingAsync(this, "Pull (retry)", emit =>
-                {
-                    RemoteOpResult r = new RemoteService().PullStreaming(repo, remote, rebase: false, emit, creds);
-                    return new GitProcessOutcome(r.Success, r.Output);
-                });
-            }
-        }
-
-        Close();
+        await RunPushAsync("Pull", (emit, creds) =>
+            new RemoteService().PullStreaming(repo, remote, rebase: false, emit, creds));
     }
+
+    // --- Helpers ----------------------------------------------------------
+
+    private static void AddAt(Grid grid, Control child, int row, int column)
+    {
+        Grid.SetRow(child, row);
+        Grid.SetColumn(child, column);
+        grid.Children.Add(child);
+    }
+
+    private static ScrollViewer Scroll(Control content) => new()
+    {
+        Content = content,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+    };
+
+    private TextBlock Label(string text) => new()
+    {
+        Text = text,
+        VerticalAlignment = VerticalAlignment.Center,
+        Foreground = Brush("App.Text", Brushes.Gainsboro),
+    };
+
+    private TextBlock Header(string text) => new()
+    {
+        Text = text,
+        VerticalAlignment = VerticalAlignment.Center,
+        FontWeight = FontWeight.Bold,
+        Foreground = Brush("App.TextDim", Brushes.Gray),
+    };
 
     private static void SelectBranch(ComboBox combo, string branch, IReadOnlyList<string> known)
     {
