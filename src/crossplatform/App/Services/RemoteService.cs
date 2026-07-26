@@ -53,12 +53,23 @@ public sealed record RemoteOpResult(bool Success, string Output, bool AuthFailed
 public sealed class RemoteService
 {
     /// <summary>
+    ///  Runs an async git call from a synchronous service method without ever
+    ///  deadlocking the caller. Awaiting directly with <c>GetAwaiter().GetResult()</c>
+    ///  hangs forever when the caller sits on the Avalonia UI thread: the
+    ///  continuation is posted back to that same (now blocked) thread. Hopping to
+    ///  the thread pool first detaches the continuation from the UI
+    ///  SynchronizationContext. Callers should still stay off the UI thread — this
+    ///  only turns a hard hang into a short block.
+    /// </summary>
+    private static T RunDetached<T>(Func<Task<T>> work) => Task.Run(work).GetAwaiter().GetResult();
+
+    /// <summary>
     ///  Lists the configured remotes (name + fetch/push URLs).
     /// </summary>
     public IReadOnlyList<RemoteRow> ListRemotes(string repoPath)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        IReadOnlyList<Remote> remotes = module.GetRemotesAsync().GetAwaiter().GetResult();
+        IReadOnlyList<Remote> remotes = RunDetached(module.GetRemotesAsync);
         return [.. remotes.Select(r => new RemoteRow(
             r.Name,
             r.FetchUrl ?? string.Empty,
@@ -456,7 +467,7 @@ public sealed class RemoteService
 
     private static IReadOnlyList<RemoteRow> ListRemotesFrom(GitModule module)
     {
-        IReadOnlyList<Remote> remotes = module.GetRemotesAsync().GetAwaiter().GetResult();
+        IReadOnlyList<Remote> remotes = RunDetached(module.GetRemotesAsync);
         return [.. remotes.Select(r => new RemoteRow(
             r.Name,
             r.FetchUrl ?? string.Empty,

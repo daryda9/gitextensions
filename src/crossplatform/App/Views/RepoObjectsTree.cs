@@ -836,7 +836,8 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            string current = FindRemoteUrl(remote);
+            // Off the UI thread: the lookup shells out to git (see RemoteService).
+            string current = await Task.Run(() => FindRemoteUrl(remote));
             string? url = await PromptAsync($"URL for remote '{remote}':", current);
             if (url is { Length: > 0 } target && !string.Equals(target, current, StringComparison.Ordinal))
             {

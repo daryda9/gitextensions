@@ -1482,8 +1482,15 @@ public sealed class MainWindow : Window
             _statusBar.SetText($"{label}…");
 
             RemoteService svc = new();
-            var remotes = svc.ListRemotes(_repoPath);
-            string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
+
+            // Off the UI thread: ListRemotes shells out to git. Calling it here
+            // froze the whole window before the process dialog even appeared.
+            string repo = _repoPath;
+            string remote = await Task.Run(() =>
+            {
+                var remotes = svc.ListRemotes(repo);
+                return remotes.Count > 0 ? remotes[0].Name : "origin";
+            });
 
             RemoteOpResult? res = null;
             await Views.GitProcessDialog.RunStreamingAsync(this, label, emit =>

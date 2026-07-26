@@ -993,6 +993,17 @@ git figli possono ereditare un `HOME` sbagliato — fix non fatto perché tocca 
 condiviso con la build Windows. **SKIP confermati fuori scope**: repository-host GitHub,
 colonna build status.
 
+- **M43** (bugfix post-blocco, 2026-07-27) — **Fetch/Pull bloccavano la GUI**.
+  `RemoteService.ListRemotes` fa sync-over-async (`GetRemotesAsync().GetAwaiter().GetResult()`)
+  e `MainWindow.RunRemoteOp` lo chiamava **sul thread UI**: la continuazione veniva postata
+  sul thread già bloccato → hang totale *prima* di avviare git, quindi nemmeno il process
+  dialog compariva (finestra congelata, non lenta). Stesso difetto in
+  `RepoObjectsTree.DoEditRemoteUrlAsync` → `FindRemoteUrl`. Fix a due livelli: helper
+  `RemoteService.RunDetached` che fa hop sul thread pool (nessun chiamante può più
+  deadlockare — degrada a blocco breve), e le due chiamate spostate in `Task.Run`.
+  Push era immune perché `PushDialog` pre-carica già fuori dall'UI thread. Verificato in
+  GUI headless: il dialog appare e il fetch completa con `Success`.
+
 - **M42** (iter. 4) — C10 + D11 + D12, chiusura del blocco:
   - **C10 terminale PTY realmente embedded** (nuovi `Services/PtyProcess.cs`,
     `Services/TerminalEmulator.cs`, `Views/TerminalControl.cs` + `Views/ConsoleView.cs`,
