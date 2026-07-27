@@ -27,6 +27,10 @@ namespace GitExtensions.Avalonia.Views;
 ///    the user picks — <i>Local for current repository</i> or <i>Global for all
 ///    repositories</i>, a cut-down port of upstream's
 ///    <c>SettingsPageHeader</c> level selector.</item>
+///   <item>The eight tri-state keys of upstream's <c>GitConfigAdvancedSettingsPage</c>
+///    (<c>pull.rebase</c>, <c>fetch.prune</c>, the two autostashes, …), written into
+///    git config at the same chosen level. They need no consumer inside the port —
+///    the consumer is git.</item>
 ///   <item>Default pull action (the five actions the toolbar's Pull split button
 ///    offers), persisted in <see cref="UiState.DefaultPullAction"/> — the value the
 ///    split button itself reads.</item>
@@ -69,15 +73,25 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox _pullAction;
     private readonly ComboBox _theme;
 
+    // One three-state checkbox per GitConfigChoices entry, same order.
+    private readonly CheckBox[] _gitConfigChecks;
+
     // The level the identity fields currently show, so a level change can be told
     // from the initial load and the fields reloaded for the new level.
     private GitSettingLevel _loadedLevel = GitSettingLevel.Local;
     private bool _loadingIdentity;
+    private bool _loadingGitConfig;
 
     // Category panels, shown one at a time in the right pane.
     private readonly Panel _identityPanel;
+    private readonly Panel _gitConfigPanel;
     private readonly Panel _behaviourPanel;
     private readonly Panel _appearancePanel;
+
+    // The level selector, hoisted out of the identity panel: it now governs every
+    // page that reads/writes git config (identity AND the advanced keys), exactly as
+    // upstream's SettingsPageHeader governs a whole GitConfigBaseSettingsPage.
+    private readonly Control _levelHeader;
 
     // Every caption re-applies itself from here, so a language switch needs no
     // rebuild of the control tree (and no reload of the user's pending edits).
@@ -130,11 +144,45 @@ public sealed class SettingsWindow : Window
         (GitSettingLevel.Global, "SettingsPageHeader/GlobalRB.Text", "Global for all repositories"),
     ];
 
+    // The eight tri-state git config keys of upstream's "Git config advanced" page
+    // (GitConfigAdvancedSettingsPage.cs:19-26), with that page's own captions so the
+    // two cannot drift.
+    //
+    // Tri-state is the whole point: "set to true", "set to false" and "not set" are
+    // three different things to git — an unset pull.rebase inherits whatever a wider
+    // config level says, while an explicit false pins it. Applying therefore writes
+    // "true"/"false" for a determinate box and *unsets* the key for an indeterminate
+    // one (GitConfigSettings.SetValue(name, null) → "git config --unset").
+    //
+    // These need no consumer inside the port: the consumer is git itself, on every
+    // pull/fetch/merge/rebase the app runs.
+    private static readonly (string Key, string TransKey, string Label)[] GitConfigChoices =
+    [
+        ("pull.rebase", "GitConfigAdvancedSettingsPage/checkBoxPullRebase.Text",
+            "Rebase local branch when pulling (instead of merge)"),
+        ("fetch.prune", "GitConfigAdvancedSettingsPage/checkBoxFetchPrune.Text",
+            "Prune remote branches during fetch"),
+        ("merge.autostash", "GitConfigAdvancedSettingsPage/checkboxMergeAutoStash.Text",
+            "Automatically stash before doing a merge"),
+        ("rebase.autostash", "GitConfigAdvancedSettingsPage/checkBoxRebaseAutostash.Text",
+            "Automatically stash before doing a rebase"),
+        ("rebase.autosquash", "GitConfigAdvancedSettingsPage/checkBoxRebaseAutosquash.Text",
+            "Automatically squash commits when doing an interactive rebase"),
+        ("rebase.updaterefs", "GitConfigAdvancedSettingsPage/checkBoxUpdateRefs.Text",
+            "Rebase also dependent branches"),
+        ("rerere.enabled", "GitConfigAdvancedSettingsPage/checkBoxReReReEnabled.Text",
+            "Reuse recorded resolution of conflicted merges"),
+        ("rerere.autoupdate", "GitConfigAdvancedSettingsPage/checkBoxReReReAutoUpdate.Text",
+            "Automatically apply recorded resolution of conflicted merges"),
+    ];
+
     // Category names, shared by the left list and the panel heading so the two can
     // never drift apart.
     // The port's own wording: no upstream trans-unit, hence a null key.
     private const string? IdentityKey = null;
     private const string IdentityText = "Git identity";
+    private const string GitConfigKey = "GitConfigAdvancedSettingsPage/$this.Text";
+    private const string GitConfigText = "Git config advanced";
     private const string BehaviourKey = "GeneralSettingsPage/groupBoxBehaviour.Text";
     private const string BehaviourText = "Behaviour";
     private const string AppearanceKey = "AppearanceSettingsPage/$this.Text";
@@ -179,17 +227,46 @@ public sealed class SettingsWindow : Window
         _settingsLevel.SelectedIndex = 0;
         _settingsLevel.SelectionChanged += (_, _) => OnLevelChanged();
 
+        // Shared by every git-config-backed page, so switching page keeps the level.
+        _levelHeader = Field("SettingsPageHeader/label1.Text", "Settings source:", _settingsLevel, dim);
+        _levelHeader.Margin = new Thickness(20, 16, 20, 0);
+
         _identityPanel = CategoryPanel(
             IdentityKey, IdentityText,
-            null, "Stored with git config. \"Local\" writes the current repository's "
-                + "config, \"Global\" your user-wide config (~/.gitconfig) — the one a "
-                + "brand-new repository inherits. Clearing a field removes the entry "
-                + "from the chosen level.",
+            null, "Stored with git config at the level chosen above. \"Local\" writes the "
+                + "current repository's config, \"Global\" your user-wide config "
+                + "(~/.gitconfig) — the one a brand-new repository inherits. Clearing a "
+                + "field removes the entry from the chosen level.",
             text,
             dim,
-            Field("SettingsPageHeader/label1.Text", "Settings source:", _settingsLevel, dim),
             Field("GitConfigSettingsPage/label3.Text", "User name", _userName, dim),
             Field("GitConfigSettingsPage/label4.Text", "User email", _userEmail, dim));
+
+        // ---- Git config advanced: eight tri-state keys, written straight to git.
+        _gitConfigChecks = new CheckBox[GitConfigChoices.Length];
+        Control[] gitConfigFields = new Control[GitConfigChoices.Length];
+        for (int i = 0; i < GitConfigChoices.Length; i++)
+        {
+            (string key, string transKey, string label) = GitConfigChoices[i];
+
+            // IsThreeState makes the box cycle unchecked → checked → indeterminate,
+            // which is exactly the "false / true / not set" triple git understands.
+            CheckBox box = new() { IsThreeState = true };
+            Localize(box, transKey, label, $" [{key}]");
+            _gitConfigChecks[i] = box;
+            gitConfigFields[i] = box;
+        }
+
+        _gitConfigPanel = CategoryPanel(
+            GitConfigKey, GitConfigText,
+            null, "Written directly into the git config at the level chosen above, so git "
+                + "itself obeys them — inside this app and outside it. Each box has three "
+                + "states: checked (the key is set to true), unchecked (set to false) and "
+                + "the third, filled state (the key is not set at all, so a wider config "
+                + "level or git's own default decides).",
+            text,
+            dim,
+            gitConfigFields);
 
         _pullAction = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
         foreach ((string _, string key, string label) in PullChoices)
@@ -224,13 +301,21 @@ public sealed class SettingsWindow : Window
 
         Grid rightPane = new();
         rightPane.Children.Add(_identityPanel);
+        rightPane.Children.Add(_gitConfigPanel);
         rightPane.Children.Add(_behaviourPanel);
         rightPane.Children.Add(_appearancePanel);
 
         // A translated page can be taller than the dialog; scroll rather than clip.
+        // The level header scrolls with the pages: eight wrapped checkbox captions are
+        // already taller than the dialog, and a pinned header would eat the room they
+        // need.
+        StackPanel rightStack = new();
+        rightStack.Children.Add(_levelHeader);
+        rightStack.Children.Add(rightPane);
+
         ScrollViewer rightScroll = new()
         {
-            Content = rightPane,
+            Content = rightStack,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
@@ -246,13 +331,18 @@ public sealed class SettingsWindow : Window
             MaxWidth = 280,
         };
         categories.Items.Add(CategoryItem(IdentityKey, IdentityText));
+        categories.Items.Add(CategoryItem(GitConfigKey, GitConfigText));
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
             _identityPanel.IsVisible = categories.SelectedIndex == 0;
-            _behaviourPanel.IsVisible = categories.SelectedIndex == 1;
-            _appearancePanel.IsVisible = categories.SelectedIndex == 2;
+            _gitConfigPanel.IsVisible = categories.SelectedIndex == 1;
+            _behaviourPanel.IsVisible = categories.SelectedIndex == 2;
+            _appearancePanel.IsVisible = categories.SelectedIndex == 3;
+
+            // The level selector only means something on the two git-config pages.
+            _levelHeader.IsVisible = categories.SelectedIndex is 0 or 1;
         };
         categories.SelectedIndex = 0;
 
@@ -364,8 +454,11 @@ public sealed class SettingsWindow : Window
     private void Localize(TextBlock block, string? key, string english)
         => Register(() => block.Text = TranslationService.T(key, english));
 
-    private void Localize(ContentControl control, string? key, string english)
-        => Register(() => control.Content = TranslationService.T(key, english));
+    // The suffix is appended untranslated — it carries the raw git config key, which
+    // upstream also shows verbatim next to each caption
+    // (GitConfigAdvancedSettingsPage_Load).
+    private void Localize(ContentControl control, string? key, string english, string suffix = "")
+        => Register(() => control.Content = TranslationService.T(key, english) + suffix);
 
     private void LocalizeWatermark(TextBox box, string? key, string english)
         => Register(() => box.Watermark = TranslationService.T(key, english));
@@ -397,7 +490,7 @@ public sealed class SettingsWindow : Window
             ((ComboBoxItem)_settingsLevel.Items[0]!).IsEnabled = false;
         }
 
-        LoadIdentity(SelectedLevel);
+        LoadGitConfig(SelectedLevel);
 
         // Default pull action: read from the value the host is actually using, or
         // from UiState if the host did not pass one.
@@ -419,29 +512,42 @@ public sealed class SettingsWindow : Window
         GitSettingLevel level = SelectedLevel;
         if (level != _loadedLevel)
         {
-            LoadIdentity(level);
+            LoadGitConfig(level);
         }
     }
 
-    // Reads user.name / user.email at the given level. Running git config is blocking,
-    // so it happens off the UI thread; the fields are blanked meanwhile so the
-    // previous level's values are never mistaken for this one's.
-    private void LoadIdentity(GitSettingLevel level)
+    // Reads everything this dialog keeps in git config — user.name / user.email and the
+    // eight advanced keys — at the given level. Running git config is blocking, so it
+    // happens off the UI thread, through a SINGLE store: GitConfigSettings caches one
+    // "git config --list" pass, so ten reads cost one git invocation. The controls are
+    // blanked meanwhile so the previous level's values are never mistaken for this
+    // one's, and applying is suppressed until the read lands.
+    private void LoadGitConfig(GitSettingLevel level)
     {
         _loadedLevel = level;
         _loadingIdentity = true;
+        _loadingGitConfig = true;
         _userName.Text = string.Empty;
         _userEmail.Text = string.Empty;
+        foreach (CheckBox box in _gitConfigChecks)
+        {
+            box.IsChecked = null;
+        }
 
         _ = Task.Run(() =>
         {
             string name = string.Empty;
             string email = string.Empty;
+            bool?[] flags = new bool?[GitConfigChoices.Length];
             try
             {
                 IConfigValueStore store = ConfigStore(level);
                 name = store.GetValue("user.name") ?? string.Empty;
                 email = store.GetValue("user.email") ?? string.Empty;
+                for (int i = 0; i < GitConfigChoices.Length; i++)
+                {
+                    flags[i] = ToTriState(store.GetValue(GitConfigChoices[i].Key));
+                }
             }
             catch (Exception)
             {
@@ -459,10 +565,28 @@ public sealed class SettingsWindow : Window
 
                 _userName.Text = name;
                 _userEmail.Text = email;
+                for (int i = 0; i < _gitConfigChecks.Length; i++)
+                {
+                    _gitConfigChecks[i].IsChecked = flags[i];
+                }
+
                 _loadingIdentity = false;
+                _loadingGitConfig = false;
             });
         });
     }
+
+    // git's boolean spellings (git-config(1) "bool"). A missing key — and any value that
+    // is not a boolean, e.g. pull.rebase=interactive — reads as indeterminate, and
+    // leaving such a box alone leaves the value alone. Upstream's SettingsToPage maps
+    // the same way.
+    private static bool? ToTriState(string? value)
+        => value switch
+        {
+            "true" or "yes" or "on" or "1" => true,
+            "false" or "no" or "off" or "0" or "" => false,
+            _ => null,
+        };
 
     // A read/write view of one git config level. GitConfigSettings runs
     // "git config --local|--global", i.e. exactly what upstream's settings pages use
@@ -488,12 +612,17 @@ public sealed class SettingsWindow : Window
         // Skipped while a level change is still loading: the fields are blank then and
         // applying would delete the entries the user never saw.
         GitSettingLevel level = SelectedLevel;
-        if (!_loadingIdentity && (level == GitSettingLevel.Global || _repoPath is not null))
+        if (!_loadingIdentity && !_loadingGitConfig && (level == GitSettingLevel.Global || _repoPath is not null))
         {
             string? name = _userName.Text?.Trim();
             string? email = _userEmail.Text?.Trim();
 
+            // Snapshot the tri-states on the UI thread; the write runs off it.
+            bool?[] flags = Array.ConvertAll(_gitConfigChecks, box => box.IsChecked);
+
             // git config is blocking; the dialog must not freeze on a slow repository.
+            // Identity and the advanced keys share one store and one Save(), so the two
+            // pages can never race each other over the same config file.
             _ = Task.Run(() =>
             {
                 try
@@ -505,6 +634,18 @@ public sealed class SettingsWindow : Window
                     // picked instead of always --local.
                     store.SetValue("user.name", string.IsNullOrEmpty(name) ? null : name);
                     store.SetValue("user.email", string.IsNullOrEmpty(email) ? null : email);
+
+                    // The tri-state contract: an indeterminate box passes null, which
+                    // GitConfigSettings.Save turns into "git config --unset" — writing
+                    // "false" instead would be a different thing entirely, pinning the
+                    // key against whatever a wider level says.
+                    for (int i = 0; i < flags.Length; i++)
+                    {
+                        store.SetValue(
+                            GitConfigChoices[i].Key,
+                            flags[i] switch { true => "true", false => "false", _ => null });
+                    }
+
                     store.Save();
                 }
                 catch (Exception)
