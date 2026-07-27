@@ -749,15 +749,11 @@ public sealed class RevisionGridView : UserControl
         UpdateFilterChrome();
         ToolTip.SetTip(_resetFilterButton, ResetFilterTip);
 
-        List<string> selected = _list.SelectedItems is { Count: > 0 } items
-            ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
-            : [];
-
         // Rebuilds the artificial rows, the header and the status line, and
-        // re-templates every visible row against the new catalogue.
-        ApplyFilterCore(_search.Text);
-
-        RestoreSelection(selected);
+        // re-templates every visible row against the new catalogue. The rebind
+        // carries the selection, the scroll offset and the keyboard focus across:
+        // changing language must not move the list.
+        ApplyFilterCore(_search.Text, preserveViewport: true);
     }
 
     // Re-selects the rows whose hashes were selected before a rebuild. Rows that
@@ -806,10 +802,13 @@ public sealed class RevisionGridView : UserControl
         _staged = staged;
 
         // Rebuild the displayed rows so the artificial nodes appear/disappear (and
-        // their counts refresh) without re-running git. Keeps the current filter.
+        // their counts refresh) without re-running git. Keeps the current filter —
+        // and the viewport: these counts are fed by a background poll the user did
+        // not ask for (touching any file in the work tree changes them), so this
+        // must never move the list under him.
         if (_allRows.Count > 0)
         {
-            ApplyFilterCore(_search.Text);
+            ApplyFilterCore(_search.Text, preserveViewport: true);
         }
     }
 
@@ -902,11 +901,62 @@ public sealed class RevisionGridView : UserControl
     /// <summary>
     ///  Loads and displays the recent revisions of the repository at
     ///  <paramref name="repoPath"/>. Heavy git work runs off the UI thread.
+    ///
+    ///  <para>Asking again for the repository that is ALREADY shown is a refresh,
+    ///  not a load: the shell calls this from <c>RefreshAll</c>, which the
+    ///  repository watcher fires on its own whenever a file moves under the work
+    ///  tree. A refresh must therefore be invisible to a user who is reading the
+    ///  history — same depth, same scroll position, same selection — otherwise the
+    ///  list snaps back to the first commit under his hands. Only a DIFFERENT
+    ///  repository starts from scratch.</para>
     /// </summary>
     public void LoadRepository(string repoPath)
     {
+        bool sameRepo = _loaded.Count > 0
+            && string.Equals(_repoPath, repoPath, StringComparison.Ordinal);
+
         _repoPath = repoPath;
+
+        if (sameRepo)
+        {
+            RefreshKeepingView();
+            return;
+        }
+
         Reload();
+    }
+
+    /// <summary>
+    ///  Re-runs the walk for the repository already on screen without disturbing
+    ///  what the user is looking at.
+    ///
+    ///  <para>Three things are preserved that a plain <see cref="Reload"/> destroys:
+    ///  the DEPTH (a single page as long as everything paged in so far, so the rows
+    ///  the user scrolled down to are still there afterwards), the scroll offset and
+    ///  the selection — the latter two by <see cref="ApplyFilterCore"/>'s
+    ///  preserve-viewport path. The ItemsSource is not unbound up-front either: the
+    ///  old rows stay on screen for the (off-thread) duration of the walk instead of
+    ///  blanking the grid.</para>
+    /// </summary>
+    private void RefreshKeepingView()
+    {
+        if (string.IsNullOrEmpty(_repoPath))
+        {
+            return;
+        }
+
+        // Re-walk exactly as far as the user has already paged in, in one page. One
+        // commit MORE is asked for: "the page came back full" is how the service
+        // reports that the walk continues, so a request for exactly `depth` would
+        // always come back full and resurrect the "Load more" footer at the end of
+        // a fully-walked history. The extra row is trimmed off in the merge.
+        int depth = Math.Max(_pageSize, _loaded.Count);
+
+        _loaded = [];
+        _hasMore = false;
+        LoadPage(restart: true, preserveView: true, maxCount: depth + 1);
+
+        RefreshRefContext();
     }
 
     /// <summary>
@@ -964,7 +1014,7 @@ public sealed class RevisionGridView : UserControl
     ///  "Working directory" / "Commit index" nodes stay correct), the selection is
     ///  restored by hash, and the scroll offset is put back where the user left it.</para>
     /// </summary>
-    private void LoadPage(bool restart)
+    private void LoadPage(bool restart, bool preserveView = false, int maxCount = 0)
     {
         string repoPath = _repoPath;
         BranchScope scope = _branchScope;
@@ -972,8 +1022,17 @@ public sealed class RevisionGridView : UserControl
         bool showTags = _showTags;
         bool showStashes = _showStashes;
         bool topoOrder = _topoOrder;
-        int pageSize = _pageSize;
+        int pageSize = maxCount > 0 ? maxCount : _pageSize;
         RevisionFilter filter = _gitFilter;
+
+        // An append continues where the user is; a silent refresh re-walks the same
+        // history underneath him. Both must leave the viewport alone — only a real
+        // (re)start, i.e. a different repository or an explicitly changed scope /
+        // filter / page size, is allowed to go back to the first commit.
+        bool keepViewport = !restart || preserveView;
+
+        // How many rows the merge may keep (0 = no trimming); see the merge below.
+        int trimTo = preserveView && maxCount > 0 ? maxCount - 1 : 0;
 
         IReadOnlyList<RevisionRow> before = restart ? [] : _loaded;
         int skip = before.Count;
@@ -987,17 +1046,12 @@ public sealed class RevisionGridView : UserControl
         _loadingPage = true;
         UpdateMoreBar();
 
-        if (restart)
+        if (restart && !preserveView)
         {
+            // A silent refresh keeps the real status line: flashing "Loading…" over
+            // it would be the visible symptom the refresh is meant not to have.
             _status.Text = T("RevisionGridControl/_strLoading.Text", "Loading…");
         }
-
-        // What the user is looking at right now, so the append can put it back.
-        List<string> selected = _list.SelectedItems is { Count: > 0 } items
-            ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
-            : [];
-        Vector offset = _scroll?.Offset ?? default;
-        bool hadFocus = _list.IsKeyboardFocusWithin;
 
         _ = Task.Run(() =>
         {
@@ -1018,6 +1072,18 @@ public sealed class RevisionGridView : UserControl
                 List<RevisionRow> merged = new(before.Count + page.Rows.Count);
                 merged.AddRange(before);
                 merged.AddRange(page.Rows);
+
+                // The refresh asked for one commit more than it wants to display
+                // (see RefreshKeepingView): getting it back is the proof the walk
+                // continues, and it is dropped so the loaded depth — and therefore
+                // the scroll extent — is exactly what it was before the refresh.
+                bool hasMore = page.HasMore;
+                if (trimTo > 0 && merged.Count > trimTo)
+                {
+                    merged.RemoveRange(trimTo, merged.Count - trimTo);
+                    hasMore = true;
+                }
+
                 IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(merged);
 
                 Dispatcher.UIThread.Post(() =>
@@ -1030,7 +1096,7 @@ public sealed class RevisionGridView : UserControl
 
                     _loadingPage = false;
                     _loaded = merged;
-                    _hasMore = page.HasMore;
+                    _hasMore = hasMore;
 
                     int laneCount = graphed.Count > 0 ? graphed[0].LaneCount : 1;
                     _graphWidth = Math.Clamp(laneCount, 1, MaxGraphLanes) * LaneWidth;
@@ -1040,39 +1106,12 @@ public sealed class RevisionGridView : UserControl
                     _repoLabel = CollapseHome(repoPath);
                     // Recompute HEAD reachability for the relatives/highlight styles.
                     ComputeReachability();
-                    // Re-apply any current filter text so a reload keeps the view consistent.
-                    ApplyFilterCore(_search.Text);
+                    // Re-apply any current filter text so a reload keeps the view
+                    // consistent. This is also what rebinds the rows, so it is the
+                    // single place where scroll offset, selection and keyboard focus
+                    // are carried across the rebind (see ApplyFilterCore).
+                    ApplyFilterCore(_search.Text, keepViewport);
                     UpdateMoreBar();
-
-                    if (!restart)
-                    {
-                        // Re-selecting would drag the viewport to the selected row
-                        // (AutoScrollToSelectedItem); the user's own scroll position is
-                        // what must survive an append, so the auto-scroll is suppressed
-                        // for the duration of the restore.
-                        bool autoScroll = _list.AutoScrollToSelectedItem;
-                        _list.AutoScrollToSelectedItem = false;
-                        RestoreSelection(selected);
-                        _list.AutoScrollToSelectedItem = autoScroll;
-
-                        // Rebinding ItemsSource resets the viewport to the top and drops
-                        // keyboard focus; put both back after layout so the appended rows
-                        // simply continue below the ones the user was reading.
-                        Dispatcher.UIThread.Post(
-                            () =>
-                            {
-                                if (_scroll is not null && offset.Y > 0)
-                                {
-                                    _scroll.Offset = offset;
-                                }
-
-                                if (hadFocus)
-                                {
-                                    _list.Focus();
-                                }
-                            },
-                            DispatcherPriority.Loaded);
-                    }
                 });
             }
             catch (Exception ex)
@@ -1259,7 +1298,71 @@ public sealed class RevisionGridView : UserControl
         _resetFilterButton.IsVisible = GitFilterActive;
     }
 
-    private void ApplyFilterCore(string? text)
+    /// <summary>
+    ///  Rebinds <see cref="_rows"/> onto the list, optionally without the user
+    ///  noticing.
+    ///
+    ///  <para>Avalonia's <c>ListBox</c> has no "re-template the rows in place" hook,
+    ///  so every change to the row catalogue (filter, graph width, date mode,
+    ///  language, artificial rows) goes through a null-then-reassign of
+    ///  <c>ItemsSource</c>. That rebind resets the viewport to the top, empties the
+    ///  selection and drops keyboard focus — acceptable when the USER asked for a
+    ///  different set of rows, never acceptable when something refreshed by itself.
+    ///  With <paramref name="preserveViewport"/> the offset is put back after
+    ///  layout; the selection and focus are put back either way, since a row that
+    ///  still exists was never meant to be deselected.</para>
+    ///
+    ///  <para>Re-selecting is done with <c>AutoScrollToSelectedItem</c> suppressed:
+    ///  otherwise the list would jump to the selected row and undo the offset that
+    ///  is being restored.</para>
+    /// </summary>
+    private void RebindRows(bool preserveViewport)
+    {
+        List<string> selected = _list.SelectedItems is { Count: > 0 } items
+            ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
+            : [];
+        Vector offset = _scroll?.Offset ?? default;
+        bool hadFocus = _list.IsKeyboardFocusWithin;
+
+        _list.ItemsSource = null;
+        _list.ItemsSource = _rows;
+
+        bool autoScroll = _list.AutoScrollToSelectedItem;
+        _list.AutoScrollToSelectedItem = false;
+        RestoreSelection(selected);
+        _list.AutoScrollToSelectedItem = autoScroll;
+
+        if (!preserveViewport && !hadFocus)
+        {
+            return;
+        }
+
+        // The offset can only be restored once the rebound rows have been laid out,
+        // hence the deferral to DispatcherPriority.Loaded.
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (preserveViewport && _scroll is not null && offset.Y > 0)
+                {
+                    _scroll.Offset = offset;
+                }
+
+                if (hadFocus)
+                {
+                    _list.Focus();
+                }
+            },
+            DispatcherPriority.Loaded);
+    }
+
+    /// <param name="preserveViewport">
+    ///  <see langword="true"/> when the rebuild was not asked for by the user (a
+    ///  watcher-driven refresh, new working-directory counts, a language change, an
+    ///  appended page, the status flash expiring): the scroll position must survive
+    ///  it. <see langword="false"/> only for an explicit filter change, where
+    ///  showing the first match of the new result is the expected behaviour.
+    /// </param>
+    private void ApplyFilterCore(string? text, bool preserveViewport = false)
     {
         string query = (text ?? string.Empty).Trim();
         bool wasFiltering = _quickFilterActive;
@@ -1294,9 +1397,9 @@ public sealed class RevisionGridView : UserControl
         _headerHost.Content = BuildHeader();
 
         // Reassign the source so every visible row is rebuilt against the current
-        // filter/graph state (and stale selection is dropped).
-        _list.ItemsSource = null;
-        _list.ItemsSource = _rows;
+        // filter/graph state, carrying the viewport across when the rebuild was not
+        // the user's doing.
+        RebindRows(preserveViewport);
 
         if (_quickFilterActive)
         {
@@ -1366,9 +1469,10 @@ public sealed class RevisionGridView : UserControl
     private void RefreshView()
     {
         _headerHost.Content = BuildHeader();
-        IReadOnlyList<RevisionRow> current = _rows;
-        _list.ItemsSource = null;
-        _list.ItemsSource = current;
+
+        // The row SET is unchanged — only how each row is drawn — so the user must
+        // keep looking at the same commits, still selected.
+        RebindRows(preserveViewport: true);
     }
 
     // Recomputes, from the loaded rows, HEAD's reachability sets used by the two
@@ -2164,7 +2268,11 @@ public sealed class RevisionGridView : UserControl
     private void OnStatusFlashElapsed(object? sender, EventArgs e)
     {
         _statusFlashTimer?.Stop();
-        ApplyFilterCore(_search.Text);
+
+        // Five seconds after a flash message the status line goes back to the
+        // repository/count text. Nothing about the rows changed and the user asked
+        // for nothing: the viewport stays exactly where it is.
+        ApplyFilterCore(_search.Text, preserveViewport: true);
     }
 
     private DispatcherTimer? _statusFlashTimer;
