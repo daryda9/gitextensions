@@ -48,6 +48,19 @@ public sealed class CommitDialog : Window
     private readonly MenuItem _markResolvedItem = new() { Header = "Mark resolved" };
     private readonly HashSet<string> _conflictPaths = new(StringComparer.Ordinal);
 
+    // Per-file actions on the unstaged menu. Like the conflict entries above, these
+    // are created once and only their IsEnabled is touched while the menu opens.
+    // Naming/order follow the original shared file-list menu (FileStatusList's
+    // ItemContextMenu, which FormCommit binds): the reset entry sits right below
+    // Stage, "Copy path" and the .gitignore block come last, each after a separator.
+    // The original's "Reset file(s) to" is a submenu (index / parent); the port keeps
+    // the single meaningful choice here — discard back to the index — and reuses the
+    // wording already used by WorkingDirectoryView.
+    private readonly MenuItem _discardItem = new() { Header = "Discard changes" };
+    private readonly MenuItem _ignorePathItem = new() { Header = "Add to .gitignore" };
+    private readonly MenuItem _ignoreExtItem = new() { Header = "Ignore by extension" };
+    private readonly MenuItem _ignoreFolderItem = new() { Header = "Ignore in folder" };
+
     private bool _busy;
 
     // Options-menu state (mirrors the original commit form's Options dropdown).
@@ -103,25 +116,70 @@ public sealed class CommitDialog : Window
         MenuItem stageItem = new() { Header = "Stage" };
         stageItem.Click += (_, _) => StageSelected();
 
+        MenuItem unstagedCopyItem = new() { Header = "Copy path" };
+        unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
+
+        _discardItem.Click += (_, _) => DiscardSelected();
+        _ignorePathItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Path);
+        _ignoreExtItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Extension);
+        _ignoreFolderItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Folder);
+
         ContextMenu unstagedMenu = new()
         {
             ItemsSource = new Control[]
             {
                 stageItem,
+                _discardItem,
                 new Separator(),
                 _mergetoolItem, _takeOursItem, _takeTheirsItem, _markResolvedItem,
+                new Separator(),
+                unstagedCopyItem,
+                new Separator(),
+                _ignorePathItem, _ignoreExtItem, _ignoreFolderItem,
             },
         };
         unstagedMenu.Opening += (_, _) =>
         {
             bool conflict = SelectedConflicts().Count > 0;
-            stageItem.IsEnabled = !conflict && _unstagedList.SelectedItem is WorkingDirFileRow;
+            WorkingDirFileRow? row = _unstagedList.SelectedItem as WorkingDirFileRow;
+            stageItem.IsEnabled = !conflict && row is not null;
+            unstagedCopyItem.IsEnabled = row is not null;
+
+            // "Reset file changes" only makes sense for a tracked, non-conflicted file:
+            // untracked ones are handled by .gitignore / clean, never discarded here.
+            _discardItem.IsEnabled = !conflict && row is not null && row.Status != "new";
+
+            // The .gitignore entries mirror WorkingDirectoryView: a single UNTRACKED
+            // file only, plus an extension / a parent folder where applicable.
+            WorkingDirFileRow? untracked = SingleUntracked();
+            string path = (untracked?.Path ?? string.Empty).Replace('\\', '/');
+            _ignorePathItem.IsEnabled = untracked is not null;
+            _ignoreExtItem.IsEnabled = untracked is not null
+                && System.IO.Path.GetExtension(path).TrimStart('.').Length > 0;
+            _ignoreFolderItem.IsEnabled = untracked is not null && path.LastIndexOf('/') > 0;
+
             _mergetoolItem.IsEnabled = conflict;
             _takeOursItem.IsEnabled = conflict;
             _takeTheirsItem.IsEnabled = conflict;
             _markResolvedItem.IsEnabled = conflict;
         };
         _unstagedList.ContextMenu = unstagedMenu;
+
+        MenuItem unstageItem = new() { Header = "Unstage" };
+        unstageItem.Click += (_, _) => UnstageSelected();
+        MenuItem stagedCopyItem = new() { Header = "Copy path" };
+        stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
+        ContextMenu stagedMenu = new()
+        {
+            ItemsSource = new Control[] { unstageItem, new Separator(), stagedCopyItem },
+        };
+        stagedMenu.Opening += (_, _) =>
+        {
+            bool has = _stagedList.SelectedItem is WorkingDirFileRow;
+            unstageItem.IsEnabled = has;
+            stagedCopyItem.IsEnabled = has;
+        };
+        _stagedList.ContextMenu = stagedMenu;
 
         _conflictBanner = new Border
         {
@@ -365,6 +423,127 @@ public sealed class CommitDialog : Window
         {
             RunGit(() => _service.Unstage(_repoPath, rows));
         }
+    }
+
+    // ---------- per-file actions (discard / copy path / .gitignore) ----------
+
+    // Discards the work-tree changes of the selected TRACKED file
+    // (git checkout -- <path>). Destructive and not undoable, so it is confirmed
+    // first, exactly like Take ours / Take theirs.
+    private void DiscardSelected()
+    {
+        if (_unstagedList.SelectedItem is not WorkingDirFileRow row
+            || row.Status == "new"
+            || _conflictPaths.Contains(row.Path))
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string path = row.Path;
+        ConfirmThen(
+            $"Discard changes to '{path}'? The file is restored from the index and this cannot be undone.",
+            () =>
+            {
+                SetStatus($"Discarding changes to {path} …");
+                RunGitResult(
+                    () => _service.ResetFile(repo, path),
+                    result =>
+                    {
+                        SetStatus(result.Success
+                            ? $"Discarded changes to {path}."
+                            : "Discard failed: " + FirstLine(result.Output));
+                        Reload();
+                    });
+            });
+    }
+
+    // Copies the selected file's repo-relative path to the clipboard. Nothing else
+    // depends on it, so a missing clipboard (headless) is silently ignored.
+    private void CopySelectedPath(ListBox list)
+    {
+        if (list.SelectedItem is not WorkingDirFileRow row)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(row.Path);
+            SetStatus("Copied path: " + row.Path);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not copy the path: " + ex.Message);
+        }
+    }
+
+    private enum GitignoreMode
+    {
+        Path,
+        Extension,
+        Folder,
+    }
+
+    // The single selected UNTRACKED row (git "??" → status "new"), or null when the
+    // selection is anything else. Same semantics as WorkingDirectoryView: the ignore
+    // actions never apply to files git already tracks.
+    private WorkingDirFileRow? SingleUntracked()
+        => _unstagedList.SelectedItem is WorkingDirFileRow row && row.Status == "new"
+            ? row
+            : null;
+
+    // Builds the .gitignore pattern for the selected untracked file and appends it,
+    // then reloads so the now-ignored file drops out of the unstaged list.
+    private void AddSelectedToGitignore(GitignoreMode mode)
+    {
+        WorkingDirFileRow? row = SingleUntracked();
+        if (row is null)
+        {
+            return;
+        }
+
+        string path = row.Path.Replace('\\', '/');
+        string pattern;
+        switch (mode)
+        {
+            case GitignoreMode.Extension:
+                string ext = System.IO.Path.GetExtension(path).TrimStart('.');
+                if (ext.Length == 0)
+                {
+                    return;
+                }
+
+                pattern = "*." + ext;
+                break;
+
+            case GitignoreMode.Folder:
+                int slash = path.LastIndexOf('/');
+                if (slash <= 0)
+                {
+                    return;
+                }
+
+                pattern = path[..slash] + "/";
+                break;
+
+            default:
+                // Anchor the exact relative path to the repo root with a leading '/'.
+                pattern = "/" + path;
+                break;
+        }
+
+        string repo = _repoPath;
+        SetStatus($"Adding '{pattern}' to .gitignore …");
+        RunGitResult(
+            () => _service.AddToGitignore(repo, pattern),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? FirstLine(result.Output)
+                    : "Could not update .gitignore: " + FirstLine(result.Output));
+                Reload();
+            });
     }
 
     // ---------- merge conflicts ----------
