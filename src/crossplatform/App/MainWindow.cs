@@ -925,6 +925,11 @@ public sealed class MainWindow : Window
         // open the commit dialog on single click, so they are not re-raised here.
         _revisions.RevisionActivated += _ => Dispatcher.UIThread.Post(() => _bottom.SelectedItem = _commitInfoTab);
         _fileHistory.RevisionSelected += OnRevisionSelected;
+        // Revert / cherry-pick from the file-history menu take the same path as the
+        // grid's own commands, so they get the watcher suspension and the refresh.
+        _fileHistory.RevertCommitRequested += RevertThisCommit;
+        _fileHistory.CherryPickCommitRequested +=
+            hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success);
         // Parent/child hash links in the commit detail navigate the grid: select the
         // target row (best-effort) and refresh detail/diff/filetree/gpg for it.
         _detail.CommitNavigated += h =>
