@@ -138,6 +138,33 @@ public sealed class UiState
     public string CommitInfoPosition { get; set; } = "BelowGraph";
 
     /// <summary>
+    ///  The revision grid's "View" options, keyed by the <c>Opt…</c> ids
+    ///  <c>Views.RevisionGridView</c> publishes (<c>ShowRemoteBranches</c>,
+    ///  <c>GraphColumn</c>, <c>RelativeDate</c>, …): which columns are shown, which
+    ///  refs the walk includes, the date mode and the walk order.
+    ///
+    ///  <para>Upstream keeps the same set in <c>AppSettings</c>
+    ///  (<c>AppSettings.cs:568,1165-1177,1247-1281,1286-1326,1330-1354</c>); in this
+    ///  port they used to be session-local, so the grid had to be reconfigured at
+    ///  every start.</para>
+    ///
+    ///  <para>A dictionary keyed by the very ids the menus already use, rather than
+    ///  one property per toggle: the ids are the single source of truth for that
+    ///  surface (grid flyouts and main menu mirror each other through them), the JSON
+    ///  stays readable, and adding a toggle later needs no change here. An id this
+    ///  build does not know is ignored on load, and a missing one keeps its default,
+    ///  so the file survives both directions of a version skew.</para>
+    /// </summary>
+    public Dictionary<string, bool> GridViewOptions { get; set; } = [];
+
+    /// <summary>
+    ///  How many commits one page of the revision walk loads — the port's equivalent
+    ///  of upstream's <c>AppSettings.MaxRevisionGraphCommits</c>
+    ///  (<c>AppSettings.cs:1402</c>), chosen from the grid's View menu.
+    /// </summary>
+    public int GridPageSize { get; set; } = 500;
+
+    /// <summary>
     ///  Full path of the repository that was open when the app was last closed, or
     ///  null if none was. Upstream reopens the last repository at start-up
     ///  (<c>AppSettings.RecentWorkingDir</c>); the path is only a hint and is
@@ -223,6 +250,14 @@ public sealed class UiStateService
         s.DefaultPullAction = SanePullAction(s.DefaultPullAction);
         s.CommitInfoPosition = SaneCommitInfoPosition(s.CommitInfoPosition);
         s.LastRepoPath = string.IsNullOrWhiteSpace(s.LastRepoPath) ? null : s.LastRepoPath.Trim();
+
+        // The grid clamps the page size itself, but a corrupt 0 here would otherwise
+        // reach the view and be read as "load nothing".
+        s.GridPageSize = s.GridPageSize is >= 50 and <= 100000 ? s.GridPageSize : 500;
+
+        // A null from a hand-edited or truncated file must not become a NullReference
+        // at the first toggle: an empty map simply means "every option at its default".
+        s.GridViewOptions ??= [];
         return s;
     }
 

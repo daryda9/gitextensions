@@ -1383,6 +1383,12 @@ public sealed class RevisionGridView : UserControl
         _pageSize = value;
         UpdateMoreBar();
         Reload();
+
+        // The page size is persisted alongside the checkable options, so it rides the
+        // same change notification: a host that stores view state on ViewOptionsChanged
+        // then needs no second subscription. (No check mark corresponds to it, so the
+        // in-place sync OptionsChanged does is simply a no-op for it.)
+        OptionsChanged();
     }
 
     // Path display (home collapsed to "~") is shared with the toolbar's repository
@@ -2401,6 +2407,138 @@ public sealed class RevisionGridView : UserControl
         [OptOrderAuthorDate] = _authorDateSort,
         [OptOrderTopo] = _topoOrder,
     };
+
+    /// <summary>
+    ///  The ids of the "View" options worth carrying across sessions, in the order
+    ///  they are written to <c>ui-state.json</c>.
+    ///
+    ///  <para>A CANONICAL subset of <see cref="ViewOptions"/>: the complements
+    ///  (<see cref="OptCommitDate"/>, <see cref="OptAbsoluteDate"/>,
+    ///  <see cref="OptOrderDefault"/>) are left out, because storing both halves of a
+    ///  pair invites a file that says two contradictory things and gives
+    ///  <see cref="RestoreViewOptions"/> no way to choose. Each stored id is read as
+    ///  "this one is on"; everything else follows from it.</para>
+    /// </summary>
+    public static readonly IReadOnlyList<string> PersistedOptionIds =
+    [
+        OptShowAllBranches,
+        OptShowCurrentBranchOnly,
+        OptShowFilteredBranches,
+        OptShowRemoteBranches,
+        OptShowTags,
+        OptShowStashes,
+        OptShowArtificialCommits,
+        OptShowGitNotes,
+        OptDrawNonRelativesGray,
+        OptHighlightCurrentBranch,
+        OptGraphColumn,
+        OptAvatarColumn,
+        OptAuthorColumn,
+        OptDateColumn,
+        OptIdColumn,
+        OptAuthorDate,
+        OptRelativeDate,
+        OptOrderAuthorDate,
+        OptOrderTopo,
+    ];
+
+    /// <summary>
+    ///  The persistable slice of <see cref="ViewOptions"/> (see
+    ///  <see cref="PersistedOptionIds"/>), ready to be stored by the host.
+    ///
+    ///  <para>Deliberately a plain snapshot rather than a file write of its own: the
+    ///  host owns ONE <c>UiState</c> instance and re-serializes all of it when the
+    ///  window closes, so a view that wrote the file behind its back would simply see
+    ///  that write overwritten. Same contract as
+    ///  <c>RepoObjectsTree.CategoryOrder</c>.</para>
+    /// </summary>
+    public IReadOnlyDictionary<string, bool> PersistedViewOptions
+    {
+        get
+        {
+            IReadOnlyDictionary<string, bool> current = ViewOptions;
+            Dictionary<string, bool> snapshot = new(StringComparer.Ordinal);
+            foreach (string id in PersistedOptionIds)
+            {
+                if (current.TryGetValue(id, out bool value))
+                {
+                    snapshot[id] = value;
+                }
+            }
+
+            return snapshot;
+        }
+    }
+
+    /// <summary>How many commits one page of the walk loads (see <see cref="SetPageSize"/>).</summary>
+    public int PageSize => _pageSize;
+
+    /// <summary>
+    ///  Puts a previously stored set of "View" options (and page size) back, as the
+    ///  host restores them at start-up.
+    ///
+    ///  <para>The backing fields are assigned DIRECTLY instead of replaying the
+    ///  public toggles: each of those reloads or re-templates on its own, so
+    ///  replaying nineteen of them would cost several <c>git log</c> runs before the
+    ///  first page is even on screen. One rebuild of the affected surfaces happens at
+    ///  the end instead.</para>
+    ///
+    ///  <para>Intended to be called BEFORE the repository is loaded, which is the
+    ///  cheap case (nothing to reload). It is still safe afterwards: a repository
+    ///  already on screen is re-walked once, because the ref scope and the walk order
+    ///  are decided by git.</para>
+    /// </summary>
+    public void RestoreViewOptions(IReadOnlyDictionary<string, bool>? options, int pageSize)
+    {
+        _pageSize = Math.Max(50, pageSize);
+
+        if (options is { Count: > 0 })
+        {
+            bool Get(string id, bool fallback) => options.TryGetValue(id, out bool v) ? v : fallback;
+
+            // The scope is one of three: an explicitly stored "current branch" or
+            // "filtered" wins, anything else (including a file that stored none of
+            // them) means all branches.
+            _branchScope = Get(OptShowCurrentBranchOnly, false) ? BranchScope.CurrentBranch
+                : Get(OptShowFilteredBranches, false) ? BranchScope.Filtered
+                : BranchScope.AllBranches;
+
+            _showRemotes = Get(OptShowRemoteBranches, _showRemotes);
+            _showTags = Get(OptShowTags, _showTags);
+            _showStashes = Get(OptShowStashes, _showStashes);
+            _showArtificial = Get(OptShowArtificialCommits, _showArtificial);
+            _showGitNotes = Get(OptShowGitNotes, _showGitNotes);
+            _drawNonRelativesGray = Get(OptDrawNonRelativesGray, _drawNonRelativesGray);
+            _highlightCurrentBranch = Get(OptHighlightCurrentBranch, _highlightCurrentBranch);
+
+            _showGraph = Get(OptGraphColumn, _showGraph);
+            _showAvatar = Get(OptAvatarColumn, _showAvatar);
+            _showAuthor = Get(OptAuthorColumn, _showAuthor);
+            _showDate = Get(OptDateColumn, _showDate);
+            _showHash = Get(OptIdColumn, _showHash);
+
+            _dateSource = Get(OptAuthorDate, false) ? DateSource.Author : DateSource.Commit;
+            _relativeDates = Get(OptRelativeDate, _relativeDates);
+
+            // Topological order is the stronger constraint and wins if a file somehow
+            // stored both, mirroring how the two are emitted in RevisionService.
+            _topoOrder = Get(OptOrderTopo, false);
+            _authorDateSort = !_topoOrder && Get(OptOrderAuthorDate, false);
+        }
+
+        // The header is built from the column flags, and the footer's page-size
+        // caption from _pageSize, so both are rebuilt; OptionsChanged() then brings
+        // the flyout check marks (built in the constructor, i.e. before this call)
+        // in line and tells the host's mirrored menu.
+        UpdateMoreBar();
+        _headerHost.Content = BuildHeader();
+        OptionsChanged();
+
+        if (!string.IsNullOrEmpty(_repoPath))
+        {
+            Reload();
+        }
+    }
 
     // Every toggle control this view built for a "View" option, by id, together with
     // the reader for its value. The builders overwrite their entry each time a flyout
