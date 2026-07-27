@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M47,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M48,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,10 +11,10 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `2e9d981eb` (… + follow-up 1 / M45 + follow-up residui / M46 + **feature e integrazione GUI / M47**) |
+| HEAD al momento dell'handoff | `66a5ae1c8` (… + M45 + M46 + **feature e integrazione GUI / M47–M48**) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47)** |
+| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
 | Push su remote | eseguito dall'utente (origin allineato). Portachiavi **vuoto**: il prossimo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M48**), tiene il contatore iterazione.
+  libera: **M49**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -241,16 +241,12 @@ DIREZIONE DATA DALL'UTENTE (27/07/2026): le LINGUE non interessano oltre inglese
 -> blocco traduzioni CHIUSO, non aprirne altre unita'. Contano FEATURE e INTEGRAZIONE GUI.
 
 LAVORARE su questo, in ordine di impatto/costo (dall'audit di parita' funzionale):
-1. HotkeyService: il port ha DUE scorciatoie (F5, Ctrl+O); l'originale ne definisce ~110 in
-   src/app/GitUI/Hotkey/HotkeySettingsManager.cs:196-330, instradate da FormBrowse.cs:2053.
-   Quotidiane: Ctrl+Space commit, Ctrl+Up/Down push/pull, Ctrl+. checkout, Ctrl+B branch,
-   Ctrl+E focus filtro, Ctrl+0..7 focus pannelli, Ctrl+Tab tab, Ctrl+Alt+Up/Down stash.
-   Include il rendere globale il Ctrl+F del diff (oggi e' locale alla view).
-2. Menu contestuale della grid: oggi 20 voci piatte sempre abilitate (registrate da
-   MainWindow); l'originale ne ha ~60 in sotto-menu con predicati di visibilita' (merge,
-   rebase interattivo, reset another branch to here, delete/rename branch, push branch,
-   apply/pop/drop stash, edit commit...). Vedi RevisionGridControl.Designer.cs:633-692.
-3. Difetti noti aperti: la selezione della grid viene persa da un refresh in background
+1. FATTI in M48: HotkeyService (~30 gesture, tabella da HotkeySettingsManager, override da
+   hotkeys.json) e menu contestuale della grid con sotto-menu e predicati. Restano da cablare:
+   push del branch dal menu grid, edit commit e rebase interattivo (serve un harness
+   GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested, e le gesture Ctrl+M merge /
+   Ctrl+Shift+E rebase / Ctrl+Alt+W worktrees (i service esistono, manca l'entry point).
+2. Difetti noti aperti: la selezione della grid viene persa da un refresh in background
    (SetWorkingState -> ApplyFilterCore ribinda ItemsSource); CheckoutBranchDialog e' misto
    italiano/inglese; Avalonia non espone WM_DELETE_WINDOW (finestra non chiudibile dal WM);
    il "salva come" del diff non e' verificabile headless (serve portal XDG).

@@ -974,7 +974,7 @@ Menu + toolbar:
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
 ### Blocco FEATURE E INTEGRAZIONE GUI (round 7)
-> **Iterazioni 1–2.** Direzione data dall'utente: **le lingue non interessano oltre inglese
+> **Iterazioni 1–3.** Direzione data dall'utente: **le lingue non interessano oltre inglese
 > e italiano** (blocco traduzioni chiuso), contano **feature e integrazione nella GUI**.
 > Le unità nascono da un audit di parità *funzionale* (non di voci di menu) fra
 > `src/app/GitUI` e il port: la checklist di PORTING contava le voci, non la profondità.
@@ -1056,13 +1056,57 @@ Menu + toolbar:
   (`GitCommands.LocalChangesAction`) perché `CommitInfoPosition` esiste sia nel core sia nelle
   view del port.
 
+**M48** (2026-07-27, iterazione 3 del round 7) — le due lacune di interazione rimaste:
+
+- **H1** (`66a5ae1c8`) — **da 2 scorciatoie a ~30**. Nuovo `Services/HotkeyService.cs`: enum
+  `BrowseCommand` speculare a `FormBrowse.Command`, tabella di default **copiata da
+  `HotkeySettingsManager.cs:216-265`** (non inventata), override da
+  `$XDG_CONFIG_HOME/GitExtensions.Avalonia/hotkeys.json`, `Bind`/`Display`/`Save` pronti per
+  una futura UI di configurazione. Wired: Ctrl+Space commit · Ctrl+↑/↓ push/pull ·
+  Ctrl+Shift+↓ e F8 fetch · Ctrl+. checkout · Ctrl+B branch · Ctrl+T tag · Ctrl+W chiudi ·
+  Ctrl+, impostazioni · Ctrl+E filtro · Ctrl+0…6 e Ctrl+9 focus pannelli · Ctrl+Tab tab ·
+  Ctrl+Alt+↑/↓ stash/pop · Ctrl+Shift+F find file · Ctrl+Alt+C toggle pannello sinistro ·
+  Ctrl+F ricerca nel diff **da qualunque focus** (era locale alla view).
+  *Correzioni rispetto all'elenco che avevo dato io*: i focus pannelli sono Ctrl+0…7 **più
+  Ctrl+9**, Ctrl+7 è FocusBuildServerStatus che qui non esiste; `Ctrl+.`/`Ctrl+,` sono
+  `OemPeriod`/`OemComma`. La tabella upstream ha vinto sul brief, giustamente.
+  **Priorità contro le view**: dispatcher in tunneling con `handledEventsToo` + predicato di
+  riserva che replica l'ordine di `FormBrowse.ProcessHotkey` — grid col focus tiene
+  Ctrl+C/Alt+frecce/F3, il diff tiene Ctrl+F/Ctrl+G/F3, la console PTY tiene tutto tranne F5 e
+  i comandi di focus (altrimenti non se ne esce da tastiera).
+  *Due bug trovati dagli screenshot e corretti*: `FocusInto` prendeva il primo controllo
+  focalizzabile, che era un **Button** di intestazione (Ctrl+1 poi Ctrl+Space premeva
+  "Filter…"); e la `ListBox` di Avalonia **non è focalizzabile** (lo sono i container), quindi
+  Ctrl+1 finiva nella casella di ricerca.
+- **H2** (`9c8e18bc8`) — **menu contestuale della grid** da lista piatta sempre abilitata a
+  menu con sotto-menu e predicati: `Copia nella clipboard ▸` · checkout/merge/rename/delete
+  per ref (3 slot fissi per tipo, caption riscritta) · `Reset del branch corrente ▸` ·
+  `Reset di un altro branch a questo punto…` · create branch/tag · revert/cherry-pick/archive ·
+  `Avanzato ▸` (reword/squash/fixup) · `Confronta ▸` · `Naviga ▸` · `Other actions ▸`.
+  Predicati su: riga artificiale vs commit, selezione singola vs multipla, `IsHead`, branch
+  corrente, e **tipo di ref da una mappa nome→tipo aggiornata fuori thread**, non da euristiche
+  sul testo. Vincolo rispettato: Items creati una volta, in `Opening` solo
+  `IsVisible`/`IsEnabled`/`Header`; i sotto-menu senza figli visibili si nascondono e i
+  separatori collassano come in `UpdateSeparators()`. Otto operazioni nuove funzionanti
+  (merge, rebase su commit, reset di un altro branch, rename/delete branch, delete tag,
+  checkout branch, confronto di due commit), verificate da CLI: tag `v0.9 v1.0`→`v0.9`,
+  `topic df5b5cc`→`73515be`, merge con due parent, rename `feature`→`featuremaster`, delete con
+  doppia conferma se git dice "not fully merged". Un merge è **fallito correttamente** perché
+  git l'ha rifiutato: l'app non ha forzato nulla. `AddCommitCommand` resta compatibile (le voci
+  note vanno nei sotto-menu, le altre in "Other actions").
+  Lasciate fuori con motivo: push del branch (credenziali in `MainWindow`), edit commit e
+  rebase interattivo (serve un harness `GIT_SEQUENCE_EDITOR` che non esiste), apply/pop/drop
+  stash (la grid non cammina i commit di stash, le voci non avrebbero bersaglio).
+
 **Difetti noti raccolti in questo blocco, non ancora chiusi**: un refresh in background
 (`SetWorkingState` → `ApplyFilterCore`) ribinda `ItemsSource` e **perde la selezione**
 dell'utente pochi secondi dopo l'avvio; `CheckoutBranchDialog` è misto italiano/inglese (le
 descrizioni delle opzioni non hanno `trans-unit`); Avalonia non espone `WM_DELETE_WINDOW`,
-quindi la finestra non è chiudibile dal window manager; `Ctrl+F` del diff è locale alla view,
-non un acceleratore globale; il "salva come" del diff non è verificabile headless (serve un
-portal XDG — follow-up 5).
+quindi la finestra non è chiudibile dal window manager; il "salva come" del diff non è
+verificabile headless (serve un portal XDG — follow-up 5); il pannello dettagli non si
+aggiorna dopo un cambio di ref dal menu della grid (mostra per un attimo "Contained in tags"
+stantio); `SelectRefInLeftPanelRequested` è esposto ma non ancora cablato; il commit dialog
+non si chiude con Escape. *(Il `Ctrl+F` locale alla view è stato risolto da M48/H1.)*
 
 ### Blocco FOLLOW-UP RESIDUI (round 6) — traduzioni, header grid, strascichi M45
 > **Iterazione: 1 / 15.** Tre unità in parallelo su file disgiunti (T1 traduzioni,
