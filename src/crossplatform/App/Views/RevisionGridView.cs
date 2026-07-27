@@ -202,6 +202,10 @@ public sealed class RevisionGridView : UserControl
             Background = B("App.Toolbar"),
             Padding = new Thickness(0, 2, 0, 2),
             Text = "No repository loaded.",
+            // A deep repository path would otherwise run past the right edge and
+            // hide the commit count / scope that follow it. Ellipsize instead, and
+            // keep the full line reachable through the tooltip.
+            TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
         _headerHost = new ContentControl { Content = BuildHeader() };
@@ -656,7 +660,9 @@ public sealed class RevisionGridView : UserControl
                     int laneCount = rows.Count > 0 ? rows[0].LaneCount : 1;
                     _graphWidth = Math.Max(1, laneCount) * LaneWidth;
                     _allRows = rows;
-                    _repoLabel = repoPath;
+                    // Display-only: _repoPath keeps the absolute path, the status
+                    // line shows the same "~" form as the toolbar repo dropdown.
+                    _repoLabel = CollapseHome(repoPath);
                     // Recompute HEAD reachability for the relatives/highlight styles.
                     ComputeReachability();
                     // Re-apply any current filter text so a reload keeps the view consistent.
@@ -668,6 +674,42 @@ public sealed class RevisionGridView : UserControl
                 Dispatcher.UIThread.Post(() => _status.Text = "Error: " + ex.Message);
             }
         });
+    }
+
+    // Replaces a leading user-home prefix with "~" for a compact path display,
+    // matching the toolbar's repository caption/dropdown exactly.
+    //
+    // Deliberate duplicate of MainToolbar.CollapseHome: promoting it to a shared
+    // helper would mean editing MainToolbar.cs, which another agent owns in this
+    // round. UserHome (declared in that file) is internal, so at least the home
+    // lookup — the part with the HOME-rewrite subtlety — is shared. Merge the two
+    // copies into one helper when MainToolbar.cs is free again.
+    private static string CollapseHome(string path)
+    {
+        string home = UserHome.Path;
+        if (string.IsNullOrEmpty(home))
+        {
+            return path;
+        }
+
+        string trimmedHome = home.TrimEnd('/');
+        if (trimmedHome.Length == 0)
+        {
+            return path;
+        }
+
+        if (string.Equals(path, trimmedHome, StringComparison.Ordinal))
+        {
+            return "~";
+        }
+
+        // Only collapse on a real directory boundary, so "/home/dariofoo" is left alone.
+        if (path.StartsWith(trimmedHome + "/", StringComparison.Ordinal))
+        {
+            return "~" + path.Substring(trimmedHome.Length);
+        }
+
+        return path;
     }
 
     // Human label for the current branch scope, shown in the status line so the
@@ -752,6 +794,9 @@ public sealed class RevisionGridView : UserControl
                 ? "No repository loaded."
                 : $"{_repoLabel}  —  {_allRows.Count} commits  ({ScopeLabel})";
         }
+
+        // The line is ellipsized when the pane is narrow; keep it fully readable.
+        ToolTip.SetTip(_status, _status.Text);
 
         _ = wasFiltering; // (state kept for clarity; no extra action needed)
     }
