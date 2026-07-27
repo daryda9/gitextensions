@@ -1,13 +1,16 @@
 using System.Diagnostics;
-using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
+using GitCommands;
 using GitExtensions.Avalonia.Plugins;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
@@ -15,18 +18,10 @@ using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
 using GitExtensions.Extensibility.Plugins;
 using GitExtUtils;
+using CommitInfoPosition = GitExtensions.Avalonia.Views.CommitInfoPosition;
+using GitModule = GitCommands.GitModule;
 
 namespace GitExtensions.Avalonia;
-
-/// <summary>A minimal ICommand for wiring key bindings to void actions.</summary>
-internal sealed class RelayCommand(Action execute) : ICommand
-{
-    public event EventHandler? CanExecuteChanged;
-
-    public bool CanExecute(object? parameter) => true;
-
-    public void Execute(object? parameter) => execute();
-}
 
 /// <summary>
 ///  Integrated main window modelled on the original GitExtensions FormBrowse:
@@ -104,6 +99,13 @@ public sealed class MainWindow : Window
     // Watches the working tree and the git dir so a commit, checkout or pull made
     // in a terminal shows up here without the user pressing F5 (unit F2).
     private readonly RepositoryWatcherService _watcher = new();
+
+    // Keyboard map (command → gesture) + the window-level dispatcher. Defaults are
+    // upstream's FormBrowse hotkeys; see InstallHotkeys for what each one runs.
+    private readonly HotkeyService _hotkeys = new();
+
+    // Left-panel width remembered across a Ctrl+Alt+C collapse/expand.
+    private double _treeWidthBeforeCollapse;
 
     // Native X11 drop receiver (see X11DropTarget): null off X11 or on failure.
     private X11DropTarget? _dropTarget;
@@ -226,11 +228,8 @@ public sealed class MainWindow : Window
         _root = root;
         Content = root;
 
-        // Global shortcuts: F5 refresh, Ctrl+O open.
-        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.F5), Command = new RelayCommand(RefreshAll) });
-        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.O, KeyModifiers.Control), Command = new RelayCommand(() => _ = PickRepositoryAsync()) });
-
         WireEvents();
+        InstallHotkeys();
         WireDragAndDrop();
         WireWatcher();
         _toolbar.SetSplitView(_splitHorizontal);
@@ -1644,7 +1643,10 @@ public sealed class MainWindow : Window
     }
 
     // Modal single-select branch picker; returns the chosen branch, or null on cancel.
-    private async Task<BranchTagRow?> PickBranchAsync(IReadOnlyList<BranchTagRow> branches)
+    // The captions default to the "compare to branch" wording it was written for;
+    // the checkout hotkey (Ctrl+.) reuses the same picker with its own.
+    private async Task<BranchTagRow?> PickBranchAsync(
+        IReadOnlyList<BranchTagRow> branches, string? title = null, string? okText = null, string? prompt = null)
     {
         ListBox list = new()
         {
@@ -1655,11 +1657,11 @@ public sealed class MainWindow : Window
             MinHeight = 220,
         };
 
-        Button ok = new() { Content = T("FormCompareToBranch/btnCompare.Text", "Compare"), MinWidth = 90 };
+        Button ok = new() { Content = okText ?? T("FormCompareToBranch/btnCompare.Text", "Compare"), MinWidth = 90 };
         Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
         Window dlg = new()
         {
-            Title = T("FormCompareToBranch/$this.Text", "Compare to branch"),
+            Title = title ?? T("FormCompareToBranch/$this.Text", "Compare to branch"),
             Width = 420,
             Height = 360,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1669,7 +1671,7 @@ public sealed class MainWindow : Window
                 Margin = new Thickness(16),
                 Children =
                 {
-                    new TextBlock { Text = T("Diff against branch (branch .. selected commit):"), Margin = new Thickness(0, 0, 0, 6), [DockPanel.DockProperty] = Dock.Top },
+                    new TextBlock { Text = prompt ?? T("Diff against branch (branch .. selected commit):"), Margin = new Thickness(0, 0, 0, 6), [DockPanel.DockProperty] = Dock.Top },
                     new StackPanel
                     {
                         Orientation = Orientation.Horizontal,
@@ -1695,6 +1697,469 @@ public sealed class MainWindow : Window
         };
         list.DoubleTapped += (_, _) => ok.RaiseEvent(new global::Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
         cancel.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+        return result;
+    }
+
+    // ------------------------------------------------------------------ hotkeys
+
+    /// <summary>
+    ///  Binds an action to every keyboard command the port can actually perform and
+    ///  installs the dispatcher (see <see cref="HotkeyService"/> for the map itself
+    ///  and for why the handler tunnels).
+    ///
+    ///  <para>Every action here goes through the SAME method the menu or the toolbar
+    ///  calls — nothing is reimplemented for the keyboard, so a hotkey inherits the
+    ///  watcher suspension, the off-thread git execution and the refresh that path
+    ///  already has.</para>
+    ///
+    ///  <para>Commands with no port equivalent are left unbound on purpose and are
+    ///  inert: AddNotes, EditFile, the four difftool/temp-file gestures (they act on
+    ///  the diff's file selection, which the diff view handles itself),
+    ///  GoToChild, ManageWorkTrees, MergeBranches, Rebase,
+    ///  ToggleBetweenArtificialAndHeadCommits, and FocusBuildServerStatus (this port
+    ///  has no build-server tab).</para>
+    /// </summary>
+    private void InstallHotkeys()
+    {
+        void Bind(BrowseCommand command, Action action) => _hotkeys.Bind(command, action);
+
+        // --- repository / remote operations (identical to the menu handlers)
+        Bind(BrowseCommand.Refresh, RefreshAll);
+        Bind(BrowseCommand.OpenRepo, () => _ = PickRepositoryAsync());
+        Bind(BrowseCommand.CloseRepository, ShowDashboard);
+        Bind(BrowseCommand.Commit, OpenCommitDialog);
+        Bind(BrowseCommand.OpenSettings, () => _ = OpenSettingsAsync());
+        Bind(BrowseCommand.GitBash, () => WithRepo(p => _externalTools.OpenTerminal(p)));
+
+        // Push/pull. The port has no dialog-less push, so the "quick" variants land
+        // on the same paths as their full counterparts rather than pretending.
+        Bind(BrowseCommand.Push, OpenPushDialog);
+        Bind(BrowseCommand.QuickPush, OpenPushDialog);
+        Bind(BrowseCommand.PullOrFetch, Pull);
+        Bind(BrowseCommand.QuickPull, Pull);
+        Bind(BrowseCommand.QuickFetch, Fetch);
+        Bind(BrowseCommand.QuickPullOrFetch, Fetch);
+
+        // --- refs
+        Bind(BrowseCommand.CheckoutBranch, () => _ = CheckoutBranchPickerAsync());
+        Bind(BrowseCommand.CreateBranch, () => _ = NewBranchAsync());
+        Bind(BrowseCommand.CreateTag, () => _ = NewTagAsync());
+        Bind(BrowseCommand.GoToParent, () => _ = GoToParentAsync());
+
+        // --- stash (same service calls as the toolbar/menu items)
+        Bind(BrowseCommand.Stash,
+            () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success));
+        Bind(BrowseCommand.StashPop,
+            () => RunOp("Stash pop", () => _stashOps.StashPop(_repoPath!, "stash@{0}").Success));
+        Bind(BrowseCommand.StashStaged,
+            () => RunOp("Stash staged", () => _stashOps.StashStaged(_repoPath!, "WIP (staged)").Success));
+
+        // --- search
+        Bind(BrowseCommand.FindFileInSelectedCommit, () => _ = FindFileInCommitAsync());
+        Bind(BrowseCommand.FindInDiff, FocusDiffSearch);
+
+        // --- focus movement (upstream Ctrl+0…Ctrl+9 / Ctrl+Tab / Ctrl+E)
+        Bind(BrowseCommand.FocusLeftPanel, () => FocusInto(_tree));
+        Bind(BrowseCommand.FocusRevisionGrid, () => FocusInto(_revisions));
+        Bind(BrowseCommand.FocusCommitInfo, () => FocusTab(_commitInfoTab, _detail));
+        Bind(BrowseCommand.FocusDiff, () => { FocusDiff(); FocusLater(_diff); });
+        Bind(BrowseCommand.FocusFileTree, () => FocusTab(_fileTreeTab, _fileTree));
+        Bind(BrowseCommand.FocusGpgInfo, () => FocusTab(_gpgTab, _gpg));
+        Bind(BrowseCommand.FocusGitConsole, () => FocusTab(_consoleTab, _console));
+        Bind(BrowseCommand.FocusOutputHistoryAndToggleIfPanel, () => FocusTab(_outputTab, _output));
+        Bind(BrowseCommand.FocusNextTab, () => StepBottomTab(forward: true));
+        Bind(BrowseCommand.FocusPrevTab, () => StepBottomTab(forward: false));
+        Bind(BrowseCommand.FocusFilter, FocusFilterBox);
+        Bind(BrowseCommand.ToggleLeftPanel, ToggleLeftPanel);
+
+        _hotkeys.Install(this, IsGestureOwnedByFocusedView);
+    }
+
+    /// <summary>
+    ///  The priority rule: upstream's <c>FormBrowse.ProcessHotkey</c> hands a gesture
+    ///  to the focused control first and only treats it as global if nothing claimed
+    ///  it. The dispatcher here tunnels (it has to — inner controls swallow arrows
+    ///  and Ctrl+Tab before a bubbling handler could see them), so the same priority
+    ///  has to be stated explicitly: for the gestures a focused view handles itself,
+    ///  this returns true and the window keeps its hands off.
+    /// </summary>
+    private bool IsGestureOwnedByFocusedView(BrowseCommand command, HotkeyGesture gesture)
+    {
+        bool ctrl = gesture.Modifiers == KeyModifiers.Control;
+        bool alt = gesture.Modifiers == KeyModifiers.Alt;
+
+        // The Console tab is a real PTY: while it has the focus it must receive the
+        // keystrokes, control characters included. Only refresh and the focus-moving
+        // commands stay global — otherwise there would be no way back out with the
+        // keyboard.
+        if (_console.IsKeyboardFocusWithin)
+        {
+            return command is not (BrowseCommand.Refresh
+                or BrowseCommand.FocusLeftPanel or BrowseCommand.FocusRevisionGrid
+                or BrowseCommand.FocusCommitInfo or BrowseCommand.FocusDiff
+                or BrowseCommand.FocusFileTree or BrowseCommand.FocusGpgInfo
+                or BrowseCommand.FocusGitConsole
+                or BrowseCommand.FocusOutputHistoryAndToggleIfPanel
+                or BrowseCommand.FocusNextTab or BrowseCommand.FocusPrevTab
+                or BrowseCommand.FocusFilter);
+        }
+
+        // DiffView.OnKeyDown: Ctrl+F / Ctrl+G (find + go-to-line), F3 (next match),
+        // Ctrl+C (copy path or diff).
+        if (_diff.IsKeyboardFocusWithin)
+        {
+            return (ctrl && gesture.Key is Key.F or Key.G or Key.C) || gesture.Key == Key.F3;
+        }
+
+        // RevisionGridView.OnListKeyDown: Ctrl+C (copy hash), Ctrl+G (go to commit),
+        // Alt+↑/↓ (quick search), Alt+←/→ (navigation history, M47/F1), F3.
+        if (_revisions.IsKeyboardFocusWithin)
+        {
+            return (ctrl && gesture.Key is Key.C or Key.G)
+                || (alt && gesture.Key is Key.Up or Key.Down or Key.Left or Key.Right)
+                || gesture.Key == Key.F3;
+        }
+
+        return false;
+    }
+
+    // Fetch / pull exactly as the menu and toolbar items do (streaming dialog,
+    // credentials, off-thread execution).
+    private void Fetch() => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
+
+    private void Pull() => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
+
+    // Focus helpers. A UserControl is not focusable itself, so "focus this view"
+    // means "focus its content" — the grid's row list, the tree's tree, the output's
+    // text box.
+    //
+    // The candidate is NOT simply the first focusable descendant: these views start
+    // with a header of buttons ("Go to", "Filter…", the diff toolbar), and focusing
+    // a Button would leave the panel one Space away from firing it — which is
+    // exactly what happened when Ctrl+1 was followed by Ctrl+Space during the
+    // verification of this unit. So the list/tree comes first, then a text box, and
+    // a button only if the view has nothing else to offer.
+    private static void FocusInto(Control root)
+    {
+        if (root.Focusable)
+        {
+            root.Focus();
+            return;
+        }
+
+        List<Control> visible = root.GetVisualDescendants()
+            .OfType<Control>()
+            .Where(c => c.IsEffectivelyVisible && c.IsEffectivelyEnabled)
+            .ToList();
+
+        // The view's main list or tree. Avalonia's ListBox/TreeView are NOT focusable
+        // themselves — only their item containers are — so a list is entered through
+        // its selected row; that is also what makes the arrow keys work straight away.
+        ItemsControl? items = visible
+            .OfType<ItemsControl>()
+            .FirstOrDefault(c => c is not (MenuBase or ComboBox));
+        if (items is not null)
+        {
+            if (items.Focusable && items.Focus())
+            {
+                return;
+            }
+
+            int index = items is SelectingItemsControl { SelectedIndex: >= 0 } selecting ? selecting.SelectedIndex : 0;
+            if (items.ContainerFromIndex(index) is Control container && container.Focus())
+            {
+                return;
+            }
+        }
+
+        List<Control> candidates = visible.Where(c => c.Focusable).ToList();
+        Control? target = candidates.FirstOrDefault(c => c is TextBox)
+            ?? candidates.FirstOrDefault(c => c is not Button)
+            ?? candidates.FirstOrDefault();
+
+        target?.Focus();
+    }
+
+    // Focus after the current layout pass: a tab's content is only realized once
+    // the tab is selected, so focusing it in the same beat would find nothing.
+    private static void FocusLater(Control root)
+        => Dispatcher.UIThread.Post(() => FocusInto(root), DispatcherPriority.Background);
+
+    private void FocusTab(TabItem tab, Control content)
+    {
+        if (_bottom.Items.Contains(tab))
+        {
+            _bottom.SelectedItem = tab;
+        }
+
+        FocusLater(content);
+    }
+
+    // Ctrl+Tab / Ctrl+Shift+Tab: cycle the bottom panel's tab strip (wrapping).
+    private void StepBottomTab(bool forward)
+    {
+        int count = _bottom.Items.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        int index = _bottom.SelectedIndex < 0 ? 0 : _bottom.SelectedIndex;
+        _bottom.SelectedIndex = ((index + (forward ? 1 : -1)) % count + count) % count;
+    }
+
+    // Ctrl+E (upstream: ToolStripFilters.SetFocus) — the revision filter box.
+    //
+    // There are two of them in this port: the toolbar's "Filter:" box, and the one
+    // in the revision grid's own header. Whichever is on screen is the right answer,
+    // and at narrow widths only the second one is: the toolbar moves its box into
+    // the "»" overflow flyout, where it is still a visual descendant but is never
+    // arranged, so focusing it would put the caret nowhere.
+    private void FocusFilterBox()
+    {
+        TextBox? filter = VisibleTextBox(_toolbar) ?? VisibleTextBox(_revisions);
+        if (filter is null)
+        {
+            _statusBar.SetText(T("No filter box is on screen."));
+            return;
+        }
+
+        filter.Focus();
+        filter.SelectAll();
+
+        static TextBox? VisibleTextBox(Control root) => root.GetVisualDescendants()
+            .OfType<TextBox>()
+            .FirstOrDefault(t => t.IsEffectivelyVisible && t.IsEffectivelyEnabled && t.Bounds.Width > 0);
+    }
+
+    // Ctrl+F from anywhere in the window: bring the diff up and open its find bar.
+    private void FocusDiffSearch()
+    {
+        FocusDiff();
+        Dispatcher.UIThread.Post(_diff.FocusSearch, DispatcherPriority.Background);
+    }
+
+    // Ctrl+Alt+C: collapse/expand the left repository-objects panel.
+    private void ToggleLeftPanel()
+    {
+        if (_tree.IsVisible)
+        {
+            _treeWidthBeforeCollapse = _treeCol.Width.Value > 0 ? _treeCol.Width.Value : 260;
+            _tree.IsVisible = false;
+            _treeCol.Width = new GridLength(0, GridUnitType.Pixel);
+        }
+        else
+        {
+            _tree.IsVisible = true;
+            _treeCol.Width = new GridLength(
+                _treeWidthBeforeCollapse > 0 ? _treeWidthBeforeCollapse : 260, GridUnitType.Pixel);
+        }
+    }
+
+    // Ctrl+. — pick a local branch and check it out through the ordinary checkout
+    // path (which asks what to do with local changes). Loading the refs is git work,
+    // so it happens off the UI thread.
+    private async Task CheckoutBranchPickerAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        IReadOnlyList<BranchTagRow> branches;
+        try
+        {
+            branches = await Task.Run(() => new BranchTagService().LoadRefs(_repoPath!)
+                .Branches.Where(b => !b.IsRemote).ToList());
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText(TF("{0} failed: {1}", T("FormCheckoutBranch/$this.Text", "Checkout branch"), ex.Message));
+            return;
+        }
+
+        if (branches.Count == 0)
+        {
+            _statusBar.SetText(T("No local branches to compare against."));
+            return;
+        }
+
+        BranchTagRow? chosen = await PickBranchAsync(
+            branches,
+            T("FormCheckoutBranch/$this.Text", "Checkout branch"),
+            T("FormCheckoutBranch/Ok.Text", "Checkout"),
+            T("FormCheckoutBranch/LocalBranch.Text", "Local branch"));
+
+        if (chosen is not null)
+        {
+            await CheckoutBranchAsync(chosen.Name);
+        }
+    }
+
+    // Ctrl+P — select the first parent of the current revision in the grid.
+    private async Task GoToParentAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo || _lastSelectedHash is not { Length: > 0 } hash)
+        {
+            return;
+        }
+
+        string? parent = await Task.Run(() =>
+        {
+            try
+            {
+                GitModule module = GitContext.CreateModule(repo);
+                GitArgumentBuilder args = new("rev-parse") { "--verify", "--quiet", $"{hash}^" };
+                ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+                string text = result.StandardOutput.Trim();
+                return result.ExitedSuccessfully && text.Length > 0 ? text : null;
+            }
+            catch
+            {
+                return null;
+            }
+        });
+
+        if (parent is null)
+        {
+            _statusBar.SetText(T("RevisionGridControl/_noParentNoRevision.Text", "The selected commit has no parent."));
+            return;
+        }
+
+        _revisions.SelectCommit(parent);
+    }
+
+    // Ctrl+Shift+F — list the files of the selected commit (git ls-tree, off the UI
+    // thread), filter them as the user types, and open the chosen file's history in
+    // the bottom panel. Upstream's FindFileInSelectedCommit lands in the file tree;
+    // the port's file tree has no "reveal path" entry point, so file history — the
+    // nearest per-file destination it does have — is what Enter opens.
+    private async Task FindFileInCommitAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        string commit = _lastSelectedHash is { Length: > 0 } h ? h : "HEAD";
+
+        List<string> files = await Task.Run(() =>
+        {
+            List<string> result = [];
+            try
+            {
+                GitModule module = GitContext.CreateModule(repo);
+                GitArgumentBuilder args = new("ls-tree") { "-r", "--name-only", commit };
+                ExecutionResult execution = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+                if (execution.ExitedSuccessfully)
+                {
+                    foreach (string rawLine in execution.StandardOutput.Split('\n'))
+                    {
+                        string line = rawLine.Trim();
+                        if (line.Length > 0)
+                        {
+                            result.Add(line);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // An unreadable tree just yields an empty picker.
+            }
+
+            return result;
+        });
+
+        if (files.Count == 0)
+        {
+            _statusBar.SetText(T("No files in the selected commit."));
+            return;
+        }
+
+        string? path = await PickFileAsync(files);
+        if (path is { Length: > 0 })
+        {
+            ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(repo, path));
+        }
+    }
+
+    // Modal incremental file picker used by Ctrl+Shift+F. Typing narrows the list;
+    // Enter (or double click) accepts, Esc cancels.
+    private async Task<string?> PickFileAsync(IReadOnlyList<string> files)
+    {
+        ListBox list = new()
+        {
+            ItemsSource = files.Take(2000).ToList(),
+            Background = (IBrush)Application.Current!.Resources["App.Control"]!,
+            Foreground = (IBrush)Application.Current!.Resources["App.Text"]!,
+            SelectedIndex = 0,
+        };
+
+        TextBox search = new()
+        {
+            Watermark = T("FileStatusList/tsmiFindFile.Text", "Find file..."),
+            Background = (IBrush)Application.Current!.Resources["App.Panel"]!,
+            Foreground = (IBrush)Application.Current!.Resources["App.Text"]!,
+            Padding = new Thickness(6, 3, 6, 3),
+            [DockPanel.DockProperty] = Dock.Top,
+        };
+
+        search.TextChanged += (_, _) =>
+        {
+            string term = search.Text ?? string.Empty;
+            list.ItemsSource = (term.Length == 0
+                    ? files
+                    : files.Where(f => f.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                .Take(2000)
+                .ToList();
+            list.SelectedIndex = 0;
+        };
+
+        string? result = null;
+        Window dlg = new()
+        {
+            Title = T("FileStatusList/tsmiFindFile.Text", "Find file..."),
+            Width = 620,
+            Height = 460,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = new DockPanel { Margin = new Thickness(12), Children = { search, list } },
+        };
+
+        void Accept()
+        {
+            result = list.SelectedItem as string;
+            dlg.Close();
+        }
+
+        // Tunnelling, handledEventsToo: the ListBox consumes Enter and the arrows
+        // before a bubbling handler would ever see them (the port has been bitten
+        // by this before) — but the arrows must keep moving the selection, so only
+        // Enter and Esc are intercepted here.
+        dlg.AddHandler(
+            KeyDownEvent,
+            (_, e) =>
+            {
+                if (e.Key is Key.Enter or Key.Return)
+                {
+                    Accept();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.Escape)
+                {
+                    dlg.Close();
+                    e.Handled = true;
+                }
+            },
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+
+        list.DoubleTapped += (_, _) => Accept();
+        dlg.Opened += (_, _) => search.Focus();
         await dlg.ShowDialog(this);
         return result;
     }

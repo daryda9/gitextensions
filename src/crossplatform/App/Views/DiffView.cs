@@ -759,6 +759,14 @@ public sealed class DiffView : UserControl
     }
 
     /// <summary>
+    ///  Opens the find bar and puts the caret in it — the same thing Ctrl+F does
+    ///  from inside the view, exposed so the window can reach it when the focus is
+    ///  somewhere else entirely (the view's own Ctrl+F is a tunnelling handler on
+    ///  this control, so it only ever fires once the focus is already in here).
+    /// </summary>
+    public void FocusSearch() => OpenFindBar(focusGoto: false);
+
+    /// <summary>
     ///  Loads the changed-files list for <paramref name="commitHash"/> in the
     ///  repository at <paramref name="repoPath"/>. Selecting a file loads its diff.
     /// </summary>
