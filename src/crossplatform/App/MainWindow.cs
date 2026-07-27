@@ -940,6 +940,16 @@ public sealed class MainWindow : Window
         // open the commit dialog on single click, so they are not re-raised here.
         _revisions.RevisionActivated += _ => Dispatcher.UIThread.Post(() => _bottom.SelectedItem = _commitInfoTab);
         _fileHistory.RevisionSelected += OnRevisionSelected;
+        // Double click on a history row behaves like the grid's own activation: select
+        // that commit and bring the bottom panel onto it.
+        _fileHistory.RevisionActivated += h =>
+        {
+            if (_repoPath is not null)
+            {
+                _revisions.SelectCommit(h);
+                OnRevisionSelected(h);
+            }
+        };
         // Revert / cherry-pick from the file-history menu take the same path as the
         // grid's own commands, so they get the watcher suspension and the refresh.
         _fileHistory.RevertCommitRequested += RevertThisCommit;
@@ -2336,6 +2346,8 @@ public sealed class MainWindow : Window
         _stash.LoadRepository(_repoPath);
         _tree.LoadRepository(_repoPath);
         _statusBar.LoadRepository(_repoPath);
+        // No-op while no file is shown in the history tab.
+        _fileHistory.Reload();
         RefreshToolbarState();
 
         // Tell the watcher the window is now up to date: it drops the events that
