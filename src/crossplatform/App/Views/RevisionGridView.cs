@@ -271,12 +271,34 @@ public sealed class RevisionGridView : UserControl
     // UpdateAuthorHighlight, which is the only writer.
     private string _highlightedAuthor = string.Empty;
 
-    // Set while RebindRows swaps ItemsSource and puts the selection back. That swap
-    // raises SelectionChanged synchronously (empty, then re-selected), which is NOT a
-    // user selection: the very same commits end up selected. Announcing it would
-    // re-raise RevisionSelected/RangeSelected on every refresh — and, since the
-    // author highlight now rebinds too, twice per click.
+    // Set while ANY assignment to _list.ItemsSource is in flight — RebindRows' swap
+    // (plus the selection it puts back) and Reload's unbind alike. Every assignment
+    // goes through SetListItems, which raises this flag.
+    //
+    // Two distinct reasons, and both matter:
+    //
+    //  * COSMETIC. The swap raises SelectionChanged synchronously (empty, then
+    //    re-selected), which is NOT a user selection: the very same commits end up
+    //    selected. Announcing it would re-raise RevisionSelected/RangeSelected on
+    //    every refresh — and, since the author highlight rebinds too, twice per click.
+    //
+    //  * FATAL. Avalonia's SelectingItemsControl re-points its SelectionModel at the
+    //    new source INSIDE the ItemsSource setter and raises SelectionChanged from
+    //    within that batch update. Assigning ItemsSource again from such a handler
+    //    throws InvalidOperationException("Cannot change source while update is in
+    //    progress") and, on the posted call path an external caller uses, takes the
+    //    process down. That is exactly what "Filter file in grid" hit: Reload's
+    //    unbind was NOT guarded, so its SelectionChanged reached
+    //    UpdateAuthorHighlight -> RefreshView -> RebindRows -> ItemsSource. The
+    //    guard below plus the re-entrancy check at the top of RebindRows close both
+    //    halves of that loop.
     private bool _rebinding;
+
+    // A rebind asked for while one was already in flight. It cannot run now (see
+    // above), so it is coalesced into a single deferred pass at Background priority
+    // — after the in-flight assignment, and after the layout it triggers.
+    private bool _rebindQueued;
+    private bool _rebindQueuedPreserveViewport;
 
     // Reachability sets computed from the loaded rows whenever _allRows changes,
     // keyed by full hash. _headRelatives = the highlight anchor ∪ its ancestors,
@@ -1154,7 +1176,7 @@ public sealed class RevisionGridView : UserControl
         _loaded = [];
         _hasMore = false;
         _scroll = null;
-        _list.ItemsSource = null;
+        SetListItems(null);
         LoadPage(restart: true);
 
         // The context menu's predicates need the checked-out branch and the kind of
@@ -1503,6 +1525,32 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     private void RebindRows(bool preserveViewport)
     {
+        if (_rebinding)
+        {
+            // Re-entered from a SelectionChanged raised by an ItemsSource assignment
+            // that has not finished yet. Assigning again now is the fatal case
+            // documented on _rebinding, so the request is remembered instead and run
+            // once, later. Background priority (not Send/Normal) so it lands after
+            // the current assignment AND the layout pass it schedules — the same
+            // reason the scroll offset has to be restored there.
+            //
+            // Coalescing rule: the viewport is only preserved when EVERY pending
+            // requester wanted it preserved. A caller that asked for a reset (the
+            // user chose a different set of rows) must not have it silently
+            // upgraded to "keep looking at the same place".
+            _rebindQueuedPreserveViewport = _rebindQueued
+                ? _rebindQueuedPreserveViewport && preserveViewport
+                : preserveViewport;
+
+            if (!_rebindQueued)
+            {
+                _rebindQueued = true;
+                Dispatcher.UIThread.Post(FlushQueuedRebind, DispatcherPriority.Background);
+            }
+
+            return;
+        }
+
         // The graph's relative/non-relative flags are per DISPLAY ROW, so they are
         // refreshed here — the single place every rebind goes through, whether the
         // rows, the filter, the anchor or a highlight toggle changed.
@@ -1524,8 +1572,8 @@ public sealed class RevisionGridView : UserControl
         _rebinding = true;
         try
         {
-            _list.ItemsSource = null;
-            _list.ItemsSource = new List<RevisionRow>(_rows);
+            SetListItems(null);
+            SetListItems(new List<RevisionRow>(_rows));
 
             bool autoScroll = _list.AutoScrollToSelectedItem;
             _list.AutoScrollToSelectedItem = false;
@@ -1577,6 +1625,37 @@ public sealed class RevisionGridView : UserControl
                 }
             },
             DispatcherPriority.Loaded);
+    }
+
+    // Runs the single rebind that was coalesced while another one was in flight.
+    // A no-op if something already rebound in the meantime and cleared the flag.
+    private void FlushQueuedRebind()
+    {
+        if (!_rebindQueued)
+        {
+            return;
+        }
+
+        _rebindQueued = false;
+        RebindRows(_rebindQueuedPreserveViewport);
+    }
+
+    // The ONLY writer of _list.ItemsSource, so that no assignment can ever be made
+    // without the re-entrancy guard raised (see _rebinding for why that is fatal
+    // rather than merely untidy). Nested calls restore the flag to what they found
+    // instead of clearing it, so RebindRows' outer guard survives them.
+    private void SetListItems(IEnumerable<RevisionRow>? items)
+    {
+        bool outer = _rebinding;
+        _rebinding = true;
+        try
+        {
+            _list.ItemsSource = items;
+        }
+        finally
+        {
+            _rebinding = outer;
+        }
     }
 
     /// <param name="preserveViewport">
