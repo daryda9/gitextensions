@@ -326,8 +326,8 @@ LAVORARE su questo, in quest'ordine. I punti 1 e 2 sono PRIORITARI: indicati dal
    (finestra non chiudibile dal WM); il "salva come" del diff non e' verificabile headless
    (serve portal XDG).
 
-6. Minori: opzioni di merge/cherry-pick, continue/skip/abort per rebase, filtrare i cataloghi .xlf a inglese +
-   italiano per togliere ~19 MB dal .deb.
+6. Minori: opzioni di merge/cherry-pick, continue/skip/abort per rebase, filtrare i
+   cataloghi .xlf a inglese + italiano per togliere ~19 MB dal .deb.
 NON lavorare su repository-host GitHub ne' colonna build status: SKIP fuori scope.
 
 METODO: il loop NON scrive codice a mano — DELEGA a subagent CLAUDE in worktree isolati
