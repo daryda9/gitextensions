@@ -994,6 +994,20 @@ public sealed class MainWindow : Window
         _tree.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
         _tree.OpenRepositoryRequested += OpenRepositoryPath;
+        // The tree cannot reach the bottom panel or the streaming remote ops itself;
+        // without these its stash and fetch-all entries stay disabled rather than dead.
+        _tree.BottomTabRequested += key =>
+        {
+            _uiState.BottomTab = key;
+            RestoreBottomTab();
+        };
+        _tree.FetchAllRequested += () => RunRemoteOp(
+            "Fetch all", (s, _, emit, creds) => s.FetchAllStreaming(_repoPath!, emit, creds));
+        _tree.FetchAndPruneAllRequested += () => RunRemoteOp(
+            "Fetch and prune all",
+            (s, _, emit, creds) => s.FetchAndPruneAllStreaming(_repoPath!, emit, creds));
+        _tree.CategoryOrder = _uiState.LeftPanelCategoryOrder;
+        _tree.CategoryOrderChanged += () => _uiState.LeftPanelCategoryOrder = _tree.CategoryOrder;
 
         _dashboard.RepositorySelected += repo =>
         {
