@@ -2393,16 +2393,63 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
-        RevisionRow? row = (e.Source as Visual)?
-            .FindAncestorOfType<ListBoxItem>(includeSelf: true)?
-            .DataContext as RevisionRow;
-
-        if (row is null)
+        if (RowUnder(e) is not { } row)
         {
             return;
         }
 
         HighlightBranchOf(IsArtificial(row) ? null : row.Hash);
+    }
+
+    // Resolves the row a pointer event landed on, from ANY point of the row. The
+    // cheap path walks the visual ancestors of the event source (the row content is
+    // a tree of cells — graph control, text blocks, avatar, ref badges — all of them
+    // below the item container). Hits that do not sit under a container at all (list
+    // chrome, gaps between the realized items, a source hosted outside the item's
+    // ancestor chain) fall back to matching the pointer's Y against the realized
+    // containers, which is what makes the whole row width behave alike.
+    //
+    // Clicks on the list's scroll bars are deliberately NOT resolved to a row: they
+    // overlay the rows, and in the original grid the scroll bar is not part of any
+    // row either.
+    private RevisionRow? RowUnder(PointerEventArgs e)
+    {
+        if (e.Source is Visual source)
+        {
+            foreach (Visual ancestor in source.GetSelfAndVisualAncestors())
+            {
+                if (ancestor is ScrollBar)
+                {
+                    return null;
+                }
+
+                if (ancestor is ListBoxItem container)
+                {
+                    return container.DataContext as RevisionRow;
+                }
+
+                if (ReferenceEquals(ancestor, _list))
+                {
+                    break;
+                }
+            }
+        }
+
+        foreach (Control container in _list.GetRealizedContainers())
+        {
+            if (container.DataContext is not RevisionRow candidate)
+            {
+                continue;
+            }
+
+            double y = e.GetPosition(container).Y;
+            if (y >= 0 && y < container.Bounds.Height)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     private void OnListDoubleTapped(object? sender, TappedEventArgs e)
