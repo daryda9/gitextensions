@@ -12,6 +12,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
+using GitExtensions.Avalonia.Theming;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -40,10 +41,19 @@ public sealed class DiffView : UserControl
     private static readonly IBrush AddedBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
     private static readonly IBrush RemovedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
 
-    // File-status glyph colours: modified=accent, added=green, deleted=red.
-    private static readonly IBrush ModifiedGlyph = new SolidColorBrush(Color.FromRgb(0x4A, 0x9E, 0xD6));
-    private static readonly IBrush AddedGlyph = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
-    private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+    // Syntax highlighting repaints the content of a +/- line with the token
+    // colours, so the line's identity moves to a background tint (which is how
+    // the original marks added/removed lines too).
+    private static readonly IBrush AddedTint = new SolidColorBrush(Color.FromArgb(0x28, 0x6A, 0xC7, 0x76));
+    private static readonly IBrush RemovedTint = new SolidColorBrush(Color.FromArgb(0x28, 0xE0, 0x6C, 0x6C));
+
+    // Token colours for the syntax highlighter, in the same key as the diff
+    // colours above (literal values: the palette has no token resources).
+    private static readonly IBrush KeywordBrush = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8));
+    private static readonly IBrush StringBrush = new SolidColorBrush(Color.FromRgb(0xCE, 0x91, 0x78));
+    private static readonly IBrush CommentBrush = new SolidColorBrush(Color.FromRgb(0x7E, 0x9E, 0x7E));
+    private static readonly IBrush NumberBrush = new SolidColorBrush(Color.FromRgb(0xB5, 0xCE, 0xA8));
+    private static readonly IBrush PreprocessorBrush = new SolidColorBrush(Color.FromRgb(0xC5, 0x86, 0xC0));
 
     // Search highlight: amber for every occurrence, a stronger amber for the one
     // the ▲/▼ navigation currently sits on. Literal colours (like the diff
@@ -71,16 +81,23 @@ public sealed class DiffView : UserControl
         WorkingTree,  // a commit vs the current working tree
     }
 
-    private readonly ListBox _files;
+    private readonly FileStatusListView _files;
     private readonly SelectableTextBlock _diff;
     private readonly TextBlock _status;
     private readonly ScrollViewer _diffScroll;
 
     // Diff-toolbar state (session-persisted in DiffTextService.Session).
     private readonly DiffDisplayOptions _options = DiffTextService.Session;
+
+    // The options the port was missing, which live outside DiffDisplayOptions.
+    private readonly DiffViewerOptions _extras = DiffViewerOptions.Session;
+
     private readonly ToggleButton _ignoreWhitespaceButton;
+    private readonly ToggleButton _ignoreWhitespaceEolButton;
+    private readonly ToggleButton _ignoreWhitespaceChangeButton;
     private readonly ToggleButton _nonPrintingButton;
     private readonly ToggleButton _wordDiffButton;
+    private readonly ToggleButton _syntaxButton;
     private readonly ComboBox _encodingBox;
 
     // Kept so a language switch can re-label them in place (see ApplyTranslations).
@@ -96,6 +113,8 @@ public sealed class DiffView : UserControl
     private readonly MenuItem _showInFolderItem;
     private readonly MenuItem _saveAsItem;
     private readonly MenuItem _copyPatchItem;
+    private readonly MenuItem _copyNewVersionItem;
+    private readonly MenuItem _copyOldVersionItem;
     private readonly Button _prevChangeButton;
     private readonly Button _nextChangeButton;
     private readonly Button _zoomInButton;
@@ -138,6 +157,9 @@ public sealed class DiffView : UserControl
     private readonly List<int> _hunkLines = [];
     private int _hunkIndex = -1;
 
+    // Re-runs the load that produced the current file list (the refresh button).
+    private Action? _reload;
+
     private string? _repoPath;
     private string? _commitHash;   // the (right/"new") commit; also the "other" side in Range mode
     private string? _baseHash;     // the ("old"/left) commit in Range mode
@@ -152,41 +174,18 @@ public sealed class DiffView : UserControl
     // Text is cleared while inlines are rendered, so keep our own copy to copy).
     private string _currentDiffText = string.Empty;
 
+    // Path of the file the displayed patch belongs to: the syntax highlighter
+    // picks its language from the extension.
+    private string? _diffPath;
+
     public DiffView()
     {
-        _files = new ListBox
-        {
-            FontFamily = Monospace,
-            FontSize = 12,
-            Background = B("App.Panel"),
-            Foreground = B("App.Text"),
-            BorderThickness = new Thickness(0),
-            ItemTemplate = new global::Avalonia.Controls.Templates.FuncDataTemplate<DiffFileRow>(
-                (row, _) => BuildFileRow(row),
-                supportsRecycling: true),
-        };
-        _files.SelectionChanged += OnFileSelected;
-
-        // Tight rows + an App.Selection highlight, matching the revision grid.
-        _files.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
-        {
-            Setters =
-            {
-                new Setter(ListBoxItem.PaddingProperty, new Thickness(8, 1, 8, 1)),
-                new Setter(ListBoxItem.MinHeightProperty, 0d),
-                new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent),
-            },
-        });
-        _files.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":pointerover")
-            .Template().OfType<ContentPresenter>())
-        {
-            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.PanelAlt")) },
-        });
-        _files.Styles.Add(new Style(x => x.OfType<ListBoxItem>().Class(":selected")
-            .Template().OfType<ContentPresenter>())
-        {
-            Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")) },
-        });
+        // The changed-files list, its toolbar and its regex filter box all live in
+        // the shared control (the original's FileStatusList, which also backs the
+        // file-tree and stash views): this view only reacts to the selection.
+        _files = new FileStatusListView { ShowRefreshButton = true };
+        _files.SelectedFileChanged += _ => OnFileSelected();
+        _files.RefreshRequested += ReloadFileList;
 
         _copyPathItem = new MenuItem();
         _copyPathItem.Click += (_, _) => CopySelectedFilePath();
@@ -231,7 +230,7 @@ public sealed class DiffView : UserControl
             },
         };
         fileMenu.Opening += (_, _) => UpdateFileMenuState();
-        _files.ContextMenu = fileMenu;
+        _files.List.ContextMenu = fileMenu;
 
         _diff = new SelectableTextBlock
         {
@@ -246,7 +245,33 @@ public sealed class DiffView : UserControl
         _copyDiffItem.Click += (_, _) => CopyDiffText();
         _selectAllCopyItem = new MenuItem();
         _selectAllCopyItem.Click += (_, _) => SelectAllAndCopy();
-        _diff.ContextMenu = new ContextMenu { ItemsSource = new[] { _copyDiffItem, _selectAllCopyItem } };
+
+        // The original's "Copy new/old version" copy the file, not the patch, so
+        // they read the blob rather than filtering the +/- lines of the diff: that
+        // way they also work with -w, --word-diff or a partial context.
+        _copyNewVersionItem = new MenuItem();
+        _copyNewVersionItem.Click += (_, _) => CopyFileVersion(newVersion: true);
+        _copyOldVersionItem = new MenuItem();
+        _copyOldVersionItem.Click += (_, _) => CopyFileVersion(newVersion: false);
+
+        ContextMenu diffMenu = new()
+        {
+            ItemsSource = new Control[]
+            {
+                _copyDiffItem,
+                _selectAllCopyItem,
+                new Separator(),
+                _copyNewVersionItem,
+                _copyOldVersionItem,
+            },
+        };
+        diffMenu.Opening += (_, _) =>
+        {
+            bool hasFile = _files.SelectedFile is not null && _repoPath is not null && _commitHash is not null;
+            _copyNewVersionItem.IsEnabled = hasFile;
+            _copyOldVersionItem.IsEnabled = hasFile;
+        };
+        _diff.ContextMenu = diffMenu;
 
         _diff.FontSize = _options.FontSize;
 
@@ -295,6 +320,22 @@ public sealed class DiffView : UserControl
                 RenderDiff(_currentDiffText);
             });
 
+        _ignoreWhitespaceEolButton = ToggleTool(
+            "-eol", _extras.IgnoreWhitespaceAtEol,
+            v =>
+            {
+                _extras.IgnoreWhitespaceAtEol = v;
+                ReloadDiff();
+            });
+
+        _ignoreWhitespaceChangeButton = ToggleTool(
+            "-b", _extras.IgnoreWhitespaceChange,
+            v =>
+            {
+                _extras.IgnoreWhitespaceChange = v;
+                ReloadDiff();
+            });
+
         _wordDiffButton = ToggleTool(
             "<div>", _options.WordDiff,
             v =>
@@ -302,6 +343,17 @@ public sealed class DiffView : UserControl
                 _options.WordDiff = v;
                 ReloadDiff();
             });
+
+        // Display-only: the patch is already loaded, so this re-renders it instead
+        // of re-running git.
+        _syntaxButton = ToggleTool(
+            "{;}", _extras.SyntaxHighlighting,
+            v =>
+            {
+                _extras.SyntaxHighlighting = v;
+                RenderDiff(_currentDiffText);
+            },
+            icon: "SyntaxHighlighting");
 
         _encodingBox = new ComboBox
         {
@@ -333,12 +385,14 @@ public sealed class DiffView : UserControl
         _settingsButton = ToolButton("⚙", null);
         _settingsButton.Click += (_, _) => ShowSettingsMenu(_settingsButton);
 
-        // Every item here is a glyph or a data-driven combo box, so no caption
-        // grows when the UI is translated and a plain horizontal strip is safe.
-        StackPanel toolbar = new()
+        // A WrapPanel, not a horizontal StackPanel: the strip carries enough items
+        // (and one 190 px combo box) to be wider than the pane on a narrow window,
+        // and a StackPanel would push the encoding box and the gear off the right
+        // edge instead of moving them to a second row. Spacing comes from each
+        // item's own margin, which WrapPanel honours.
+        WrapPanel toolbar = new()
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(4, 2, 6, 2),
         };
@@ -354,8 +408,11 @@ public sealed class DiffView : UserControl
         toolbar.Children.Add(_zoomInButton);
         toolbar.Children.Add(_zoomOutButton);
         toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(_ignoreWhitespaceEolButton);
+        toolbar.Children.Add(_ignoreWhitespaceChangeButton);
         toolbar.Children.Add(_ignoreWhitespaceButton);
         toolbar.Children.Add(_nonPrintingButton);
+        toolbar.Children.Add(_syntaxButton);
         toolbar.Children.Add(_wordDiffButton);
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(_encodingBox);
@@ -512,6 +569,8 @@ public sealed class DiffView : UserControl
         _showInFolderItem.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
         _saveAsItem.Header = T("FileStatusList/tsmiSaveAs.Text", "Save selected as...");
         _copyPatchItem.Header = T("FileViewer/copyPatchToolStripMenuItem.Text", "Copy patch");
+        _copyNewVersionItem.Header = T("FileViewer/copyNewVersionToolStripMenuItem.Text", "Copy new version");
+        _copyOldVersionItem.Header = T("FileViewer/copyOldVersionToolStripMenuItem.Text", "Copy old version");
 
         ToolTip.SetTip(_prevChangeButton, T("FileViewer/previousChangeButton.ToolTipText", "Previous change"));
         ToolTip.SetTip(_nextChangeButton, T("FileViewer/nextChangeButton.ToolTipText", "Next change"));
@@ -544,6 +603,14 @@ public sealed class DiffView : UserControl
             T("FileViewer/showNonPrintChars.ToolTipText", "Show nonprinting characters"));
         ToolTip.SetTip(_wordDiffButton,
             F("{0}  ({1})", T("FileViewer/showGitWordColoringToolStripMenuItem.Text", "Word diff"), "git diff --word-diff"));
+        ToolTip.SetTip(_ignoreWhitespaceEolButton, F("{0}  ({1})",
+            T("FileViewer/ignoreWhitespaceAtEol.ToolTipText", "Ignore whitespace changes at end of line"),
+            "git diff --ignore-space-at-eol"));
+        ToolTip.SetTip(_ignoreWhitespaceChangeButton, F("{0}  ({1})",
+            T("FileViewer/ignoreWhiteSpaces.ToolTipText", "Ignore changes in amount of whitespace"),
+            "git diff -b"));
+        ToolTip.SetTip(_syntaxButton,
+            T("FileViewer/showSyntaxHighlighting.ToolTipText", "Show syntax highlighting"));
 
         ToolTip.SetTip(_encodingBox, T("Encoding used to decode the diff text"));
         ToolTip.SetTip(_settingsButton, T("FileViewer/settingsButton.ToolTipText", "Settings"));
@@ -555,48 +622,6 @@ public sealed class DiffView : UserControl
     }
 
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
-
-    // A changed-file row: a coloured status glyph (M/A/D/R/C) followed by the path.
-    private static Control BuildFileRow(DiffFileRow? row)
-    {
-        if (row is null)
-        {
-            return new TextBlock();
-        }
-
-        (char glyph, IBrush glyphBrush) = row.Kind switch
-        {
-            DiffChangeKind.Added => ('A', AddedGlyph),
-            DiffChangeKind.Deleted => ('D', DeletedGlyph),
-            DiffChangeKind.Renamed => ('R', ModifiedGlyph),
-            DiffChangeKind.Copied => ('C', ModifiedGlyph),
-            _ => ('M', ModifiedGlyph),
-        };
-
-        string path = row.OldName is null || row.OldName == row.Name
-            ? row.Name
-            : $"{row.OldName} -> {row.Name}";
-
-        StackPanel panel = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
-        panel.Children.Add(new TextBlock
-        {
-            Text = glyph.ToString(),
-            Foreground = glyphBrush,
-            FontFamily = Monospace,
-            FontWeight = FontWeight.Bold,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-        panel.Children.Add(new TextBlock
-        {
-            Text = path,
-            Foreground = B("App.Text"),
-            FontFamily = Monospace,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-
-        return panel;
-    }
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
@@ -682,7 +707,7 @@ public sealed class DiffView : UserControl
 
     private void RaiseFileAction(Action<string>? handler)
     {
-        if (_files.SelectedItem is DiffFileRow row)
+        if (_files.SelectedFile is DiffFileRow row)
         {
             handler?.Invoke(row.Name);
         }
@@ -693,7 +718,7 @@ public sealed class DiffView : UserControl
     // detached, so neither call blocks; only a config error is surfaced (status).
     private void OpenSelectedInExternalDiffTool()
     {
-        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
         {
             return;
         }
@@ -722,7 +747,7 @@ public sealed class DiffView : UserControl
     // working-tree version and renders it in the shared coloured diff pane.
     private void CompareSelectedToWorkingDirectory()
     {
-        if (_files.SelectedItem is not DiffFileRow || _repoPath is null || _commitHash is null)
+        if (_files.SelectedFile is not DiffFileRow || _repoPath is null || _commitHash is null)
         {
             return;
         }
@@ -734,13 +759,79 @@ public sealed class DiffView : UserControl
 
     private void CopySelectedFilePath()
     {
-        if (_files.SelectedItem is DiffFileRow row)
+        if (_files.SelectedFile is DiffFileRow row)
         {
             CopyToClipboard(row.Name);
         }
     }
 
     private void CopyDiffText() => CopyToClipboard(_currentDiffText);
+
+    /// <summary>
+    ///  The original's "Copy new version" / "Copy old version": the whole file as
+    ///  it is on one side of the comparison, not the patch. Which revision that is
+    ///  depends on the comparison shown — the working tree has no revision, and the
+    ///  "old" side of a single commit is its first parent.
+    /// </summary>
+    private void CopyFileVersion(bool newVersion)
+    {
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        bool workingTree = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree;
+
+        string? rev;
+        string path;
+
+        if (newVersion)
+        {
+            rev = workingTree ? null : _commitHash;
+            path = row.Name;
+        }
+        else
+        {
+            rev = _mode == CompareMode.Range
+                ? _baseHash ?? _commitHash
+                : workingTree
+                    ? _commitHash
+                    : _commitHash + "^";
+
+            // A rename's old side lives under its old path.
+            path = row.OldName ?? row.Name;
+        }
+
+        string repoPath = _repoPath;
+        string encoding = _options.EncodingName;
+
+        _status.Text = F(T("Reading {0}…"), path);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string text = await ExtendedDiffTextService
+                    .GetFileTextAsync(repoPath, rev, path, encoding)
+                    .ConfigureAwait(false);
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    CopyToClipboard(text);
+                    _status.Text = F(
+                        T("Copied {0} ({1} characters)"),
+                        rev is null ? path : rev + ":" + path,
+                        text.Length);
+                });
+            }
+            catch (Exception ex)
+            {
+                // A deleted file has no new version, a root commit no old one: git
+                // says so and the status line repeats it.
+                Dispatcher.UIThread.Post(() => _status.Text = F("{0}: {1}", ErrorWord(), ex.Message));
+            }
+        });
+    }
 
     private void SelectAllAndCopy()
     {
@@ -836,14 +927,17 @@ public sealed class DiffView : UserControl
     private static string LoadingFilesFormat() => T("Loading changed files for {0}…");
 
     // Shared changed-file-list loader: clears the panes, loads the file rows off
-    // the UI thread, then populates the list and auto-selects the first row so
-    // its per-file diff loads via OnFileSelected (which dispatches on _mode).
+    // the UI thread, then hands them to the list, which selects the first row and
+    // reports it back through SelectedFileChanged (which dispatches on _mode).
     private void LoadFileList(
         Func<IReadOnlyList<DiffFileRow>> load,
         Func<int, string> statusFor,
         string loadingText)
     {
-        _files.ItemsSource = null;
+        // Remembered so the toolbar's refresh button can re-run exactly this load.
+        _reload = () => LoadFileList(load, statusFor, loadingText);
+
+        _files.Clear();
         _diff.Inlines?.Clear();
         _diff.Text = string.Empty;
         _currentDiffText = string.Empty;
@@ -857,12 +951,8 @@ public sealed class DiffView : UserControl
                 IReadOnlyList<DiffFileRow> rows = load();
                 Dispatcher.UIThread.Post(() =>
                 {
-                    _files.ItemsSource = rows;
+                    _files.SetFiles(rows);
                     _status.Text = statusFor(rows.Count);
-                    if (rows.Count > 0)
-                    {
-                        _files.SelectedIndex = 0;
-                    }
                 });
             }
             catch (Exception ex)
@@ -872,7 +962,11 @@ public sealed class DiffView : UserControl
         });
     }
 
-    private void OnFileSelected(object? sender, SelectionChangedEventArgs e)
+    // The toolbar's refresh button: re-reads the changed-file list of whatever
+    // comparison is on screen (the working-tree one is the one that goes stale).
+    private void ReloadFileList() => _reload?.Invoke();
+
+    private void OnFileSelected()
     {
         // A plain selection always shows the comparison the file list belongs to.
         _forceWorkingTreeCompare = false;
@@ -935,6 +1029,7 @@ public sealed class DiffView : UserControl
                 VerticalAlignment = VerticalAlignment.Center,
             },
             Padding = new Thickness(6, 2),
+            Margin = new Thickness(1, 0),
             MinWidth = 0,
             MinHeight = 0,
             Background = Brushes.Transparent,
@@ -951,18 +1046,25 @@ public sealed class DiffView : UserControl
         return button;
     }
 
-    private ToggleButton ToggleTool(string glyph, bool isChecked, Action<bool> onChanged)
+    // icon: the name of a reused Windows resource to show instead of the glyph,
+    // when that resource exists (IconLoader returns null when it does not).
+    private ToggleButton ToggleTool(string glyph, bool isChecked, Action<bool> onChanged, string? icon = null)
     {
-        ToggleButton button = new()
-        {
-            Content = new TextBlock
+        Control face = icon is not null && IconLoader.Image(icon, 16) is Image image
+            ? image
+            : new TextBlock
             {
                 Text = glyph,
                 FontSize = 12,
                 Foreground = B("App.Text"),
                 VerticalAlignment = VerticalAlignment.Center,
-            },
+            };
+
+        ToggleButton button = new()
+        {
+            Content = face,
             Padding = new Thickness(6, 2),
+            Margin = new Thickness(1, 0),
             MinWidth = 0,
             MinHeight = 0,
             IsChecked = isChecked,
@@ -996,6 +1098,48 @@ public sealed class DiffView : UserControl
             IsChecked = _options.IgnoreWhitespace,
         };
         ignore.Click += (_, _) => _ignoreWhitespaceButton.IsChecked = !_options.IgnoreWhitespace;
+
+        MenuItem ignoreEol = new()
+        {
+            Header = F("{0}  ({1})",
+                T("FileViewer/ignoreWhitespaceAtEolToolStripMenuItem.Text",
+                    "Ignore whitespace changes at end of line"), "--ignore-space-at-eol"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _extras.IgnoreWhitespaceAtEol,
+        };
+        ignoreEol.Click += (_, _) => _ignoreWhitespaceEolButton.IsChecked = !_extras.IgnoreWhitespaceAtEol;
+
+        MenuItem ignoreChange = new()
+        {
+            Header = F("{0}  ({1})",
+                T("FileViewer/ignoreWhitespaceChangesToolStripMenuItem.Text",
+                    "Ignore changes in amount of whitespace"), "-b"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _extras.IgnoreWhitespaceChange,
+        };
+        ignoreChange.Click += (_, _) =>
+            _ignoreWhitespaceChangeButton.IsChecked = !_extras.IgnoreWhitespaceChange;
+
+        MenuItem asText = new()
+        {
+            Header = F("{0}  ({1})",
+                T("FileViewer/treatAllFilesAsTextToolStripMenuItem.Text", "Treat all files as text"), "--text"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _extras.TreatAllFilesAsText,
+        };
+        asText.Click += (_, _) =>
+        {
+            _extras.TreatAllFilesAsText = !_extras.TreatAllFilesAsText;
+            ReloadDiff();
+        };
+
+        MenuItem syntax = new()
+        {
+            Header = T("FileViewer/showSyntaxHighlightingToolStripMenuItem.Text", "Show syntax highlighting"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _extras.SyntaxHighlighting,
+        };
+        syntax.Click += (_, _) => _syntaxButton.IsChecked = !_extras.SyntaxHighlighting;
 
         MenuItem nonPrinting = new()
         {
@@ -1070,9 +1214,13 @@ public sealed class DiffView : UserControl
                 find,
                 goToLine,
                 new Separator(),
+                ignoreEol,
+                ignoreChange,
                 ignore,
                 nonPrinting,
+                syntax,
                 word,
+                asText,
                 new Separator(),
                 moreContext,
                 lessContext,
@@ -1328,7 +1476,7 @@ public sealed class DiffView : UserControl
     // constructor (a ContextMenu re-populated from Opening mis-measures).
     private void UpdateFileMenuState()
     {
-        bool hasFile = _files.SelectedItem is DiffFileRow && _repoPath is not null;
+        bool hasFile = _files.SelectedFile is DiffFileRow && _repoPath is not null;
         bool onDisk = hasFile && File.Exists(SelectedWorkingPath());
 
         _openWorkingFileItem.IsEnabled = onDisk;
@@ -1346,7 +1494,7 @@ public sealed class DiffView : UserControl
     // Absolute path of the selected file in the working tree (it may not exist:
     // the file can have been deleted, or belong to an old revision).
     private string? SelectedWorkingPath() =>
-        _files.SelectedItem is DiffFileRow row && _repoPath is not null
+        _files.SelectedFile is DiffFileRow row && _repoPath is not null
             ? Path.GetFullPath(Path.Combine(_repoPath, row.Name))
             : null;
 
@@ -1377,7 +1525,7 @@ public sealed class DiffView : UserControl
     // opens that copy — the equivalent of the original's "Open this revision".
     private void OpenSelectedRevisionFile()
     {
-        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
         {
             return;
         }
@@ -1407,7 +1555,7 @@ public sealed class DiffView : UserControl
     // read and the write do not.
     private void SaveSelectedAs()
     {
-        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
         {
             return;
         }
@@ -1498,7 +1646,7 @@ public sealed class DiffView : UserControl
     // options (-w, --word-diff, encoding) become real git arguments.
     private void LoadSelectedFileDiff()
     {
-        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
         {
             return;
         }
@@ -1528,6 +1676,17 @@ public sealed class DiffView : UserControl
             ShowEntireFile = _options.ShowEntireFile,
         };
 
+        // The extra flags travel as their own snapshot, for the same reason.
+        DiffViewerOptions extras = new()
+        {
+            IgnoreWhitespaceAtEol = _extras.IgnoreWhitespaceAtEol,
+            IgnoreWhitespaceChange = _extras.IgnoreWhitespaceChange,
+            TreatAllFilesAsText = _extras.TreatAllFilesAsText,
+        };
+
+        // The language of the patch content, for the syntax highlighter.
+        _diffPath = row.Name;
+
         _diff.Inlines?.Clear();
         _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
 
@@ -1535,7 +1694,9 @@ public sealed class DiffView : UserControl
         {
             try
             {
-                string text = await DiffTextService.GetDiffTextAsync(request, options, token);
+                string text = await ExtendedDiffTextService
+                    .GetDiffTextAsync(request, options, extras, token)
+                    .ConfigureAwait(false);
                 if (token.IsCancellationRequested)
                 {
                     return;
@@ -1548,8 +1709,8 @@ public sealed class DiffView : UserControl
                         RenderDiff(text);
 
                         // Show the command that produced the patch, so the effect of
-                        // the toolbar toggles (-w, --word-diff) is visible.
-                        _status.Text = DiffTextService.DescribeCommand(request, options);
+                        // the toolbar toggles (-w, -b, --word-diff, --text) is visible.
+                        _status.Text = ExtendedDiffTextService.DescribeCommand(request, options, extras);
                     }
                 });
             }
@@ -1604,6 +1765,16 @@ public sealed class DiffView : UserControl
         bool inlineHighlight = CollectMatches(display);
         int matchCursor = 0;
 
+        // Syntax highlighting obeys the same size rule as the search highlighting:
+        // both work by splitting lines into extra Runs, and each Run is its own
+        // text-layout box. Past the cap the patch renders one Run per line, as
+        // before, rather than making a huge file crawl.
+        SyntaxLanguage? language = _extras.SyntaxHighlighting && rawLines.Length <= MaxHighlightLines
+            ? DiffSyntaxHighlighter.Detect(_diffPath)
+            : null;
+        SyntaxState syntaxState = new();
+        List<SyntaxSpan> spans = [];
+
         int lineNumber = -1;
         foreach (string rawLine in rawLines)
         {
@@ -1639,6 +1810,29 @@ public sealed class DiffView : UserControl
 
             line = display[lineNumber];
 
+            // Only the content lines carry code; the file/hunk headers keep their
+            // own colour. A tokenized +/- line moves its identity to a background
+            // tint, because its foreground now belongs to the tokens.
+            IBrush? lineBackground = null;
+            spans.Clear();
+
+            if (language is not null &&
+                (brush is null || ReferenceEquals(brush, AddedBrush) || ReferenceEquals(brush, RemovedBrush)))
+            {
+                // The leading +/-/space is diff syntax, not code.
+                int from = rawLine.Length > 0 && rawLine[0] is '+' or '-' or ' ' ? 1 : 0;
+                DiffSyntaxHighlighter.Tokenize(language, line, from, syntaxState, spans);
+
+                if (ReferenceEquals(brush, AddedBrush))
+                {
+                    lineBackground = AddedTint;
+                }
+                else if (ReferenceEquals(brush, RemovedBrush))
+                {
+                    lineBackground = RemovedTint;
+                }
+            }
+
             // Skip past matches belonging to earlier lines (only possible when
             // highlighting is suppressed, but keeps the cursor honest).
             while (matchCursor < _searchMatches.Count && _searchMatches[matchCursor].Line < lineNumber)
@@ -1650,22 +1844,19 @@ public sealed class DiffView : UserControl
                 && matchCursor < _searchMatches.Count
                 && _searchMatches[matchCursor].Line == lineNumber;
 
-            if (!lineHasMatch)
-            {
-                inlines.Add(Segment(line + "\n", brush, background: null));
-                continue;
-            }
-
+            int firstRun = inlines.Count;
             int pos = 0;
-            while (matchCursor < _searchMatches.Count && _searchMatches[matchCursor].Line == lineNumber)
+
+            while (lineHasMatch
+                && matchCursor < _searchMatches.Count
+                && _searchMatches[matchCursor].Line == lineNumber)
             {
                 (_, int start, int length) = _searchMatches[matchCursor];
 
-                if (start > pos)
-                {
-                    inlines.Add(Segment(line[pos..start], brush, background: null));
-                }
+                EmitSpans(inlines, line, pos, start, brush, lineBackground, spans);
 
+                // A match is always exactly one Run, whatever the tokens under it:
+                // the ▲/▼ navigation addresses matches by Run.
                 Run hit = Segment(line.Substring(start, length), brush, MatchBrush);
                 inlines.Add(hit);
                 _matchRuns.Add(hit);
@@ -1674,7 +1865,18 @@ public sealed class DiffView : UserControl
                 matchCursor++;
             }
 
-            inlines.Add(Segment(line[pos..] + "\n", brush, background: null));
+            EmitSpans(inlines, line, pos, line.Length, brush, lineBackground, spans);
+
+            // The line break rides on the line's last Run, so an unhighlighted
+            // patch still costs exactly one Run per line, as it did before.
+            if (inlines.Count == firstRun)
+            {
+                inlines.Add(Segment("\n", brush, lineBackground));
+            }
+            else if (inlines[^1] is Run tail)
+            {
+                tail.Text += "\n";
+            }
         }
 
         // A reload (new file, new toggle) rebuilds the match list: put the
@@ -1688,6 +1890,63 @@ public sealed class DiffView : UserControl
             UpdateMatchCounter();
         }
     }
+
+    // Emits line[from..to], splitting it wherever a syntax span applies. The spans
+    // are ordered and clipped to the range, so this can be called once per
+    // between-matches region of the same line.
+    private static void EmitSpans(
+        InlineCollection inlines,
+        string line,
+        int from,
+        int to,
+        IBrush? baseForeground,
+        IBrush? background,
+        List<SyntaxSpan> spans)
+    {
+        if (to <= from)
+        {
+            return;
+        }
+
+        if (spans.Count == 0)
+        {
+            inlines.Add(Segment(line[from..to], baseForeground, background));
+            return;
+        }
+
+        int pos = from;
+        foreach (SyntaxSpan span in spans)
+        {
+            int start = Math.Max(span.Start, from);
+            int end = Math.Min(span.Start + span.Length, to);
+            if (end <= start)
+            {
+                continue;
+            }
+
+            if (start > pos)
+            {
+                inlines.Add(Segment(line[pos..start], baseForeground, background));
+            }
+
+            inlines.Add(Segment(line[start..end], TokenBrush(span.Kind), background));
+            pos = end;
+        }
+
+        if (pos < to)
+        {
+            inlines.Add(Segment(line[pos..to], baseForeground, background));
+        }
+    }
+
+    private static IBrush TokenBrush(SyntaxTokenKind kind) => kind switch
+    {
+        SyntaxTokenKind.Keyword => KeywordBrush,
+        SyntaxTokenKind.String => StringBrush,
+        SyntaxTokenKind.Comment => CommentBrush,
+        SyntaxTokenKind.Number => NumberBrush,
+        _ => PreprocessorBrush,
+    };
 
     private static Run Segment(string text, IBrush? foreground, IBrush? background)
     {
