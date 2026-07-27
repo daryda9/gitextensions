@@ -6,6 +6,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 
 // The toolbar has its own Separator(IBrush) factory for the inline group rules,
@@ -122,13 +123,29 @@ public sealed class MainToolbar : UserControl
     // Last-known current branch, so the branch flyout can mark/bold it.
     private string _currentBranch = string.Empty;
 
-    private readonly OverflowPanel _bar;
+    // Rebuilt wholesale when the language changes, so neither is readonly.
+    private OverflowPanel _bar = null!;
 
     // Overflow ("»") button + its flyout, and the per-item descriptors used to
     // rebuild that flyout from the items the panel could not fit.
-    private readonly Button _overflowButton;
+    private Button _overflowButton = null!;
     private readonly MenuFlyout _overflowFlyout = new();
     private readonly Dictionary<Control, OverflowEntry> _overflow = new();
+
+    // ---- state re-applied after a language rebuild ---------------------------
+    // Build() re-creates every caption from scratch, so the last values the host
+    // pushed in are remembered here and replayed onto the fresh controls. Without
+    // this a language switch would blank the push/pull badges, the commit count,
+    // the repo/branch captions and the split-view check mark until the next
+    // refresh.
+    private bool _hasState;
+    private int _lastAhead;
+    private int _lastBehind;
+    private int _lastStaged;
+    private int _lastUnstaged;
+    private string _lastRepoPath = string.Empty;
+    private string _lastBranch = string.Empty;
+    private bool _splitViewOn;
 
     public MainToolbar()
     {
@@ -143,128 +160,11 @@ public sealed class MainToolbar : UserControl
         BorderBrush = border;
         BorderThickness = new Thickness(0, 0, 0, 1);
 
-        // The "»" overflow button: shown by OverflowPanel only when the strip is
-        // too narrow for every item, and dropping a menu with the items left out.
-        _overflowButton = MakeOverflowButton();
-
-        OverflowPanel bar = new(_overflowButton)
-        {
-            VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 2,
-            Margin = new Thickness(6, 3),
-        };
-        _bar = bar;
-
-        bar.AddItem(MakeButton("RepoOpen", "Open", "Open repository", () => OpenRepoRequested?.Invoke()));
-
-        // Inline repo-path + branch dropdowns near the left, echoing the original
-        // FormBrowse toolbar (a repository-path selector and a current-branch
-        // selector inline in the toolbar).
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeRepoPathButton(border));
-        bar.AddItem(MakeBranchButton(border));
-
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("PullFetch", "Fetch", "Fetch from remote", () => FetchRequested?.Invoke()));
-        _pullButton = MakeButton("Pull", "Pull", "Pull from remote", () => PullRequested?.Invoke(),
-            out _pullCaption, out _pullIcon);
-        bar.AddItem(_pullButton);
-        _pushButton = MakeButton("Push", "Push", "Push to remote", () => PushRequested?.Invoke(),
-            out _pushCaption, out _pushIcon);
-        bar.AddItem(_pushButton);
-        bar.AddItem(Separator(border));
-        _commitButton = MakeButton("CommitSummary", "Commit", "Commit changes", () => CommitRequested?.Invoke(),
-            out _commitCaption, out _commitIcon);
-        bar.AddItem(_commitButton);
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("stash", "Stash", "Stash changes", () => StashRequested?.Invoke()));
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("ReloadRevisions", "Refresh", "Refresh", () => RefreshRequested?.Invoke()));
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("BranchCreate", "New branch", "Create a new branch", () => NewBranchRequested?.Invoke()));
-
-        // ---- submodules / worktrees split buttons --------------------------------
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeRepoLinkButton("SubmodulesManage", "Submodules",
-            "Open a submodule (or the parent super-project) as the active repository",
-            () => SubmodulesProvider, border));
-        bar.AddItem(MakeRepoLinkButton("WorkTree", "Worktrees",
-            "Open a worktree as the active repository",
-            () => WorktreesProvider, border));
-
-        // ---- view / layout group -------------------------------------------------
-        bar.AddItem(Separator(border));
-        // Split view is a TOGGLE: the caption carries a check mark while it is on,
-        // which also labels the entry the overflow menu builds from LiveCaption.
-        _splitButton = MakeButton("LayoutFooter", "Split view",
-            "Show the commit detail and the diff side by side in the Commit tab",
-            () => SplitViewToggleRequested?.Invoke(),
-            out _splitCaption, out _);
-        bar.AddItem(_splitButton);
-        bar.AddItem(MakeMenuButton("LayoutSidebarLeft", "Commit info", "Commit-info position", new[]
-        {
-            ("LayoutFooter", "Below graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.BelowGraph))),
-            ("LayoutSidebarTopLeft", "Left of graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.LeftOfGraph))),
-            ("LayoutSidebarTopRight", "Right of graph", (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.RightOfGraph))),
-        }));
-
-        // ---- external tools group ------------------------------------------------
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("BrowseFileExplorer", "File Explorer", "Open the repository in the file manager",
-            () => FileExplorerRequested?.Invoke()));
-        bar.AddItem(MakeButton("Console", "Terminal", "Open a terminal in the repository directory",
-            () => OpenTerminalRequested?.Invoke()));
-
-        // ---- branch-scope + filter group (right side) ---------------------------
-        // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
-        // "Filter:" combo. Placed after the buttons and before the (lazily-added)
-        // repo indicator so the two selectors read on the right of the strip.
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeMenuButton("Branch", "All branches", "Which branches the revision grid shows", new[]
-        {
-            ("Branch", "All branches", (Action)(() => BranchScopeChanged?.Invoke(0))),
-            ("Branch", "Current branch", (Action)(() => BranchScopeChanged?.Invoke(1))),
-            ("Branch", "Filtered", (Action)(() => BranchScopeChanged?.Invoke(2))),
-        }));
-
-        TextBlock filterLabel = new()
-        {
-            Text = "Filter:",
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Brush("App.TextDim", "#8A8A8A"),
-            FontSize = 12,
-            Margin = new Thickness(8, 0, 4, 0),
-        };
-        bar.AddItem(filterLabel);
-        _overflow[filterLabel] = new OverflowEntry { Kind = OverflowKind.Skip };
-
-        TextBox filterBox = new()
-        {
-            Width = 180,
-            Watermark = "author / message / hash",
-            Background = Brush("App.Panel", "#252526"),
-            Foreground = Brush("App.Text", "#DCDCDC"),
-            BorderBrush = border,
-            BorderThickness = new Thickness(1),
-            FontSize = 12,
-            Padding = new Thickness(6, 2, 4, 2),
-            VerticalContentAlignment = VerticalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        ToolTip.SetTip(filterBox, "Filter the revision grid (author / message / hash)");
-        filterBox.TextChanged += (_, _) => FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
-        bar.AddItem(filterBox);
-        _overflow[filterBox] = new OverflowEntry
-        {
-            Kind = OverflowKind.Filter,
-            Label = "Filter",
-            Icon = "ViewFilter",
-            FilterBox = filterBox,
-        };
-
         // Flat/borderless buttons with a subtle hover fill (the Fluent template
         // paints the button's chrome through its inner ContentPresenter, so we
         // style that part directly for both the resting and pointer-over states).
+        // Added once, in the constructor: the styles live on the control itself and
+        // survive the strip being rebuilt for a language change.
         Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn")
             .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
         {
@@ -294,6 +194,175 @@ public sealed class MainToolbar : UserControl
             },
         });
 
+        Build();
+
+        // A language switch rebuilds the strip in place — no restart. Posting the
+        // rebuild keeps it out of the loader's continuation (same pattern as MainMenu).
+        TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        Build();
+
+        // Replay whatever the host last told us, so badges/captions survive.
+        if (_hasState)
+        {
+            UpdateState(_lastAhead, _lastBehind, _lastStaged, _lastUnstaged, _lastRepoPath, _lastBranch);
+        }
+
+        SetSplitView(_splitViewOn);
+    });
+
+    /// <summary>
+    ///  (Re-)creates the whole toolbar strip. Called from the constructor and again
+    ///  whenever the language changes; every caption is produced through
+    ///  <see cref="T(string?, string)"/> so the fresh strip speaks the new language.
+    ///  Provider properties and public events live on the control (not on the
+    ///  rebuilt children) and therefore survive untouched.
+    /// </summary>
+    private void Build()
+    {
+        IBrush border = Brush("App.Border", "#3F3F46");
+
+        // Stale descriptors would keep the discarded controls (and their captions)
+        // alive in the overflow menu.
+        _overflow.Clear();
+        _repoIndicator = null;
+
+        // The "»" overflow button: shown by OverflowPanel only when the strip is
+        // too narrow for every item, and dropping a menu with the items left out.
+        _overflowButton = MakeOverflowButton();
+
+        OverflowPanel bar = new(_overflowButton)
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 2,
+            Margin = new Thickness(6, 3),
+        };
+        _bar = bar;
+
+        bar.AddItem(MakeButton("RepoOpen", T("FormBrowse/openToolStripMenuItem.Text", "Open"),
+            T("Dashboard/_openRepository.Text", "Open repository"), () => OpenRepoRequested?.Invoke()));
+
+        // Inline repo-path + branch dropdowns near the left, echoing the original
+        // FormBrowse toolbar (a repository-path selector and a current-branch
+        // selector inline in the toolbar).
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeRepoPathButton(border));
+        bar.AddItem(MakeBranchButton(border));
+
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("PullFetch", T("FormBrowse/_pullFetch.Text", "Fetch"),
+            T("FormBrowse/fetchToolStripMenuItem.ToolTipText", "Fetch from remote"), () => FetchRequested?.Invoke()));
+        _pullButton = MakeButton("Pull", T("FormBrowse/toolStripButtonPull.Text", "Pull"),
+            T("Pull from remote"), () => PullRequested?.Invoke(),
+            out _pullCaption, out _pullIcon);
+        bar.AddItem(_pullButton);
+        _pushButton = MakeButton("Push", T("FormBrowse/toolStripButtonPush.Text", "Push"),
+            T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"), () => PushRequested?.Invoke(),
+            out _pushCaption, out _pushIcon);
+        bar.AddItem(_pushButton);
+        bar.AddItem(Separator(border));
+        _commitButton = MakeButton("CommitSummary", T("FormBrowse/toolStripButtonCommit.Text", "Commit"),
+            T("Commit changes"), () => CommitRequested?.Invoke(),
+            out _commitCaption, out _commitIcon);
+        bar.AddItem(_commitButton);
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("stash", T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash"),
+            T("FormBrowse/stashChangesToolStripMenuItem.ToolTipText", "Stash changes"), () => StashRequested?.Invoke()));
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("ReloadRevisions", T("FormBrowse/RefreshButton.ToolTipText", "Refresh"),
+            T("FormBrowse/RefreshButton.ToolTipText", "Refresh"), () => RefreshRequested?.Invoke()));
+        bar.AddItem(Separator(border));
+        // Upstream's wording for the same command is "Create branch"; the port's
+        // shorter caption keeps the strip narrow but reuses that catalogue entry.
+        bar.AddItem(MakeButton("BranchCreate", T("TranslatedStrings/_buttonCreateBranch.Text", "New branch"),
+            T("FormCommit/createBranchToolStripButton.ToolTipText", "Create a new branch"), () => NewBranchRequested?.Invoke()));
+
+        // ---- submodules / worktrees split buttons --------------------------------
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeRepoLinkButton("SubmodulesManage", T("TranslatedStrings/_submodulesText.Text", "Submodules"),
+            T("Open a submodule (or the parent super-project) as the active repository"),
+            () => SubmodulesProvider, border));
+        bar.AddItem(MakeRepoLinkButton("WorkTree", T("TranslatedStrings/_worktreesText.Text", "Worktrees"),
+            T("Open a worktree as the active repository"),
+            () => WorktreesProvider, border));
+
+        // ---- view / layout group -------------------------------------------------
+        bar.AddItem(Separator(border));
+        // Split view is a TOGGLE: the caption carries a check mark while it is on,
+        // which also labels the entry the overflow menu builds from LiveCaption.
+        _splitButton = MakeButton("LayoutFooter", T("Split view"),
+            T("Show the commit detail and the diff side by side in the Commit tab"),
+            () => SplitViewToggleRequested?.Invoke(),
+            out _splitCaption, out _);
+        bar.AddItem(_splitButton);
+        bar.AddItem(MakeMenuButton("LayoutSidebarLeft", T("Commit info"),
+            T("FormBrowse/menuCommitInfoPosition.ToolTipText", "Commit-info position"), new[]
+        {
+            ("LayoutFooter", T("FormBrowse/commitInfoBelowMenuItem.Text", "Below graph"), (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.BelowGraph))),
+            ("LayoutSidebarTopLeft", T("FormBrowse/commitInfoLeftwardMenuItem.Text", "Left of graph"), (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.LeftOfGraph))),
+            ("LayoutSidebarTopRight", T("FormBrowse/commitInfoRightwardMenuItem.Text", "Right of graph"), (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.RightOfGraph))),
+        }));
+
+        // ---- external tools group ------------------------------------------------
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeButton("BrowseFileExplorer", T("FormBrowse/toolStripFileExplorer.ToolTipText", "File Explorer"),
+            T("Open the repository in the file manager"),
+            () => FileExplorerRequested?.Invoke()));
+        bar.AddItem(MakeButton("Console", T("Terminal"), T("Open a terminal in the repository directory"),
+            () => OpenTerminalRequested?.Invoke()));
+
+        // ---- branch-scope + filter group (right side) ---------------------------
+        // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
+        // "Filter:" combo. Placed after the buttons and before the (lazily-added)
+        // repo indicator so the two selectors read on the right of the strip.
+        bar.AddItem(Separator(border));
+        bar.AddItem(MakeMenuButton("Branch", T("FormBrowse/tssbtnShowBranches.Text", "All branches"),
+            T("Which branches the revision grid shows"), new[]
+        {
+            ("Branch", T("FormBrowse/tssbtnShowBranches.Text", "All branches"), (Action)(() => BranchScopeChanged?.Invoke(0))),
+            ("Branch", T("Current branch"), (Action)(() => BranchScopeChanged?.Invoke(1))),
+            ("Branch", T("Filtered"), (Action)(() => BranchScopeChanged?.Invoke(2))),
+        }));
+
+        TextBlock filterLabel = new()
+        {
+            // The colon is punctuation, not part of the translatable noun.
+            Text = string.Format("{0}:", T("FormBrowse/ToolStripFilters.Text", "Filter")),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.TextDim", "#8A8A8A"),
+            FontSize = 12,
+            Margin = new Thickness(8, 0, 4, 0),
+        };
+        bar.AddItem(filterLabel);
+        _overflow[filterLabel] = new OverflowEntry { Kind = OverflowKind.Skip };
+
+        TextBox filterBox = new()
+        {
+            Width = 180,
+            Watermark = T("author / message / hash"),
+            Background = Brush("App.Panel", "#252526"),
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            BorderBrush = border,
+            BorderThickness = new Thickness(1),
+            FontSize = 12,
+            Padding = new Thickness(6, 2, 4, 2),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(filterBox, T("Filter the revision grid (author / message / hash)"));
+        filterBox.TextChanged += (_, _) => FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
+        bar.AddItem(filterBox);
+        _overflow[filterBox] = new OverflowEntry
+        {
+            Kind = OverflowKind.Filter,
+            Label = T("FormBrowse/ToolStripFilters.Text", "Filter"),
+            Icon = "ViewFilter",
+            FilterBox = filterBox,
+        };
+
         Content = bar;
     }
 
@@ -310,6 +379,15 @@ public sealed class MainToolbar : UserControl
     /// <param name="branch">Current branch name (may be empty).</param>
     public void UpdateState(int ahead, int behind, int staged, int unstaged, string repoPath, string branch)
     {
+        // Remembered so a language rebuild can replay it onto the fresh captions.
+        _hasState = true;
+        _lastAhead = ahead;
+        _lastBehind = behind;
+        _lastStaged = staged;
+        _lastUnstaged = unstaged;
+        _lastRepoPath = repoPath ?? string.Empty;
+        _lastBranch = branch ?? string.Empty;
+
         IBrush text = Brush("App.Text", "#DCDCDC");
         IBrush dim = Brush("App.TextDim", "#8A8A8A");
         IBrush accent = Brush("App.Accent", "#007ACC");
@@ -320,7 +398,9 @@ public sealed class MainToolbar : UserControl
         if (_pushCaption is not null)
         {
             bool lit = ahead > 0;
-            _pushCaption.Text = lit ? $"Push ↑{ahead}" : "Push";
+            _pushCaption.Text = lit
+                ? string.Format(T("{0} ↑{1}"), T("FormBrowse/toolStripButtonPush.Text", "Push"), ahead)
+                : T("FormBrowse/toolStripButtonPush.Text", "Push");
             _pushCaption.Foreground = lit ? accent : text;
             if (_pushIcon is not null)
             {
@@ -332,7 +412,9 @@ public sealed class MainToolbar : UserControl
         if (_pullCaption is not null)
         {
             bool lit = behind > 0;
-            _pullCaption.Text = lit ? $"Pull ↓{behind}" : "Pull";
+            _pullCaption.Text = lit
+                ? string.Format(T("{0} ↓{1}"), T("FormBrowse/toolStripButtonPull.Text", "Pull"), behind)
+                : T("FormBrowse/toolStripButtonPull.Text", "Pull");
             _pullCaption.Foreground = lit ? accent : text;
             if (_pullIcon is not null)
             {
@@ -345,7 +427,9 @@ public sealed class MainToolbar : UserControl
         {
             int changes = staged + unstaged;
             IBrush commitColour = staged > 0 ? green : unstaged > 0 ? orange : dim;
-            _commitCaption.Text = changes > 0 ? $"Commit ({changes})" : "Commit";
+            _commitCaption.Text = changes > 0
+                ? string.Format(T("{0} ({1})"), T("FormBrowse/toolStripButtonCommit.Text", "Commit"), changes)
+                : T("FormBrowse/toolStripButtonCommit.Text", "Commit");
             _commitCaption.Foreground = commitColour;
             if (_commitIcon is not null)
             {
@@ -357,7 +441,7 @@ public sealed class MainToolbar : UserControl
         _currentBranch = branch ?? string.Empty;
         if (_branchCaption is not null)
         {
-            _branchCaption.Text = string.IsNullOrWhiteSpace(branch) ? "(no branch)" : branch;
+            _branchCaption.Text = string.IsNullOrWhiteSpace(branch) ? NoBranchCaption() : branch;
             _branchCaption.Foreground = text;
         }
 
@@ -365,7 +449,7 @@ public sealed class MainToolbar : UserControl
         if (_repoPathCaption is not null)
         {
             _repoPathCaption.Text = string.IsNullOrWhiteSpace(repoPath)
-                ? "(no repository)"
+                ? T("(no repository)")
                 : CollapseHome(repoPath);
         }
 
@@ -392,7 +476,7 @@ public sealed class MainToolbar : UserControl
 
         if (string.IsNullOrWhiteSpace(repoPath))
         {
-            _repoIndicator.Text = "(no repository)";
+            _repoIndicator.Text = T("(no repository)");
             _repoIndicator.Foreground = dim;
             ToolTip.SetTip(_repoIndicator, null);
         }
@@ -405,11 +489,9 @@ public sealed class MainToolbar : UserControl
             }
 
             string shown = CollapseHome(repoPath);
-            string label = $"{name} — {shown}";
-            if (!string.IsNullOrWhiteSpace(branch))
-            {
-                label += $" ({branch})";
-            }
+            string label = string.IsNullOrWhiteSpace(branch)
+                ? string.Format(T("{0} — {1}"), name, shown)
+                : string.Format(T("{0} — {1} ({2})"), name, shown, branch);
 
             _repoIndicator.Text = label;
             _repoIndicator.Foreground = dim;
@@ -417,35 +499,9 @@ public sealed class MainToolbar : UserControl
         }
     }
 
-    // Replaces a leading user-home prefix with "~" for a compact path display.
-    // Display-only: the persisted/opened path stays absolute and normalized.
-    private static string CollapseHome(string path)
-    {
-        string home = UserHome.Path;
-        if (string.IsNullOrEmpty(home))
-        {
-            return path;
-        }
-
-        string trimmedHome = home.TrimEnd('/');
-        if (trimmedHome.Length == 0)
-        {
-            return path;
-        }
-
-        if (string.Equals(path, trimmedHome, StringComparison.Ordinal))
-        {
-            return "~";
-        }
-
-        // Only collapse on a real directory boundary, so "/home/dariofoo" is left alone.
-        if (path.StartsWith(trimmedHome + "/", StringComparison.Ordinal))
-        {
-            return "~" + path.Substring(trimmedHome.Length);
-        }
-
-        return path;
-    }
+    // Path display (home collapsed to "~") is shared with the revision grid's
+    // status line — see PathDisplay.CollapseHome.
+    private static string CollapseHome(string path) => PathDisplay.CollapseHome(path);
 
     /// <summary>
     ///  Reflects the host's split-view state on the toggle: a checked, accented
@@ -454,18 +510,19 @@ public sealed class MainToolbar : UserControl
     /// </summary>
     public void SetSplitView(bool on)
     {
+        _splitViewOn = on;
         if (_splitCaption is null)
         {
             return;
         }
 
-        _splitCaption.Text = on ? "Split view ✓" : "Split view";
+        _splitCaption.Text = on ? string.Format(T("{0} ✓"), T("Split view")) : T("Split view");
         _splitCaption.Foreground = on ? Brush("App.Accent", "#3399FF") : Brush("App.Text", "#DCDCDC");
         if (_splitButton is not null)
         {
             ToolTip.SetTip(_splitButton, on
-                ? "Split view on: commit detail and diff side by side in the Commit tab"
-                : "Show the commit detail and the diff side by side in the Commit tab");
+                ? T("Split view on: commit detail and diff side by side in the Commit tab")
+                : T("Show the commit detail and the diff side by side in the Commit tab"));
         }
     }
 
@@ -683,11 +740,11 @@ public sealed class MainToolbar : UserControl
         flyout.Items.Clear();
         if (provider is null)
         {
-            flyout.Items.Add(new MenuItem { Header = "(no repository open)", IsEnabled = false });
+            flyout.Items.Add(new MenuItem { Header = T("(no repository open)"), IsEnabled = false });
             return;
         }
 
-        flyout.Items.Add(new MenuItem { Header = "Loading…", IsEnabled = false });
+        flyout.Items.Add(new MenuItem { Header = T("RevisionGridControl/_strLoading.Text", "Loading…"), IsEnabled = false });
 
         IReadOnlyList<RepoLink> links;
         try
@@ -697,20 +754,24 @@ public sealed class MainToolbar : UserControl
         catch
         {
             flyout.Items.Clear();
-            flyout.Items.Add(new MenuItem { Header = "(unable to list)", IsEnabled = false });
+            flyout.Items.Add(new MenuItem { Header = T("(unable to list)"), IsEnabled = false });
             return;
         }
 
         flyout.Items.Clear();
         if (links.Count == 0)
         {
-            flyout.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+            flyout.Items.Add(new MenuItem { Header = T("(none)"), IsEnabled = false });
             return;
         }
 
         foreach (RepoLink link in links)
         {
-            MenuItem item = new() { Header = link.Label };
+            // A string MenuItem header goes through Avalonia's access-key parser,
+            // so an underscore in the data ("git_ext_mod") is escaped to survive.
+            // (Captions rendered by a plain TextBlock must NOT be escaped — the
+            // glyphs would show up doubled.)
+            MenuItem item = new() { Header = link.Label.Replace("_", "__") };
             Image? mIcon = IconLoader.Image(string.IsNullOrEmpty(link.Icon) ? fallbackIcon : link.Icon, 16);
             if (mIcon is not null)
             {
@@ -745,7 +806,7 @@ public sealed class MainToolbar : UserControl
 
         _branchCaption = new TextBlock
         {
-            Text = "(no branch)",
+            Text = NoBranchCaption(),
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
@@ -773,7 +834,7 @@ public sealed class MainToolbar : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
         };
         button.Classes.Add("toolbtn");
-        ToolTip.SetTip(button, "Checkout a local branch");
+        ToolTip.SetTip(button, T("TranslatedStrings/_buttonCheckoutBranch.Text", "Checkout a local branch"));
         button.Click += async (_, _) =>
         {
             await PopulateBranchesAsync(flyout, BranchesProvider);
@@ -782,7 +843,7 @@ public sealed class MainToolbar : UserControl
         _overflow[button] = new OverflowEntry
         {
             Kind = OverflowKind.LazyMenu,
-            Label = "Branch",
+            Label = T("TranslatedStrings/_branchText.Text", "Branch"),
             Icon = "Branch",
             LiveCaption = _branchCaption,
             ShowMenu = async anchor =>
@@ -816,7 +877,7 @@ public sealed class MainToolbar : UserControl
 
         _repoPathCaption = new TextBlock
         {
-            Text = "(no repository)",
+            Text = T("(no repository)"),
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
@@ -844,7 +905,7 @@ public sealed class MainToolbar : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
         };
         button.Classes.Add("toolbtn");
-        ToolTip.SetTip(button, "Open a recent repository");
+        ToolTip.SetTip(button, T("FormBrowse/tsmiRecentRepositories.Text", "Open a recent repository"));
         button.Click += async (_, _) =>
         {
             if (RecentReposProvider is null)
@@ -860,7 +921,7 @@ public sealed class MainToolbar : UserControl
         _overflow[button] = new OverflowEntry
         {
             Kind = OverflowKind.LazyMenu,
-            Label = "Repository",
+            Label = T("Repository"),
             Icon = "RepoOpen",
             LiveCaption = _repoPathCaption,
             ShowMenu = async anchor =>
@@ -888,7 +949,7 @@ public sealed class MainToolbar : UserControl
         flyout.Items.Clear();
         if (provider is null)
         {
-            flyout.Items.Add(new MenuItem { Header = "(no repository)", IsEnabled = false });
+            flyout.Items.Add(new MenuItem { Header = T("(no repository)"), IsEnabled = false });
             return;
         }
 
@@ -1016,7 +1077,7 @@ public sealed class MainToolbar : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
         };
         button.Classes.Add("toolbtn");
-        ToolTip.SetTip(button, "More toolbar commands");
+        ToolTip.SetTip(button, T("More toolbar commands"));
         button.Click += (_, _) =>
         {
             BuildOverflowMenu();
@@ -1068,7 +1129,7 @@ public sealed class MainToolbar : UserControl
 
         if (_overflowFlyout.Items.Count == 0)
         {
-            _overflowFlyout.Items.Add(new MenuItem { Header = "(nothing hidden)", IsEnabled = false });
+            _overflowFlyout.Items.Add(new MenuItem { Header = T("(nothing hidden)"), IsEnabled = false });
         }
     }
 
@@ -1118,7 +1179,7 @@ public sealed class MainToolbar : UserControl
                     {
                         new TextBlock
                         {
-                            Text = "Filter:",
+                            Text = string.Format("{0}:", T("FormBrowse/ToolStripFilters.Text", "Filter")),
                             VerticalAlignment = VerticalAlignment.Center,
                             Foreground = Brush("App.TextDim", "#8A8A8A"),
                             FontSize = 12,
@@ -1322,46 +1383,16 @@ public sealed class MainToolbar : UserControl
             => item.Tag as string == SeparatorTag;
     }
 
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    // "(no branch)" is the port's parenthesised form of the upstream noun.
+    private static string NoBranchCaption()
+        => string.Format("({0})", T("TranslatedStrings/_noBranch.Text", "no branch"));
+
     private static IBrush Brush(string key, string fallback)
         => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b
             ? b
             : new SolidColorBrush(Color.Parse(fallback));
-}
-
-/// <summary>
-///  The user's real home directory, snapshotted at assembly load.
-///
-///  It cannot be read on demand: the Git Extensions core rewrites the process
-///  <c>HOME</c> variable on startup (<c>EnvironmentConfiguration.SetEnvironmentVariables</c>
-///  assigns it <see cref="Environment.SpecialFolder.Personal"/>, which on Linux is
-///  <c>~/Documents</c>, and can also clear it), and that runs on a background thread
-///  while the shell is already building. A later
-///  <c>GetFolderPath(SpecialFolder.UserProfile)</c> therefore returns <c>~/Documents</c>
-///  or an empty string depending on timing — which is why the toolbar repo caption
-///  intermittently showed the full absolute path instead of the <c>~</c> form.
-///
-///  The module initializer runs before <c>Main</c> and before any core assembly code,
-///  so the value captured here is the genuine login home.
-/// </summary>
-internal static class UserHome
-{
-    private static string _path = string.Empty;
-
-    /// <summary>Gets the home directory as it was before any core code touched <c>HOME</c>.</summary>
-    internal static string Path => _path;
-
-    [System.Runtime.CompilerServices.ModuleInitializer]
-    internal static void Capture()
-    {
-        try
-        {
-            _path = Environment.GetEnvironmentVariable("HOME") is { Length: > 0 } home
-                ? home
-                : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-        catch
-        {
-            _path = string.Empty;
-        }
-    }
 }

@@ -52,8 +52,17 @@ public sealed class RevisionGridView : UserControl
 
     // "Go to ▾" bar button (holds the navigation flyout) and its hash entry box,
     // kept as fields so a keyboard shortcut (Ctrl+G) can open + focus them.
+    // The box is re-created together with the flyout on a language switch (a
+    // control cannot be moved between two visual trees), so it is not readonly.
     private readonly Button _goToButton;
-    private readonly TextBox _goToBox;
+    private TextBox _goToBox;
+
+    // The other compact bar buttons, kept so Relabel() can re-caption them and
+    // rebuild their flyouts (which carry translated labels) in place.
+    private readonly Button _dateButton;
+    private readonly Button _columnsButton;
+    private readonly Button _branchesButton;
+    private readonly Button _viewButton;
 
     // --- Type-to-search (quick-search) -------------------------------------
     //
@@ -201,7 +210,7 @@ public sealed class RevisionGridView : UserControl
             FontSize = 12,
             Background = B("App.Toolbar"),
             Padding = new Thickness(0, 2, 0, 2),
-            Text = "No repository loaded.",
+            Text = T("No repository loaded."),
             // A deep repository path would otherwise run past the right edge and
             // hide the commit count / scope that follow it. Ellipsize instead, and
             // keep the full line reachable through the tooltip.
@@ -212,7 +221,7 @@ public sealed class RevisionGridView : UserControl
 
         _search = new TextBox
         {
-            Watermark = "Filter: author / message / hash",
+            Watermark = T("Filter: author / message / hash"),
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
             BorderBrush = B("App.Border"),
@@ -261,50 +270,39 @@ public sealed class RevisionGridView : UserControl
         // Compact "View" controls sitting to the right of the filter box: a Date
         // menu (author/commit + relative/absolute) and a Columns menu (show/hide
         // Author, Date, Commit-ID). Both apply live via RefreshView().
-        Button dateButton = MakeBarButton("Date ▾");
-        dateButton.Flyout = BuildDateFlyout();
+        _dateButton = MakeBarButton(Chevron(T("TranslatedStrings/_dateText.Text", "Date")));
+        _dateButton.Flyout = BuildDateFlyout();
 
-        Button columnsButton = MakeBarButton("Columns ▾");
-        columnsButton.Flyout = BuildColumnsFlyout();
+        _columnsButton = MakeBarButton(Chevron(T("RevisionGrid/ColumnsToolStripMenuItem.Text", "Columns")));
+        _columnsButton.Flyout = BuildColumnsFlyout();
 
         // Compact commit-navigation control: first-parent / child jumps plus a
         // "go to commit" hash box. Also reachable via keyboard (Alt+↑ / Alt+↓ / Ctrl+G).
-        _goToBox = new TextBox
-        {
-            Watermark = "hash (full or short)",
-            Background = B("App.Window"),
-            Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(1),
-            FontSize = 12,
-            MinWidth = 150,
-            Padding = new Thickness(6, 3, 4, 3),
-            VerticalContentAlignment = VerticalAlignment.Center,
-        };
-        _goToButton = MakeBarButton("Go to ▾");
+        _goToBox = MakeGoToBox();
+        _goToButton = MakeBarButton(Chevron(T("RevisionGrid/GotoCommit.Text", "Go to")));
         _goToButton.Flyout = BuildGoToFlyout();
 
         // Branch-scope control: All branches / Current branch only / Filtered.
         // Switching re-runs the log through the existing load path (Reload).
-        Button branchesButton = MakeBarButton("Branches ▾");
-        branchesButton.Flyout = BuildBranchesFlyout();
+        _branchesButton = MakeBarButton(Chevron(T("RevisionGrid/BranchesToolStripMenuItem.Text", "Branches")));
+        _branchesButton.Flyout = BuildBranchesFlyout();
 
         // "View" control: remote/tag/stash inclusion, walk order, and the two
         // render-time highlight styles. Walk-affecting toggles reload; render-time
         // ones re-template via RefreshView().
-        Button viewButton = MakeBarButton("View ▾");
-        viewButton.Flyout = BuildViewFlyout();
+        _viewButton = MakeBarButton(Chevron(T("RevisionGridControl/viewToolStripMenuItem.Text", "View")));
+        _viewButton.Flyout = BuildViewFlyout();
 
         DockPanel bar = new();
-        DockPanel.SetDock(dateButton, Dock.Right);
-        DockPanel.SetDock(columnsButton, Dock.Right);
-        DockPanel.SetDock(viewButton, Dock.Right);
-        DockPanel.SetDock(branchesButton, Dock.Right);
+        DockPanel.SetDock(_dateButton, Dock.Right);
+        DockPanel.SetDock(_columnsButton, Dock.Right);
+        DockPanel.SetDock(_viewButton, Dock.Right);
+        DockPanel.SetDock(_branchesButton, Dock.Right);
         DockPanel.SetDock(_goToButton, Dock.Right);
-        bar.Children.Add(columnsButton);
-        bar.Children.Add(dateButton);
-        bar.Children.Add(viewButton);
-        bar.Children.Add(branchesButton);
+        bar.Children.Add(_columnsButton);
+        bar.Children.Add(_dateButton);
+        bar.Children.Add(_viewButton);
+        bar.Children.Add(_branchesButton);
         bar.Children.Add(_goToButton);
         bar.Children.Add(_search); // fills the remaining space
 
@@ -505,6 +503,83 @@ public sealed class RevisionGridView : UserControl
         root.Children.Add(listHost);
 
         Content = root;
+
+        // A language switch re-labels this view in place — no restart, and no
+        // loss of filter / scope / selection (see Relabel).
+        TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    // ---- translation ---------------------------------------------------------
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    // Appends the drop-down chevron to a bar-button caption without making the
+    // glyph part of the translatable string.
+    private static string Chevron(string caption) => string.Format("{0} ▾", caption);
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(Relabel);
+
+    /// <summary>
+    ///  Re-captions every piece of chrome this view owns after a language change.
+    ///
+    ///  <para>The view's STATE is deliberately untouched: the filter text stays in
+    ///  the box, the branch scope / date mode / column toggles stay in their fields
+    ///  (the rebuilt flyouts are seeded from them), and the selected commits are
+    ///  captured by hash and re-selected afterwards. The artificial "Working
+    ///  directory" / "Commit index" rows are re-synthesised by the same
+    ///  <see cref="ApplyFilterCore"/> path that builds them normally, so they never
+    ///  disappear — they just change language with everything else.</para>
+    /// </summary>
+    private void Relabel()
+    {
+        _dateButton.Content = Chevron(T("TranslatedStrings/_dateText.Text", "Date"));
+        _dateButton.Flyout = BuildDateFlyout();
+        _columnsButton.Content = Chevron(T("RevisionGrid/ColumnsToolStripMenuItem.Text", "Columns"));
+        _columnsButton.Flyout = BuildColumnsFlyout();
+        _branchesButton.Content = Chevron(T("RevisionGrid/BranchesToolStripMenuItem.Text", "Branches"));
+        _branchesButton.Flyout = BuildBranchesFlyout();
+        _viewButton.Content = Chevron(T("RevisionGridControl/viewToolStripMenuItem.Text", "View"));
+        _viewButton.Flyout = BuildViewFlyout();
+
+        // The hash box is re-created inside the flyout (a control cannot have two
+        // visual parents), so the field is re-pointed at the fresh one.
+        _goToButton.Content = Chevron(T("RevisionGrid/GotoCommit.Text", "Go to"));
+        _goToBox = MakeGoToBox();
+        _goToButton.Flyout = BuildGoToFlyout();
+
+        _search.Watermark = T("Filter: author / message / hash");
+
+        List<string> selected = _list.SelectedItems is { Count: > 0 } items
+            ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
+            : [];
+
+        // Rebuilds the artificial rows, the header and the status line, and
+        // re-templates every visible row against the new catalogue.
+        ApplyFilterCore(_search.Text);
+
+        RestoreSelection(selected);
+    }
+
+    // Re-selects the rows whose hashes were selected before a rebuild. Rows that
+    // no longer exist are simply skipped.
+    private void RestoreSelection(IReadOnlyList<string> hashes)
+    {
+        if (hashes.Count == 0 || _list.SelectedItems is not { } selection)
+        {
+            return;
+        }
+
+        HashSet<string> wanted = new(hashes, StringComparer.Ordinal);
+        selection.Clear();
+        foreach (RevisionRow row in _rows)
+        {
+            if (wanted.Contains(row.Hash))
+            {
+                selection.Add(row);
+            }
+        }
     }
 
     /// <summary>
@@ -594,12 +669,14 @@ public sealed class RevisionGridView : UserControl
         List<RevisionRow> display = [];
         if (_unstaged > 0)
         {
-            display.Add(MakeArtificial(WorkTreeHash, "Working directory", lane, laneCount));
+            display.Add(MakeArtificial(WorkTreeHash,
+                T("TranslatedStrings/_workingDirectoryText.Text", "Working directory"), lane, laneCount));
         }
 
         if (_staged > 0)
         {
-            display.Add(MakeArtificial(IndexHash, "Commit index", lane, laneCount));
+            display.Add(MakeArtificial(IndexHash,
+                T("TranslatedStrings/_indexText.Text", "Commit index"), lane, laneCount));
         }
 
         _artificialCount = display.Count;
@@ -642,7 +719,7 @@ public sealed class RevisionGridView : UserControl
         bool topoOrder = _topoOrder;
 
         _list.ItemsSource = null;
-        _status.Text = "Loading…";
+        _status.Text = T("RevisionGridControl/_strLoading.Text", "Loading…");
 
         _ = Task.Run(() =>
         {
@@ -671,55 +748,23 @@ public sealed class RevisionGridView : UserControl
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = "Error: " + ex.Message);
+                Dispatcher.UIThread.Post(() => _status.Text = string.Format(T("Error: {0}"), ex.Message));
             }
         });
     }
 
-    // Replaces a leading user-home prefix with "~" for a compact path display,
-    // matching the toolbar's repository caption/dropdown exactly.
-    //
-    // Deliberate duplicate of MainToolbar.CollapseHome: promoting it to a shared
-    // helper would mean editing MainToolbar.cs, which another agent owns in this
-    // round. UserHome (declared in that file) is internal, so at least the home
-    // lookup — the part with the HOME-rewrite subtlety — is shared. Merge the two
-    // copies into one helper when MainToolbar.cs is free again.
-    private static string CollapseHome(string path)
-    {
-        string home = UserHome.Path;
-        if (string.IsNullOrEmpty(home))
-        {
-            return path;
-        }
-
-        string trimmedHome = home.TrimEnd('/');
-        if (trimmedHome.Length == 0)
-        {
-            return path;
-        }
-
-        if (string.Equals(path, trimmedHome, StringComparison.Ordinal))
-        {
-            return "~";
-        }
-
-        // Only collapse on a real directory boundary, so "/home/dariofoo" is left alone.
-        if (path.StartsWith(trimmedHome + "/", StringComparison.Ordinal))
-        {
-            return "~" + path.Substring(trimmedHome.Length);
-        }
-
-        return path;
-    }
+    // Path display (home collapsed to "~") is shared with the toolbar's repository
+    // caption — see PathDisplay.CollapseHome.
+    private static string CollapseHome(string path) => PathDisplay.CollapseHome(path);
 
     // Human label for the current branch scope, shown in the status line so the
     // effect of the toggle (and the resulting commit count) is visible.
     private string ScopeLabel => _branchScope switch
     {
-        BranchScope.AllBranches => "all branches",
-        BranchScope.CurrentBranch => "current branch",
-        BranchScope.Filtered => "filtered (current branch)",
-        _ => "all branches",
+        BranchScope.AllBranches => T("all branches"),
+        BranchScope.CurrentBranch => T("current branch"),
+        BranchScope.Filtered => T("filtered (current branch)"),
+        _ => T("all branches"),
     };
 
     /// <summary>
@@ -786,13 +831,19 @@ public sealed class RevisionGridView : UserControl
 
         if (_filterActive)
         {
-            _status.Text = $"{_repoLabel}  —  {filtered.Count} of {_allRows.Count} commits  ({ScopeLabel}; filter: \"{query}\")";
+            // One format string with placeholders, never a concatenation: a
+            // translator can reorder every part, and the "commits" noun is looked
+            // up separately so it agrees with the catalogue.
+            _status.Text = string.Format(
+                T("{0}  —  {1} of {2} {3}  ({4}; filter: \"{5}\")"),
+                _repoLabel, filtered.Count, _allRows.Count, CommitsNoun, ScopeLabel, query);
         }
         else
         {
             _status.Text = _allRows.Count == 0
-                ? "No repository loaded."
-                : $"{_repoLabel}  —  {_allRows.Count} commits  ({ScopeLabel})";
+                ? T("No repository loaded.")
+                : string.Format(T("{0}  —  {1} {2}  ({3})"),
+                    _repoLabel, _allRows.Count, CommitsNoun, ScopeLabel);
         }
 
         // The line is ellipsized when the pane is narrow; keep it fully readable.
@@ -800,6 +851,9 @@ public sealed class RevisionGridView : UserControl
 
         _ = wasFiltering; // (state kept for clarity; no extra action needed)
     }
+
+    // The plural noun used by the status line's commit count.
+    private static string CommitsNoun => T("CommitInfo/_plusCommits.Text", "commits");
 
     private static bool Matches(RevisionRow row, string query)
         => row.Author.Contains(query, StringComparison.OrdinalIgnoreCase)
@@ -909,23 +963,23 @@ public sealed class RevisionGridView : UserControl
     {
         StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 210 };
 
-        panel.Children.Add(SectionLabel("Show in log"));
+        panel.Children.Add(SectionLabel(T("Show in log")));
 
-        CheckBox remotes = MakeCheck("Remote branches", _showRemotes);
+        CheckBox remotes = MakeCheck(T("RevisionGrid/ShowRemoteBranches.Text", "Remote branches"), _showRemotes);
         remotes.IsCheckedChanged += (_, _) =>
         {
             _showRemotes = remotes.IsChecked == true;
             Reload();
         };
 
-        CheckBox tags = MakeCheck("Tags", _showTags);
+        CheckBox tags = MakeCheck(T("TranslatedStrings/_tagsText.Text", "Tags"), _showTags);
         tags.IsCheckedChanged += (_, _) =>
         {
             _showTags = tags.IsChecked == true;
             Reload();
         };
 
-        CheckBox stashes = MakeCheck("Stashes", _showStashes);
+        CheckBox stashes = MakeCheck(T("TranslatedStrings/_stashesText.Text", "Stashes"), _showStashes);
         stashes.IsCheckedChanged += (_, _) =>
         {
             _showStashes = stashes.IsChecked == true;
@@ -936,9 +990,9 @@ public sealed class RevisionGridView : UserControl
         panel.Children.Add(tags);
         panel.Children.Add(stashes);
 
-        panel.Children.Add(SectionLabel("Order"));
-        RadioButton dateOrder = MakeRadio("Date order", "revOrder", !_topoOrder);
-        RadioButton topoOrder = MakeRadio("Topo-order", "revOrder", _topoOrder);
+        panel.Children.Add(SectionLabel(T("RevisionGrid/SortingToolStripMenuItem.Text", "Order")));
+        RadioButton dateOrder = MakeRadio(T("Date order"), "revOrder", !_topoOrder);
+        RadioButton topoOrder = MakeRadio(T("Topo-order"), "revOrder", _topoOrder);
         dateOrder.IsCheckedChanged += (_, _) =>
         {
             if (dateOrder.IsChecked == true && _topoOrder)
@@ -958,16 +1012,18 @@ public sealed class RevisionGridView : UserControl
         panel.Children.Add(dateOrder);
         panel.Children.Add(topoOrder);
 
-        panel.Children.Add(SectionLabel("Highlighting"));
+        panel.Children.Add(SectionLabel(T("Highlighting")));
 
-        CheckBox nonRelatives = MakeCheck("Draw non-relatives gray", _drawNonRelativesGray);
+        CheckBox nonRelatives = MakeCheck(
+            T("RevisionGrid/drawNonrelativesGrayToolStripMenuItem.Text", "Draw non-relatives gray"),
+            _drawNonRelativesGray);
         nonRelatives.IsCheckedChanged += (_, _) =>
         {
             _drawNonRelativesGray = nonRelatives.IsChecked == true;
             RefreshView();
         };
 
-        CheckBox highlight = MakeCheck("Highlight current branch", _highlightCurrentBranch);
+        CheckBox highlight = MakeCheck(T("Highlight current branch"), _highlightCurrentBranch);
         highlight.IsCheckedChanged += (_, _) =>
         {
             _highlightCurrentBranch = highlight.IsChecked == true;
@@ -1002,6 +1058,13 @@ public sealed class RevisionGridView : UserControl
     }
 
     // A compact human "… ago" rendering (dates are LocalDateTime, so compare to now).
+    //
+    // The English wording and the plural rule both come from the catalogue: the
+    // upstream TranslatedStrings entries are "{0} {1:minute|minutes} ago", i.e. a
+    // count placeholder plus a SmartFormat plural list. The port cannot pull in
+    // SmartFormat (it is not part of the Linux build's dependency set), so
+    // Pluralize below expands that one construct itself — which is enough for
+    // every "… ago" unit in every shipped catalogue.
     private static string Relative(DateTime dt)
     {
         TimeSpan span = DateTime.Now - dt;
@@ -1012,35 +1075,59 @@ public sealed class RevisionGridView : UserControl
 
         if (span.TotalSeconds < 60)
         {
-            return "just now";
+            return T("just now");
         }
 
         if (span.TotalMinutes < 60)
         {
-            int m = (int)span.TotalMinutes;
-            return $"{m} minute{(m == 1 ? "" : "s")} ago";
+            return Ago("TranslatedStrings/_minutesAgo.Text", "{0} {1:minute|minutes} ago", (int)span.TotalMinutes);
         }
 
         if (span.TotalHours < 24)
         {
-            int h = (int)span.TotalHours;
-            return $"{h} hour{(h == 1 ? "" : "s")} ago";
+            return Ago("TranslatedStrings/_hoursAgo.Text", "{0} {1:hour|hours} ago", (int)span.TotalHours);
         }
 
         if (span.TotalDays < 30)
         {
-            int d = (int)span.TotalDays;
-            return $"{d} day{(d == 1 ? "" : "s")} ago";
+            return Ago("TranslatedStrings/_daysAgo.Text", "{0} {1:day|days} ago", (int)span.TotalDays);
         }
 
         if (span.TotalDays < 365)
         {
-            int mo = (int)(span.TotalDays / 30);
-            return $"{mo} month{(mo == 1 ? "" : "s")} ago";
+            return Ago("TranslatedStrings/_monthsAgo.Text", "{0} {1:month|months} ago", (int)(span.TotalDays / 30));
         }
 
-        int y = (int)(span.TotalDays / 365);
-        return $"{y} year{(y == 1 ? "" : "s")} ago";
+        return Ago("TranslatedStrings/_yearsAgo.Text", "{0} {1:year|years} ago", (int)(span.TotalDays / 365));
+    }
+
+    // Renders one "{0} {1:singular|plural} ago" catalogue entry for a count.
+    private static string Ago(string key, string english, int value)
+        => Pluralize(T(key, english), value);
+
+    // Expands "{0}" (the count) and "{1:singular|plural}" (the noun) of the
+    // upstream relative-date format. Some catalogues separate the two forms with
+    // a backslash instead of a pipe, and some give a single invariant form, so
+    // both are accepted; anything unrecognised is left verbatim rather than
+    // throwing inside a cell renderer.
+    private static string Pluralize(string format, int value)
+    {
+        string result = Regex.Replace(
+            format,
+            @"\{1:([^}]*)\}",
+            m =>
+            {
+                string[] forms = m.Groups[1].Value.Split('|', '\\');
+                if (forms.Length == 0)
+                {
+                    return m.Value;
+                }
+
+                return value == 1 ? forms[0] : forms[^1];
+            });
+
+        return result.Replace("{0}", value.ToString(System.Globalization.CultureInfo.CurrentCulture),
+            StringComparison.Ordinal);
     }
 
     // A small compact toolbar button (styled from App.* brushes) used for the
@@ -1065,9 +1152,9 @@ public sealed class RevisionGridView : UserControl
     {
         StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 150 };
 
-        panel.Children.Add(SectionLabel("Date shown"));
-        RadioButton commit = MakeRadio("Commit date", "revDateSrc", _dateSource == DateSource.Commit);
-        RadioButton author = MakeRadio("Author date", "revDateSrc", _dateSource == DateSource.Author);
+        panel.Children.Add(SectionLabel(T("Date shown")));
+        RadioButton commit = MakeRadio(T("Commit date"), "revDateSrc", _dateSource == DateSource.Commit);
+        RadioButton author = MakeRadio(T("Author date"), "revDateSrc", _dateSource == DateSource.Author);
         commit.IsCheckedChanged += (_, _) =>
         {
             if (commit.IsChecked == true)
@@ -1087,9 +1174,9 @@ public sealed class RevisionGridView : UserControl
         panel.Children.Add(commit);
         panel.Children.Add(author);
 
-        panel.Children.Add(SectionLabel("Format"));
-        RadioButton absolute = MakeRadio("Absolute", "revDateFmt", !_relativeDates);
-        RadioButton relative = MakeRadio("Relative", "revDateFmt", _relativeDates);
+        panel.Children.Add(SectionLabel(T("Format")));
+        RadioButton absolute = MakeRadio(T("Absolute"), "revDateFmt", !_relativeDates);
+        RadioButton relative = MakeRadio(T("Relative"), "revDateFmt", _relativeDates);
         absolute.IsCheckedChanged += (_, _) =>
         {
             if (absolute.IsChecked == true)
@@ -1124,30 +1211,30 @@ public sealed class RevisionGridView : UserControl
     private Flyout BuildColumnsFlyout()
     {
         StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 140 };
-        panel.Children.Add(SectionLabel("Show columns"));
+        panel.Children.Add(SectionLabel(T("Show columns")));
 
-        CheckBox hash = MakeCheck("Commit ID", _showHash);
+        CheckBox hash = MakeCheck(T("Commit ID"), _showHash);
         hash.IsCheckedChanged += (_, _) =>
         {
             _showHash = hash.IsChecked == true;
             RefreshView();
         };
 
-        CheckBox avatar = MakeCheck("Avatar", _showAvatar);
+        CheckBox avatar = MakeCheck(T("Avatar"), _showAvatar);
         avatar.IsCheckedChanged += (_, _) =>
         {
             _showAvatar = avatar.IsChecked == true;
             RefreshView();
         };
 
-        CheckBox author = MakeCheck("Author", _showAuthor);
+        CheckBox author = MakeCheck(T("TranslatedStrings/_author.Text", "Author"), _showAuthor);
         author.IsCheckedChanged += (_, _) =>
         {
             _showAuthor = author.IsChecked == true;
             RefreshView();
         };
 
-        CheckBox date = MakeCheck("Date", _showDate);
+        CheckBox date = MakeCheck(T("TranslatedStrings/_dateText.Text", "Date"), _showDate);
         date.IsCheckedChanged += (_, _) =>
         {
             _showDate = date.IsChecked == true;
@@ -1177,11 +1264,11 @@ public sealed class RevisionGridView : UserControl
     {
         StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 190 };
 
-        panel.Children.Add(SectionLabel("Branches shown"));
+        panel.Children.Add(SectionLabel(T("Branches shown")));
 
-        RadioButton all = MakeRadio("All branches", "revBranchScope", _branchScope == BranchScope.AllBranches);
-        RadioButton current = MakeRadio("Current branch only", "revBranchScope", _branchScope == BranchScope.CurrentBranch);
-        RadioButton filtered = MakeRadio("Filtered branches", "revBranchScope", _branchScope == BranchScope.Filtered);
+        RadioButton all = MakeRadio(T("FormBrowse/tssbtnShowBranches.Text", "All branches"), "revBranchScope", _branchScope == BranchScope.AllBranches);
+        RadioButton current = MakeRadio(T("RevisionGrid/ShowCurrentBranchOnly.Text", "Current branch only"), "revBranchScope", _branchScope == BranchScope.CurrentBranch);
+        RadioButton filtered = MakeRadio(T("RevisionGrid/ShowFilteredBranches.Text", "Filtered branches"), "revBranchScope", _branchScope == BranchScope.Filtered);
 
         all.IsCheckedChanged += (_, _) => SelectScope(all, BranchScope.AllBranches);
         current.IsCheckedChanged += (_, _) => SelectScope(current, BranchScope.CurrentBranch);
@@ -1194,7 +1281,7 @@ public sealed class RevisionGridView : UserControl
         // "Filtered" has no selection UI yet, so it walks the current branch.
         panel.Children.Add(new TextBlock
         {
-            Text = "Filtered walks the current branch until a ref picker is added.",
+            Text = T("Filtered walks the current branch until a ref picker is added."),
             Foreground = B("App.TextDim"),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
@@ -1253,16 +1340,18 @@ public sealed class RevisionGridView : UserControl
 
         Flyout flyout = new();
 
-        panel.Children.Add(SectionLabel("Navigate"));
+        panel.Children.Add(SectionLabel(T("FormBrowse/navigateToolStripMenuItem.Text", "Navigate")));
 
-        Button parent = MakeMenuButton("↑  First parent   (Alt+↑)");
+        Button parent = MakeMenuButton(string.Format(T("↑  {0}   (Alt+↑)"),
+            T("RevisionGrid/GotoFirstParentCommit.Text", "First parent")));
         parent.Click += (_, _) =>
         {
             flyout.Hide();
             GoToParent();
         };
 
-        Button child = MakeMenuButton("↓  Nearest child   (Alt+↓)");
+        Button child = MakeMenuButton(string.Format(T("↓  {0}   (Alt+↓)"),
+            T("RevisionGrid/GotoChildCommit.Text", "Nearest child")));
         child.Click += (_, _) =>
         {
             flyout.Hide();
@@ -1272,10 +1361,10 @@ public sealed class RevisionGridView : UserControl
         panel.Children.Add(parent);
         panel.Children.Add(child);
 
-        panel.Children.Add(SectionLabel("Go to commit"));
+        panel.Children.Add(SectionLabel(T("FormGoToCommit/$this.Text", "Go to commit")));
         panel.Children.Add(_goToBox);
 
-        Button go = MakeMenuButton("Select commit");
+        Button go = MakeMenuButton(T("Select commit"));
         void RunGoTo()
         {
             string text = _goToBox.Text ?? string.Empty;
@@ -1310,6 +1399,22 @@ public sealed class RevisionGridView : UserControl
         };
         return flyout;
     }
+
+    // The "go to commit" hash entry box. Re-created whenever the Go-to flyout is
+    // rebuilt, because an Avalonia control can only have one visual parent.
+    private static TextBox MakeGoToBox()
+        => new()
+        {
+            Watermark = T("hash (full or short)"),
+            Background = B("App.Window"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            FontSize = 12,
+            MinWidth = 150,
+            Padding = new Thickness(6, 3, 4, 3),
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
 
     // A full-width, left-aligned button used inside the "Go to" flyout.
     private static Button MakeMenuButton(string text)
@@ -1436,14 +1541,16 @@ public sealed class RevisionGridView : UserControl
     private void ShowQuickSearch(bool found)
     {
         _quickSearchLabel.Text = found
-            ? $"quick-search: {_quickSearch}…"
-            : $"quick-search: {_quickSearch}…  (no match)";
+            ? string.Format(T("{0}: {1}…"), QuickSearchNoun, _quickSearch)
+            : string.Format(T("{0}: {1}…  (no match)"), QuickSearchNoun, _quickSearch);
         _quickSearchLabel.Foreground = found ? B("App.Text") : B("App.TextDim");
         _quickSearchOverlay.IsVisible = true;
 
         _quickSearchTimer.Stop();
         _quickSearchTimer.Start();
     }
+
+    private static string QuickSearchNoun => T("RevisionGrid/QuickSearch.Text", "quick-search");
 
     // Clears the buffer and hides the adorner (Esc, empty backspace, or idle).
     private void EndQuickSearch()
@@ -1471,13 +1578,13 @@ public sealed class RevisionGridView : UserControl
 
         if (row.ParentHashes.Count == 0)
         {
-            _status.Text = "No parent commit (root).";
+            _status.Text = T("No parent commit (root).");
             return;
         }
 
         if (!SelectByHash(row.ParentHashes[0]))
         {
-            _status.Text = "Parent commit is not in the loaded history.";
+            _status.Text = T("Parent commit is not in the loaded history.");
         }
     }
 
@@ -1513,7 +1620,7 @@ public sealed class RevisionGridView : UserControl
 
         if (best is null)
         {
-            _status.Text = "No child commit in the loaded history.";
+            _status.Text = T("No child commit in the loaded history.");
             return;
         }
 
@@ -1549,7 +1656,7 @@ public sealed class RevisionGridView : UserControl
 
         if (index < 0)
         {
-            _status.Text = $"No commit matching \"{query}\".";
+            _status.Text = string.Format(T("No commit matching \"{0}\"."), query);
             return;
         }
 
@@ -1654,10 +1761,10 @@ public sealed class RevisionGridView : UserControl
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6, 0, 6, 1),
             VerticalAlignment = VerticalAlignment.Center,
-            [ToolTip.TipProperty] = "This commit has a git note",
+            [ToolTip.TipProperty] = T("This commit has a git note"),
             Child = new TextBlock
             {
-                Text = "note",
+                Text = T("note"),
                 Foreground = new SolidColorBrush(Color.FromRgb(0xE3, 0xCB, 0x95)),
                 FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -1689,21 +1796,24 @@ public sealed class RevisionGridView : UserControl
         AddCell(grid, 0, string.Empty, B("App.TextDim"), bold: true);
         if (_showHash)
         {
-            AddCell(grid, 1, "Commit ID", B("App.TextDim"), bold: true);
+            AddCell(grid, 1, T("Commit ID"), B("App.TextDim"), bold: true);
         }
 
         // Column 2 (avatar) has no textual header — the identicons speak for themselves.
         if (_showAuthor)
         {
-            AddCell(grid, 3, "Author", B("App.TextDim"), bold: true);
+            AddCell(grid, 3, T("TranslatedStrings/_author.Text", "Author"), B("App.TextDim"), bold: true);
         }
 
         if (_showDate)
         {
-            AddCell(grid, 4, _relativeDates ? "Date (rel.)" : "Date", B("App.TextDim"), bold: true);
+            string dateHeader = T("TranslatedStrings/_dateText.Text", "Date");
+            AddCell(grid, 4, _relativeDates ? string.Format(T("{0} (rel.)"), dateHeader) : dateHeader,
+                B("App.TextDim"), bold: true);
         }
 
-        AddCell(grid, 5, "Subject", B("App.TextDim"), bold: true);
+        AddCell(grid, 5, T("PatchGrid/subjectDataGridViewTextBoxColumn.HeaderText", "Subject"),
+            B("App.TextDim"), bold: true);
 
         return new Border
         {
@@ -1947,7 +2057,9 @@ public sealed class RevisionGridView : UserControl
 
         TextBlock countText = new()
         {
-            Text = isWorkTree ? $"{count} modified" : $"{count} staged",
+            Text = isWorkTree
+                ? string.Format(T("{0} modified"), count)
+                : string.Format(T("{0} staged"), count),
             Foreground = B("App.TextDim"),
             FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center,
@@ -1986,7 +2098,10 @@ public sealed class RevisionGridView : UserControl
             RoutingStrategies.Bubble);
 
         // A commit context menu makes no sense here; offer the one useful action.
-        MenuItem open = new() { Header = isWorkTree ? "Show working directory changes" : "Show staged changes" };
+        MenuItem open = new()
+        {
+            Header = isWorkTree ? T("Show working directory changes") : T("Show staged changes"),
+        };
         open.Click += (_, _) => Raise();
         view.ContextMenu = new ContextMenu { Items = { open } };
         return view;
@@ -2093,13 +2208,13 @@ public sealed class RevisionGridView : UserControl
     // Right-click menu: copy details of the row that was clicked.
     private ContextMenu BuildRowContextMenu(RevisionRow row)
     {
-        MenuItem copyHash = new() { Header = "Copy commit hash" };
+        MenuItem copyHash = new() { Header = T("Copy commit hash") };
         copyHash.Click += (_, _) => Copy(row.Hash);
 
-        MenuItem copySubject = new() { Header = "Copy subject" };
+        MenuItem copySubject = new() { Header = T("Copy subject") };
         copySubject.Click += (_, _) => Copy(row.Subject);
 
-        MenuItem copyAuthor = new() { Header = "Copy author" };
+        MenuItem copyAuthor = new() { Header = T("Copy author") };
         copyAuthor.Click += (_, _) => Copy(row.Author);
 
         ContextMenu menu = new()
