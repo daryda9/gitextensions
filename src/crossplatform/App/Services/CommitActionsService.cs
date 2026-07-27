@@ -1,3 +1,4 @@
+using System.Text;
 using GitCommands;
 using GitExtensions.Extensibility;
 using GitExtUtils;
@@ -43,6 +44,12 @@ public sealed class CommitActionsService
     ///  <c>git commit -F &lt;file&gt; [--amend] [--signoff] [--no-verify] [--reset-author]</c>.
     ///  The message is passed through a temp file so multi-line text and quoting
     ///  never go through the shell.
+    ///
+    ///  The temp file is written in the repository's configured commit encoding
+    ///  (<c>i18n.commitEncoding</c>, exposed by the core as
+    ///  <see cref="GitModule.CommitEncoding"/>) — git reads a <c>-F</c> message file
+    ///  as bytes in that encoding, so writing it as UTF-8 unconditionally corrupted
+    ///  every non-ASCII character whenever the repo used e.g. cp1251 or latin1.
     /// </summary>
     public CommitActionResult Commit(string repoPath, string message, CommitOptions options)
     {
@@ -50,7 +57,7 @@ public sealed class CommitActionsService
         string messageFile = Path.GetTempFileName();
         try
         {
-            File.WriteAllText(messageFile, message ?? string.Empty);
+            File.WriteAllText(messageFile, message ?? string.Empty, CommitEncodingOf(module));
 
             GitArgumentBuilder args = new("commit")
             {
@@ -411,6 +418,68 @@ public sealed class CommitActionsService
     }
 
     // ---------------- helpers ----------------
+
+    // The encoding git expects for commit messages in this repository
+    // (i18n.commitEncoding), falling back to BOM-less UTF-8 — git's own default.
+    // GitModule.CommitEncoding already resolves the configured name (and maps the
+    // "utf-8" spelling onto the BOM-less encoding); it only throws if git config
+    // itself is unreadable, hence the guard.
+    private static Encoding CommitEncodingOf(GitModule module)
+    {
+        UTF8Encoding fallback = new(false);
+        Encoding resolved;
+        try
+        {
+            resolved = module.CommitEncoding ?? fallback;
+        }
+        catch
+        {
+            return fallback;
+        }
+
+        if (resolved.CodePage != fallback.CodePage)
+        {
+            return resolved;
+        }
+
+        // UTF-8 codepage: either nothing is configured, or it is configured as UTF-8,
+        // or the configured name is a spelling .NET's encoding table does not know
+        // (git/iconv accept e.g. "cp1251") and the core silently handed the UTF-8
+        // default back. Try the codepage mapping; otherwise stay on UTF-8 — always our
+        // own BOM-less instance, because a BOM in the message would end up in the
+        // commit text (Encoding.UTF8 / Encoding.Default do emit one).
+        Encoding? byCodePage = ResolveByCodePage(
+            Exec(module, new GitArgumentBuilder("config") { "--get", "i18n.commitEncoding" }));
+
+        return byCodePage is not null && byCodePage.CodePage != fallback.CodePage ? byCodePage : fallback;
+    }
+
+    // Maps encoding names .NET's table misses onto a codepage: "cp1251"/"1251" → 1251.
+    // Returns null for anything else (including UTF-8 spellings, where the BOM-less
+    // default the core returned is exactly what we want).
+    private static Encoding? ResolveByCodePage(string? configured)
+    {
+        string name = (configured ?? string.Empty).Trim().ToLowerInvariant();
+        if (name.Length == 0)
+        {
+            return null;
+        }
+
+        string digits = name.StartsWith("cp", StringComparison.Ordinal) ? name[2..] : name;
+        if (!int.TryParse(digits, out int codePage))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Encoding.GetEncoding(codePage);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static string Exec(GitModule module, ArgumentString args, bool trim = true)
     {
