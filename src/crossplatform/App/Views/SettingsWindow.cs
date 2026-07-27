@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
@@ -40,6 +42,9 @@ namespace GitExtensions.Avalonia.Views;
 ///    changes (<see cref="AppPreferences.DefaultCheckoutLocalChangesAction"/>) and the
 ///    commit-info panel's visibility toggles
 ///    (<see cref="CommitInfoSettingsService"/>).</item>
+///   <item>A Hotkeys page over <see cref="HotkeyService"/>: every command with its
+///    gesture, recorded by pressing the combination, with duplicate detection and
+///    "Reset all" (upstream's <c>HotkeysSettingsPage</c> + <c>ControlHotkeys</c>).</item>
 ///   <item>Default pull action (the five actions the toolbar's Pull split button
 ///    offers), persisted in <see cref="UiState.DefaultPullAction"/> — the value the
 ///    split button itself reads.</item>
@@ -94,6 +99,25 @@ public sealed class SettingsWindow : Window
     // The three blame switches (BlameViewerSettingsPage). They are not stored by this
     // dialog: BlameOptions is a view of upstream's AppSettings, which is exactly what
     // the core's GitModule.Blame reads while building the command line.
+    // ---- Hotkeys page ------------------------------------------------------
+    // The service whose map is edited. The host passes the live instance (the one the
+    // window installed its key handler from and the one the toolbar and menu read their
+    // gesture captions off); with none passed this is a fresh instance over the same
+    // hotkeys.json, so the edit still persists — it just cannot take effect until the
+    // next start. See the MainWindow wiring note on ShowAsync.
+    private readonly HotkeyService _hotkeys;
+    private readonly bool _hotkeysAreLive;
+
+    // The pending edits: command → gesture, with null meaning "cleared". Applied in one
+    // go, so Cancel really discards and a half-finished remapping never reaches the
+    // running window.
+    private readonly Dictionary<BrowseCommand, HotkeyGesture?> _hotkeyDraft = [];
+    private readonly List<(BrowseCommand Command, Button Gesture)> _hotkeyRows = [];
+
+    // The command whose next keystroke is being captured, if any.
+    private BrowseCommand? _capturing;
+    private TextBlock _hotkeyWarning = null!;
+
     // Behaviour page, beyond the pull action.
     private readonly CheckBox _autoRefresh;
     private readonly ComboBox _checkoutLocalChanges;
@@ -223,6 +247,8 @@ public sealed class SettingsWindow : Window
     private const string BlameText = "Blame settings";
     private const string CommitInfoKey = "CommitInfo/$this.Text";
     private const string CommitInfoText = "Commit info";
+    private const string HotkeysKey = "HotkeysSettingsPage/$this.Text";
+    private const string HotkeysText = "Hotkeys";
 
     // What the checkout dialog pre-selects for pending local changes. Tokens are the
     // names of LocalChangesAction, i.e. exactly what AppPreferences stores and
@@ -262,8 +288,11 @@ public sealed class SettingsWindow : Window
         Action<string>? pullActionChanged = null,
         Action? blameOptionsChanged = null,
         bool? currentAutoRefresh = null,
-        Action<bool>? autoRefreshChanged = null)
+        Action<bool>? autoRefreshChanged = null,
+        HotkeyService? hotkeys = null)
     {
+        _hotkeysAreLive = hotkeys is not null;
+        _hotkeys = hotkeys ?? new HotkeyService();
         _repoPath = repoPath;
         _currentPullAction = currentPullAction;
         _pullActionChanged = pullActionChanged;
@@ -458,12 +487,15 @@ public sealed class SettingsWindow : Window
             dim,
             Field("ColorsSettingsPage/gbTheme.Text", "Theme", _theme, dim));
 
+        Panel hotkeysPanel = BuildHotkeysPage(text, dim);
+
         // Category order — the left list is built from the same sequence below, so the
         // two cannot fall out of step.
         _pages.Add(identityPanel);
         _pages.Add(gitConfigPanel);
         _pages.Add(blamePanel);
         _pages.Add(commitInfoPanel);
+        _pages.Add(hotkeysPanel);
         _pages.Add(behaviourPanel);
         _pages.Add(appearancePanel);
 
@@ -502,6 +534,7 @@ public sealed class SettingsWindow : Window
         categories.Items.Add(CategoryItem(GitConfigKey, GitConfigText));
         categories.Items.Add(CategoryItem(BlameKey, BlameText));
         categories.Items.Add(CategoryItem(CommitInfoKey, CommitInfoText));
+        categories.Items.Add(CategoryItem(HotkeysKey, HotkeysText));
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
@@ -599,6 +632,20 @@ public sealed class SettingsWindow : Window
     ///  chosen action whenever the user applies — the host must use it to update its
     ///  own <see cref="UiState"/> instance (and the toolbar), because that instance is
     ///  re-serialised in full when the window closes.</para>
+    ///
+    ///  <para><b>Host wiring (MainWindow.OpenSettingsAsync).</b> Four optional arguments
+    ///  exist only so the host can keep its own state in step; each is safe to omit, at
+    ///  the cost of the change taking effect only at the next start:
+    ///  <list type="bullet">
+    ///   <item><paramref name="blameOptionsChanged"/> → call
+    ///    <c>BlameView.ReloadBlameOptions()</c> on the blame tab.</item>
+    ///   <item><paramref name="currentAutoRefresh"/> / <paramref name="autoRefreshChanged"/>
+    ///    → pass <c>_uiState.AutoRefresh</c>, and in the callback set it and re-point the
+    ///    watcher: <c>_watcher.Watch(on ? _repoPath : null)</c>.</item>
+    ///   <item><paramref name="hotkeys"/> → pass the live <c>HotkeyService</c>, and
+    ///    subscribe once to its <c>Changed</c> event to re-label the toolbar and menu
+    ///    (they print the gestures in their captions).</item>
+    ///  </list></para>
     /// </summary>
     public static Task ShowAsync(
         Window owner,
@@ -607,14 +654,16 @@ public sealed class SettingsWindow : Window
         Action<string>? pullActionChanged = null,
         Action? blameOptionsChanged = null,
         bool? currentAutoRefresh = null,
-        Action<bool>? autoRefreshChanged = null)
+        Action<bool>? autoRefreshChanged = null,
+        HotkeyService? hotkeys = null)
         => new SettingsWindow(
                 repoPath,
                 currentPullAction,
                 pullActionChanged,
                 blameOptionsChanged,
                 currentAutoRefresh,
-                autoRefreshChanged)
+                autoRefreshChanged,
+                hotkeys)
             .ShowDialog(owner);
 
     // ---- translation -------------------------------------------------------
@@ -876,6 +925,13 @@ public sealed class SettingsWindow : Window
             Dispatcher.UIThread.Post(() => _blameOptionsChanged?.Invoke());
         });
 
+        // ---- Hotkeys: one atomic apply, which re-indexes the gesture lookup, writes
+        // hotkeys.json and raises HotkeyService.Changed so the toolbar and menu can
+        // re-print the gestures in their captions. Cheap and local — no git, no reason
+        // to leave the UI thread.
+        StopCapture();
+        _hotkeys.ApplyBindings(_hotkeyDraft);
+
         // ---- Checkout default and commit-info toggles: files of their own, no
         // last-writer-wins hazard with the host's UiState. Saving the commit-info file
         // raises CommitInfoSettingsService.Changed, which is what makes an open commit
@@ -925,6 +981,212 @@ public sealed class SettingsWindow : Window
         // An applied theme is the new baseline: a later Cancel must not undo it.
         _applied = true;
         _revertTheme = ui.Theme;
+    }
+
+    // ---- hotkeys ------------------------------------------------------------
+
+    /// <summary>
+    ///  Builds the Hotkeys page: one row per command, showing its gesture as a button
+    ///  that records the next keystroke, plus a Clear per row, a "Reset all" and a
+    ///  conflict warning.
+    ///
+    ///  <para>Upstream splits this over <c>HotkeysSettingsPage</c> +
+    ///  <c>ControlHotkeys</c> and detects duplicates with
+    ///  <c>HotkeySettingsManager.IsUniqueKey</c>. The port needs the same check for a
+    ///  reason of its own: <see cref="HotkeyService.Reindex"/> resolves a duplicate by
+    ///  "first writer wins" (HotkeyService.cs:270), so a clashing binding does not
+    ///  fail loudly — one of the two commands just stops responding. Flagging the
+    ///  clash here is what keeps that from looking like a bug.</para>
+    ///
+    ///  <para>Commands are listed under their enum names on purpose: those are exactly
+    ///  the keys of <c>hotkeys.json</c>, so what the page shows and what a hand-edited
+    ///  file contains cannot diverge.</para>
+    /// </summary>
+    private Panel BuildHotkeysPage(IBrush text, IBrush dim)
+    {
+        foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
+        {
+            _hotkeyDraft[command] = _hotkeys.GestureFor(command);
+        }
+
+        Button resetAll = new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 110 };
+        Localize(resetAll, "HotkeysSettingsPage/btnResetAllHotkeys.Text", "Reset all");
+        resetAll.Click += (_, _) =>
+        {
+            StopCapture();
+            foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
+            {
+                _hotkeyDraft[command] =
+                    HotkeyService.Defaults.TryGetValue(command, out HotkeyGesture g) ? g : null;
+            }
+
+            RefreshHotkeyRows();
+        };
+
+        _hotkeyWarning = new TextBlock
+        {
+            Foreground = Resource("App.DiffRemoved", "#CE5C5C"),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            IsVisible = false,
+        };
+
+        StackPanel rows = new() { Spacing = 2 };
+        foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
+        {
+            BrowseCommand captured = command;
+
+            Button gesture = new() { MinWidth = 170, HorizontalContentAlignment = HorizontalAlignment.Center };
+            gesture.Click += (_, _) => StartCapture(captured);
+
+            Button clear = new() { MinWidth = 70, Margin = new Thickness(6, 0, 0, 0) };
+            Localize(clear, "HotkeysSettingsPage/btnClearHotkey.Text", "Clear");
+            clear.Click += (_, _) =>
+            {
+                StopCapture();
+                _hotkeyDraft[captured] = null;
+                RefreshHotkeyRows();
+            };
+
+            TextBlock name = new()
+            {
+                Text = captured.ToString(),
+                Foreground = text,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 10, 0),
+            };
+
+            Grid row = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+            Grid.SetColumn(name, 0);
+            Grid.SetColumn(gesture, 1);
+            Grid.SetColumn(clear, 2);
+            row.Children.Add(name);
+            row.Children.Add(gesture);
+            row.Children.Add(clear);
+            rows.Children.Add(row);
+
+            _hotkeyRows.Add((captured, gesture));
+        }
+
+        // Recording listens on the window in the tunnelling phase, for the same reason
+        // HotkeyService itself does: a bubbling handler would never see the keys the
+        // focused button swallows (Space and Enter, among others), so those could never
+        // be assigned. handledEventsToo for the same reason.
+        AddHandler(KeyDownEvent, OnHotkeyCapture, RoutingStrategies.Tunnel, handledEventsToo: true);
+
+        // The row captions ("None", "Press a key…", the conflict warning) are built here
+        // rather than by Localize, so they are re-applied through the same list a
+        // language switch walks.
+        Register(RefreshHotkeyRows);
+
+        string note = _hotkeysAreLive
+            ? "Click a gesture, then press the combination to assign — Esc cancels, "
+                + "Backspace clears. Changes apply when you press OK or Apply."
+            : "Click a gesture, then press the combination to assign — Esc cancels, "
+                + "Backspace clears. Changes are saved to hotkeys.json but only take "
+                + "effect at the next start, because this dialog was not given the "
+                + "running keyboard map.";
+
+        return CategoryPanel(
+            HotkeysKey, HotkeysText,
+            null, note,
+            text,
+            dim,
+            resetAll,
+            _hotkeyWarning,
+            rows);
+    }
+
+    private void StartCapture(BrowseCommand command)
+    {
+        _capturing = command;
+        RefreshHotkeyRows();
+    }
+
+    private void StopCapture()
+    {
+        _capturing = null;
+        RefreshHotkeyRows();
+    }
+
+    // While recording, every keystroke belongs to the page: it is swallowed and turned
+    // into the gesture of the command being recorded.
+    private void OnHotkeyCapture(object? sender, KeyEventArgs e)
+    {
+        if (_capturing is not { } command)
+        {
+            return;
+        }
+
+        // A modifier on its own is not a gesture; keep waiting for the real key. Without
+        // this, pressing Ctrl before the letter would assign "Ctrl+LeftCtrl".
+        if (e.Key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+            or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin or Key.System)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        e.Handled = true;
+
+        if (e.Key == Key.Escape)
+        {
+            StopCapture();
+            return;
+        }
+
+        if (e.Key == Key.Back)
+        {
+            _hotkeyDraft[command] = null;
+            StopCapture();
+            return;
+        }
+
+        _hotkeyDraft[command] = new HotkeyGesture(e.Key, e.KeyModifiers);
+        StopCapture();
+    }
+
+    // Re-labels every row from the draft and re-runs the duplicate check.
+    private void RefreshHotkeyRows()
+    {
+        // A gesture used by more than one command: whichever of them Reindex happens to
+        // see first would be the only one that works.
+        HashSet<HotkeyGesture> seen = [];
+        HashSet<HotkeyGesture> duplicates = [];
+        foreach (HotkeyGesture? gesture in _hotkeyDraft.Values)
+        {
+            if (gesture is { } g && !seen.Add(g))
+            {
+                duplicates.Add(g);
+            }
+        }
+
+        IBrush conflict = Resource("App.DiffRemoved", "#CE5C5C");
+        IBrush normal = Resource("App.Text", "#DCDCDC");
+
+        foreach ((BrowseCommand command, Button button) in _hotkeyRows)
+        {
+            HotkeyGesture? gesture = _hotkeyDraft.GetValueOrDefault(command);
+            bool recording = _capturing == command;
+            button.Content = recording
+                ? TranslationService.T("HotkeysSettingsPage/lblPressKey.Text", "Press a key…")
+                : gesture?.ToString() ?? TranslationService.T("HotkeysSettingsPage/lblNone.Text", "None");
+            button.Foreground = gesture is { } g2 && duplicates.Contains(g2) ? conflict : normal;
+        }
+
+        if (duplicates.Count == 0)
+        {
+            _hotkeyWarning.IsVisible = false;
+            return;
+        }
+
+        _hotkeyWarning.IsVisible = true;
+        _hotkeyWarning.Text = string.Format(
+            TranslationService.T(
+                "The same shortcut is assigned to more than one command ({0}). Only one of "
+                + "them will respond — give the others a different combination."),
+            string.Join(", ", duplicates.Select(d => d.ToString()).Order()));
     }
 
     // ---- layout building blocks -------------------------------------------

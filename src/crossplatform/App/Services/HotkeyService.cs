@@ -241,8 +241,45 @@ public sealed class HotkeyService
         Reindex();
     }
 
-    /// <summary>The JSON overrides file (for diagnostics and a future settings page).</summary>
+    /// <summary>
+    ///  Raised after <see cref="ApplyBindings"/> changed the map, on the caller's
+    ///  thread. The toolbar and the main menu render the gestures into their captions
+    ///  and tooltips, so they need to know when a binding moved; the host subscribes
+    ///  and re-labels.
+    /// </summary>
+    public event Action? Changed;
+
+    /// <summary>The JSON overrides file (for diagnostics and the hotkeys settings page).</summary>
     public string FilePath => _path;
+
+    /// <summary>
+    ///  Replaces the bindings of the given commands — a null gesture clears the
+    ///  command's binding — then re-indexes, persists and raises <see cref="Changed"/>.
+    ///
+    ///  <para>This is what the Settings dialog's Hotkeys page calls. It exists rather
+    ///  than leaving callers to mutate <see cref="Bindings"/> because the three steps
+    ///  have to happen together: a mutation without <see cref="Reindex"/> leaves the
+    ///  gesture lookup pointing at the old keys, and one without
+    ///  <see cref="Changed"/> leaves stale gestures printed in the menus.</para>
+    /// </summary>
+    public void ApplyBindings(IReadOnlyDictionary<BrowseCommand, HotkeyGesture?> bindings)
+    {
+        foreach ((BrowseCommand command, HotkeyGesture? gesture) in bindings)
+        {
+            if (gesture is { } g)
+            {
+                _bindings[command] = g;
+            }
+            else
+            {
+                _bindings.Remove(command);
+            }
+        }
+
+        Reindex();
+        Save();
+        Changed?.Invoke();
+    }
 
     /// <summary>The live command → gesture map. Mutate it, then call
     /// <see cref="Reindex"/> and <see cref="Save"/>.</summary>
@@ -313,6 +350,19 @@ public sealed class HotkeyService
             }
 
             Dictionary<string, string> flat = _bindings.ToDictionary(p => p.Key.ToString(), p => p.Value.ToString());
+
+            // A command the user cleared is simply absent from _bindings, and an absent
+            // entry means "take the default" on the next Load — so clearing would undo
+            // itself at the next start. Write it out explicitly as the empty string,
+            // which Load already understands as "cleared".
+            foreach (BrowseCommand command in Defaults.Keys)
+            {
+                if (!_bindings.ContainsKey(command))
+                {
+                    flat[command.ToString()] = string.Empty;
+                }
+            }
+
             File.WriteAllText(_path, JsonSerializer.Serialize(flat, Options));
         }
         catch
