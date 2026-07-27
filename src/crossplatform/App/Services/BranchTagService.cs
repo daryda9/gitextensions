@@ -393,6 +393,57 @@ public sealed class BranchTagService
     }
 
     /// <summary>
+    ///  The name of the currently checked-out branch, or an empty string when HEAD
+    ///  is detached. Synchronous: call it off the UI thread.
+    /// </summary>
+    public string GetCurrentBranch(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        string current = module.GetSelectedBranch();
+
+        // GitModule reports a detached HEAD as "(no branch)".
+        return current.StartsWith('(') ? string.Empty : current;
+    }
+
+    /// <summary>
+    ///  Moves the local branch <paramref name="branch"/> to <paramref name="commit"/>
+    ///  (<c>git branch -f</c>) — the original's "Reset another branch to here".
+    ///  Destructive: the branch loses whatever it pointed at. The CURRENT branch is
+    ///  refused (git itself refuses it too, but the message is cryptic): resetting
+    ///  the checked-out branch is what "Reset current branch to here" is for, and it
+    ///  must also decide what happens to the working tree.
+    /// </summary>
+    public BranchTagResult ResetBranchTo(string repoPath, string branch, string commit)
+    {
+        string name = branch?.Trim() ?? string.Empty;
+        string target = commit?.Trim() ?? string.Empty;
+        if (name.Length == 0 || target.Length == 0)
+        {
+            return new BranchTagResult(false, "Branch name and commit cannot be empty.");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        if (string.Equals(module.GetSelectedBranch(), name, StringComparison.Ordinal))
+        {
+            return new BranchTagResult(
+                false,
+                $"'{name}' is the current branch: use \"Reset current branch to here\" instead.");
+        }
+
+        IGitRef? existing = module
+            .GetRefs(RefsFilter.Heads)
+            .FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.Ordinal));
+
+        if (existing is null)
+        {
+            return new BranchTagResult(false, $"Local branch '{name}' not found.");
+        }
+
+        GitArgumentBuilder args = new("branch") { "-f", name, target };
+        return Run(module, args);
+    }
+
+    /// <summary>
     ///  Rebases the current branch onto <paramref name="branch"/>.
     /// </summary>
     public BranchTagResult RebaseOnto(string repoPath, string branch)

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
@@ -291,9 +292,25 @@ public sealed class RevisionGridView : UserControl
     /// <summary>
     ///  Registers an extra context-menu command shown on each commit row; the
     ///  handler is invoked with the row's full commit hash.
+    ///
+    ///  <para>The structured context menu places the commands it knows by header
+    ///  (checkout, resets, compare, bisect, …) in the matching submenu and any other
+    ///  registration under "Other actions", so the shell's wiring keeps working
+    ///  unchanged. Registering invalidates the built menu, which is rebuilt on the
+    ///  next row that needs it.</para>
     /// </summary>
     public void AddCommitCommand(string header, Action<string> handler)
-        => _commitCommands.Add((header, handler));
+    {
+        _commitCommands.Add((header, handler));
+
+        // Items cannot be added to a live popup (it would not re-measure), so the
+        // whole menu is discarded and rebuilt instead.
+        if (_rowMenu is not null)
+        {
+            _rowMenu.Opening -= OnRowMenuOpening;
+            _rowMenu = null;
+        }
+    }
 
     public RevisionGridView()
     {
@@ -545,6 +562,13 @@ public sealed class RevisionGridView : UserControl
         // Double click ACTIVATES the row under the pointer (commit details / commit
         // dialog for the artificial rows), as in the original grid.
         _list.AddHandler(InputElement.DoubleTappedEvent, OnListDoubleTapped, RoutingStrategies.Bubble);
+
+        // A right click has to be seen BEFORE the row's own ContextMenu opens the
+        // shared popup, so the menu's Opening handler knows which row it is for:
+        // hence TUNNELLING on the list, which runs ahead of the bubbling handler
+        // Control.ContextMenu installs on the row.
+        _list.AddHandler(
+            Control.ContextRequestedEvent, OnListContextRequested, RoutingStrategies.Tunnel);
 
         // Reaching the end of the list appends the next page of history. The event
         // bubbles from the list's own ScrollViewer, which is also captured here so an
@@ -905,6 +929,10 @@ public sealed class RevisionGridView : UserControl
         _scroll = null;
         _list.ItemsSource = null;
         LoadPage(restart: true);
+
+        // The context menu's predicates need the checked-out branch and the kind of
+        // every ref; both are refreshed alongside the walk, off the UI thread.
+        RefreshRefContext();
     }
 
     /// <summary>
@@ -2652,7 +2680,7 @@ public sealed class RevisionGridView : UserControl
         Grid.SetColumn(subject, 5);
         grid.Children.Add(subject);
 
-        view.ContextMenu = BuildRowContextMenu(row);
+        view.ContextMenu = RowMenu();
         return view;
     }
 
@@ -2766,13 +2794,10 @@ public sealed class RevisionGridView : UserControl
             },
             RoutingStrategies.Bubble);
 
-        // A commit context menu makes no sense here; offer the one useful action.
-        MenuItem open = new()
-        {
-            Header = isWorkTree ? T("Show working directory changes") : T("Show staged changes"),
-        };
-        open.Click += (_, _) => Raise();
-        view.ContextMenu = new ContextMenu { Items = { open } };
+        // The SAME shared menu as a commit row: on an artificial row its rules hide
+        // everything that cannot apply (cherry-pick, reword, branch/tag operations,
+        // copy) and leave only the "show changes" entry and Navigate.
+        view.ContextMenu = RowMenu();
         return view;
     }
 
@@ -2874,41 +2899,1031 @@ public sealed class RevisionGridView : UserControl
         return Color.FromRgb(0x2E, 0x7D, 0x32); // local branch: green
     }
 
-    // Right-click menu: copy details of the row that was clicked.
-    private ContextMenu BuildRowContextMenu(RevisionRow row)
+    // --- Row context menu -----------------------------------------------------
+    //
+    // The original menu (RevisionGridControl.Designer.cs + ContextMenuOpening) is
+    // CONTEXTUAL: ~60 entries, grouped, each shown/hidden and enabled/disabled from
+    // the current selection. Two Avalonia constraints shape this port:
+    //
+    //  * A popup does NOT re-measure when Items change while it is opening (the
+    //    menu collapses to a thin strip). So the menu is built ONCE — every entry,
+    //    including the per-ref slots below — and `Opening` only flips
+    //    IsVisible/IsEnabled/Header. Nothing is ever added or removed there.
+    //  * A ref-targeted entry ("Merge 'master' into current branch…") needs one item
+    //    per ref sitting on the row, which for the same reason cannot be created on
+    //    demand. Each such operation therefore owns a fixed number of SLOTS whose
+    //    header is rewritten on open; rows carrying more refs than that show the
+    //    first RefSlotCount of them.
+    //
+    // ONE menu instance is shared by every row (commit rows and the two artificial
+    // rows alike), which also keeps list virtualisation cheap. The row the menu was
+    // opened on is captured by a TUNNELLING ContextRequested handler on the list, so
+    // it is known before the popup's own bubbling handler opens it.
+
+    // Per-ref slots per operation. Three covers the realistic cases (a commit
+    // carrying master + a tag + one topic branch) without a wall of hidden items.
+    private const int RefSlotCount = 3;
+
+    private ContextMenu? _rowMenu;
+
+    // One closure per entry, run on Opening: it decides the entry's visibility,
+    // enablement and (for ref slots) caption from the selection context.
+    private readonly List<Action<MenuCtx>> _menuRules = [];
+
+    // Headers of the host-registered commands that the structured menu already
+    // places itself; everything else lands in "Other actions".
+    private readonly HashSet<string> _routedCommands = new(StringComparer.OrdinalIgnoreCase);
+
+    // The row the menu was opened on (right-clicked), and the selection context.
+    private RevisionRow? _menuRow;
+
+    private readonly BranchTagService _branchTags = new();
+
+    // Ref metadata refreshed with every reload, off the UI thread: the checked-out
+    // branch and a name -> kind map ('b' local branch, 'r' remote, 't' tag) used to
+    // classify RevisionRow.RefNames exactly, instead of the display-only '/'-and-
+    // digits heuristics the badges use.
+    private string _currentBranch = string.Empty;
+    private Dictionary<string, char> _refKinds = new(StringComparer.Ordinal);
+
+    /// <summary>
+    ///  Raised by the menu's "Select in left panel" entry with the ref name to
+    ///  reveal (branch or tag). The shell wires this to the repository tree; when
+    ///  nothing is subscribed the entry stays disabled.
+    /// </summary>
+    public event Action<string>? SelectRefInLeftPanelRequested;
+
+    // Everything the entries need to decide about themselves. Cheap to build: no
+    // git call, only what is already loaded in the view.
+    private sealed record MenuCtx(
+        RevisionRow Row,
+        bool Artificial,
+        bool IsIndexRow,
+        int SelectionCount,
+        bool TwoCommitsSelected,
+        IReadOnlyList<string> Local,
+        IReadOnlyList<string> Remote,
+        IReadOnlyList<string> Tags,
+        string CurrentBranch)
     {
-        MenuItem copyHash = new() { Header = T("Copy commit hash") };
-        copyHash.Click += (_, _) => Copy(row.Hash);
+        // A single, real commit: the shape almost every commit operation needs.
+        public bool SingleCommit => !Artificial && SelectionCount <= 1;
 
-        MenuItem copySubject = new() { Header = T("Copy subject") };
-        copySubject.Click += (_, _) => Copy(row.Subject);
+        public bool HasRefs => Local.Count > 0 || Remote.Count > 0 || Tags.Count > 0;
+    }
 
-        MenuItem copyAuthor = new() { Header = T("Copy author") };
-        copyAuthor.Click += (_, _) => Copy(row.Author);
-
-        ContextMenu menu = new()
+    // Builds (once) and returns the menu shared by every row.
+    private ContextMenu RowMenu()
+    {
+        if (_rowMenu is not null)
         {
-            Items =
-            {
-                copyHash,
-                copySubject,
-                copyAuthor,
-            },
-        };
+            return _rowMenu;
+        }
 
-        if (_commitCommands.Count > 0)
+        _menuRules.Clear();
+        _routedCommands.Clear();
+
+        ContextMenu menu = new();
+        foreach (object item in BuildRowMenuItems())
         {
-            menu.Items.Add(new Separator());
-            foreach ((string header, Action<string> handler) in _commitCommands)
+            menu.Items.Add(item);
+        }
+
+        menu.Opening += OnRowMenuOpening;
+        _rowMenu = menu;
+        return menu;
+    }
+
+    // The full entry list, in the original's runtime order (bisect and scripts
+    // aside, which live under "Other actions" here).
+    private List<object> BuildRowMenuItems()
+    {
+        List<object> items = [];
+
+        void Add(object? item)
+        {
+            if (item is MenuItem[] slots)
             {
-                MenuItem item = new() { Header = header };
-                item.Click += (_, _) => handler(row.Hash);
-                menu.Items.Add(item);
+                // A slot group contributes its entries individually.
+                items.AddRange(slots);
+                return;
+            }
+
+            if (item is not null)
+            {
+                items.Add(item);
             }
         }
 
-        return menu;
+        void Sep() => Add(new Separator());
+
+        // Artificial rows: the one action that makes sense there. The caption
+        // switches between working directory / index on open.
+        MenuItem artificial = new();
+        artificial.Click += (_, _) =>
+        {
+            if (_menuRow is not { } row || !IsArtificial(row))
+            {
+                return;
+            }
+
+            if (row.Hash == IndexHash)
+            {
+                CommitIndexSelected?.Invoke();
+            }
+            else
+            {
+                WorkingDirectorySelected?.Invoke();
+            }
+        };
+        _menuRules.Add(ctx =>
+        {
+            artificial.IsVisible = ctx.Artificial;
+            artificial.Header = ctx.IsIndexRow
+                ? T("Show staged changes")
+                : T("Show working directory changes");
+        });
+        Add(artificial);
+
+        // Copy to clipboard: the original's CopyContextMenuItem, i.e. a submenu over
+        // the selected commits (values joined by newlines, duplicates dropped).
+        Add(BuildCopySubmenu());
+        Sep();
+
+        // --- Branch level ----------------------------------------------------
+        Add(RefSlots(
+            T("RevisionGridControl/checkoutBranchToolStripMenuItem.Text", "Chec&kout branch..."),
+            ctx => Concat(ctx.Local, ctx.Remote),
+            name => _ = CheckoutRefAsync(name),
+            (ctx, name) => !string.Equals(name, ctx.CurrentBranch, StringComparison.Ordinal)));
+
+        Add(RefSlots(
+            T("RevisionGridControl/mergeBranchToolStripMenuItem.Text", "&Merge into current branch..."),
+            // Merging the branch you are on is a no-op: the original drops it from
+            // the dropdown, so the slot is not shown for it at all.
+            ctx => Where(Concat(ctx.Local, ctx.Remote), n => !string.Equals(n, ctx.CurrentBranch, StringComparison.Ordinal)),
+            name => _ = MergeRefAsync(name)));
+
+        MenuItem rebase = new()
+        {
+            Header = Strip(T("RevisionGridControl/rebaseOnToolStripMenuItem.Text", "&Rebase current branch on"))
+                + " " + Strip(T("RevisionGridControl/rebaseToolStripMenuItem.Text", "&Selected commit")).ToLowerInvariant()
+                + "…",
+        };
+        rebase.Click += (_, _) => _ = RebaseOnSelectedAsync();
+        Rule(rebase, ctx => !ctx.Artificial, ctx => ctx.SingleCommit && !ctx.Row.IsHead && ctx.CurrentBranch.Length > 0);
+        Add(rebase);
+
+        // "Reset current branch to here" — the host registers the three modes, so
+        // they become the submenu the original opens as a dialog with three radios.
+        MenuItem resetCurrent = new()
+        {
+            Header = Strip(T("RevisionGridControl/resetCurrentBranchToHereToolStripMenuItem.Text", "Reset c&urrent branch to here...")),
+        };
+        AddRouted(resetCurrent, "Reset (soft) to here", ctx => ctx.SingleCommit);
+        AddRouted(resetCurrent, "Reset (mixed) to here", ctx => ctx.SingleCommit);
+        AddRouted(resetCurrent, "Reset (HARD) to here…", ctx => ctx.SingleCommit);
+        Rule(resetCurrent, ctx => !ctx.Artificial, ctx => ctx.SingleCommit);
+        Add(resetCurrent);
+
+        MenuItem resetAnother = new()
+        {
+            Header = Strip(T("RevisionGridControl/resetAnotherBranchToHereToolStripMenuItem.Text", "Reset an&other branch to here...")),
+        };
+        resetAnother.Click += (_, _) => _ = ResetAnotherBranchAsync();
+        Rule(resetAnother, ctx => !ctx.Artificial, ctx => ctx.SingleCommit);
+        Add(resetAnother);
+
+        Sep();
+
+        MenuItem selectInLeftPanel = new()
+        {
+            Header = Strip(T("RevisionGridControl/tsmiSelectInLeftPanel.Text", "Se&lect in left panel")),
+        };
+        selectInLeftPanel.Click += (_, _) =>
+        {
+            if (selectInLeftPanel.Tag is string name && name.Length > 0)
+            {
+                SelectRefInLeftPanelRequested?.Invoke(name);
+            }
+        };
+        _menuRules.Add(ctx =>
+        {
+            string? first = FirstOrDefault(Concat(Concat(ctx.Local, ctx.Remote), ctx.Tags));
+            selectInLeftPanel.Tag = first;
+            selectInLeftPanel.IsVisible = !ctx.Artificial && first is not null;
+            selectInLeftPanel.IsEnabled = first is not null && SelectRefInLeftPanelRequested is not null;
+        });
+        Add(selectInLeftPanel);
+
+        Add(Routed("Create branch here…", ctx => !ctx.Artificial, ctx => ctx.SingleCommit));
+        Add(Routed("Create tag here…", ctx => !ctx.Artificial, ctx => ctx.SingleCommit));
+
+        Add(RefSlots(
+            T("RevisionGridControl/renameBranchToolStripMenuItem.Text", "R&ename branch..."),
+            ctx => ctx.Local,
+            name => _ = RenameBranchAsync(name)));
+
+        Add(RefSlots(
+            T("RevisionGridControl/deleteBranchToolStripMenuItem.Text", "&Delete branch..."),
+            ctx => ctx.Local,
+            name => _ = DeleteBranchAsync(name),
+            // The original keeps the entry VISIBLE but disabled on the current
+            // branch, so the reason it cannot be deleted is discoverable.
+            (ctx, name) => !string.Equals(name, ctx.CurrentBranch, StringComparison.Ordinal)));
+
+        Add(RefSlots(
+            T("RevisionGridControl/deleteTagToolStripMenuItem.Text", "&Delete tag..."),
+            ctx => ctx.Tags,
+            name => _ = DeleteTagAsync(name)));
+
+        Sep();
+
+        // --- Commit level ----------------------------------------------------
+        Add(Routed("Checkout this commit", ctx => !ctx.Artificial, ctx => ctx.SingleCommit && !ctx.Row.IsHead));
+        Add(Routed("Revert this commit…", ctx => !ctx.Artificial, ctx => ctx.SingleCommit));
+        Add(Routed("Cherry-pick", ctx => !ctx.Artificial, ctx => ctx.SingleCommit && !ctx.Row.IsHead));
+        Add(Routed("Archive this commit…", ctx => !ctx.Artificial, ctx => ctx.SingleCommit));
+
+        MenuItem advanced = new()
+        {
+            Header = Strip(T("RevisionGridControl/manipulateCommitToolStripMenuItem.Text", "&Advanced")),
+        };
+        AddRouted(advanced, "Reword commit…", ctx => ctx.SingleCommit);
+        AddRouted(advanced, "Squash with previous…", ctx => ctx.SingleCommit);
+        AddRouted(advanced, "Fixup with previous…", ctx => ctx.SingleCommit);
+        Rule(advanced, ctx => !ctx.Artificial, ctx => ctx.SingleCommit);
+        Add(advanced);
+
+        Sep();
+
+        // --- Compare ----------------------------------------------------------
+        MenuItem compare = new()
+        {
+            Header = Strip(T("RevisionGridControl/compareToolStripMenuItem.Text", "Com&pare")),
+        };
+        AddRouted(compare, "Select as BASE to compare", ctx => ctx.SingleCommit);
+        AddRouted(compare, "Compare to BASE", ctx => ctx.SingleCommit);
+        AddRouted(compare, "Compare to working directory", ctx => ctx.SingleCommit);
+        AddRouted(compare, "Compare to branch…", ctx => ctx.SingleCommit);
+
+        MenuItem compareSelected = new()
+        {
+            Header = Strip(T("RevisionGridControl/compareSelectedCommitsMenuItem.Text", "Compare &selected commits")),
+        };
+        compareSelected.Click += (_, _) => CompareSelectedCommits();
+        AddChild(compare, compareSelected, ctx => true, ctx => ctx.TwoCommitsSelected);
+        Rule(compare, ctx => !ctx.Artificial);
+        Add(compare);
+
+        Sep();
+
+        // --- Navigate ----------------------------------------------------------
+        MenuItem navigate = new()
+        {
+            Header = Strip(T("FormBrowse/navigateToolStripMenuItem.Text", "&Navigate")),
+        };
+        AddChild(navigate, MakeItem(T("RevisionGrid/GotoFirstParentCommit.Text", "First parent"), GoToParent),
+            ctx => true, ctx => ctx.SelectionCount <= 1);
+        AddChild(navigate, MakeItem(T("RevisionGrid/GotoChildCommit.Text", "Nearest child"), GoToChild),
+            ctx => true, ctx => ctx.SelectionCount <= 1);
+        AddChild(navigate, MakeItem(T("RevisionGrid/GotoCurrentRevision.Text", "Go to current revision"), GoToCurrentRevision));
+        AddChild(navigate, MakeItem(T("FormGoToCommit/$this.Text", "Go to commit") + "…", () => _ = GoToCommitPromptAsync()));
+        AddChild(navigate, MakeItem(T("RevisionGrid/NavigateBackward.Text", "Backward") + "   (Alt+←)", () => NavigateBack()));
+        AddChild(navigate, MakeItem(T("RevisionGrid/NavigateForward.Text", "Forward") + "   (Alt+→)", () => NavigateForward()));
+        Rule(navigate, ctx => true);
+        Add(navigate);
+
+        // --- Other actions ------------------------------------------------------
+        MenuItem other = new()
+        {
+            Header = Strip(T("RevisionGridControl/tsmiOtherActions.Text", "&Other actions")),
+        };
+        AddRouted(other, "Bisect: mark good", ctx => ctx.SingleCommit);
+        AddRouted(other, "Bisect: mark bad", ctx => ctx.SingleCommit);
+        AddRouted(other, "Bisect: skip", ctx => ctx.SingleCommit);
+        AddRouted(other, "Bisect: stop/reset", ctx => true);
+
+        // Anything the host registered that this menu does not place explicitly
+        // still has to appear (AddCommitCommand is the shell's only hook), so it
+        // lands here rather than being dropped.
+        foreach ((string header, Action<string> handler) in _commitCommands)
+        {
+            if (_routedCommands.Contains(header))
+            {
+                continue;
+            }
+
+            MenuItem leftover = new() { Header = header };
+            Action<string> captured = handler;
+            leftover.Click += (_, _) =>
+            {
+                if (_menuRow is { } row)
+                {
+                    captured(row.Hash);
+                }
+            };
+            AddChild(other, leftover, ctx => !ctx.Artificial, ctx => ctx.SingleCommit);
+        }
+
+        Rule(other, ctx => true);
+        Add(other);
+
+        return items;
     }
+
+    // The Copy submenu: hash / short hash / message / author / dates / refs, each
+    // over the whole selection like the original's CopyContextMenuItem.
+    private MenuItem BuildCopySubmenu()
+    {
+        MenuItem copy = new()
+        {
+            Header = Strip(T("RevisionGridControl/copyToClipboardToolStripMenuItem.Text", "&Copy to clipboard")),
+        };
+
+        void Entry(string caption, Func<RevisionRow, string> value, Func<MenuCtx, bool>? visible = null)
+        {
+            MenuItem item = new() { Header = caption };
+            item.Click += (_, _) => CopySelected(value);
+            AddChild(copy, item, visible ?? (ctx => true));
+        }
+
+        Entry(Strip(T("TranslatedStrings/_commitHashText.Text", "Commit hash")), r => r.Hash);
+        Entry(T("Short hash"), r => r.ShortHash);
+        Entry(Strip(T("TranslatedStrings/_message.Text", "Message")), r => r.Subject);
+        Entry(Strip(T("TranslatedStrings/_author.Text", "Author")), r =>
+            r.AuthorEmail.Length > 0 ? $"{r.Author} <{r.AuthorEmail}>" : r.Author);
+        Entry(T("TranslatedStrings/_authorDateText.Text", "Author date"), r => r.AuthorDate.ToString("yyyy-MM-dd HH:mm:ss"));
+        Entry(T("TranslatedStrings/_commitDateText.Text", "Commit date"), r => r.CommitDate.ToString("yyyy-MM-dd HH:mm:ss"));
+        Entry(
+            $"{Strip(T("TranslatedStrings/_branchesText.Text", "Branches"))} / {Strip(T("TranslatedStrings/_tagsText.Text", "Tags"))}",
+            r => string.Join(" ", r.RefNames),
+            ctx => ctx.HasRefs);
+
+        Rule(copy, ctx => !ctx.Artificial);
+        return copy;
+    }
+
+    // Copies one field of every selected commit (duplicates dropped, newline
+    // separated), falling back to the right-clicked row when nothing is selected.
+    private void CopySelected(Func<RevisionRow, string> value)
+    {
+        List<RevisionRow> rows = SelectedCommits();
+        if (rows.Count == 0 && _menuRow is { } row && !IsArtificial(row))
+        {
+            rows.Add(row);
+        }
+
+        string text = string.Join(
+            "\n",
+            rows.Select(value).Where(v => !string.IsNullOrEmpty(v)).Distinct());
+
+        Copy(text);
+    }
+
+    private List<RevisionRow> SelectedCommits()
+        => _list.SelectedItems is { Count: > 0 } items
+            ? items.OfType<RevisionRow>().Where(r => !IsArtificial(r)).ToList()
+            : [];
+
+    // --- Menu wiring helpers ---------------------------------------------------
+
+    private static string Strip(string caption) => RevisionFilterDialog.StripMnemonic(caption);
+
+    private static MenuItem MakeItem(string header, Action action)
+    {
+        MenuItem item = new() { Header = Strip(header) };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    // Registers the visibility/enablement rule of an entry.
+    private void Rule(MenuItem item, Func<MenuCtx, bool> visible, Func<MenuCtx, bool>? enabled = null)
+    {
+        _menuRules.Add(ctx =>
+        {
+            item.IsVisible = visible(ctx);
+            item.IsEnabled = enabled?.Invoke(ctx) ?? true;
+        });
+    }
+
+    private void AddChild(MenuItem parent, MenuItem child, Func<MenuCtx, bool>? visible = null, Func<MenuCtx, bool>? enabled = null)
+    {
+        parent.Items.Add(child);
+        Rule(child, visible ?? (_ => true), enabled);
+    }
+
+    // Creates an entry driven by a host-registered command (AddCommitCommand). The
+    // header is matched exactly; a command the shell did not register simply has no
+    // entry, so the menu never shows a dead item.
+    private MenuItem? Routed(string header, Func<MenuCtx, bool> visible, Func<MenuCtx, bool>? enabled = null)
+    {
+        foreach ((string registered, Action<string> handler) in _commitCommands)
+        {
+            if (!string.Equals(registered, header, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            _routedCommands.Add(registered);
+            MenuItem item = new() { Header = registered };
+            Action<string> captured = handler;
+            item.Click += (_, _) =>
+            {
+                if (_menuRow is { } row)
+                {
+                    captured(row.Hash);
+                }
+            };
+
+            Rule(item, visible, enabled);
+            return item;
+        }
+
+        return null;
+    }
+
+    private void AddRouted(MenuItem parent, string header, Func<MenuCtx, bool> enabled)
+    {
+        if (Routed(header, ctx => true, enabled) is { } item)
+        {
+            parent.Items.Add(item);
+        }
+    }
+
+    // A group of RefSlotCount interchangeable entries for a ref-targeted operation.
+    // Created once; on open each slot either takes the n-th ref of the row (caption
+    // rewritten to name it) or hides itself.
+    private MenuItem[] RefSlots(
+        string caption,
+        Func<MenuCtx, IReadOnlyList<string>> refsOf,
+        Action<string> action,
+        Func<MenuCtx, string, bool>? enabled = null)
+    {
+        string baseCaption = Strip(caption).TrimEnd('.', '…', ' ');
+        MenuItem[] slots = new MenuItem[RefSlotCount];
+
+        for (int i = 0; i < RefSlotCount; i++)
+        {
+            int index = i;
+            MenuItem item = new();
+            item.Click += (_, _) =>
+            {
+                if (item.Tag is string name && name.Length > 0)
+                {
+                    action(name);
+                }
+            };
+
+            _menuRules.Add(ctx =>
+            {
+                IReadOnlyList<string> names = ctx.Artificial || ctx.SelectionCount > 1
+                    ? []
+                    : refsOf(ctx);
+
+                if (index >= names.Count)
+                {
+                    item.IsVisible = false;
+                    item.Tag = null;
+                    return;
+                }
+
+                string name = names[index];
+                item.Tag = name;
+                item.Header = $"{baseCaption} '{name}'…";
+                item.IsVisible = true;
+                item.IsEnabled = enabled?.Invoke(ctx, name) ?? true;
+            });
+
+            slots[i] = item;
+        }
+
+        return slots;
+    }
+
+    // Splits the row's refs into local branches / remote branches / tags using the
+    // kind map loaded with the repository; falls back to the badge heuristics for a
+    // ref the map does not know (a walk can outrun the ref refresh).
+    private (List<string> Local, List<string> Remote, List<string> Tags) ClassifyRefs(RevisionRow row)
+    {
+        List<string> local = [];
+        List<string> remote = [];
+        List<string> tags = [];
+
+        foreach (string name in row.RefNames)
+        {
+            char kind = _refKinds.TryGetValue(name, out char known)
+                ? known
+                : IsTagRef(name) ? 't' : IsRemoteRef(name) ? 'r' : 'b';
+
+            switch (kind)
+            {
+                case 't': tags.Add(name); break;
+                case 'r': remote.Add(name); break;
+                default: local.Add(name); break;
+            }
+        }
+
+        return (local, remote, tags);
+    }
+
+    private MenuCtx BuildMenuContext(RevisionRow row)
+    {
+        (List<string> local, List<string> remote, List<string> tags) = ClassifyRefs(row);
+        List<RevisionRow> selection = SelectedCommits();
+        int count = _list.SelectedItems?.Count ?? 0;
+
+        return new MenuCtx(
+            row,
+            IsArtificial(row),
+            row.Hash == IndexHash,
+            count,
+            selection.Count == 2,
+            local,
+            remote,
+            tags,
+            _currentBranch);
+    }
+
+    // Applies every rule, then collapses submenus with no visible child and
+    // separators that would end up leading, trailing or doubled — the equivalent of
+    // the original's UpdateSeparators().
+    private void OnRowMenuOpening(object? sender, CancelEventArgs e)
+    {
+        RevisionRow? row = _menuRow ?? _list.SelectedItem as RevisionRow;
+        if (row is null || _rowMenu is null)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        _menuRow = row;
+        MenuCtx ctx = BuildMenuContext(row);
+        foreach (Action<MenuCtx> rule in _menuRules)
+        {
+            rule(ctx);
+        }
+
+        foreach (object? item in _rowMenu.Items)
+        {
+            if (item is MenuItem { ItemCount: > 0, IsVisible: true } parent)
+            {
+                parent.IsVisible = parent.Items.OfType<MenuItem>().Any(child => child.IsVisible);
+            }
+        }
+
+        bool seenItem = false;
+        Separator? pending = null;
+        foreach (object? item in _rowMenu.Items)
+        {
+            if (item is Separator separator)
+            {
+                separator.IsVisible = false;
+                pending = seenItem ? separator : null;
+                seenItem = false;
+            }
+            else if (item is Control control && control.IsVisible)
+            {
+                if (pending is not null)
+                {
+                    pending.IsVisible = true;
+                    pending = null;
+                }
+
+                seenItem = true;
+            }
+        }
+    }
+
+    // Captures the row a right-click landed on BEFORE the popup opens, and makes
+    // that row the selection unless it is already part of a multi-selection (so a
+    // two-commit compare survives a right-click inside it).
+    private void OnListContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        RevisionRow? row = (e.Source as Visual)?
+            .FindAncestorOfType<ListBoxItem>(includeSelf: true)?
+            .DataContext as RevisionRow;
+
+        if (row is null)
+        {
+            return;
+        }
+
+        _menuRow = row;
+        if (_list.SelectedItems is not { } selection || !selection.Contains(row))
+        {
+            SelectRow(row);
+        }
+    }
+
+    // --- Menu operations -------------------------------------------------------
+    //
+    // Every one of these runs git in Task.Run and comes back to the UI thread
+    // through the dispatcher (M43: a sync-over-async git call on the UI thread
+    // freezes the whole window). Destructive ones ask first.
+
+    private void CompareSelectedCommits()
+    {
+        List<RevisionRow> rows = SelectedCommits();
+        if (rows.Count != 2)
+        {
+            return;
+        }
+
+        // Oldest first, matching the grid's own two-row selection behaviour.
+        RangeSelected?.Invoke(rows[1].Hash, rows[0].Hash);
+    }
+
+    private void GoToCurrentRevision()
+    {
+        foreach (RevisionRow row in _rows)
+        {
+            if (row.IsHead)
+            {
+                string? from = CurrentHash;
+                if (SelectByHash(row.Hash))
+                {
+                    PushHistory(from);
+                }
+
+                return;
+            }
+        }
+
+        FlashStatus(T("The current revision is not in the loaded history."));
+    }
+
+    private async Task GoToCommitPromptAsync()
+    {
+        if (await PromptAsync(T("FormGoToCommit/$this.Text", "Go to commit"), string.Empty, T("FormGoToCommit/$this.Text", "Go to commit")) is { Length: > 0 } hash)
+        {
+            GoToCommit(hash);
+        }
+    }
+
+    private async Task CheckoutRefAsync(string name)
+    {
+        if (_repoPath.Length == 0)
+        {
+            return;
+        }
+
+        // Same dialog the rest of the port uses (M47/F4): it decides what happens to
+        // local changes and returns immediately on a clean tree.
+        GitCommands.LocalChangesAction? action = await CheckoutBranchDialog.AskAsync(
+            TopLevel.GetTopLevel(this) as Window, _repoPath, name);
+
+        if (action is not { } changes)
+        {
+            return;
+        }
+
+        RunRefOp(
+            string.Format(T("Checking out {0}…"), name),
+            repo => _branchTags.Checkout(repo, name, changes));
+    }
+
+    private async Task MergeRefAsync(string name)
+    {
+        if (_repoPath.Length == 0 || _currentBranch.Length == 0)
+        {
+            FlashStatus(T("TranslatedStrings/_errorCaptionNotOnBranch.Text", "Not on a branch"));
+            return;
+        }
+
+        if (!await ConfirmAsync(string.Format(T("Merge '{0}' into '{1}'?"), name, _currentBranch)))
+        {
+            return;
+        }
+
+        RunRefOp(
+            string.Format(T("Merging {0}…"), name),
+            repo => _branchTags.MergeBranch(repo, name));
+    }
+
+    private async Task RebaseOnSelectedAsync()
+    {
+        if (_repoPath.Length == 0 || _menuRow is not { } row || IsArtificial(row))
+        {
+            return;
+        }
+
+        if (!await ConfirmAsync(T(
+            "RevisionGridControl/_areYouSureRebase.Text",
+            "Are you sure you want to rebase? This action will rewrite commit history.")))
+        {
+            return;
+        }
+
+        string target = row.Hash;
+        RunRefOp(
+            string.Format(T("Rebasing on {0}…"), row.ShortHash),
+            repo => _branchTags.RebaseOnto(repo, target));
+    }
+
+    private async Task ResetAnotherBranchAsync()
+    {
+        if (_repoPath.Length == 0 || _menuRow is not { } row || IsArtificial(row))
+        {
+            return;
+        }
+
+        (List<string> local, _, _) = ClassifyRefs(row);
+        string suggestion = local.FirstOrDefault(n => !string.Equals(n, _currentBranch, StringComparison.Ordinal)) ?? string.Empty;
+
+        if (await PromptAsync(
+                string.Format(T("Move which branch to {0}?"), row.ShortHash),
+                suggestion,
+                Strip(T("RevisionGridControl/resetAnotherBranchToHereToolStripMenuItem.Text", "Reset an&other branch to here...")))
+            is not { Length: > 0 } branch)
+        {
+            return;
+        }
+
+        if (!await ConfirmAsync(string.Format(
+                T("Move branch '{0}' to commit {1}? {2}"),
+                branch,
+                row.ShortHash,
+                T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone."))))
+        {
+            return;
+        }
+
+        string target = row.Hash;
+        RunRefOp(
+            string.Format(T("Moving {0}…"), branch),
+            repo => _branchTags.ResetBranchTo(repo, branch, target));
+    }
+
+    private async Task RenameBranchAsync(string name)
+    {
+        if (_repoPath.Length == 0)
+        {
+            return;
+        }
+
+        if (await PromptAsync(
+                string.Format(T("New name for branch '{0}':"), name),
+                name,
+                Strip(T("RevisionGridControl/renameBranchToolStripMenuItem.Text", "R&ename branch...")))
+            is not { Length: > 0 } renamed || renamed == name)
+        {
+            return;
+        }
+
+        RunRefOp(
+            string.Format(T("Renaming {0}…"), name),
+            repo => _branchTags.RenameBranch(repo, name, renamed));
+    }
+
+    private async Task DeleteBranchAsync(string name)
+    {
+        if (_repoPath.Length == 0)
+        {
+            return;
+        }
+
+        if (!await ConfirmAsync(string.Format(T("Delete branch '{0}'?"), name)))
+        {
+            return;
+        }
+
+        // Plain delete first: git refuses an unmerged branch, and only then is the
+        // second (explicitly destructive) question asked.
+        BranchTagResult result = await Task.Run(() => _branchTags.DeleteBranch(_repoPath, name, force: false));
+        if (result.Success)
+        {
+            AfterRefOp(string.Format(T("Deleted branch {0}."), name));
+            return;
+        }
+
+        if (!result.Output.Contains("not fully merged", StringComparison.OrdinalIgnoreCase))
+        {
+            FlashStatus(FirstLine(result.Output));
+            return;
+        }
+
+        if (!await ConfirmAsync(string.Format(
+                T("Branch '{0}' is not fully merged. Delete it anyway and lose its commits?"),
+                name)))
+        {
+            return;
+        }
+
+        RunRefOp(
+            string.Format(T("Deleting {0}…"), name),
+            repo => _branchTags.DeleteBranch(repo, name, force: true));
+    }
+
+    private async Task DeleteTagAsync(string name)
+    {
+        if (_repoPath.Length == 0)
+        {
+            return;
+        }
+
+        if (!await ConfirmAsync(string.Format(T("Delete tag '{0}'?"), name)))
+        {
+            return;
+        }
+
+        RunRefOp(
+            string.Format(T("Deleting tag {0}…"), name),
+            repo => _branchTags.DeleteTag(repo, name));
+    }
+
+    // Runs a ref mutation off the UI thread and, on success, reloads the walk (the
+    // refs drawn on the rows have just changed) — failures surface git's own first
+    // line in the status bar instead of throwing.
+    private void RunRefOp(string busy, Func<string, BranchTagResult> work)
+    {
+        string repo = _repoPath;
+        if (repo.Length == 0)
+        {
+            return;
+        }
+
+        FlashStatus(busy);
+        _ = Task.Run(() =>
+        {
+            BranchTagResult result;
+            try
+            {
+                result = work(repo);
+            }
+            catch (Exception ex)
+            {
+                result = new BranchTagResult(false, ex.Message);
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (result.Success)
+                {
+                    AfterRefOp(FirstLine(result.Output) is { Length: > 0 } line ? line : busy);
+                }
+                else
+                {
+                    FlashStatus(FirstLine(result.Output));
+                }
+            });
+        });
+    }
+
+    private void AfterRefOp(string message)
+    {
+        Reload();
+        RefreshRefContext();
+        FlashStatus(message);
+    }
+
+    private static string FirstLine(string? output)
+    {
+        string text = (output ?? string.Empty).Trim();
+        int end = text.IndexOf('\n');
+        return end < 0 ? text : text[..end].Trim();
+    }
+
+    // Reloads the checked-out branch and the ref-kind map used by the menu's
+    // predicates. Off the UI thread; failures leave the previous values in place.
+    private void RefreshRefContext()
+    {
+        string repo = _repoPath;
+        if (repo.Length == 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                string current = _branchTags.GetCurrentBranch(repo);
+                BranchTagListing listing = _branchTags.LoadRefs(repo);
+
+                Dictionary<string, char> kinds = new(StringComparer.Ordinal);
+                foreach (BranchTagRow branch in listing.Branches)
+                {
+                    kinds[branch.Name] = branch.IsRemote ? 'r' : 'b';
+                }
+
+                foreach (BranchTagRow tag in listing.Tags)
+                {
+                    kinds[tag.Name] = 't';
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    _currentBranch = current;
+                    _refKinds = kinds;
+                });
+            }
+            catch (Exception)
+            {
+                // Best effort: the menu falls back to the display heuristics.
+            }
+        });
+    }
+
+    // Minimal modal yes/no confirmation (same pattern as the tree/panels); allows
+    // the action when there is no window to own the dialog (headless).
+    private async Task<bool> ConfirmAsync(string message)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return true;
+        }
+
+        TaskCompletionSource<bool> tcs = new();
+        Button yes = new() { Content = T("TranslatedStrings/_yes.Text", "Yes"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("TranslatedStrings/_no.Text", "No") };
+        Window dialog = new()
+        {
+            Title = T("Confirm"),
+            Width = 380,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = B("App.Panel"),
+        };
+        yes.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
+        no.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+        dialog.Closed += (_, _) => tcs.TrySetResult(false);
+
+        StackPanel buttons = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(yes);
+        buttons.Children.Add(no);
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = B("App.Text") });
+        content.Children.Add(buttons);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    // Minimal modal text prompt; null when cancelled or headless.
+    private async Task<string?> PromptAsync(string message, string initial, string title)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return null;
+        }
+
+        TaskCompletionSource<string?> tcs = new();
+        TextBox input = new() { Text = initial };
+        Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK"), Margin = new Thickness(0, 0, 6, 0) };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
+        Window dialog = new()
+        {
+            Title = title,
+            Width = 380,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = B("App.Panel"),
+        };
+        ok.Click += (_, _) => { tcs.TrySetResult(input.Text?.Trim()); dialog.Close(); };
+        cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+        input.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                tcs.TrySetResult(input.Text?.Trim());
+                dialog.Close();
+                e.Handled = true;
+            }
+        };
+        dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+        StackPanel buttons = new() { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = B("App.Text") });
+        content.Children.Add(input);
+        content.Children.Add(buttons);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    private static IReadOnlyList<string> Concat(IReadOnlyList<string> first, IReadOnlyList<string> second)
+    {
+        if (second.Count == 0)
+        {
+            return first;
+        }
+
+        List<string> all = new(first.Count + second.Count);
+        all.AddRange(first);
+        all.AddRange(second);
+        return all;
+    }
+
+    private static IReadOnlyList<string> Where(IReadOnlyList<string> names, Func<string, bool> predicate)
+        => names.Where(predicate).ToList();
+
+    private static string? FirstOrDefault(IReadOnlyList<string> names) => names.Count > 0 ? names[0] : null;
 
     private void Copy(string? text)
     {
