@@ -20,8 +20,10 @@ public sealed record CommitDetailInfo(
     string AuthorDate,
     string AuthorDateRelative,
     string Committer,
+    string CommitterEmail,
     string CommitDate,
     string CommitDateRelative,
+    bool DatesDiffer,
     IReadOnlyList<string> ParentHashes,
     IReadOnlyList<string> ChildHashes,
     IReadOnlyList<string> Branches,
@@ -36,6 +38,14 @@ public sealed record CommitDetailInfo(
     /// <summary><see langword="true"/> when the author and committer identities differ.</summary>
     public bool CommitterDiffers =>
         !string.IsNullOrEmpty(Committer) && !string.Equals(Author, Committer, StringComparison.Ordinal);
+
+    /// <summary>
+    ///  The label for the author-date row: upstream renames it to "Author date"
+    ///  as soon as the two timestamps differ, keeping the plain "Date" for the
+    ///  common case where a commit was never rewritten
+    ///  (<c>CommitDataHeaderRenderer.Render</c>).
+    /// </summary>
+    public bool ShowCommitDate => DatesDiffer;
 }
 
 /// <summary>
@@ -99,8 +109,14 @@ public sealed class CommitDetailService
             AuthorDate: FormatDate(revision.AuthorDate),
             AuthorDateRelative: FormatRelative(revision.AuthorDate),
             Committer: committer,
+            CommitterEmail: revision.CommitterEmail ?? string.Empty,
             CommitDate: FormatDate(revision.CommitDate),
             CommitDateRelative: FormatRelative(revision.CommitDate),
+
+            // Upstream compares the timestamps, not the identities: on amend,
+            // rebase and cherry-pick the person is unchanged while the dates
+            // move apart, and that is exactly when the commit date matters.
+            DatesDiffer: !revision.AuthorDate.Equals(revision.CommitDate),
             ParentHashes: parents,
             ChildHashes: children,
             Branches: branches,

@@ -43,6 +43,7 @@ public sealed class CommitDetailView : UserControl
     private readonly CommitDetailService _service = new();
     private readonly CommitInfoExtrasService _extrasService = new();
     private readonly CommitInfoSettingsService _settingsService = new();
+    private readonly ExternalToolService _externalTools = new();
     private readonly CommitInfoSettings _settings;
 
     private readonly TextBlock _status;
@@ -337,11 +338,17 @@ public sealed class CommitDetailView : UserControl
         void Line(string label, string value) => sb.Append(label).Append(' ').AppendLine(value);
 
         Line(T("TranslatedStrings/_author.Text", "Author"), detail.Author);
-        Line(T("TranslatedStrings/_dateText.Text", "Date"),
+        Line(detail.DatesDiffer
+                ? Plural(T("TranslatedStrings/_authorDateText.Text", "{0:Author date|Author dates}"), 1)
+                : T("TranslatedStrings/_dateText.Text", "Date"),
             DateDisplay(detail.AuthorDate, detail.AuthorDateRelative));
         if (detail.CommitterDiffers)
         {
             Line(T("TranslatedStrings/_committerText.Text", "Committer"), detail.Committer);
+        }
+
+        if (detail.DatesDiffer)
+        {
             Line(Plural(T("TranslatedStrings/_commitDateText.Text", "{0:Commit date|Commit dates}"), 1),
                 DateDisplay(detail.CommitDate, detail.CommitDateRelative));
         }
@@ -595,14 +602,27 @@ public sealed class CommitDetailView : UserControl
         string none = T("UserRepositoriesList/tsmiCategoryNone.Text", "(none)");
 
         AddRow(grid, ref row, T("TranslatedStrings/_author.Text", "Author"),
-            TextValue(detail.Author, monospace: false));
-        AddRow(grid, ref row, T("TranslatedStrings/_dateText.Text", "Date"),
+            PersonValue(detail.Author, detail.AuthorEmail));
+
+        // Upstream keys the date rows off the timestamps, never off the identity:
+        // the plain "Date" label is used only while author and commit date are
+        // identical, and the commit date gets its own row as soon as they drift
+        // apart — the amend / rebase / cherry-pick case, where author and
+        // committer are the same person (CommitDataHeaderRenderer.Render).
+        AddRow(grid, ref row,
+            detail.DatesDiffer
+                ? Plural(T("TranslatedStrings/_authorDateText.Text", "{0:Author date|Author dates}"), 1)
+                : T("TranslatedStrings/_dateText.Text", "Date"),
             TextValue(DateDisplay(detail.AuthorDate, detail.AuthorDateRelative), monospace: false));
 
         if (detail.CommitterDiffers)
         {
             AddRow(grid, ref row, T("TranslatedStrings/_committerText.Text", "Committer"),
-                TextValue(detail.Committer, monospace: false));
+                PersonValue(detail.Committer, detail.CommitterEmail));
+        }
+
+        if (detail.DatesDiffer)
+        {
             AddRow(grid, ref row,
                 Plural(T("TranslatedStrings/_commitDateText.Text", "{0:Commit date|Commit dates}"), 1),
                 TextValue(DateDisplay(detail.CommitDate, detail.CommitDateRelative), monospace: false));
@@ -807,6 +827,46 @@ public sealed class CommitDetailView : UserControl
         }
 
         return block;
+    }
+
+    /// <summary>
+    ///  Renders an "author"/"committer" cell. Upstream turns the identity into a
+    ///  <c>mailto:</c> link (<c>CommitDataHeaderRenderer</c> line 94/104), so the
+    ///  name is clickable whenever an address is known and falls back to plain
+    ///  text when the commit carries no e-mail. The target is registered in
+    ///  <see cref="_linkTargets"/> so right-click still offers "Copy link".
+    /// </summary>
+    private Control PersonValue(string display, string email)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return TextValue(display, monospace: false);
+        }
+
+        string target = "mailto:" + email;
+        TextBlock link = new()
+        {
+            Text = display,
+            Foreground = B("App.Accent"),
+            TextDecorations = TextDecorations.Underline,
+            Margin = new Thickness(0, 3, 0, 3),
+            TextWrapping = TextWrapping.Wrap,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        link.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(link).Properties.IsRightButtonPressed)
+            {
+                return;
+            }
+
+            // The handler shells out to xdg-open; keep it off the UI thread.
+            Task.Run(() => _externalTools.OpenUrl(target));
+        };
+
+        _linkTargets[link] = target;
+        return link;
     }
 
     /// <summary>Builds a wrap-panel of clickable short-hash links, each raising <see cref="CommitNavigated"/>.</summary>
