@@ -74,6 +74,12 @@ public sealed class BlameView : UserControl
     private readonly MenuItem _blamePreviousItem;
     private readonly MenuItem _showChangesItem;
     private readonly MenuItem _copyMenuItem;
+
+    // The three switches that change what git blame is asked to compute
+    // (BlameOptions); upstream carries the same three in FormFileHistory's View menu.
+    private readonly MenuItem _ignoreWhitespaceItem;
+    private readonly MenuItem _detectCopyInFileItem;
+    private readonly MenuItem _detectCopyInAllItem;
     private readonly MenuItem _copyHashItem;
     private readonly MenuItem _copyMessageItem;
     private readonly MenuItem _copyAllItem;
@@ -177,6 +183,19 @@ public sealed class BlameView : UserControl
             ItemsSource = new[] { _copyHashItem, _copyMessageItem, _copyAllItem },
         };
 
+        // The blame switches. ToggleType.CheckBox gives the tick upstream's menu items
+        // show; the click handler writes the flag and immediately re-runs the blame,
+        // because the flag only reaches git on the next invocation.
+        _ignoreWhitespaceItem = new MenuItem { ToggleType = MenuItemToggleType.CheckBox };
+        _ignoreWhitespaceItem.Click += (_, _) =>
+            ApplyBlameOptions(o => o with { IgnoreWhitespace = !o.IgnoreWhitespace });
+        _detectCopyInFileItem = new MenuItem { ToggleType = MenuItemToggleType.CheckBox };
+        _detectCopyInFileItem.Click += (_, _) =>
+            ApplyBlameOptions(o => o with { DetectCopyInFile = !o.DetectCopyInFile });
+        _detectCopyInAllItem = new MenuItem { ToggleType = MenuItemToggleType.CheckBox };
+        _detectCopyInAllItem.Click += (_, _) =>
+            ApplyBlameOptions(o => o with { DetectCopyInAll = !o.DetectCopyInAll });
+
         // Items (including the submenu's) are built in full here: mutating them
         // from Opening leaves the popup mis-measured. Opening only flips
         // IsEnabled and re-words the "previous revision" header.
@@ -189,6 +208,10 @@ public sealed class BlameView : UserControl
                 _showChangesItem,
                 new Separator(),
                 _copyMenuItem,
+                new Separator(),
+                _ignoreWhitespaceItem,
+                _detectCopyInFileItem,
+                _detectCopyInAllItem,
             },
         };
         menu.Opening += (_, _) => UpdateMenuState();
@@ -243,6 +266,9 @@ public sealed class BlameView : UserControl
         Content = root;
 
         Retranslate();
+
+        // Ticks only: nothing is on screen yet, so there is nothing to re-blame.
+        ReloadBlameOptions(reblame: false);
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
@@ -262,6 +288,49 @@ public sealed class BlameView : UserControl
         _copyHashItem.Header = T("BlameControl/commitHashToolStripMenuItem.Text", "Commit _hash");
         _copyMessageItem.Header = T("BlameControl/commitMessageToolStripMenuItem.Text", "Commit _message");
         _copyAllItem.Header = T("BlameControl/allCommitInfoToolStripMenuItem.Text", "_All commit info");
+        _ignoreWhitespaceItem.Header =
+            T("FormFileHistory/ignoreWhitespaceToolStripMenuItem.Text", "Ignore whitespace");
+        _detectCopyInFileItem.Header =
+            T("FormFileHistory/detectMoveAndCopyInThisFileToolStripMenuItem.Text", "Detect move and copy in this file");
+        _detectCopyInAllItem.Header =
+            T("FormFileHistory/detectMoveAndCopyInAllFilesToolStripMenuItem.Text", "Detect move and copy in all files");
+    }
+
+    /// <summary>
+    ///  Re-reads the three blame switches into the menu ticks and, when
+    ///  <paramref name="reblame"/> is set and a file is on screen, blames it again so
+    ///  the change is visible at once.
+    ///
+    ///  <para>Public because the Settings dialog edits the very same flags: after an
+    ///  Apply the host can call this to keep an open blame in step (see
+    ///  <c>MainWindow</c> wiring note). Called on the UI thread; the flags come from
+    ///  upstream's in-memory settings container, not from git.</para>
+    /// </summary>
+    public void ReloadBlameOptions(bool reblame = true)
+    {
+        BlameOptions options = BlameOptions.Load();
+        _ignoreWhitespaceItem.IsChecked = options.IgnoreWhitespace;
+        _detectCopyInFileItem.IsChecked = options.DetectCopyInFile;
+        _detectCopyInAllItem.IsChecked = options.DetectCopyInAll;
+
+        if (reblame && _repoPath is not null && _shownFile is not null)
+        {
+            ShowBlame(_repoPath, _shownFile, _shownCommit == "HEAD" ? null : _shownCommit);
+        }
+    }
+
+    // Flips one switch, persists all three and re-blames the file on screen.
+    private void ApplyBlameOptions(Func<BlameOptions, BlameOptions> change)
+    {
+        // Writing the flags goes through upstream's settings container, which may touch
+        // disk: keep it off the UI thread, then come back to update the ticks and
+        // re-run the blame (which is itself asynchronous).
+        BlameOptions updated = change(BlameOptions.Load());
+        _ = Task.Run(() =>
+        {
+            updated.Apply();
+            Dispatcher.UIThread.Post(() => ReloadBlameOptions());
+        });
     }
 
     private static string ActualPreviousHeader

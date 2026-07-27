@@ -31,6 +31,9 @@ namespace GitExtensions.Avalonia.Views;
 ///    (<c>pull.rebase</c>, <c>fetch.prune</c>, the two autostashes, …), written into
 ///    git config at the same chosen level. They need no consumer inside the port —
 ///    the consumer is git.</item>
+///   <item>The three blame switches of <c>BlameViewerSettingsPage</c>
+///    (<c>-w</c> / <c>-M</c> / <c>-C</c>), which change what <c>git blame</c> itself
+///    computes — see <see cref="BlameOptions"/>.</item>
 ///   <item>Default pull action (the five actions the toolbar's Pull split button
 ///    offers), persisted in <see cref="UiState.DefaultPullAction"/> — the value the
 ///    split button itself reads.</item>
@@ -82,11 +85,16 @@ public sealed class SettingsWindow : Window
     private bool _loadingIdentity;
     private bool _loadingGitConfig;
 
-    // Category panels, shown one at a time in the right pane.
-    private readonly Panel _identityPanel;
-    private readonly Panel _gitConfigPanel;
-    private readonly Panel _behaviourPanel;
-    private readonly Panel _appearancePanel;
+    // The three blame switches (BlameViewerSettingsPage). They are not stored by this
+    // dialog: BlameOptions is a view of upstream's AppSettings, which is exactly what
+    // the core's GitModule.Blame reads while building the command line.
+    private readonly CheckBox _blameIgnoreWhitespace;
+    private readonly CheckBox _blameDetectCopyInFile;
+    private readonly CheckBox _blameDetectCopyInAll;
+
+    // Category panels, shown one at a time in the right pane — index-aligned with the
+    // left list, so a new category is one entry in each.
+    private readonly List<Panel> _pages = [];
 
     // The level selector, hoisted out of the identity panel: it now governs every
     // page that reads/writes git config (identity AND the advanced keys), exactly as
@@ -112,6 +120,11 @@ public sealed class SettingsWindow : Window
     // the file from here would be undone at exit: the host has to update its own
     // instance, which is what this callback is for.
     private readonly Action<string>? _pullActionChanged;
+
+    // Raised on the UI thread after the blame switches have been written, so a Blame
+    // tab that is already showing a file can re-run it (BlameView.ReloadBlameOptions).
+    // Optional: without it the new switches simply take effect at the next blame.
+    private readonly Action? _blameOptionsChanged;
 
     // The default-pull-action choices.
     //
@@ -183,16 +196,23 @@ public sealed class SettingsWindow : Window
     private const string IdentityText = "Git identity";
     private const string GitConfigKey = "GitConfigAdvancedSettingsPage/$this.Text";
     private const string GitConfigText = "Git config advanced";
+    private const string BlameKey = "BlameViewerSettingsPage/groupBoxBlameSettings.Text";
+    private const string BlameText = "Blame settings";
     private const string BehaviourKey = "GeneralSettingsPage/groupBoxBehaviour.Text";
     private const string BehaviourText = "Behaviour";
     private const string AppearanceKey = "AppearanceSettingsPage/$this.Text";
     private const string AppearanceText = "Appearance";
 
-    public SettingsWindow(string? repoPath, string? currentPullAction = null, Action<string>? pullActionChanged = null)
+    public SettingsWindow(
+        string? repoPath,
+        string? currentPullAction = null,
+        Action<string>? pullActionChanged = null,
+        Action? blameOptionsChanged = null)
     {
         _repoPath = repoPath;
         _currentPullAction = currentPullAction;
         _pullActionChanged = pullActionChanged;
+        _blameOptionsChanged = blameOptionsChanged;
 
         IBrush window = Resource("App.Window", "#1E1E1E");
         IBrush panel = Resource("App.Panel", "#252526");
@@ -231,7 +251,7 @@ public sealed class SettingsWindow : Window
         _levelHeader = Field("SettingsPageHeader/label1.Text", "Settings source:", _settingsLevel, dim);
         _levelHeader.Margin = new Thickness(20, 16, 20, 0);
 
-        _identityPanel = CategoryPanel(
+        Panel identityPanel = CategoryPanel(
             IdentityKey, IdentityText,
             null, "Stored with git config at the level chosen above. \"Local\" writes the "
                 + "current repository's config, \"Global\" your user-wide config "
@@ -257,7 +277,7 @@ public sealed class SettingsWindow : Window
             gitConfigFields[i] = box;
         }
 
-        _gitConfigPanel = CategoryPanel(
+        Panel gitConfigPanel = CategoryPanel(
             GitConfigKey, GitConfigText,
             null, "Written directly into the git config at the level chosen above, so git "
                 + "itself obeys them — inside this app and outside it. Each box has three "
@@ -268,6 +288,37 @@ public sealed class SettingsWindow : Window
             dim,
             gitConfigFields);
 
+        // ---- Blame: the three switches that change git blame's own output.
+        // Not stored here — BlameOptions writes the AppSettings entries the core's
+        // GitModule.Blame reads (GitModule.cs:3278-3280), so BlameView picks them up on
+        // its next run with no extra plumbing.
+        BlameOptions blame = BlameOptions.Load();
+        _blameIgnoreWhitespace = new CheckBox { IsChecked = blame.IgnoreWhitespace };
+        Localize(_blameIgnoreWhitespace, "BlameViewerSettingsPage/cbIgnoreWhitespace.Text", "Ignore whitespace");
+        _blameDetectCopyInFile = new CheckBox { IsChecked = blame.DetectCopyInFile };
+        Localize(
+            _blameDetectCopyInFile,
+            "BlameViewerSettingsPage/cbDetectMoveAndCopyInThisFile.Text",
+            "Detect moved or copied lines within blamed file");
+        _blameDetectCopyInAll = new CheckBox { IsChecked = blame.DetectCopyInAll };
+        Localize(
+            _blameDetectCopyInAll,
+            "BlameViewerSettingsPage/cbDetectMoveAndCopyInAllFiles.Text",
+            "Detect moved or copied lines from all files in same commit");
+
+        Panel blamePanel = CategoryPanel(
+            BlameKey, BlameText,
+            null, "Extra switches handed to git blame itself (-w, -M, -C): they change "
+                + "which commit a line is attributed to, so a re-indentation or a moved "
+                + "block stops hiding the commit that actually wrote the line. The Blame "
+                + "tab's context menu carries the same three, and re-blames at once when "
+                + "one is toggled there.",
+            text,
+            dim,
+            _blameIgnoreWhitespace,
+            _blameDetectCopyInFile,
+            _blameDetectCopyInAll);
+
         _pullAction = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
         foreach ((string _, string key, string label) in PullChoices)
         {
@@ -276,7 +327,7 @@ public sealed class SettingsWindow : Window
             _pullAction.Items.Add(item);
         }
 
-        _behaviourPanel = CategoryPanel(
+        Panel behaviourPanel = CategoryPanel(
             BehaviourKey, BehaviourText,
             null, "Chooses what the Pull command does by default in this app.",
             text,
@@ -291,7 +342,7 @@ public sealed class SettingsWindow : Window
         _theme.Items.Add(new ComboBoxItem { Content = "Light" });
         _theme.SelectionChanged += (_, _) => PreviewTheme();
 
-        _appearancePanel = CategoryPanel(
+        Panel appearancePanel = CategoryPanel(
             AppearanceKey, AppearanceText,
             null, "The application colour theme. The choice is applied immediately as a "
                 + "preview and persisted on OK or Apply (reverted on Cancel).",
@@ -299,11 +350,19 @@ public sealed class SettingsWindow : Window
             dim,
             Field("ColorsSettingsPage/gbTheme.Text", "Theme", _theme, dim));
 
+        // Category order — the left list is built from the same sequence below, so the
+        // two cannot fall out of step.
+        _pages.Add(identityPanel);
+        _pages.Add(gitConfigPanel);
+        _pages.Add(blamePanel);
+        _pages.Add(behaviourPanel);
+        _pages.Add(appearancePanel);
+
         Grid rightPane = new();
-        rightPane.Children.Add(_identityPanel);
-        rightPane.Children.Add(_gitConfigPanel);
-        rightPane.Children.Add(_behaviourPanel);
-        rightPane.Children.Add(_appearancePanel);
+        foreach (Panel page in _pages)
+        {
+            rightPane.Children.Add(page);
+        }
 
         // A translated page can be taller than the dialog; scroll rather than clip.
         // The level header scrolls with the pages: eight wrapped checkbox captions are
@@ -332,14 +391,15 @@ public sealed class SettingsWindow : Window
         };
         categories.Items.Add(CategoryItem(IdentityKey, IdentityText));
         categories.Items.Add(CategoryItem(GitConfigKey, GitConfigText));
+        categories.Items.Add(CategoryItem(BlameKey, BlameText));
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
-            _identityPanel.IsVisible = categories.SelectedIndex == 0;
-            _gitConfigPanel.IsVisible = categories.SelectedIndex == 1;
-            _behaviourPanel.IsVisible = categories.SelectedIndex == 2;
-            _appearancePanel.IsVisible = categories.SelectedIndex == 3;
+            for (int i = 0; i < _pages.Count; i++)
+            {
+                _pages[i].IsVisible = categories.SelectedIndex == i;
+            }
 
             // The level selector only means something on the two git-config pages.
             _levelHeader.IsVisible = categories.SelectedIndex is 0 or 1;
@@ -431,8 +491,12 @@ public sealed class SettingsWindow : Window
     ///  re-serialised in full when the window closes.</para>
     /// </summary>
     public static Task ShowAsync(
-        Window owner, string? repoPath, string? currentPullAction = null, Action<string>? pullActionChanged = null)
-        => new SettingsWindow(repoPath, currentPullAction, pullActionChanged).ShowDialog(owner);
+        Window owner,
+        string? repoPath,
+        string? currentPullAction = null,
+        Action<string>? pullActionChanged = null,
+        Action? blameOptionsChanged = null)
+        => new SettingsWindow(repoPath, currentPullAction, pullActionChanged, blameOptionsChanged).ShowDialog(owner);
 
     // ---- translation -------------------------------------------------------
 
@@ -654,6 +718,19 @@ public sealed class SettingsWindow : Window
                 }
             });
         }
+
+        // ---- Blame switches: written into the AppSettings entries the core's blame
+        // command line is built from. Persisting may touch disk, so it runs off the UI
+        // thread; the host is told afterwards so an open Blame tab can re-blame.
+        BlameOptions blame = new(
+            IgnoreWhitespace: _blameIgnoreWhitespace.IsChecked == true,
+            DetectCopyInFile: _blameDetectCopyInFile.IsChecked == true,
+            DetectCopyInAll: _blameDetectCopyInAll.IsChecked == true);
+        _ = Task.Run(() =>
+        {
+            blame.Apply();
+            Dispatcher.UIThread.Post(() => _blameOptionsChanged?.Invoke());
+        });
 
         // ---- Default pull action: UiState is what the toolbar reads.
         string pullAction = PullChoices[Math.Max(0, _pullAction.SelectedIndex)].Token;

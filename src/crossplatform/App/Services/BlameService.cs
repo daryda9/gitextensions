@@ -44,6 +44,53 @@ public sealed record BlameLineRow(
 public sealed record BlameResult(string ResolvedCommit, IReadOnlyList<BlameLineRow> Lines);
 
 /// <summary>
+///  The three switches upstream's <c>BlameViewerSettingsPage</c> offers, which change
+///  what <c>git blame</c> itself is asked to do:
+///
+///  <list type="bullet">
+///   <item><see cref="IgnoreWhitespace"/> → <c>-w</c>, so a re-indentation stops
+///    reassigning every line it touched to the commit that re-indented it.</item>
+///   <item><see cref="DetectCopyInFile"/> → <c>-M</c>, following a block moved
+///    inside the same file back to where it was written.</item>
+///   <item><see cref="DetectCopyInAll"/> → <c>-C</c>, following a block copied in
+///    from another file of the same commit.</item>
+///  </list>
+///
+///  <para><b>Where these live.</b> In upstream's own store: the core's
+///  <c>GitModule.Blame</c> builds its argument list straight from
+///  <c>AppSettings.IgnoreWhitespaceOnBlame</c> / <c>DetectCopyInFileOnBlame</c> /
+///  <c>DetectCopyInAllOnBlame</c> (<c>GitModule.cs:3278-3280</c>), and the port reuses
+///  that method verbatim. Keeping a second copy of the flags in the port's own JSON
+///  would mean a setting that reads back correctly and changes nothing, so this record
+///  is a typed <i>view</i> of those three statics — the same way <c>StashPanel</c>
+///  already rides on <c>AppSettings.StashKeepIndex</c>. Defaults are upstream's:
+///  whitespace ignored, neither copy detection on.</para>
+/// </summary>
+public sealed record BlameOptions(bool IgnoreWhitespace, bool DetectCopyInFile, bool DetectCopyInAll)
+{
+    /// <summary>Reads the three flags as they stand now.</summary>
+    public static BlameOptions Load()
+        => new(
+            AppSettings.IgnoreWhitespaceOnBlame,
+            AppSettings.DetectCopyInFileOnBlame,
+            AppSettings.DetectCopyInAllOnBlame);
+
+    /// <summary>
+    ///  Persists the three flags, which is also what makes the next
+    ///  <see cref="BlameService.GetBlameResult"/> use them: the core reads the statics
+    ///  as it assembles the command line, so there is no separate plumbing to keep in
+    ///  step. Writing goes through upstream's settings container, so it survives a
+    ///  restart and is shared with any other view that blames.
+    /// </summary>
+    public void Apply()
+    {
+        AppSettings.IgnoreWhitespaceOnBlame = IgnoreWhitespace;
+        AppSettings.DetectCopyInFileOnBlame = DetectCopyInFile;
+        AppSettings.DetectCopyInAllOnBlame = DetectCopyInAll;
+    }
+}
+
+/// <summary>
 ///  Computes <c>git blame</c> for a file by reusing the Git Extensions core
 ///  module (<see cref="GitModule"/>) obtained from
 ///  <see cref="GitContext.CreateModule"/>. The single call is blocking and meant
@@ -71,12 +118,22 @@ public sealed class BlameService
     ///  <c>BlameControl.cs:34,132,151</c>).</para>
     /// </summary>
     public BlameResult GetBlameResult(
-        string repoPath, string filePath, string? commitOrHead = null, CancellationToken cancellationToken = default)
+        string repoPath,
+        string filePath,
+        string? commitOrHead = null,
+        CancellationToken cancellationToken = default,
+        BlameOptions? options = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         GitModule module = GitContext.CreateModule(repoPath);
         string from = string.IsNullOrWhiteSpace(commitOrHead) ? "HEAD" : commitOrHead!;
+
+        // The core reads the three flags off AppSettings while building the command
+        // line, so an explicit set has to be published there before the call. Passing
+        // null means "whatever is configured", which is the normal case and writes
+        // nothing.
+        options?.Apply();
 
         GitBlame blame = module.Blame(
             fileName: filePath,
