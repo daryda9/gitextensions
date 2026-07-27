@@ -69,7 +69,7 @@ public sealed class FileStatusListView : UserControl
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
-    private readonly FileStatusListOptions _options = FileStatusListOptions.Session;
+    private readonly FileStatusListOptions _options;
 
     private readonly ListBox _list;
     private readonly WrapPanel _toolbar;
@@ -99,8 +99,20 @@ public sealed class FileStatusListView : UserControl
     private bool _suppressSelection;
     private bool _updatingGroupButtons;
 
-    public FileStatusListView()
+    /// <summary>
+    ///  Builds the list. <paramref name="options"/> is the grouping state the list
+    ///  obeys: leave it out to share <see cref="FileStatusListOptions.Session"/>
+    ///  with every other changed-files list (the diff pane, the commit dialog),
+    ///  or pass an own instance for a list whose grouping is not the user's
+    ///  session choice — the File-tree tab, which is always a path tree and
+    ///  upstream shows no grouping toolbar at all
+    ///  (<c>FileStatusList.Bind</c>, <c>Toolbar.Visible = false</c> when
+    ///  <c>isFileTreeMode</c>).
+    /// </summary>
+    public FileStatusListView(FileStatusListOptions? options = null)
     {
+        _options = options ?? FileStatusListOptions.Session;
+
         _list = new ListBox
         {
             FontFamily = Monospace,
@@ -332,11 +344,127 @@ public sealed class FileStatusListView : UserControl
         _files = rows;
         _collapsed.Clear();
         _selectedName = null;
+        ApplyInitialCollapse();
         Rebuild();
+    }
+
+    /// <summary>
+    ///  Whether a fresh set of rows starts with every group folded. Upstream only
+    ///  auto-expands outside file-tree mode
+    ///  (<c>expandIfFewFiles = !_isFileTreeMode || _filter is not null</c>), so a
+    ///  whole-tree listing opens on its root folders.
+    /// </summary>
+    public bool CollapseGroupsOnLoad { get; set; }
+
+    // Folds everything on load, unless a filter is active: filtering is a search,
+    // and a search must show its hits (the upstream rule above).
+    private void ApplyInitialCollapse()
+    {
+        if (!CollapseGroupsOnLoad)
+        {
+            return;
+        }
+
+        _collapsed.Clear();
+        if (_filter.IsActive)
+        {
+            return;
+        }
+
+        foreach (string key in AllGroupKeys())
+        {
+            _collapsed.Add(key);
+        }
     }
 
     /// <summary>Empties the list (a repository was closed, a load failed).</summary>
     public void Clear() => SetFiles([]);
+
+    /// <summary>
+    ///  Whether the grouping toolbar is shown. Upstream hides the whole toolbar in
+    ///  file-tree mode (<c>FileStatusList.Bind</c>) and keeps only the filter box.
+    /// </summary>
+    public bool ShowToolbar
+    {
+        get => _toolbarBar.IsVisible;
+        set => _toolbarBar.IsVisible = value;
+    }
+
+    /// <summary>
+    ///  Whether a file row carries the coloured M/A/D/R/C status glyph. Off for a
+    ///  list that shows a commit's whole tree, where there is no change to report.
+    /// </summary>
+    public bool ShowStatusGlyphs { get; set; } = true;
+
+    /// <summary>Whether the current grouping produced any group header.</summary>
+    public bool HasGroups => AllGroupKeys().Count > 0;
+
+    /// <summary>Applies a grouping to this list (and to whatever shares its options).</summary>
+    public void SetGrouping(DiffFileGroupMode mode, bool asTree)
+    {
+        _options.AsTree = asTree;
+        SetGroupMode(mode);
+    }
+
+    /// <summary>Folds every group, at every level (the tree context menu's "Collapse all").</summary>
+    public void CollapseAllGroups()
+    {
+        foreach (string key in AllGroupKeys())
+        {
+            _collapsed.Add(key);
+        }
+
+        Rebuild();
+    }
+
+    /// <summary>Unfolds every group (the tree context menu's "Expand all").</summary>
+    public void ExpandAllGroups()
+    {
+        _collapsed.Clear();
+        Rebuild();
+    }
+
+    /// <summary>
+    ///  Folds the top-level folders only, leaving the state of their children
+    ///  alone — the tree context menu's "Collapse root folders", which upstream
+    ///  offers in file-tree mode only.
+    /// </summary>
+    public void CollapseRootFolders()
+    {
+        foreach (string key in AllGroupKeys(maxLevel: 0))
+        {
+            _collapsed.Add(key);
+        }
+
+        Rebuild();
+    }
+
+    // Every group key the current rows/filter/grouping produce, including the ones
+    // hidden inside a folded parent: built from a throw-away expanded layout,
+    // because the visible items only carry the keys that are on screen.
+    private List<string> AllGroupKeys(int? maxLevel = null)
+    {
+        DiffFileGroupMode mode = _options.GroupMode;
+        (List<object> items, _) = DiffFileListBuilder.Build(
+            _files,
+            _filter,
+            mode,
+            _options.AsTree,
+            GrouperFor(mode),
+            new HashSet<string>(StringComparer.Ordinal),
+            static (header, _) => header);
+
+        List<string> keys = [];
+        foreach (object item in items)
+        {
+            if (item is FileListGroupNode group && (maxLevel is null || group.Level <= maxLevel))
+            {
+                keys.Add(group.Key);
+            }
+        }
+
+        return keys;
+    }
 
     // ------------------------------------------------------------- translation
 
@@ -415,7 +543,28 @@ public sealed class FileStatusListView : UserControl
     }
 
     // A changed-file row: a coloured status glyph (M/A/D/R/C) followed by the path.
-    private static Control BuildFileRow(FileListFileNode node)
+    // In a plain tree (ShowStatusGlyphs off) there is no change to report — every
+    // file of a commit's tree is simply tracked — so the glyph is left out rather
+    // than shown as a meaningless "M".
+    private Control BuildFileRow(FileListFileNode node)
+    {
+        if (!ShowStatusGlyphs)
+        {
+            return new TextBlock
+            {
+                Text = node.Display,
+                Foreground = B("App.Text"),
+                FontFamily = Monospace,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(node.Level * 12, 0, 0, 0),
+            };
+        }
+
+        return BuildStatusFileRow(node);
+    }
+
+    private static Control BuildStatusFileRow(FileListFileNode node)
     {
         (char glyph, IBrush glyphBrush) = node.Row.Kind switch
         {
@@ -606,6 +755,7 @@ public sealed class FileStatusListView : UserControl
         DiffFileFilter parsed = DiffFileFilter.Parse(_filterBox.Text);
         _filter = parsed;
         UpdateFilterFeedback();
+        ApplyInitialCollapse();
         Rebuild();
     }
 

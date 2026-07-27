@@ -71,6 +71,34 @@ public static class DiffService
     }
 
     /// <summary>
+    ///  Returns <b>every tracked file</b> of the tree at <paramref name="commitHash"/>
+    ///  — not the files it changed — which is what the File-tree tab lists. Reuses
+    ///  the core module's <see cref="GitModule.GetTreeFiles"/> (<c>git ls-tree</c>
+    ///  with the object ids), so the port does not parse the tree itself.
+    ///
+    ///  <para>The rows come back as <see cref="DiffChangeKind.Modified"/> with no
+    ///  old name: a tree entry has no change kind (upstream sets
+    ///  <c>IsNew/IsChanged/IsDeleted = false</c> for all of them), so the list must
+    ///  be told not to draw a status glyph
+    ///  (<c>FileStatusListView.ShowStatusGlyphs = false</c>).</para>
+    /// </summary>
+    public static IReadOnlyList<DiffFileRow> GetTreeFiles(string repoPath, string commitHash)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId commitId = ObjectId.Parse(commitHash);
+
+        IReadOnlyList<GitItemStatus> files = module.GetTreeFiles(commitId, full: true);
+
+        List<DiffFileRow> rows = new(files.Count);
+        foreach (GitItemStatus item in files)
+        {
+            rows.Add(new DiffFileRow(item.Name, OldName: null, DiffChangeKind.Modified, IsTracked: true));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
     ///  Returns the unified diff text for a single <paramref name="file"/> in
     ///  <paramref name="commitHash"/> (compared with its first parent). Returns an
     ///  error/placeholder string if no patch could be produced.
