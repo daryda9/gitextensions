@@ -5,9 +5,11 @@ using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -39,15 +41,45 @@ public sealed class CommitDetailView : UserControl
     private static string T(string english) => TranslationService.T(english);
 
     private readonly CommitDetailService _service = new();
+    private readonly CommitInfoExtrasService _extrasService = new();
+    private readonly CommitInfoSettingsService _settingsService = new();
+    private readonly CommitInfoSettings _settings;
 
     private readonly TextBlock _status;
     private readonly Border _avatarHost;
     private readonly StackPanel _details;
     private readonly SelectableTextBlock _message;
 
+    // The context menu and the entries whose state has to be refreshed before it
+    // opens. Built once, in full: adding or removing items from Opening leaves the
+    // popup unmeasured (HANDOFF §3), so only Header/IsChecked/IsVisible ever change.
+    private readonly ContextMenu _menu;
+    private readonly MenuItem _copyLinkItem;
+    private readonly MenuItem _copyInfoItem;
+    private readonly MenuItem _addNotesItem;
+    private readonly MenuItem _showBranchesItem;
+    private readonly MenuItem _showBranchesRemoteItem;
+    private readonly MenuItem _showBranchesRemoteIfNoLocalItem;
+    private readonly MenuItem _showTagsItem;
+    private readonly MenuItem _showAnnotatedTagsItem;
+    private readonly MenuItem _showDerivesFromItem;
+
+    // Which control carries which link target, so a right-click can name the link
+    // under the pointer. Rebuilt by every Render.
+    private readonly Dictionary<Control, string> _linkTargets = [];
+
     // Last rendered commit, kept so a language switch can re-label the panel
     // without another git round-trip.
     private CommitDetailInfo? _rendered;
+
+    // Extra data only some toggles need (remote branches, annotated tag messages,
+    // the commit's note), for the commit in _rendered.
+    private CommitInfoExtras _extras = CommitInfoExtras.Empty;
+
+    private string _repoPath = string.Empty;
+
+    // The link target under the pointer when the menu was opened, or null.
+    private string? _pointerLink;
 
     private CancellationTokenSource? _cts;
 
@@ -60,6 +92,8 @@ public sealed class CommitDetailView : UserControl
 
     public CommitDetailView()
     {
+        _settings = _settingsService.Load();
+
         _status = new TextBlock
         {
             Padding = new Thickness(12, 7, 12, 7),
@@ -123,7 +157,330 @@ public sealed class CommitDetailView : UserControl
 
         Content = root;
 
+        // --- context menu (upstream: commitInfoContextMenuStrip) ---
+        _copyLinkItem = Item(T("CommitInfo/copyLinkToolStripMenuItem.Text", "Copy link"), CopyLink);
+        _copyInfoItem = Item(T("CommitInfo/copyCommitInfoToolStripMenuItem.Text", "&Copy commit info"), CopyCommitInfo);
+        _addNotesItem = Item(T("CommitInfo/addNoteToolStripMenuItem.Text", "Add &notes"), () => EditNotes());
+
+        _showBranchesItem = Toggle(
+            T("CommitInfo/showContainedInBranchesToolStripMenuItem.Text", "Show local branches containing this commit"),
+            () => _settings.ShowContainedInBranchesLocal = !_settings.ShowContainedInBranchesLocal);
+        _showBranchesRemoteItem = Toggle(
+            T("CommitInfo/showContainedInBranchesRemoteToolStripMenuItem.Text", "Show remote branches containing this commit"),
+            () => _settings.ShowContainedInBranchesRemote = !_settings.ShowContainedInBranchesRemote);
+        _showBranchesRemoteIfNoLocalItem = Toggle(
+            T("CommitInfo/showContainedInBranchesRemoteIfNoLocalToolStripMenuItem.Text",
+                "Show remote branches only when no local branch contains this commit"),
+            () => _settings.ShowContainedInBranchesRemoteIfNoLocal = !_settings.ShowContainedInBranchesRemoteIfNoLocal);
+        _showTagsItem = Toggle(
+            T("CommitInfo/showContainedInTagsToolStripMenuItem.Text", "Show tags containing this commit"),
+            () => _settings.ShowContainedInTags = !_settings.ShowContainedInTags);
+        _showAnnotatedTagsItem = Toggle(
+            T("CommitInfo/showMessagesOfAnnotatedTagsToolStripMenuItem.Text", "Show messages of annotated tags"),
+            () => _settings.ShowAnnotatedTagsMessages = !_settings.ShowAnnotatedTagsMessages);
+        _showDerivesFromItem = Toggle(
+            T("CommitInfo/showTagThisCommitDerivesFromMenuItem.Text", "Show the most recent tag this commit derives from"),
+            () => _settings.ShowTagThisCommitDerivesFrom = !_settings.ShowTagThisCommitDerivesFrom);
+
+        _menu = new ContextMenu
+        {
+            Placement = PlacementMode.Pointer,
+            ItemsSource = new Control[]
+            {
+                _copyLinkItem,
+                _copyInfoItem,
+                new Separator(),
+                _showBranchesItem,
+                _showBranchesRemoteItem,
+                _showBranchesRemoteIfNoLocalItem,
+                _showTagsItem,
+                _showAnnotatedTagsItem,
+                _showDerivesFromItem,
+                new Separator(),
+                _addNotesItem,
+            },
+        };
+
+        // Opened by hand from a TUNNELLING press with handledEventsToo: this panel
+        // is built out of SelectableTextBlocks, which swallow the secondary button
+        // (ContextRequested never fires on them — the same wall CommitDialog's diff
+        // menu hit). Getting in ahead of them also leaves any highlight alone.
+        AddHandler(PointerPressedEvent, OnPreviewPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+
         TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    /// <summary>A plain command entry. Mnemonics are converted, not shown.</summary>
+    private static MenuItem Item(string header, Action action)
+    {
+        MenuItem item = new() { Header = MenuHeader(header) };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    /// <summary>
+    ///  A checked visibility entry: flips its setting, persists it, and re-renders
+    ///  the panel from the data at hand — upstream's <c>ReloadCommitInfo</c>.
+    /// </summary>
+    private MenuItem Toggle(string header, Action flip)
+    {
+        MenuItem item = new()
+        {
+            Header = MenuHeader(header),
+            ToggleType = MenuItemToggleType.CheckBox,
+        };
+        item.Click += (_, _) =>
+        {
+            flip();
+            _settingsService.Save(_settings);
+            ReloadAfterSettingChange();
+        };
+        return item;
+    }
+
+    // WinForms "&" mnemonics are dropped; a literal underscore has to be doubled
+    // or Avalonia would eat it as a mnemonic marker of its own.
+    private static string MenuHeader(string caption)
+        => RevisionFilterDialog.StripMnemonic(caption).Replace("_", "__", StringComparison.Ordinal);
+
+    private void OnPreviewPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        _pointerLink = LinkAt(e.GetPosition(this));
+
+        // Everything is settled BEFORE the popup is shown; only labels and states
+        // change, never the item list.
+        UpdateMenuState();
+        _menu.Open(this);
+    }
+
+    /// <summary>
+    ///  The link target under <paramref name="position"/>, or <see langword="null"/>.
+    ///  The only links this panel draws are the parent/child hashes, so a hit is
+    ///  resolved by walking up from the element under the pointer to whichever
+    ///  ancestor was registered by <see cref="HashLink"/>.
+    /// </summary>
+    private string? LinkAt(Point position)
+    {
+        if (_linkTargets.Count == 0)
+        {
+            return null;
+        }
+
+        Visual? hit = this.InputHitTest(position) as Visual;
+        while (hit is not null)
+        {
+            if (hit is Control control && _linkTargets.TryGetValue(control, out string? target))
+            {
+                return target;
+            }
+
+            hit = hit.GetVisualParent();
+        }
+
+        return null;
+    }
+
+    // Labels/enablement for the entries, computed from the state at open time.
+    private void UpdateMenuState()
+    {
+        // Upstream hides "Copy link" outright when the cursor is not over a link,
+        // and formats the target into its caption.
+        _copyLinkItem.IsVisible = _pointerLink is not null;
+        if (_pointerLink is { } link)
+        {
+            _copyLinkItem.Header = MenuHeader(string.Format(
+                T("CommitInfo/_copyLink.Text", "Copy &link ({0})"),
+                Shorten(link)));
+        }
+
+        _copyInfoItem.IsEnabled = _rendered is not null;
+        _addNotesItem.IsEnabled = _rendered is not null && _repoPath.Length > 0;
+
+        _showBranchesItem.IsChecked = _settings.ShowContainedInBranchesLocal;
+        _showBranchesRemoteItem.IsChecked = _settings.ShowContainedInBranchesRemote;
+        _showBranchesRemoteIfNoLocalItem.IsChecked = _settings.ShowContainedInBranchesRemoteIfNoLocal;
+        _showTagsItem.IsChecked = _settings.ShowContainedInTags;
+        _showAnnotatedTagsItem.IsChecked = _settings.ShowAnnotatedTagsMessages;
+        _showDerivesFromItem.IsChecked = _settings.ShowTagThisCommitDerivesFrom;
+    }
+
+    private static string Shorten(string hash) => hash.Length >= 8 ? hash[..8] : hash;
+
+    private void CopyLink()
+    {
+        if (_pointerLink is { Length: > 0 } link)
+        {
+            CopyToClipboard(link);
+        }
+    }
+
+    /// <summary>
+    ///  Upstream's "Copy commit info": the header block as plain text, a blank
+    ///  line, then the commit message. The containing-branches/tags sections are
+    ///  not part of it there either.
+    /// </summary>
+    private void CopyCommitInfo()
+    {
+        if (_rendered is not { } detail)
+        {
+            return;
+        }
+
+        StringBuilder sb = new();
+        void Line(string label, string value) => sb.Append(label).Append(' ').AppendLine(value);
+
+        Line(T("TranslatedStrings/_author.Text", "Author"), detail.Author);
+        Line(T("TranslatedStrings/_dateText.Text", "Date"),
+            DateDisplay(detail.AuthorDate, detail.AuthorDateRelative));
+        if (detail.CommitterDiffers)
+        {
+            Line(T("TranslatedStrings/_committerText.Text", "Committer"), detail.Committer);
+            Line(Plural(T("TranslatedStrings/_commitDateText.Text", "{0:Commit date|Commit dates}"), 1),
+                DateDisplay(detail.CommitDate, detail.CommitDateRelative));
+        }
+
+        Line(T("PatchGrid/CommitHash.HeaderText", "Commit hash"), detail.Hash);
+        if (detail.ParentHashes.Count > 0)
+        {
+            Line(Plural(T("TranslatedStrings/_parentsText.Text", "{0:Parent|Parents}"), detail.ParentHashes.Count),
+                string.Join(" ", detail.ParentHashes));
+        }
+
+        if (detail.ChildHashes.Count > 0)
+        {
+            Line(Plural(T("TranslatedStrings/_childrenText.Text", "{0:Child|Children}"), detail.ChildHashes.Count),
+                string.Join(" ", detail.ChildHashes));
+        }
+
+        sb.AppendLine().Append(detail.Message);
+        CopyToClipboard(sb.ToString());
+    }
+
+    private void CopyToClipboard(string text)
+    {
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
+    }
+
+    /// <summary>
+    ///  Edits the current commit's git note. Public so the host can bind it to a
+    ///  hotkey (upstream: <c>FormBrowse.Command.AddNotes</c>); unwired is harmless.
+    ///
+    ///  <para>The note is read and written off the UI thread; the editor itself is
+    ///  <see cref="AddNotesDialog"/>, because upstream's <c>git notes edit</c> would
+    ///  hand the commit to <c>core.editor</c>.</para>
+    /// </summary>
+    public void EditNotes()
+    {
+        if (_rendered is not { } detail || _repoPath.Length == 0)
+        {
+            return;
+        }
+
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string hash = detail.Hash;
+
+        _ = Task.Run(async () =>
+        {
+            string existing;
+            try
+            {
+                existing = _extrasService.LoadNotes(repo, hash);
+            }
+            catch
+            {
+                existing = string.Empty;
+            }
+
+            await Dispatcher.UIThread.InvokeAsync(async () =>
+            {
+                AddNotesDialog dialog = new(Shorten(hash), existing);
+                await dialog.ShowDialog(owner);
+                if (!dialog.Accepted)
+                {
+                    return;
+                }
+
+                string text = dialog.NoteText;
+                string error = await Task.Run(() => _extrasService.SaveNotes(repo, hash, text));
+                if (error.Length > 0)
+                {
+                    _status.Text = string.Format(T("Error: {0}"), error.Split('\n')[0]);
+                    return;
+                }
+
+                // The note is part of what this panel shows, so refresh it.
+                if (_rendered?.Hash == hash)
+                {
+                    ReloadAfterSettingChange();
+                }
+            });
+        });
+    }
+
+    /// <summary>
+    ///  Re-fetches whatever the current toggles need (a toggle just turned on may
+    ///  require data never loaded) and re-renders. Never throws.
+    /// </summary>
+    private void ReloadAfterSettingChange()
+    {
+        if (_rendered is not { } detail)
+        {
+            return;
+        }
+
+        // Render at once from what is already loaded, so the change is immediate
+        // even if the extra lookup is slow or yields nothing new.
+        Render(detail);
+
+        if (_repoPath.Length == 0)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string hash = detail.Hash;
+        bool wantRemote = _settings.ShowContainedInBranchesRemote
+            || _settings.ShowContainedInBranchesRemoteIfNoLocal;
+        bool wantTags = _settings.ShowAnnotatedTagsMessages;
+
+        _ = Task.Run(() =>
+        {
+            CommitInfoExtras extras;
+            try
+            {
+                extras = _extrasService.Load(repo, hash, wantRemote, wantTags);
+            }
+            catch
+            {
+                extras = CommitInfoExtras.Empty;
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (_rendered is { } current && current.Hash == hash)
+                {
+                    _extras = extras;
+                    Render(current);
+                }
+            });
+        });
     }
 
     // Re-label in place on a language switch. The event fires on whichever thread
@@ -154,13 +511,30 @@ public sealed class CommitDetailView : UserControl
         CancellationToken token = _cts.Token;
 
         Clear();
+        _repoPath = repoPath;
         _status.Text = string.Format(T("Loading commit {0}…"), commitHash);
+
+        bool wantRemote = _settings.ShowContainedInBranchesRemote
+            || _settings.ShowContainedInBranchesRemoteIfNoLocal;
+        bool wantTags = _settings.ShowAnnotatedTagsMessages;
 
         _ = Task.Run(() =>
         {
             try
             {
                 CommitDetailInfo? detail = _service.LoadCommit(repoPath, commitHash, token);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                // Best-effort; a failure here must not cost the whole panel.
+                CommitInfoExtras extras = CommitInfoExtras.Empty;
+                if (detail is not null)
+                {
+                    extras = _extrasService.Load(repoPath, detail.Hash, wantRemote, wantTags, token);
+                }
+
                 if (token.IsCancellationRequested)
                 {
                     return;
@@ -179,6 +553,7 @@ public sealed class CommitDetailView : UserControl
                         return;
                     }
 
+                    _extras = extras;
                     Render(detail);
                 });
             }
@@ -212,6 +587,7 @@ public sealed class CommitDetailView : UserControl
         };
 
         _details.Children.Clear();
+        _linkTargets.Clear();
 
         Grid grid = new() { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
         int row = 0;
@@ -244,48 +620,109 @@ public sealed class CommitDetailView : UserControl
 
         _details.Children.Add(grid);
 
-        // Contained-in branches.
-        _details.Children.Add(SectionLabel(detail.Branches.Count > 0
-            ? T("TranslatedStrings/_containedInBranchesText.Text", "Contained in branches:")
-            : T("TranslatedStrings/_containedInNoBranchText.Text", "Contained in no branch")));
-        if (detail.Branches.Count > 0)
+        // Annotated tag messages, first as upstream renders them ("tag: message").
+        if (_settings.ShowAnnotatedTagsMessages)
         {
-            _details.Children.Add(TagWrap(detail.Branches, B("App.GraphGreen")));
+            foreach (CommitInfoAnnotatedTag tag in _extras.AnnotatedTags)
+            {
+                _details.Children.Add(SectionLabel($"{tag.Name}:"));
+                SelectableTextBlock body = TextValue(tag.Message, monospace: false);
+                body.Margin = new Thickness(14, 0, 14, 2);
+                _details.Children.Add(body);
+            }
+        }
+
+        // Contained-in branches: one section listing whichever kinds the three
+        // branch toggles allow. With all three off the section is absent, exactly
+        // as upstream's empty _branchInfo makes it.
+        IReadOnlyList<string> branches = VisibleBranches(detail);
+        if (_settings.ShowContainedInBranchesLocal
+            || _settings.ShowContainedInBranchesRemote
+            || _settings.ShowContainedInBranchesRemoteIfNoLocal)
+        {
+            _details.Children.Add(SectionLabel(branches.Count > 0
+                ? T("TranslatedStrings/_containedInBranchesText.Text", "Contained in branches:")
+                : T("TranslatedStrings/_containedInNoBranchText.Text", "Contained in no branch")));
+            if (branches.Count > 0)
+            {
+                _details.Children.Add(TagWrap(branches, B("App.GraphGreen")));
+            }
         }
 
         // Contained-in tags.
-        if (detail.Tags.Count > 0)
+        if (_settings.ShowContainedInTags)
         {
-            _details.Children.Add(SectionLabel(T("TranslatedStrings/_containedInTagsText.Text", "Contained in tags:")));
-            _details.Children.Add(TagWrap(detail.Tags, B("App.Accent")));
-        }
-        else
-        {
-            _details.Children.Add(SectionLabel(T("TranslatedStrings/_containedInNoTagText.Text", "Contained in no tag")));
+            if (detail.Tags.Count > 0)
+            {
+                _details.Children.Add(SectionLabel(T("TranslatedStrings/_containedInTagsText.Text", "Contained in tags:")));
+                _details.Children.Add(TagWrap(detail.Tags, B("App.Accent")));
+            }
+            else
+            {
+                _details.Children.Add(SectionLabel(T("TranslatedStrings/_containedInNoTagText.Text", "Contained in no tag")));
+            }
         }
 
         // Derives-from-tag. One format with a placeholder, so a language whose
         // word order differs can move the tag name.
-        if (!string.IsNullOrEmpty(detail.DescribeTag))
+        if (_settings.ShowTagThisCommitDerivesFrom)
         {
-            _details.Children.Add(SectionLabel(string.Format(
-                "{0} {1}",
-                T("CommitInfo/_derivesFromTag.Text", "Derives from tag:"),
-                detail.DescribeTag)));
+            if (!string.IsNullOrEmpty(detail.DescribeTag))
+            {
+                _details.Children.Add(SectionLabel(string.Format(
+                    "{0} {1}",
+                    T("CommitInfo/_derivesFromTag.Text", "Derives from tag:"),
+                    detail.DescribeTag)));
+            }
+            else
+            {
+                _details.Children.Add(SectionLabel(T("CommitInfo/_derivesFromNoTag.Text", "Derives from no tag")));
+            }
         }
-        else
+
+        // The commit's git note, so "Add notes" has visible feedback.
+        if (_extras.Notes.Length > 0)
         {
-            _details.Children.Add(SectionLabel(T("CommitInfo/_derivesFromNoTag.Text", "Derives from no tag")));
+            _details.Children.Add(SectionLabel(T("Notes:")));
+            SelectableTextBlock notes = TextValue(_extras.Notes, monospace: false);
+            notes.Margin = new Thickness(14, 0, 14, 2);
+            _details.Children.Add(notes);
         }
 
         _message.Text = detail.Message;
     }
 
+    /// <summary>
+    ///  The branches to list, per the three branch toggles: locals when they are
+    ///  enabled, remotes when they are — and, for "remote if no local", only while
+    ///  no local branch contains the commit (upstream reaches the same result by
+    ///  suppressing remotes once a local one appears in the sorted list).
+    /// </summary>
+    private IReadOnlyList<string> VisibleBranches(CommitDetailInfo detail)
+    {
+        List<string> result = [];
+        if (_settings.ShowContainedInBranchesLocal)
+        {
+            result.AddRange(detail.Branches);
+        }
+
+        bool remotesAllowed = _settings.ShowContainedInBranchesRemote
+            || (_settings.ShowContainedInBranchesRemoteIfNoLocal && detail.Branches.Count == 0);
+        if (remotesAllowed)
+        {
+            result.AddRange(_extras.RemoteBranches);
+        }
+
+        return result;
+    }
+
     private void Clear()
     {
         _rendered = null;
+        _extras = CommitInfoExtras.Empty;
         _avatarHost.Child = null;
         _details.Children.Clear();
+        _linkTargets.Clear();
         _message.Text = string.Empty;
     }
 
@@ -402,7 +839,20 @@ public sealed class CommitDetailView : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        link.PointerPressed += (_, _) => CommitNavigated?.Invoke(fullHash);
+        link.PointerPressed += (_, e) =>
+        {
+            // The right button belongs to the context menu, which the tunnelling
+            // handler has already dealt with.
+            if (e.GetCurrentPoint(link).Properties.IsRightButtonPressed)
+            {
+                return;
+            }
+
+            CommitNavigated?.Invoke(fullHash);
+        };
+
+        // Registered so a right-click over it can offer "Copy link".
+        _linkTargets[link] = fullHash;
         return link;
     }
 
