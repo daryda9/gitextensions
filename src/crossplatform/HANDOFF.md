@@ -252,7 +252,30 @@ LAVORARE su questo, in ordine di impatto/costo (dall'audit di parita' funzionale
    CheckoutBranchDialog e' misto
    italiano/inglese; Avalonia non espone WM_DELETE_WINDOW (finestra non chiudibile dal WM);
    il "salva come" del diff non e' verificabile headless (serve portal XDG).
-4. Minori: dialogo Pull con prune/autostash/tag policy (oggi solo remote+rebase), opzioni di
+4. FEDELTA' VISIVA/INTERAZIONE segnalata dall'utente il 27/07/2026 confrontando con
+   ~/Documents/process dialog with terminal command/GUI.png (screenshot dell'originale):
+   a) GRAFO: nell'originale, evidenziando un commit restano colorate solo le lane del
+      percorso che porta a quel commit, il resto diventa GRIGIO. Due meccanismi separati:
+      - HighlightSelectedBranch() (RevisionGridControl.cs:3062) si attiva su ALT+CLIC
+        (OnGridViewMouseClick:1900) o dal comando ToggleHighlightSelectedBranch, NON sulla
+        selezione semplice; chiama MakeRelative() che risale i PARENT marcando IsRelative.
+      - il disegno usa GetBrushForLaneInfo(laneInfo, isRelative, drawStyle)
+        (Graph/Rendering/GraphRenderer.cs:64): lane non-relative in grigio; a parte,
+        RevisionDataGridView.cs:352 ingrigisce il TESTO se AppSettings
+        .RevisionGraphDrawNonRelativesGray e' attiva.
+      Nel port: _drawNonRelativesGray esiste (RevisionGridView.cs:2705) ma calcola i parenti
+      rispetto a HEAD invece che al commit selezionato, e ingrigisce SOLO il testo: le lane
+      restano sempre colorate. Da fare: relatives dalla selezione + lane grigie + Alt+clic.
+   b) COLONNA SINISTRA: l'originale ha una barra di 5 pulsanti icona sopra l'albero e una
+      CASELLA DI RICERCA con lente; RepoObjectsTree.cs non ha ne' l'una ne' l'altra.
+   c) TAB del pannello inferiore: nell'originale hanno le ICONE (Commit/Diff/File tree/GPG/
+      Console/Output); nel port sono solo testo (MainWindow.cs:48-56, IconLoader gia' esiste).
+   d) TOOLBAR in alto: l'originale ha piu' pulsanti e split-button di quelli portati.
+   e) Gia' noti dall'audit e ancora aperti: toolbar ricca della lista file (raggruppamento
+      per path/estensione/stato, casella di ricerca, toggle ignorati/skip-worktree/untracked
+      - FileStatusList.Toolbar.cs) e opzioni del viewer (evidenziazione sintattica, copia
+      versione nuova/vecchia - FileViewer.Designer.cs:27-48).
+5. Minori: dialogo Pull con prune/autostash/tag policy (oggi solo remote+rebase), opzioni di
    merge/cherry-pick, continue/skip/abort per rebase, filtrare i cataloghi .xlf a inglese +
    italiano per togliere ~19 MB dal .deb.
 NON lavorare su repository-host GitHub ne' colonna build status: SKIP fuori scope.
