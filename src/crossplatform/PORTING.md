@@ -973,6 +973,92 @@ Menu + toolbar:
   installa GCM) → configurato `git-credential-libsecret` (compilato dal contrib di git,
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
+### Priorità aperte (P1–P3) e coda di lavoro
+
+> Dettaglio operativo dei punti elencati in `HANDOFF.md` sezione 5. **P1–P3 sono priorità
+> indicate dall'utente il 27/07/2026**, confrontando la GUI con gli screenshot dell'originale
+> Windows in `~/Documents/process dialog with terminal command/GUI.png` e
+> `~/Documents/pullù/` (`button.png`, `menu.png`, `pull dialog.png`).
+> I riferimenti `file:riga` valgono per l'albero al momento della stesura: verificarli.
+
+1. [PRIORITA' UTENTE] GRAFO: nell'originale, evidenziando un commit restano colorate solo le
+   lane del percorso che porta a quel commit, il resto diventa GRIGIO. Due meccanismi separati:
+   - HighlightSelectedBranch() (RevisionGridControl.cs:3062) si attiva su ALT+CLIC
+     (OnGridViewMouseClick:1900) o dal comando ToggleHighlightSelectedBranch, NON sulla
+     selezione semplice; chiama MakeRelative() che risale i PARENT marcando IsRelative.
+   - il disegno usa GetBrushForLaneInfo(laneInfo, isRelative, drawStyle)
+     (Graph/Rendering/GraphRenderer.cs:64): lane non-relative in grigio; a parte,
+     RevisionDataGridView.cs:352 ingrigisce il TESTO se AppSettings
+     .RevisionGraphDrawNonRelativesGray e' attiva.
+   Nel port: _drawNonRelativesGray esiste (RevisionGridView.cs:2705) ma calcola i parenti
+   rispetto a HEAD invece che al commit selezionato, e ingrigisce SOLO il testo: le lane
+   restano sempre colorate. Da fare: relatives dalla selezione + lane grigie + Alt+clic.
+   DECISO DALL'UTENTE (27/07/2026): FEDELE all'originale. Quindi:
+   - all'apertura il riferimento e' HEAD (upstream: ApplyFlags(isCheckedOut: HeadId == ...)
+     marca HEAD e AddParent propaga agli antenati; il setting
+     RevisionGraphDrawNonRelativesGray e' true di default, quindi il grigio si vede subito);
+   - ALT+CLIC su una riga sposta il riferimento a quel commit; il clic NORMALE non cambia
+     nulla e NON deve ri-ancorare l'ingrigimento;
+   - da ingrigire sono le LANE del grafo oltre al testo (oggi il port fa solo il testo).
+
+2. [PRIORITA' UTENTE] CHROME MANCANTE rispetto all'originale:
+   a) COLONNA SINISTRA: l'originale ha una barra di 5 pulsanti icona sopra l'albero e una
+      CASELLA DI RICERCA con lente; RepoObjectsTree.cs non ha ne' l'una ne' l'altra.
+   b) TAB del pannello inferiore: nell'originale hanno le ICONE (Commit/Diff/File tree/GPG/
+      Console/Output); nel port sono solo testo (MainWindow.cs:48-56, IconLoader gia' esiste).
+   c) TOOLBAR in alto: l'originale ha piu' pulsanti e split-button di quelli portati.
+   d) Gia' noti dall'audit e ancora aperti: toolbar ricca della lista file (raggruppamento
+      per path/estensione/stato, casella di ricerca, toggle ignorati/skip-worktree/untracked
+      - FileStatusList.Toolbar.cs) e opzioni del viewer (evidenziazione sintattica, copia
+      versione nuova/vecchia - FileViewer.Designer.cs:27-48).
+
+3. [PRIORITA' UTENTE, 27/07/2026] PULL: split-button + menu + dialogo dedicato.
+   Screenshot dell'originale in ~/Documents/pull/ (button.png, menu.png, pull dialog.png)
+   -- la cartella reale si chiama "pullù".
+   Nell'originale `toolStripButtonPull` e' un ToolStripSplitButton
+   (FormBrowse.Designer.cs:50): il corpo esegue l'AZIONE PREDEFINITA (tooltip
+   "Pull - merge (F8)"), la freccia apre un menu con:
+     Open pull dialog... (Ctrl+Down) | Pull - merge | Pull - rebase | Fetch | Fetch all |
+     Fetch and prune all | --- | Set default Pull button action > (sottomenu)
+   L'azione predefinita e' persistita in AppSettings.DefaultPullAction
+   (AppSettings.cs:1008, enum GitPullAction in
+   GitExtensions.Extensibility/Git/GitPullAction.cs: None/Merge/Rebase/Fetch/FetchAll/
+   FetchPruneAll/Default; default = Merge).
+   Il "pull dialog" (FormPull) contiene: Pull from (Remote con combo + Manage remotes /
+   URL con Browse), Branch (Local branch in sola lettura + Remote branch), Merge options
+   (merge / rebase / solo fetch), Tag options (follow tagopt / no tag / all tags),
+   Prune remote branches, Prune remote branches and tags, e in fondo
+   Solve conflicts | Stash changes | Auto stash | Pull, piu' un pannello di aiuto con lo
+   schema visuale (l'illustrazione si puo' omettere).
+   NEL PORT: il Pull e' un pulsante semplice senza freccia (MainToolbar.cs:258) e chiama
+   PullStreaming(..., rebase: false, ...) con il flag CABLATO A FALSE in due punti
+   (MainWindow.cs:964 dal toolbar e :1082 dal menu), quindi non esiste ne' il dialogo, ne'
+   la scelta merge/rebase/fetch, ne' un'azione predefinita configurabile. Nel MainToolbar
+   non esiste ancora nessuno split-button: la struttura va creata (attenzione alla trappola
+   nota: gli Items del MenuFlyout vanno popolati PRIMA di ShowAt).
+   Nota: il punto 5 elencava gia' "dialogo Pull con prune/autostash/tag policy" come minore;
+   e' assorbito qui e promosso.
+
+4. Code da M48: push del branch dal menu grid, edit commit e rebase interattivo (serve un
+   harness GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested da cablare, e le gesture
+   Ctrl+M merge / Ctrl+Shift+E rebase / Ctrl+Alt+W worktrees (i service esistono, manca
+   l'entry point in MainWindow).
+
+5. Difetti noti aperti (la perdita di scroll/selezione al refresh e' RISOLTA in M49):
+   CheckoutBranchDialog e' misto italiano/inglese; Avalonia non espone WM_DELETE_WINDOW
+   (finestra non chiudibile dal WM); il "salva come" del diff non e' verificabile headless
+   (serve portal XDG).
+
+6. Minori: opzioni di merge/cherry-pick, continue/skip/abort per rebase, filtrare i
+   cataloghi .xlf a inglese + italiano per togliere ~19 MB dal .deb.
+
+**Resto della coda** (dettaglio in `HANDOFF.md` sezione 5, punti 4–6): code lasciate da M48
+(push del branch dal menu grid, edit commit e rebase interattivo — servirebbe un harness
+`GIT_SEQUENCE_EDITOR` che il port non ha, `SelectRefInLeftPanelRequested` da cablare, gesture
+`Ctrl+M`/`Ctrl+Shift+E`/`Ctrl+Alt+W` senza entry point in `MainWindow`); difetti noti aperti;
+minori (opzioni merge/cherry-pick, continue/skip/abort per rebase, filtro dei cataloghi
+`.xlf` a inglese + italiano per togliere ~19 MB dal `.deb`).
+
 ### Blocco FEATURE E INTEGRAZIONE GUI (round 7)
 > **Iterazioni 1–3.** Direzione data dall'utente: **le lingue non interessano oltre inglese
 > e italiano** (blocco traduzioni chiuso), contano **feature e integrazione nella GUI**.
