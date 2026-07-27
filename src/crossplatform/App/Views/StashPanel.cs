@@ -3,9 +3,12 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using GitCommands;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -44,9 +47,11 @@ public sealed class StashPanel : UserControl
     private readonly ListBox _stashList;
     private readonly TextBox _messageBox;
     private readonly CheckBox _untrackedCheck;
+    private readonly CheckBox _keepIndexCheck;
     private readonly Button _saveButton;
     private readonly Button _stashDialogButton;
     private readonly Button _stagedButton;
+    private readonly Button _stashSelectedButton;
     private readonly Button _applyButton;
     private readonly Button _popButton;
     private readonly Button _dropButton;
@@ -54,9 +59,29 @@ public sealed class StashPanel : UserControl
     private readonly TextBlock _status;
     private readonly TextBlock _listTitle;
 
+    // The middle pane: the files of the selected stash, or — for the working
+    // directory entry — its Index group in the first list and its Workspace group
+    // in the second (upstream's SetStashDiffs, which puts both in one list under
+    // two group headers; this port has one list per group instead).
+    private readonly Grid _filesGrid;
+    private readonly FileStatusListView _indexFiles;
+    private readonly FileStatusListView _workTreeFiles;
+    private readonly TextBlock _indexHeader;
+    private readonly TextBlock _workTreeHeader;
+
     private string? _repoPath;
     private bool _busy;
     private CancellationTokenSource? _diffCts;
+    private CancellationTokenSource? _filesCts;
+
+    // The new-stash message the user typed. The message box doubles as the
+    // read-only display of the selected stash's message (upstream reuses the very
+    // same control), so the draft has to survive a round trip through a stash.
+    private string _draftMessage = string.Empty;
+
+    // Set while one file list is being cleared because the other one took the
+    // selection, so the resulting events do not fight each other.
+    private bool _syncingFileSelection;
 
     /// <summary>
     ///  Raised on the UI thread after any successful mutating operation
@@ -71,7 +96,7 @@ public sealed class StashPanel : UserControl
             SelectionMode = SelectionMode.Single,
             FontFamily = Monospace,
         };
-        _stashList.SelectionChanged += (_, _) => ShowSelectedStashDiff();
+        _stashList.SelectionChanged += (_, _) => OnStashSelectionChanged();
 
         _listTitle = new TextBlock
         {
@@ -82,6 +107,16 @@ public sealed class StashPanel : UserControl
         _messageBox = new TextBox { Margin = new Thickness(0, 0, 0, 4) };
 
         _untrackedCheck = new CheckBox { Margin = new Thickness(0, 0, 0, 4) };
+
+        // Upstream persists this one in AppSettings.StashKeepIndex and reads it
+        // back when the dialog opens (FormStash.cs:108,114).
+        _keepIndexCheck = new CheckBox
+        {
+            Margin = new Thickness(0, 0, 0, 4),
+            IsChecked = AppSettings.StashKeepIndex,
+        };
+        _keepIndexCheck.IsCheckedChanged += (_, _) =>
+            AppSettings.StashKeepIndex = _keepIndexCheck.IsChecked == true;
 
         // A trailing margin (rather than the parent's spacing) is what separates
         // the buttons, so it survives a wrap onto a second line.
@@ -95,6 +130,11 @@ public sealed class StashPanel : UserControl
 
         _stagedButton = new Button { Margin = gap };
         _stagedButton.Click += (_, _) => DoStashStaged();
+
+        // Upstream enables this only on the working-directory entry and only with
+        // at least one file selected (FormStash.EnablePartialStash).
+        _stashSelectedButton = new Button { Margin = gap, IsEnabled = false };
+        _stashSelectedButton.Click += (_, _) => DoStashSelected();
 
         _applyButton = new Button { Margin = gap };
         _applyButton.Click += (_, _) => DoApply();
@@ -132,10 +172,16 @@ public sealed class StashPanel : UserControl
         saveButtons.Children.Add(_saveButton);
         saveButtons.Children.Add(_stashDialogButton);
         saveButtons.Children.Add(_stagedButton);
+        saveButtons.Children.Add(_stashSelectedButton);
+
+        WrapPanel saveChecks = new() { Orientation = Orientation.Horizontal };
+        _untrackedCheck.Margin = new Thickness(0, 0, 12, 4);
+        saveChecks.Children.Add(_untrackedCheck);
+        saveChecks.Children.Add(_keepIndexCheck);
 
         StackPanel savePanel = new() { Margin = new Thickness(8, 4, 8, 4) };
         savePanel.Children.Add(_messageBox);
-        savePanel.Children.Add(_untrackedCheck);
+        savePanel.Children.Add(saveChecks);
         savePanel.Children.Add(saveButtons);
 
         _status = new TextBlock
@@ -163,25 +209,50 @@ public sealed class StashPanel : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
+        // ---- middle pane: the files of whatever the stash list has selected ----
+        _indexFiles = new FileStatusListView { ShowRefreshButton = true };
+        _indexFiles.RefreshRequested += ReloadFiles;
+        _workTreeFiles = new FileStatusListView { ShowToolbar = false };
+
+        foreach (FileStatusListView view in new[] { _indexFiles, _workTreeFiles })
+        {
+            // "Stash selected changes" takes a set of paths, so the lists must be
+            // able to hold one. The component itself is untouched: SelectionMode
+            // lives on the ListBox it already exposes.
+            view.List.SelectionMode = SelectionMode.Multiple;
+            view.SelectedFileChanged += _ => ShowSelectedFileDiff();
+            view.List.SelectionChanged += OnFileSelectionChanged;
+        }
+
+        _indexHeader = GroupHeader();
+        _workTreeHeader = GroupHeader();
+
+        _filesGrid = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto,0") };
+        Grid.SetRow(_indexHeader, 0);
+        Grid.SetRow(_indexFiles, 1);
+        Grid.SetRow(_workTreeHeader, 2);
+        Grid.SetRow(_workTreeFiles, 3);
+        _filesGrid.Children.Add(_indexHeader);
+        _filesGrid.Children.Add(_indexFiles);
+        _filesGrid.Children.Add(_workTreeHeader);
+        _filesGrid.Children.Add(_workTreeFiles);
+
         Grid split = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"),
+            ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,Auto,*"),
         };
         Grid.SetColumn(listPanel, 0);
         listPanel.Width = 340;
 
-        GridSplitter splitter = new()
-        {
-            Width = 4,
-            Background = B("App.Border"),
-            ResizeDirection = GridResizeDirection.Columns,
-        };
-        Grid.SetColumn(splitter, 1);
+        Grid.SetColumn(_filesGrid, 2);
+        _filesGrid.Width = 320;
 
-        Grid.SetColumn(diffScroll, 2);
+        Grid.SetColumn(diffScroll, 4);
 
         split.Children.Add(listPanel);
-        split.Children.Add(splitter);
+        split.Children.Add(Splitter(1));
+        split.Children.Add(_filesGrid);
+        split.Children.Add(Splitter(3));
         split.Children.Add(diffScroll);
 
         DockPanel root = new();
@@ -193,8 +264,69 @@ public sealed class StashPanel : UserControl
 
         Content = root;
 
+        // Ctrl+N / Ctrl+P walk the stash list, upstream's Stash hotkeys
+        // (HotkeySettingsManager: NextStash = Ctrl+N, PreviousStash = Ctrl+P).
+        // Tunnelling, so the keys work while the message box has the focus.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+
         ApplyTranslations();
         TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    private GridSplitter Splitter(int column)
+    {
+        GridSplitter splitter = new()
+        {
+            Width = 4,
+            Background = B("App.Border"),
+            ResizeDirection = GridResizeDirection.Columns,
+        };
+        Grid.SetColumn(splitter, column);
+        return splitter;
+    }
+
+    private static TextBlock GroupHeader() => new()
+    {
+        FontWeight = FontWeight.Bold,
+        FontSize = 12,
+        Foreground = B("App.TextDim"),
+        Margin = new Thickness(8, 4, 8, 2),
+        IsVisible = false,
+    };
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            return;
+        }
+
+        if (e.Key == Key.N)
+        {
+            e.Handled = StepStash(next: true);
+        }
+        else if (e.Key == Key.P)
+        {
+            e.Handled = StepStash(next: false);
+        }
+    }
+
+    // Upstream's ChangeSelectedStash: move by one, and stop at the ends.
+    private bool StepStash(bool next)
+    {
+        if (_stashList.ItemCount == 0)
+        {
+            return false;
+        }
+
+        int index = _stashList.SelectedIndex + (next ? 1 : -1);
+        if (index < 0 || index >= _stashList.ItemCount)
+        {
+            return false;
+        }
+
+        _stashList.SelectedIndex = index;
+        return true;
     }
 
     // ------------------------------------------------------------ translation
@@ -208,6 +340,10 @@ public sealed class StashPanel : UserControl
 
     private static string ErrorWord() => T("TranslatedStrings/_error.Text", "Error");
 
+    // WinForms mnemonics ("&Keep index") are not Avalonia's, and a stray "&"
+    // would be drawn as-is.
+    private static string Strip(string caption) => RevisionFilterDialog.StripMnemonic(caption);
+
     // One format with a placeholder for the raw git output, never a translated
     // prefix glued to a message.
     private static string FailedFormat() => T("Failed: {0}");
@@ -217,10 +353,23 @@ public sealed class StashPanel : UserControl
         _listTitle.Text = T("TranslatedStrings/_stashesText.Text", "Stashes");
         _messageBox.Watermark = T("Stash message (optional)");
         _untrackedCheck.Content = T("FormStash/chkIncludeUntrackedFiles.Text", "Include untracked files");
+        _keepIndexCheck.Content = Strip(T("FormStash/StashKeepIndex.Text", "&Keep index"));
+        ToolTip.SetTip(
+            _keepIndexCheck,
+            T("FormStash/StashKeepIndex.toolTip", "All changes already added to the index are left intact"));
+
+        _indexHeader.Text = T("TranslatedStrings/_indexText.Text", "Commit index");
+        _workTreeHeader.Text = T("TranslatedStrings/_workspaceText.Text", "Working directory");
 
         _saveButton.Content = T("FormStash/Stash.Text", "Save stash");
         _stashDialogButton.Content = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash…");
         _stagedButton.Content = T("FormBrowse/stashStagedToolStripMenuItem.Text", "Stash staged");
+        _stashSelectedButton.Content = Strip(T("FormStash/StashSelectedFiles.Text", "Stash &selected changes"));
+        ToolTip.SetTip(
+            _stashSelectedButton,
+            T(
+                "FormStash/StashSelectedFiles.toolTip",
+                "Stash changes for the selected files, then revert them to the original state"));
         _applyButton.Content = T("RepoObjectsTree/mnubtnApplyStash.Text", "Apply");
         _popButton.Content = T("RepoObjectsTree/mnubtnPopStash.Text", "Pop");
         _dropButton.Content = T("RepoObjectsTree/mnubtnDropStash.Text", "Drop");
@@ -232,11 +381,16 @@ public sealed class StashPanel : UserControl
             _status.Text = T("No repository loaded.");
         }
 
-        if (SelectedStash() is null)
+        if (CurrentFile() is null)
         {
-            _diff.Inlines?.Clear();
-            _diff.Text = T("Select a stash to view its diff.");
+            ShowDiffPlaceholder();
         }
+    }
+
+    private void ShowDiffPlaceholder()
+    {
+        _diff.Inlines?.Clear();
+        _diff.Text = T("Select a file to view its diff.");
     }
 
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
@@ -273,12 +427,35 @@ public sealed class StashPanel : UserControl
             () => _service.ListStashes(repo),
             stashes =>
             {
-                _stashList.ItemsSource = stashes.ToList();
+                // A brand-new list instance, never a mutated one: reassigning the
+                // same instance to ItemsSource does not rebuild the containers.
+                // The synthetic working-directory entry goes first, as upstream
+                // inserts it at index 0 (FormStash.Initialize).
+                List<object> items = [new WorkingDirRow(WorkingDirText())];
+                items.AddRange(stashes);
+                _stashList.ItemsSource = items;
+                _stashList.SelectedIndex = 0;
+
                 _status.Text = stashes.Count == 0
                     ? T("FormStash/_noStashes.Text", "There are no stashes.")
                     : F(T("{0} stash(es)."), stashes.Count);
             });
     }
+
+    private static string WorkingDirText()
+        => T("FormStash/_currentWorkingDirChanges.Text", "Current working directory changes");
+
+    /// <summary>
+    ///  The synthetic first row of the stash list. A record of its own rather than
+    ///  a <see cref="StashRow"/> with a fake index, so nothing can mistake it for
+    ///  a stash that <c>git stash apply</c> could be pointed at.
+    /// </summary>
+    private sealed record WorkingDirRow(string Text)
+    {
+        public override string ToString() => Text;
+    }
+
+    private bool IsWorkingDirSelected => _stashList.SelectedItem is WorkingDirRow;
 
     private void DoSave()
     {
@@ -287,13 +464,56 @@ public sealed class StashPanel : UserControl
             return;
         }
 
-        string message = _messageBox.Text ?? string.Empty;
+        string message = DraftMessage();
         bool untracked = _untrackedCheck.IsChecked == true;
+        bool keepIndex = _keepIndexCheck.IsChecked == true;
 
         _status.Text = T("Saving stash…");
         RunGit(
-            () => _service.StashSave(repo, message, untracked),
-            result => OnMutated(result, T("Stash saved."), () => _messageBox.Text = string.Empty));
+            () => _service.StashSave(repo, message, untracked, keepIndex),
+            result => OnMutated(result, T("Stash saved."), ClearDraft));
+    }
+
+    /// <summary>
+    ///  Stashes only the files picked in the middle pane — upstream's "Stash
+    ///  selected changes", which is why that button is live on the working
+    ///  directory entry only.
+    /// </summary>
+    private void DoStashSelected()
+    {
+        if (_repoPath is not { Length: > 0 } repo || !IsWorkingDirSelected)
+        {
+            return;
+        }
+
+        List<string> files = SelectedFileNames();
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        string message = DraftMessage();
+        bool untracked = _untrackedCheck.IsChecked == true;
+        bool keepIndex = _keepIndexCheck.IsChecked == true;
+
+        _status.Text = T("Saving stash…");
+        RunGit(
+            () => _service.StashSave(repo, message, untracked, keepIndex, files),
+            result => OnMutated(result, F(T("{0} file(s) stashed."), files.Count), ClearDraft));
+    }
+
+    // The message box shows the selected stash's message while a stash is
+    // selected, so the text a new stash should carry is the preserved draft.
+    private string DraftMessage()
+        => _messageBox.IsReadOnly ? _draftMessage : _messageBox.Text ?? string.Empty;
+
+    private void ClearDraft()
+    {
+        _draftMessage = string.Empty;
+        if (!_messageBox.IsReadOnly)
+        {
+            _messageBox.Text = string.Empty;
+        }
     }
 
     private void DoStashStaged()
@@ -303,12 +523,12 @@ public sealed class StashPanel : UserControl
             return;
         }
 
-        string message = _messageBox.Text ?? string.Empty;
+        string message = DraftMessage();
 
         _status.Text = T("Stashing staged changes…");
         RunGit(
             () => _service.StashStaged(repo, message),
-            result => OnMutated(result, T("Staged changes stashed."), () => _messageBox.Text = string.Empty));
+            result => OnMutated(result, T("Staged changes stashed."), ClearDraft));
     }
 
     private async Task DoStashDialogAsync()
@@ -328,7 +548,7 @@ public sealed class StashPanel : UserControl
             _status.Text = T("Saving stash…");
             RunGit(
                 () => _service.StashSaveMessage(repo, prompt.Message, prompt.IncludeUntracked),
-                result => OnMutated(result, T("Stash saved."), () => _messageBox.Text = string.Empty));
+                result => OnMutated(result, T("Stash saved."), ClearDraft));
         }
         catch (Exception ex)
         {
@@ -415,37 +635,82 @@ public sealed class StashPanel : UserControl
     private StashRow? SelectedStash()
         => _stashList.SelectedItem as StashRow;
 
-    // Loads and renders the selected stash's full patch, off the UI thread.
-    // Any in-flight load is superseded so rapid selection changes stay correct.
-    private void ShowSelectedStashDiff()
-    {
-        _diffCts?.Cancel();
-        _diffCts?.Dispose();
-        _diffCts = new CancellationTokenSource();
-        CancellationToken token = _diffCts.Token;
+    // ------------------------------------------------------- stash selection
 
-        if (SelectedStash() is not { } stash || _repoPath is not { Length: > 0 } repo)
+    // The stash list drives everything else: the message box (upstream reuses one
+    // control for the new-stash message and the selected stash's own message),
+    // which operations are legal, and the file list of the middle pane.
+    private void OnStashSelectionChanged()
+    {
+        bool workingDir = IsWorkingDirSelected;
+
+        if (workingDir)
         {
-            _diff.Inlines?.Clear();
-            _diff.Text = T("Select a stash to view its diff.");
+            _messageBox.IsReadOnly = false;
+            _messageBox.Text = _draftMessage;
+        }
+        else
+        {
+            if (!_messageBox.IsReadOnly)
+            {
+                _draftMessage = _messageBox.Text ?? string.Empty;
+            }
+
+            _messageBox.IsReadOnly = true;
+            _messageBox.Text = SelectedStash()?.Message ?? string.Empty;
+        }
+
+        // Apply / Pop / Drop are meaningless on the working directory, and
+        // upstream disables them there (FormStash.InitializeSoft).
+        bool onStash = SelectedStash() is not null;
+        _applyButton.IsEnabled = onStash && !_busy;
+        _popButton.IsEnabled = onStash && !_busy;
+        _dropButton.IsEnabled = onStash && !_busy;
+
+        ReloadFiles();
+    }
+
+    // ------------------------------------------------------------- file list
+
+    // Loads the middle pane for whatever the stash list has selected. Off the UI
+    // thread, and outside RunGit's single-operation gate: a selection change must
+    // not be dropped just because a mutation is in flight.
+    private void ReloadFiles()
+    {
+        _filesCts?.Cancel();
+        _filesCts?.Dispose();
+        _filesCts = new CancellationTokenSource();
+        CancellationToken token = _filesCts.Token;
+
+        bool workingDir = IsWorkingDirSelected;
+        SetFilesMode(workingDir);
+
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            SetFileRows([], []);
             return;
         }
 
-        _diff.Inlines?.Clear();
-        _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
+        StashRow? stash = SelectedStash();
+        if (!workingDir && stash is null)
+        {
+            SetFileRows([], []);
+            return;
+        }
 
         _ = Task.Run(() =>
         {
             try
             {
-                string text = _service.GetStashDiff(repo, stash.Name);
+                (IReadOnlyList<DiffFileRow> first, IReadOnlyList<DiffFileRow> second) = workingDir
+                    ? Split(_service.GetWorkingDirFiles(repo))
+                    : (_service.GetStashFiles(repo, stash!.Name), (IReadOnlyList<DiffFileRow>)[]);
+
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        RenderDiff(string.IsNullOrEmpty(text)
-                            ? F("({0})", T("FileStatusList/NoFiles.Text", "no changes"))
-                            : text);
+                        SetFileRows(first, second);
                     }
                 });
             }
@@ -455,13 +720,223 @@ public sealed class StashPanel : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        _diff.Inlines?.Clear();
-                        _diff.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                        SetFileRows([], []);
+                        _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                     }
                 });
             }
         });
+
+        static (IReadOnlyList<DiffFileRow>, IReadOnlyList<DiffFileRow>) Split(StashWorkingDirFiles files)
+            => (files.Index, files.WorkTree);
     }
+
+    // In working-directory mode the pane shows two labelled lists (upstream's
+    // Index and Workspace groups); for a stash it shows one, and the second row
+    // pair is collapsed to zero height — an invisible child of a star row would
+    // still take up half the pane.
+    private void SetFilesMode(bool workingDir)
+    {
+        _indexHeader.IsVisible = workingDir;
+        _workTreeHeader.IsVisible = workingDir;
+        _workTreeFiles.IsVisible = workingDir;
+        _filesGrid.RowDefinitions = new RowDefinitions(workingDir ? "Auto,*,Auto,*" : "Auto,*,Auto,0");
+    }
+
+    private void SetFileRows(IReadOnlyList<DiffFileRow> first, IReadOnlyList<DiffFileRow> second)
+    {
+        // Each SetFiles selects its list's first row, so without this guard the
+        // two lists would end up both selected and would each load a diff.
+        _syncingFileSelection = true;
+        try
+        {
+            _indexFiles.SetFiles(first);
+            _workTreeFiles.SetFiles(second);
+
+            if (first.Count > 0)
+            {
+                _workTreeFiles.List.SelectedItem = null;
+            }
+        }
+        finally
+        {
+            _syncingFileSelection = false;
+        }
+
+        ShowSelectedFileDiff();
+        UpdateStashSelectedEnabled();
+    }
+
+    // One logical selection across the two lists: taking a selection in one drops
+    // the other's, so the diff pane always has a single unambiguous subject.
+    private void OnFileSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingFileSelection)
+        {
+            return;
+        }
+
+        if (sender is ListBox list && e.AddedItems.Count > 0)
+        {
+            ListBox other = ReferenceEquals(list, _indexFiles.List) ? _workTreeFiles.List : _indexFiles.List;
+            if (other.SelectedItems is { Count: > 0 })
+            {
+                _syncingFileSelection = true;
+                try
+                {
+                    other.SelectedItems.Clear();
+                }
+                finally
+                {
+                    _syncingFileSelection = false;
+                }
+            }
+        }
+
+        UpdateStashSelectedEnabled();
+    }
+
+    // The file the diff pane should be showing, and whether it is a staged one
+    // (which decides the git comparison for a working-directory file).
+    private (DiffFileRow Row, bool Staged)? CurrentFile()
+    {
+        if (_indexFiles.SelectedFile is { } indexRow)
+        {
+            return (indexRow, IsWorkingDirSelected);
+        }
+
+        if (IsWorkingDirSelected && _workTreeFiles.SelectedFile is { } workRow)
+        {
+            return (workRow, false);
+        }
+
+        return null;
+    }
+
+    // Every file picked in either list, for the partial stash.
+    private List<string> SelectedFileNames()
+    {
+        List<string> names = [];
+        foreach (FileStatusListView view in new[] { _indexFiles, _workTreeFiles })
+        {
+            if (!view.IsVisible || view.List.SelectedItems is not { } selected)
+            {
+                continue;
+            }
+
+            foreach (object? item in selected)
+            {
+                if (item is FileListFileNode node && !names.Contains(node.Row.Name))
+                {
+                    names.Add(node.Row.Name);
+                }
+            }
+        }
+
+        return names;
+    }
+
+    private void UpdateStashSelectedEnabled()
+        => _stashSelectedButton.IsEnabled = !_busy && IsWorkingDirSelected && SelectedFileNames().Count > 0;
+
+    // ------------------------------------------------------------- diff pane
+
+    // Loads and renders the patch of the selected file. Any in-flight load is
+    // superseded so rapid selection changes stay correct.
+    private void ShowSelectedFileDiff()
+    {
+        if (_syncingFileSelection)
+        {
+            return;
+        }
+
+        _diffCts?.Cancel();
+        _diffCts?.Dispose();
+        _diffCts = new CancellationTokenSource();
+        CancellationToken token = _diffCts.Token;
+
+        if (CurrentFile() is not { } selection || _repoPath is not { Length: > 0 } repo)
+        {
+            ShowDiffPlaceholder();
+            return;
+        }
+
+        _diff.Inlines?.Clear();
+        _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
+
+        if (IsWorkingDirSelected)
+        {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    string text = _service.GetWorkingDirFileDiff(repo, selection.Row, selection.Staged);
+                    PostDiff(text, token);
+                }
+                catch (Exception ex)
+                {
+                    PostError(ex, token);
+                }
+            });
+
+            return;
+        }
+
+        if (SelectedStash() is { } stash)
+        {
+            _ = LoadStashFileDiffAsync(repo, stash, selection.Row, token);
+        }
+    }
+
+    // A stash's per-file patch is a plain two-revision diff, so it goes through
+    // the shared DiffTextService and picks up the diff toolbar's options
+    // (whitespace, context lines, encoding) like every other file diff in the app.
+    // An untracked file was never in <ref>: it lives in the third parent, and that
+    // is the side to compare against.
+    private async Task LoadStashFileDiffAsync(
+        string repo, StashRow stash, DiffFileRow file, CancellationToken token)
+    {
+        try
+        {
+            DiffTextRequest request = new(
+                Kind: DiffTextKind.Range,
+                RepoPath: repo,
+                CommitHash: file.IsTracked ? stash.Name : stash.Name + "^3",
+                BaseHash: stash.Name + "^",
+                Path: file.Name,
+                OldPath: file.OldName);
+
+            string text = await DiffTextService.GetDiffTextAsync(request, DiffTextService.Session, token);
+            PostDiff(text, token);
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer selection won.
+        }
+        catch (Exception ex)
+        {
+            PostError(ex, token);
+        }
+    }
+
+    private void PostDiff(string text, CancellationToken token) => Dispatcher.UIThread.Post(() =>
+    {
+        if (!token.IsCancellationRequested)
+        {
+            RenderDiff(string.IsNullOrEmpty(text)
+                ? F("({0})", T("FileStatusList/NoFiles.Text", "no changes"))
+                : text);
+        }
+    });
+
+    private void PostError(Exception ex, CancellationToken token) => Dispatcher.UIThread.Post(() =>
+    {
+        if (!token.IsCancellationRequested)
+        {
+            _diff.Inlines?.Clear();
+            _diff.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+        }
+    });
 
     // Colour each diff line: added green, removed red, hunk headers accent,
     // file/meta headers dim. Mirrors DiffView.RenderDiff.
@@ -524,7 +999,7 @@ public sealed class StashPanel : UserControl
         TextBox message = new()
         {
             Watermark = T("Stash message (optional)"),
-            Text = _messageBox.Text ?? string.Empty,
+            Text = DraftMessage(),
             Margin = new Thickness(0, 0, 0, 8),
         };
         CheckBox untracked = new()
@@ -678,8 +1153,14 @@ public sealed class StashPanel : UserControl
         _saveButton.IsEnabled = !busy;
         _stashDialogButton.IsEnabled = !busy;
         _stagedButton.IsEnabled = !busy;
-        _applyButton.IsEnabled = !busy;
-        _popButton.IsEnabled = !busy;
-        _dropButton.IsEnabled = !busy;
+
+        // These three also depend on what is selected: a stash, never the working
+        // directory entry.
+        bool onStash = !busy && SelectedStash() is not null;
+        _applyButton.IsEnabled = onStash;
+        _popButton.IsEnabled = onStash;
+        _dropButton.IsEnabled = onStash;
+
+        UpdateStashSelectedEnabled();
     }
 }
