@@ -1,4 +1,7 @@
 using GitCommands;
+using GitExtensions.Extensibility;
+using GitExtensions.Extensibility.Git;
+using GitExtUtils;
 using GitUIPluginInterfaces;
 
 namespace GitExtensions.Avalonia.Services;
@@ -26,6 +29,18 @@ public sealed record FileHistoryRow(
 
     /// <summary>Commit date, rendered; empty when unknown.</summary>
     public string CommitDate { get; init; } = string.Empty;
+
+    /// <summary>
+    ///  The path the file had <em>in this revision</em>. With <c>--follow</c> the
+    ///  history reaches back past renames, so for commits older than a rename this
+    ///  is the OLD path — the only one that resolves against that commit's tree.
+    ///  Everything that reads a blob ("Save as", difftool, open) must use it and not
+    ///  the path the file has today. Upstream keeps the same mapping in
+    ///  <c>RevisionGridControl.FilePathByObjectId</c> and reads it through
+    ///  <c>FormFileHistory.GetFileNameForRevision</c>.
+    ///  Empty when git could not name the file for that commit.
+    /// </summary>
+    public string FilePath { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -109,6 +124,12 @@ public sealed class FileHistoryService
             autostashLabel: string.Empty,
             cancellationToken: cancellationToken);
 
+        // The per-revision file name. Built in ONE extra pass instead of upstream's
+        // lazy per-selection call, because every row needs it (the "Save as" of an
+        // older revision has to read the pre-rename blob).
+        Dictionary<string, string> pathByHash =
+            GetFilePathByHash(module, filePath, options ?? new FileHistoryOptions(), cancellationToken);
+
         List<FileHistoryRow> rows = new(collector.Revisions.Count);
         foreach (GitRevision revision in collector.Revisions)
         {
@@ -123,10 +144,124 @@ public sealed class FileHistoryService
                 Message = revision.Body ?? revision.Subject ?? string.Empty,
                 AuthorDate = Render(revision.AuthorDate),
                 CommitDate = Render(revision.CommitDate),
+                FilePath = pathByHash.TryGetValue(revision.ObjectId.ToString(), out string? historic)
+                    ? historic
+                    : string.Empty,
             });
         }
 
         return rows;
+    }
+
+    // Upstream's marker in the "commit info" tab caption.
+    private const string ObjectIdPrefix = "????";
+
+    /// <summary>
+    ///  Maps commit hash → the name the file had in that commit, by asking git for
+    ///  the name it printed while following the file. Mirrors
+    ///  <c>RevisionGridControl.GetRevisionFileName</c>/<c>ParseFileNames</c>:
+    ///  <c>--name-only</c> prints one path per line under a <c>????&lt;sha&gt;</c>
+    ///  header, and with <c>--follow</c> those paths are the pre-rename ones for the
+    ///  commits that precede a rename. Blocking; call it off the UI thread.
+    /// </summary>
+    private static Dictionary<string, string> GetFilePathByHash(
+        GitModule module,
+        string filePath,
+        FileHistoryOptions options,
+        CancellationToken cancellationToken)
+    {
+        Dictionary<string, string> map = new(StringComparer.Ordinal);
+
+        // The map only makes sense while renames are followed; without --follow the
+        // path never changes and the caller's own path is already correct. Still run
+        // it, so a row whose path is genuinely absent stays detectable.
+        GitArgumentBuilder args = new("log")
+        {
+            $"--format=\"{ObjectIdPrefix}%H\"",
+            "--name-only",
+            "--diff-merges=separate",
+            options.ToRevisionFilter(),
+            "--",
+            (filePath.ToPosixPath() ?? filePath).Quote(),
+        };
+
+        ExecutionResult result;
+        try
+        {
+            result = module.GitExecutable.Execute(
+                args,
+                outputEncoding: GitModule.LosslessEncoding,
+                throwOnErrorExit: false,
+                cancellationToken: cancellationToken);
+        }
+        catch (Exception)
+        {
+            // A missing path map degrades to "use the current path", i.e. the old
+            // behaviour — never to a broken history list.
+            return map;
+        }
+
+        if (!result.ExitedSuccessfully)
+        {
+            return map;
+        }
+
+        string? currentHash = null;
+        foreach (string? raw in (result.StandardOutput ?? string.Empty).Replace("\r\n", "\n").Split('\n'))
+        {
+            string line = GitModule.ReEncodeFileNameFromLossless(raw) ?? string.Empty;
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (line.StartsWith(ObjectIdPrefix, StringComparison.Ordinal))
+            {
+                string hash = line[ObjectIdPrefix.Length..].Trim();
+                currentHash = hash.Length == ObjectId.Sha1CharCount ? hash : null;
+                continue;
+            }
+
+            if (currentHash is null)
+            {
+                continue;
+            }
+
+            // Only the FIRST path under a header is the followed file (upstream does
+            // the same); later ones belong to the rest of the commit's diff.
+            map.TryAdd(currentHash, line.Trim());
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    ///  True when <paramref name="path"/> resolves to a blob in
+    ///  <paramref name="hash"/>. Drives the port's equivalent of upstream's
+    ///  " - Git could not identify the file {0}" marker
+    ///  (<c>FormFileHistory._fileNotFound</c>). Blocking; call it off the UI thread.
+    /// </summary>
+    public bool FileExistsInRevision(string repoPath, string hash, string path)
+    {
+        try
+        {
+            if (path.Length == 0 || path.EndsWith('/'))
+            {
+                return false;
+            }
+
+            if (!ObjectId.TryParse(hash, out ObjectId objectId))
+            {
+                return false;
+            }
+
+            GitModule module = GitContext.CreateModule(repoPath);
+            return !module.GetFileBlobHash(path.ToPosixPath() ?? path, objectId).IsZero;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     // The core uses DateTime.MaxValue as "unknown".
