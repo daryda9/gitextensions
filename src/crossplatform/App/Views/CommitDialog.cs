@@ -38,6 +38,16 @@ public sealed class CommitDialog : Window
     private readonly ScrollViewer _diffScroll;
     private readonly TextBlock _statusText;
 
+    // Conflict (unmerged) support, mirroring the original commit form: unmerged
+    // files show up in the unstaged list with a "U" status and get their own
+    // context-menu entries, plus a banner while the merge is unresolved.
+    private readonly Border _conflictBanner;
+    private readonly MenuItem _mergetoolItem = new() { Header = "Open in mergetool" };
+    private readonly MenuItem _takeOursItem = new() { Header = "Take ours" };
+    private readonly MenuItem _takeTheirsItem = new() { Header = "Take theirs" };
+    private readonly MenuItem _markResolvedItem = new() { Header = "Mark resolved" };
+    private readonly HashSet<string> _conflictPaths = new(StringComparer.Ordinal);
+
     private bool _busy;
 
     // Options-menu state (mirrors the original commit form's Options dropdown).
@@ -80,8 +90,55 @@ public sealed class CommitDialog : Window
         // ---- LEFT: unstaged / buttons / staged ----
         _unstagedList.SelectionChanged += (_, _) => OnSelected(_unstagedList, staged: false);
         _stagedList.SelectionChanged += (_, _) => OnSelected(_stagedList, staged: true);
-        _unstagedList.DoubleTapped += (_, _) => StageSelected();
+        _unstagedList.DoubleTapped += (_, _) => OnUnstagedDoubleTapped();
         _stagedList.DoubleTapped += (_, _) => UnstageSelected();
+
+        // The Items are static and only their IsEnabled changes while opening —
+        // adding/removing entries in Opening leaves the popup unmeasured (HANDOFF §3).
+        _mergetoolItem.Click += (_, _) => OpenInMergetool();
+        _takeOursItem.Click += (_, _) => ResolveConflicts("ours");
+        _takeTheirsItem.Click += (_, _) => ResolveConflicts("theirs");
+        _markResolvedItem.Click += (_, _) => ResolveConflicts("resolved");
+
+        MenuItem stageItem = new() { Header = "Stage" };
+        stageItem.Click += (_, _) => StageSelected();
+
+        ContextMenu unstagedMenu = new()
+        {
+            ItemsSource = new Control[]
+            {
+                stageItem,
+                new Separator(),
+                _mergetoolItem, _takeOursItem, _takeTheirsItem, _markResolvedItem,
+            },
+        };
+        unstagedMenu.Opening += (_, _) =>
+        {
+            bool conflict = SelectedConflicts().Count > 0;
+            stageItem.IsEnabled = !conflict && _unstagedList.SelectedItem is WorkingDirFileRow;
+            _mergetoolItem.IsEnabled = conflict;
+            _takeOursItem.IsEnabled = conflict;
+            _takeTheirsItem.IsEnabled = conflict;
+            _markResolvedItem.IsEnabled = conflict;
+        };
+        _unstagedList.ContextMenu = unstagedMenu;
+
+        _conflictBanner = new Border
+        {
+            Background = Brush("App.Accent", Brushes.DarkRed),
+            Margin = new Thickness(6, 6, 6, 0),
+            Padding = new Thickness(8, 4),
+            IsVisible = false,
+            ClipToBounds = true,
+            Child = new TextBlock
+            {
+                Text = "There are unresolved merge conflicts. Right-click a file marked \"U\" "
+                     + "in the unstaged list to open the mergetool, take ours/theirs or mark it resolved.",
+                FontWeight = FontWeight.Bold,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+            },
+        };
 
         Button stageBtn = MakeButton("Stage ▼", StageSelected);
         Button unstageBtn = MakeButton("Unstage ▲", UnstageSelected);
@@ -182,7 +239,9 @@ public sealed class CommitDialog : Window
 
         DockPanel root = new();
         DockPanel.SetDock(bottom, Dock.Bottom);
+        DockPanel.SetDock(_conflictBanner, Dock.Top);
         root.Children.Add(bottom);
+        root.Children.Add(_conflictBanner);
         root.Children.Add(split);
         Content = root;
 
@@ -308,6 +367,123 @@ public sealed class CommitDialog : Window
         }
     }
 
+    // ---------- merge conflicts ----------
+
+    // Double-click stages a normal file, but opens the merge tool for an unmerged
+    // one (staging a conflicted file would silently mark it resolved).
+    private void OnUnstagedDoubleTapped()
+    {
+        if (SelectedConflicts().Count > 0)
+        {
+            OpenInMergetool();
+            return;
+        }
+
+        StageSelected();
+    }
+
+    private List<string> SelectedConflicts()
+        => [.. _unstagedList.SelectedItems?
+            .OfType<WorkingDirFileRow>()
+            .Select(r => r.Path)
+            .Where(_conflictPaths.Contains) ?? []];
+
+    // Launches the configured merge tool for each selected conflict (detached, off
+    // the UI thread). No immediate reload: the tool runs asynchronously, so the user
+    // marks the file resolved (or takes ours/theirs) once done.
+    private void OpenInMergetool()
+    {
+        List<string> paths = SelectedConflicts();
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        SetStatus("Launching merge tool…");
+        RunGitResult(
+            () =>
+            {
+                WorkingDirCommitResult last = new(true, string.Empty);
+                foreach (string path in paths)
+                {
+                    last = _service.LaunchMergetool(repo, path);
+                    if (!last.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return last;
+            },
+            result => SetStatus(result.Success
+                ? "Merge tool launched. Mark resolved when done."
+                : FirstLine(result.Output)));
+    }
+
+    // Resolves the selected conflicts with "ours", "theirs" or a plain mark-resolved
+    // (git add), then reloads so the files lose their "U" status. Taking a side
+    // overwrites the working-tree file, so it is confirmed first.
+    private void ResolveConflicts(string mode)
+    {
+        List<string> paths = SelectedConflicts();
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        if (mode is "ours" or "theirs")
+        {
+            string side = mode == "ours" ? "our" : "their";
+            ConfirmThen(
+                $"Resolve {paths.Count} conflict(s) by keeping {side} version? "
+                + "The other side is discarded in the working tree and cannot be undone.",
+                () => RunResolve(mode, paths));
+            return;
+        }
+
+        RunResolve(mode, paths);
+    }
+
+    private void RunResolve(string mode, List<string> paths)
+    {
+        string repo = _repoPath;
+        SetStatus("Resolving conflict(s)…");
+        RunGitResult(
+            () =>
+            {
+                WorkingDirCommitResult last = new(true, string.Empty);
+                foreach (string path in paths)
+                {
+                    last = mode switch
+                    {
+                        "ours" => _service.TakeOurs(repo, path),
+                        "theirs" => _service.TakeTheirs(repo, path),
+                        _ => _service.MarkResolved(repo, path),
+                    };
+
+                    if (!last.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return last;
+            },
+            result =>
+            {
+                SetStatus(result.Success
+                    ? mode switch
+                    {
+                        "ours" => $"Resolved {paths.Count} conflict(s) keeping our version.",
+                        "theirs" => $"Resolved {paths.Count} conflict(s) keeping their version.",
+                        _ => $"Marked {paths.Count} conflict(s) as resolved.",
+                    }
+                    : "Resolve failed: " + FirstLine(result.Output));
+                Reload();
+            });
+    }
+
     // ---------- commit / reset ----------
 
     private CommitOptions CurrentOptions() => new(
@@ -322,6 +498,12 @@ public sealed class CommitDialog : Window
         int staged = _stagedList.Items.Count;
         string message = _messageBox.Text ?? string.Empty;
         CommitOptions options = CurrentOptions();
+
+        if (_conflictPaths.Count > 0)
+        {
+            SetStatus("There are unresolved merge conflicts, solve merge conflicts before committing.");
+            return;
+        }
 
         if (staged == 0 && !options.Amend)
         {
@@ -777,8 +959,37 @@ public sealed class CommitDialog : Window
         }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
         {
             WorkingDirStatus status = t.Result;
-            _unstagedList.ItemsSource = status.Unstaged;
-            _stagedList.ItemsSource = status.Staged;
+
+            // Unmerged paths are shown inside the unstaged list with a "U" status,
+            // like the original commit form, rather than in a separate panel.
+            _conflictPaths.Clear();
+            foreach (string path in status.Conflicts)
+            {
+                _conflictPaths.Add(path);
+            }
+
+            List<WorkingDirFileRow> unstaged = [.. status.Unstaged
+                .Select(r => _conflictPaths.Contains(r.Path)
+                    ? r with { Status = "U conflict" }
+                    : r)];
+
+            // Defensive: surface conflicts the work-tree listing may have missed.
+            foreach (string path in status.Conflicts)
+            {
+                if (!unstaged.Any(r => string.Equals(r.Path, path, StringComparison.Ordinal)))
+                {
+                    unstaged.Insert(0, new WorkingDirFileRow(path, "U conflict", false));
+                }
+            }
+
+            _unstagedList.ItemsSource = unstaged;
+
+            // An unmerged path is reported by the index listing too; showing it in
+            // both lists would be misleading, so it stays only in the unstaged one.
+            _stagedList.ItemsSource = _conflictPaths.Count == 0
+                ? status.Staged
+                : [.. status.Staged.Where(r => !_conflictPaths.Contains(r.Path))];
+            _conflictBanner.IsVisible = _conflictPaths.Count > 0;
             RenderStatus();
         }), TaskScheduler.Default);
     }
@@ -796,6 +1007,11 @@ public sealed class CommitDialog : Window
     private void RenderStatus()
     {
         string counts = $"Staged {_stagedList.Items.Count}/{_stagedList.Items.Count + _unstagedList.Items.Count}";
+        if (_conflictPaths.Count > 0)
+        {
+            counts += $"   —   {_conflictPaths.Count} conflict(s)";
+        }
+
         _statusText.Text = _statusHint.Length > 0 ? $"{_statusHint}   —   {counts}" : counts;
     }
 
