@@ -44,10 +44,11 @@ public sealed class CommitDialog : Window
     // files show up in the unstaged list with a "U" status and get their own
     // context-menu entries, plus a banner while the merge is unresolved.
     private readonly Border _conflictBanner;
-    private readonly MenuItem _mergetoolItem = new() { Header = "Open in mergetool" };
-    private readonly MenuItem _takeOursItem = new() { Header = "Take ours" };
-    private readonly MenuItem _takeTheirsItem = new() { Header = "Take theirs" };
-    private readonly MenuItem _markResolvedItem = new() { Header = "Mark resolved" };
+    private readonly TextBlock _conflictText;
+    private readonly MenuItem _mergetoolItem = new();
+    private readonly MenuItem _takeOursItem = new();
+    private readonly MenuItem _takeTheirsItem = new();
+    private readonly MenuItem _markResolvedItem = new();
     private readonly HashSet<string> _conflictPaths = new(StringComparer.Ordinal);
 
     // Per-file actions on the unstaged menu. Like the conflict entries above, these
@@ -58,10 +59,36 @@ public sealed class CommitDialog : Window
     // The original's "Reset file(s) to" is a submenu (index / parent); the port keeps
     // the single meaningful choice here — discard back to the index — and reuses the
     // wording already used by the former working-directory panel.
-    private readonly MenuItem _discardItem = new() { Header = "Discard changes" };
-    private readonly MenuItem _ignorePathItem = new() { Header = "Add to .gitignore" };
-    private readonly MenuItem _ignoreExtItem = new() { Header = "Ignore by extension" };
-    private readonly MenuItem _ignoreFolderItem = new() { Header = "Ignore in folder" };
+    private readonly MenuItem _discardItem = new();
+    private readonly MenuItem _ignorePathItem = new();
+    private readonly MenuItem _ignoreExtItem = new();
+    private readonly MenuItem _ignoreFolderItem = new();
+
+    // The remaining re-labelable widgets. They are kept in fields so a language
+    // switch while the dialog is open can re-caption the whole window in place
+    // (ApplyTranslations), the same way MainMenu rebuilds itself.
+    private readonly MenuItem _stageItem = new();
+    private readonly MenuItem _unstagedCopyItem = new();
+    private readonly MenuItem _unstageItem = new();
+    private readonly MenuItem _stagedCopyItem = new();
+    private readonly TextBlock _unstagedHeader = MakeHeaderLabel();
+    private readonly TextBlock _stagedHeader = MakeHeaderLabel();
+    private readonly Button _stageBtn;
+    private readonly Button _unstageBtn;
+    private readonly Button _stageAllBtn;
+    private readonly Button _unstageAllBtn;
+    private readonly Button _commitBtn;
+    private readonly Button _commitPushBtn;
+    private readonly Button _stashBtn;
+    private readonly Button _resetAllBtn;
+    private readonly Button _resetUnstagedBtn;
+    private readonly Button _templatesBtn;
+    private readonly Button _createBranchBtn;
+    private readonly Button _optionsBtn;
+
+    // The branch shown in the title bar, remembered so the title can be rebuilt
+    // (translated format string) without asking git again.
+    private string _titleBranch = string.Empty;
 
     private bool _busy;
 
@@ -92,7 +119,6 @@ public sealed class CommitDialog : Window
     {
         _repoPath = repoPath;
 
-        Title = "Commit";
         Width = 1000;
         Height = 680;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -128,11 +154,8 @@ public sealed class CommitDialog : Window
         _takeTheirsItem.Click += (_, _) => ResolveConflicts("theirs");
         _markResolvedItem.Click += (_, _) => ResolveConflicts("resolved");
 
-        MenuItem stageItem = new() { Header = "Stage" };
-        stageItem.Click += (_, _) => StageSelected();
-
-        MenuItem unstagedCopyItem = new() { Header = "Copy path" };
-        unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
+        _stageItem.Click += (_, _) => StageSelected();
+        _unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
 
         _discardItem.Click += (_, _) => DiscardSelected();
         _ignorePathItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Path);
@@ -143,12 +166,12 @@ public sealed class CommitDialog : Window
         {
             ItemsSource = new Control[]
             {
-                stageItem,
+                _stageItem,
                 _discardItem,
                 new Separator(),
                 _mergetoolItem, _takeOursItem, _takeTheirsItem, _markResolvedItem,
                 new Separator(),
-                unstagedCopyItem,
+                _unstagedCopyItem,
                 new Separator(),
                 _ignorePathItem, _ignoreExtItem, _ignoreFolderItem,
             },
@@ -158,18 +181,16 @@ public sealed class CommitDialog : Window
             bool conflict = SelectedConflicts().Count > 0;
             List<WorkingDirFileRow> rows = SelectedRows(_unstagedList);
             int count = rows.Count;
-            stageItem.IsEnabled = !conflict && count > 0;
-            stageItem.Header = count > 1 ? $"Stage ({count} files)" : "Stage";
-            unstagedCopyItem.IsEnabled = count > 0;
-            unstagedCopyItem.Header = count > 1 ? $"Copy paths ({count} files)" : "Copy path";
+            _stageItem.IsEnabled = !conflict && count > 0;
+            _stageItem.Header = WithCount(StageCaption, count);
+            _unstagedCopyItem.IsEnabled = count > 0;
+            _unstagedCopyItem.Header = WithCount(CopyPathCaption, count);
 
             // "Reset file changes" only makes sense for tracked, non-conflicted files:
             // untracked ones are handled by .gitignore / clean, never discarded here.
             int discardable = rows.Count(r => r.Status != "new" && !_conflictPaths.Contains(r.Path));
             _discardItem.IsEnabled = !conflict && discardable > 0;
-            _discardItem.Header = discardable > 1
-                ? $"Discard changes ({discardable} files)"
-                : "Discard changes";
+            _discardItem.Header = WithCount(DiscardCaption, discardable);
 
             // The .gitignore entries mirror the former working-directory panel: a single UNTRACKED
             // file only, plus an extension / a parent folder where applicable.
@@ -189,24 +210,28 @@ public sealed class CommitDialog : Window
         };
         _unstagedList.ContextMenu = unstagedMenu;
 
-        MenuItem unstageItem = new() { Header = "Unstage" };
-        unstageItem.Click += (_, _) => UnstageSelected();
-        MenuItem stagedCopyItem = new() { Header = "Copy path" };
-        stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
+        _unstageItem.Click += (_, _) => UnstageSelected();
+        _stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
         ContextMenu stagedMenu = new()
         {
-            ItemsSource = new Control[] { unstageItem, new Separator(), stagedCopyItem },
+            ItemsSource = new Control[] { _unstageItem, new Separator(), _stagedCopyItem },
         };
         stagedMenu.Opening += (_, _) =>
         {
             int count = SelectedRows(_stagedList).Count;
-            unstageItem.IsEnabled = count > 0;
-            unstageItem.Header = count > 1 ? $"Unstage ({count} files)" : "Unstage";
-            stagedCopyItem.IsEnabled = count > 0;
-            stagedCopyItem.Header = count > 1 ? $"Copy paths ({count} files)" : "Copy path";
+            _unstageItem.IsEnabled = count > 0;
+            _unstageItem.Header = WithCount(UnstageCaption, count);
+            _stagedCopyItem.IsEnabled = count > 0;
+            _stagedCopyItem.Header = WithCount(CopyPathCaption, count);
         };
         _stagedList.ContextMenu = stagedMenu;
 
+        _conflictText = new TextBlock
+        {
+            FontWeight = FontWeight.Bold,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+        };
         _conflictBanner = new Border
         {
             Background = Brush("App.Accent", Brushes.DarkRed),
@@ -214,37 +239,30 @@ public sealed class CommitDialog : Window
             Padding = new Thickness(8, 4),
             IsVisible = false,
             ClipToBounds = true,
-            Child = new TextBlock
-            {
-                Text = "There are unresolved merge conflicts. Right-click a file marked \"U\" "
-                     + "in the unstaged list to open the mergetool, take ours/theirs or mark it resolved.",
-                FontWeight = FontWeight.Bold,
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = Brush("App.Foreground", Brushes.Gainsboro),
-            },
+            Child = _conflictText,
         };
 
-        Button stageBtn = MakeButton("Stage ▼", StageSelected);
-        Button unstageBtn = MakeButton("Unstage ▲", UnstageSelected);
-        Button stageAllBtn = MakeButton("Stage all", StageAll);
-        Button unstageAllBtn = MakeButton("Unstage all", UnstageAll);
+        _stageBtn = MakeButton(StageSelected);
+        _unstageBtn = MakeButton(UnstageSelected);
+        _stageAllBtn = MakeButton(StageAll);
+        _unstageAllBtn = MakeButton(UnstageAll);
 
         StackPanel stageButtons = new()
         {
             Orientation = Orientation.Horizontal,
             Spacing = 4,
             Margin = new Thickness(0, 4),
-            Children = { stageBtn, unstageBtn, stageAllBtn, unstageAllBtn },
+            Children = { _stageBtn, _unstageBtn, _stageAllBtn, _unstageAllBtn },
         };
 
         Grid leftPanel = new()
         {
             RowDefinitions = new RowDefinitions("*,Auto,*"),
         };
-        leftPanel.Children.Add(WrapWithHeader("Unstaged changes", _unstagedList, 0));
+        leftPanel.Children.Add(WrapWithHeader(_unstagedHeader, _unstagedList, 0));
         Grid.SetRow(stageButtons, 1);
         leftPanel.Children.Add(stageButtons);
-        leftPanel.Children.Add(WrapWithHeader("Staged changes", _stagedList, 2));
+        leftPanel.Children.Add(WrapWithHeader(_stagedHeader, _stagedList, 2));
 
         // ---- top region: left | right split ----
         Grid split = new()
@@ -273,35 +291,34 @@ public sealed class CommitDialog : Window
         _messageBox = new TextBox
         {
             AcceptsReturn = true,
-            Watermark = "Enter commit message",
             MinHeight = 70,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 4),
             FontFamily = Monospace,
         };
-        _amendBox = new CheckBox { Content = "Amend commit", Margin = new Thickness(0, 0, 12, 0) };
+        _amendBox = new CheckBox { Margin = new Thickness(0, 0, 12, 0) };
 
-        Button commitBtn = MakeButton("Commit", () => DoCommit(push: false));
-        Button commitPushBtn = MakeButton("Commit & push", () => DoCommit(push: true));
-        Button stashBtn = MakeButton("Stash staged changes", DoStashStaged);
-        Button resetAllBtn = MakeButton("Reset all changes", () => DoReset(includeStaged: true));
-        Button resetUnstagedBtn = MakeButton("Reset unstaged changes", () => DoReset(includeStaged: false));
+        _commitBtn = MakeButton(() => DoCommit(push: false));
+        _commitPushBtn = MakeButton(() => DoCommit(push: true));
+        _stashBtn = MakeButton(DoStashStaged);
+        _resetAllBtn = MakeButton(() => DoReset(includeStaged: true));
+        _resetUnstagedBtn = MakeButton(() => DoReset(includeStaged: false));
 
-        Button templatesBtn = new() { Content = "Commit templates ▾" };
-        templatesBtn.Click += async (_, _) => await ShowTemplatesMenuAsync(templatesBtn);
+        _templatesBtn = new Button();
+        _templatesBtn.Click += async (_, _) => await ShowTemplatesMenuAsync(_templatesBtn);
 
-        Button createBranchBtn = MakeButton("Create branch", PromptCreateBranch);
+        _createBranchBtn = MakeButton(PromptCreateBranch);
 
-        Button optionsBtn = new() { Content = "Options ▾" };
-        optionsBtn.Click += (_, _) => ShowOptionsMenu(optionsBtn);
+        _optionsBtn = new Button();
+        _optionsBtn.Click += (_, _) => ShowOptionsMenu(_optionsBtn);
 
         WrapPanel buttonRow = new()
         {
             Orientation = Orientation.Horizontal,
             Children =
             {
-                commitBtn, commitPushBtn, _amendBox, stashBtn,
-                resetAllBtn, resetUnstagedBtn, templatesBtn, createBranchBtn, optionsBtn,
+                _commitBtn, _commitPushBtn, _amendBox, _stashBtn,
+                _resetAllBtn, _resetUnstagedBtn, _templatesBtn, _createBranchBtn, _optionsBtn,
             },
         };
         foreach (Control c in buttonRow.Children)
@@ -330,10 +347,86 @@ public sealed class CommitDialog : Window
         Content = root;
 
         InstallShortcuts();
+        ApplyTranslations();
+
+        // A language switch while the dialog is open re-captions it in place
+        // (MainMenu does the same by rebuilding itself). The handler may run on
+        // the loader's thread, hence the hop onto the UI thread.
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
 
         Reload();
         RefreshBranchCaption();
     }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    // Every fixed caption of the dialog, in one place, so it can be applied at
+    // construction time and again after a language switch. Captions that carry a
+    // selection count (the context menus) are re-computed in the menus' Opening
+    // handler and only get their singular form here.
+    private void ApplyTranslations()
+    {
+        _unstagedHeader.Text = T("Unstaged changes");
+        _stagedHeader.Text = T("Staged changes");
+
+        _stageItem.Header = StageCaption;
+        _unstagedCopyItem.Header = CopyPathCaption;
+        _unstageItem.Header = UnstageCaption;
+        _stagedCopyItem.Header = CopyPathCaption;
+        _discardItem.Header = DiscardCaption;
+
+        _mergetoolItem.Header = T("FormResolveConflicts/OpenMergetool.Text", "Open in mergetool");
+        _takeOursItem.Header = T("Take ours");
+        _takeTheirsItem.Header = T("Take theirs");
+        _markResolvedItem.Header = T("Mark resolved");
+
+        _ignorePathItem.Header = T("FileStatusList/tsmiAddFileToGitIgnore.Text", "Add to .gitignore");
+        _ignoreExtItem.Header = T("Ignore by extension");
+        _ignoreFolderItem.Header = T("Ignore in folder");
+
+        _conflictText.Text = T("FormCommit/SolveMergeconflicts.Text", "There are unresolved merge conflicts")
+            + ". "
+            + T("Right-click a file marked \"U\" in the unstaged list to open the mergetool, "
+                + "take ours/theirs or mark it resolved.");
+
+        _stageBtn.Content = StageCaption + " ▼";
+        _unstageBtn.Content = UnstageCaption + " ▲";
+        _stageAllBtn.Content = T("FormCommit/_stageAll.Text", "Stage all");
+        _unstageAllBtn.Content = T("FormCommit/_unstageAll.Text", "Unstage all");
+
+        _messageBox.Watermark = T("FormCommit/_enterCommitMessageHint.Text", "Enter commit message");
+        _amendBox.Content = T("FormCommit/_amendCommitCaption.Text", "Amend commit");
+
+        _commitBtn.Content = T("FormCommit/Commit.Text", "Commit");
+        _commitPushBtn.Content = T("FormCommit/_commitAndPush.Text", "Commit & push");
+        _stashBtn.Content = T("FormCommit/StashStaged.Text", "Stash staged changes");
+        _resetAllBtn.Content = T("FormCommit/btnResetAllChanges.Text", "Reset all changes");
+        _resetUnstagedBtn.Content = T("FormCommit/btnResetUnstagedChanges.Text", "Reset unstaged changes");
+        _templatesBtn.Content = T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾";
+        _createBranchBtn.Content = T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch");
+        _optionsBtn.Content = T("FormCommit/tsmiOptions.Text", "Options") + " ▾";
+
+        UpdateTitle();
+        RenderStatus();
+    }
+
+    private static string StageCaption => T("FormCommit/toolStageItem.Text", "Stage");
+    private static string UnstageCaption => T("FormCommit/toolUnstageItem.Text", "Unstage");
+    private static string CopyPathCaption => T("FileStatusList/tsmiCopyPaths.Text", "Copy path");
+    private static string DiscardCaption => T("Discard changes");
+
+    // "Stage" + 3 → "Stage (3 files)". Upstream has a counted variant for staging
+    // only (FormCommit/_stageFiles.Text, "Stage {0} files"); using it just for that
+    // one entry would make it read differently from its three siblings, so all four
+    // share this pattern instead — the verb is translated, the parenthesised count
+    // has no trans-unit and normally stays English.
+    private static string WithCount(string caption, int count)
+        => count > 1 ? string.Format(T("{0} ({1} files)"), caption, count) : caption;
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     // Keyboard accelerators the former working-directory panel had:
     //  • Enter / Space on a list = stage (unstaged list) or unstage (staged list);
@@ -449,7 +542,7 @@ public sealed class CommitDialog : Window
             }
             catch (Exception ex)
             {
-                return "Could not load diff: " + ex.Message;
+                return string.Format(T("Could not load diff: {0}"), ex.Message);
             }
         }).ContinueWith(t =>
             Dispatcher.UIThread.Post(() => RenderDiff(t.Result)),
@@ -545,13 +638,15 @@ public sealed class CommitDialog : Window
 
         string repo = _repoPath;
         string what = paths.Count == 1
-            ? $"changes to '{paths[0]}'"
-            : $"changes to {paths.Count} files";
+            ? $"'{paths[0]}'"
+            : string.Format(T("{0} files"), paths.Count);
         ConfirmThen(
-            $"Discard {what}? The files are restored from the index and this cannot be undone.",
+            string.Format(
+                T("Discard changes to {0}? The files are restored from the index and this cannot be undone."),
+                what),
             () =>
             {
-                SetStatus($"Discarding {what} …");
+                SetStatus(string.Format(T("Discarding changes to {0} …"), what));
                 RunGitResult(
                     () =>
                     {
@@ -570,8 +665,8 @@ public sealed class CommitDialog : Window
                     result =>
                     {
                         SetStatus(result.Success
-                            ? $"Discarded {what}."
-                            : "Discard failed: " + FirstLine(result.Output));
+                            ? string.Format(T("Discarded changes to {0}."), what)
+                            : string.Format(T("Discard failed: {0}"), FirstLine(result.Output)));
                         Reload();
                     });
             });
@@ -593,12 +688,12 @@ public sealed class CommitDialog : Window
         {
             _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
             SetStatus(rows.Count == 1
-                ? "Copied path: " + rows[0].Path
-                : $"Copied {rows.Count} paths.");
+                ? string.Format(T("Copied path: {0}"), rows[0].Path)
+                : string.Format(T("Copied {0} paths."), rows.Count));
         }
         catch (Exception ex)
         {
-            SetStatus("Could not copy the path: " + ex.Message);
+            SetStatus(string.Format(T("Could not copy the path: {0}"), ex.Message));
         }
     }
 
@@ -659,14 +754,14 @@ public sealed class CommitDialog : Window
         }
 
         string repo = _repoPath;
-        SetStatus($"Adding '{pattern}' to .gitignore …");
+        SetStatus(string.Format(T("Adding '{0}' to .gitignore …"), pattern));
         RunGitResult(
             () => _service.AddToGitignore(repo, pattern),
             result =>
             {
                 SetStatus(result.Success
                     ? FirstLine(result.Output)
-                    : "Could not update .gitignore: " + FirstLine(result.Output));
+                    : string.Format(T("Could not update .gitignore: {0}"), FirstLine(result.Output)));
                 Reload();
             });
     }
@@ -704,7 +799,7 @@ public sealed class CommitDialog : Window
         }
 
         string repo = _repoPath;
-        SetStatus("Launching merge tool…");
+        SetStatus(T("Launching merge tool…"));
         RunGitResult(
             () =>
             {
@@ -721,7 +816,7 @@ public sealed class CommitDialog : Window
                 return last;
             },
             result => SetStatus(result.Success
-                ? "Merge tool launched. Mark resolved when done."
+                ? T("Merge tool launched. Mark resolved when done.")
                 : FirstLine(result.Output)));
     }
 
@@ -738,10 +833,14 @@ public sealed class CommitDialog : Window
 
         if (mode is "ours" or "theirs")
         {
-            string side = mode == "ours" ? "our" : "their";
             ConfirmThen(
-                $"Resolve {paths.Count} conflict(s) by keeping {side} version? "
-                + "The other side is discarded in the working tree and cannot be undone.",
+                string.Format(
+                    mode == "ours"
+                        ? T("Resolve {0} conflict(s) by keeping our version? "
+                            + "The other side is discarded in the working tree and cannot be undone.")
+                        : T("Resolve {0} conflict(s) by keeping their version? "
+                            + "The other side is discarded in the working tree and cannot be undone."),
+                    paths.Count),
                 () => RunResolve(mode, paths));
             return;
         }
@@ -752,7 +851,7 @@ public sealed class CommitDialog : Window
     private void RunResolve(string mode, List<string> paths)
     {
         string repo = _repoPath;
-        SetStatus("Resolving conflict(s)…");
+        SetStatus(T("Resolving conflict(s)…"));
         RunGitResult(
             () =>
             {
@@ -777,13 +876,15 @@ public sealed class CommitDialog : Window
             result =>
             {
                 SetStatus(result.Success
-                    ? mode switch
-                    {
-                        "ours" => $"Resolved {paths.Count} conflict(s) keeping our version.",
-                        "theirs" => $"Resolved {paths.Count} conflict(s) keeping their version.",
-                        _ => $"Marked {paths.Count} conflict(s) as resolved.",
-                    }
-                    : "Resolve failed: " + FirstLine(result.Output));
+                    ? string.Format(
+                        mode switch
+                        {
+                            "ours" => T("Resolved {0} conflict(s) keeping our version."),
+                            "theirs" => T("Resolved {0} conflict(s) keeping their version."),
+                            _ => T("Marked {0} conflict(s) as resolved."),
+                        },
+                        paths.Count)
+                    : string.Format(T("Resolve failed: {0}"), FirstLine(result.Output)));
                 Reload();
             });
     }
@@ -805,7 +906,9 @@ public sealed class CommitDialog : Window
 
         if (_conflictPaths.Count > 0)
         {
-            SetStatus("There are unresolved merge conflicts, solve merge conflicts before committing.");
+            SetStatus(T(
+                "FormCommit/_mergeConflicts.Text",
+                "There are unresolved merge conflicts, solve merge conflicts before committing."));
             return;
         }
 
@@ -814,31 +917,31 @@ public sealed class CommitDialog : Window
         // merge still has to be recorded (git itself allows it while MERGE_HEAD exists).
         if (staged == 0 && !options.Amend && !_mergeInProgress)
         {
-            SetStatus("Nothing staged to commit.");
+            SetStatus(T("FormCommit/_noStagedChanges.Text", "There are no staged changes"));
             return;
         }
 
         if (message.Trim().Length == 0)
         {
-            SetStatus("Enter a commit message.");
+            SetStatus(T("FormCommit/_enterCommitMessage.Text", "Please enter commit message"));
             return;
         }
 
-        SetStatus("Running " + CommitActionsService.DescribeCommit(options) + " …");
+        SetStatus(string.Format(T("Running {0} …"), CommitActionsService.DescribeCommit(options)));
         RunActionResult(
             () => _actions.Commit(_repoPath, message, options),
             async result =>
             {
                 if (!result.Success)
                 {
-                    SetStatus("Commit failed: " + FirstLine(result.Output));
+                    SetStatus(string.Format(T("Commit failed: {0}"), FirstLine(result.Output)));
                     return;
                 }
 
                 _messageBox.Text = string.Empty;
                 _amendBox.IsChecked = false;
                 Committed?.Invoke();
-                SetStatus("Committed (" + CommitActionsService.DescribeCommit(options) + ").");
+                SetStatus(string.Format(T("Committed ({0})."), CommitActionsService.DescribeCommit(options)));
                 Reload();
 
                 if (push)
@@ -856,7 +959,7 @@ public sealed class CommitDialog : Window
     private async Task PushAsync()
     {
         string repo = _repoPath;
-        await GitProcessDialog.RunStreamingAsync(this, "Push", emit =>
+        await GitProcessDialog.RunStreamingAsync(this, T("FormPush/_pushCaption.Text", "Push"), emit =>
         {
             var remotes = new RemoteService().ListRemotes(repo);
             string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
@@ -871,7 +974,7 @@ public sealed class CommitDialog : Window
         if (includeStaged)
         {
             ConfirmThen(
-                "Reset ALL changes? This discards staged and unstaged tracked changes and cannot be undone.",
+                T("Reset ALL changes? This discards staged and unstaged tracked changes and cannot be undone."),
                 () => RunGit(() => _service.ResetChanges(_repoPath, includeStaged: true)));
             return;
         }
@@ -888,21 +991,21 @@ public sealed class CommitDialog : Window
     {
         if (_stagedList.Items.Count == 0)
         {
-            SetStatus("There are no staged changes to stash.");
+            SetStatus(T("There are no staged changes to stash."));
             return;
         }
 
         string message = (_messageBox.Text ?? string.Empty).Trim();
-        string stashMessage = message.Length > 0 ? FirstLine(message) : "Staged changes";
+        string stashMessage = message.Length > 0 ? FirstLine(message) : T("Staged changes");
 
-        SetStatus("Running git stash push --staged …");
+        SetStatus(string.Format(T("Running {0} …"), "git stash push --staged"));
         RunActionResult(
             () => _actions.StashStaged(_repoPath, stashMessage),
             result =>
             {
                 SetStatus(result.Success
-                    ? "Stashed staged changes: " + stashMessage
-                    : "Stash failed: " + FirstLine(result.Output));
+                    ? string.Format(T("Stashed staged changes: {0}"), stashMessage)
+                    : string.Format(T("Stash failed: {0}"), FirstLine(result.Output)));
                 Reload();
             });
     }
@@ -932,7 +1035,7 @@ public sealed class CommitDialog : Window
         {
             flyout.Items.Add(new MenuItem
             {
-                Header = "No commit templates found",
+                Header = T("No commit templates found"),
                 IsEnabled = false,
             });
         }
@@ -951,11 +1054,11 @@ public sealed class CommitDialog : Window
         }
 
         flyout.Items.Add(new Separator());
-        MenuItem clear = new() { Header = "Clear message" };
+        MenuItem clear = new() { Header = T("Clear message") };
         clear.Click += (_, _) =>
         {
             _messageBox.Text = string.Empty;
-            SetStatus("Commit message cleared.");
+            SetStatus(T("Commit message cleared."));
         };
         flyout.Items.Add(clear);
 
@@ -969,7 +1072,7 @@ public sealed class CommitDialog : Window
             {
                 _messageBox.Text = t.Result;
                 _messageBox.Focus();
-                SetStatus("Applied commit template " + template.Name + ".");
+                SetStatus(string.Format(T("Applied commit template {0}."), template.Name));
             }), TaskScheduler.Default);
     }
 
@@ -982,7 +1085,7 @@ public sealed class CommitDialog : Window
     {
         Window prompt = new()
         {
-            Title = "Create branch",
+            Title = T("FormCreateBranch/$this.Text", "Create branch"),
             Width = 440,
             Height = 190,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -990,7 +1093,11 @@ public sealed class CommitDialog : Window
         };
 
         TextBox nameBox = new() { Watermark = "new-branch-name", Width = 400 };
-        CheckBox checkoutBox = new() { Content = "Checkout after create", IsChecked = true };
+        CheckBox checkoutBox = new()
+        {
+            Content = T("FormCreateBranch/chkCheckoutAfterCreate.Text", "Checkout after create"),
+            IsChecked = true,
+        };
         TextBlock error = new()
         {
             Foreground = Brushes.OrangeRed,
@@ -1000,8 +1107,12 @@ public sealed class CommitDialog : Window
         string? chosen = null;
         bool checkout = true;
 
-        Button create = new() { Content = "Create branch", IsDefault = true };
-        Button cancel = MakeButton("Cancel", prompt.Close);
+        Button create = new()
+        {
+            Content = T("FormCreateBranch/cmdOk.Text", "Create branch"),
+            IsDefault = true,
+        };
+        Button cancel = MakeButton(T("FormCommit/Cancel.Text", "Cancel"), prompt.Close);
         create.Click += async (_, _) =>
         {
             string name = (nameBox.Text ?? string.Empty).Trim();
@@ -1038,7 +1149,7 @@ public sealed class CommitDialog : Window
             {
                 new TextBlock
                 {
-                    Text = "Create a new branch at the current HEAD:",
+                    Text = T("Create a new branch at the current HEAD:"),
                     Foreground = Brush("App.Foreground", Brushes.Gainsboro),
                 },
                 nameBox,
@@ -1062,14 +1173,20 @@ public sealed class CommitDialog : Window
 
         string branch = chosen;
         bool doCheckout = checkout;
-        SetStatus($"Running git {(doCheckout ? "checkout -b" : "branch")} {branch} HEAD …");
+        SetStatus(string.Format(
+            T("Running {0} …"),
+            $"git {(doCheckout ? "checkout -b" : "branch")} {branch} HEAD"));
         RunActionResult(
             () => _actions.CreateBranch(_repoPath, branch, doCheckout),
             result =>
             {
                 SetStatus(result.Success
-                    ? (doCheckout ? $"Created and checked out branch '{branch}'." : $"Created branch '{branch}'.")
-                    : "Create branch failed: " + FirstLine(result.Output));
+                    ? string.Format(
+                        doCheckout
+                            ? T("Created and checked out branch '{0}'.")
+                            : T("Created branch '{0}'."),
+                        branch)
+                    : string.Format(T("Create branch failed: {0}"), FirstLine(result.Output)));
                 RefreshBranchCaption();
                 Reload();
             });
@@ -1085,24 +1202,24 @@ public sealed class CommitDialog : Window
         MenuFlyout flyout = new();
 
         flyout.Items.Add(Toggle(
-            "Amend last commit  (--amend)",
+            T("FormCommit/_amendCommitCaption.Text", "Amend commit") + "  (--amend)",
             _amendBox.IsChecked == true,
             v => _amendBox.IsChecked = v));
         flyout.Items.Add(Toggle(
-            "Add sign-off  (--signoff)",
+            T("FormCommit/signOffToolStripMenuItem.Text", "Sign-off commit") + "  (--signoff)",
             _signOff,
             v => _signOff = v));
         flyout.Items.Add(Toggle(
-            "Skip hooks  (--no-verify)",
+            T("FormCommit/noVerifyToolStripMenuItem.Text", "No verify") + "  (--no-verify)",
             _noVerify,
             v => _noVerify = v));
         flyout.Items.Add(Toggle(
-            "Reset author  (--reset-author, needs amend)",
+            T("FormCommit/ResetAuthor.Text", "Reset author") + "  (--reset-author)",
             _resetAuthor,
             v => _resetAuthor = v));
         flyout.Items.Add(new Separator());
         flyout.Items.Add(Toggle(
-            "Close dialog after commit",
+            T("FormCommit/closeDialogAfterEachCommitToolStripMenuItem.Text", "Close dialog after each commit"),
             _closeAfterCommit,
             v => _closeAfterCommit = v));
 
@@ -1114,7 +1231,9 @@ public sealed class CommitDialog : Window
             item.Click += (_, _) =>
             {
                 set(!value);
-                SetStatus("Commit command: " + CommitActionsService.DescribeCommit(CurrentOptions()));
+                SetStatus(string.Format(
+                    T("Commit command: {0}"),
+                    CommitActionsService.DescribeCommit(CurrentOptions())));
             };
             return item;
         }
@@ -1135,18 +1254,24 @@ public sealed class CommitDialog : Window
             }
         }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
         {
-            Title = t.Result.Length > 0
-                ? $"Commit to {t.Result} ({repo})"
-                : "Commit";
+            _titleBranch = t.Result;
+            UpdateTitle();
         }), TaskScheduler.Default);
     }
+
+    // "Commit to <branch> (<repo>)" — the same format string the original form uses,
+    // so the translated catalogues fit it exactly.
+    private void UpdateTitle()
+        => Title = _titleBranch.Length > 0
+            ? string.Format(T("FormCommit/_formTitle.Text", "Commit to {0} ({1})"), _titleBranch, _repoPath)
+            : T("FormCommit/$this.Text", "Commit");
 
     // Simple in-dialog confirmation flyout on the status line via a modal child window.
     private async void ConfirmThen(string prompt, Action onConfirmed)
     {
         Window confirm = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 420,
             Height = 150,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1154,8 +1279,8 @@ public sealed class CommitDialog : Window
         };
 
         bool ok = false;
-        Button yes = MakeButton("Yes", () => { ok = true; confirm.Close(); });
-        Button no = MakeButton("Cancel", confirm.Close);
+        Button yes = MakeButton(T("Yes"), () => { ok = true; confirm.Close(); });
+        Button no = MakeButton(T("FormCommit/Cancel.Text", "Cancel"), confirm.Close);
         confirm.Content = new StackPanel
         {
             Margin = new Thickness(16),
@@ -1411,15 +1536,21 @@ public sealed class CommitDialog : Window
 
     private void RenderStatus()
     {
-        string counts = $"Staged {_stagedList.Items.Count}/{_stagedList.Items.Count + _unstagedList.Items.Count}";
+        // "<Staged> 1/4": the label is upstream's status-bar caption, the ratio is
+        // appended to it exactly as the original form's status strip does.
+        string counts = string.Format(
+            "{0} {1}/{2}",
+            T("FormCommit/commitStagedCountLabel.Text", "Staged"),
+            _stagedList.Items.Count,
+            _stagedList.Items.Count + _unstagedList.Items.Count);
         if (_conflictPaths.Count > 0)
         {
-            counts += $"   —   {_conflictPaths.Count} conflict(s)";
+            counts += "   —   " + string.Format(T("{0} conflict(s)"), _conflictPaths.Count);
         }
 
         if (_mergeInProgress)
         {
-            counts += "   —   merge in progress";
+            counts += "   —   " + T("merge in progress");
         }
 
         _statusText.Text = _statusHint.Length > 0 ? $"{_statusHint}   —   {counts}" : counts;
@@ -1461,16 +1592,16 @@ public sealed class CommitDialog : Window
         ClipToBounds = true,
     };
 
-    private Control WrapWithHeader(string header, Control content, int row)
+    private static TextBlock MakeHeaderLabel() => new()
+    {
+        FontWeight = FontWeight.Bold,
+        Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+        Margin = new Thickness(2, 0, 0, 2),
+    };
+
+    private Control WrapWithHeader(TextBlock label, Control content, int row)
     {
         DockPanel panel = new() { Margin = new Thickness(0, 2) };
-        TextBlock label = new()
-        {
-            Text = header,
-            FontWeight = FontWeight.Bold,
-            Foreground = Brush("App.Foreground", Brushes.Gainsboro),
-            Margin = new Thickness(2, 0, 0, 2),
-        };
         DockPanel.SetDock(label, Dock.Top);
         Border box = new()
         {
@@ -1487,7 +1618,16 @@ public sealed class CommitDialog : Window
 
     private Button MakeButton(string text, Action onClick)
     {
-        Button b = new() { Content = text };
+        Button b = MakeButton(onClick);
+        b.Content = text;
+        return b;
+    }
+
+    // Caption-less overload: the text is applied (and re-applied on a language
+    // switch) by ApplyTranslations.
+    private Button MakeButton(Action onClick)
+    {
+        Button b = new();
         b.Click += (_, _) => onClick();
         return b;
     }
