@@ -56,37 +56,122 @@ public sealed class PatchService
     }
 
     /// <summary>
-    ///  Applies the patch at <paramref name="patchFile"/>. First tries
-    ///  <c>git am &lt;file&gt;</c> (which preserves author/message for mailbox-format
-    ///  patches produced by <c>git format-patch</c>); if that fails — e.g. the file is
-    ///  a plain <c>git diff</c> and not a mailbox — the half-started am session is
-    ///  aborted (<c>git am --abort</c>) and it falls back to <c>git apply &lt;file&gt;</c>.
-    ///  The combined git output is preserved in <see cref="PatchResult.Output"/>.
+    ///  Applies the patch at <paramref name="patchFile"/>, choosing the command the
+    ///  way the original Git Extensions <c>FormApplyPatch</c> does: the file is
+    ///  sniffed (see <see cref="IsDiffFile"/>, a port of <c>FormApplyPatch.IsDiffFile</c>)
+    ///  and a raw <c>git diff</c> goes through <c>git apply</c>, while a mailbox /
+    ///  <c>git format-patch</c> file goes through <c>git am</c> (which preserves the
+    ///  original author and message).
+    ///
+    ///  <para>
+    ///   An <c>am</c> session already in progress (ours or the user's, e.g. a rebase
+    ///   or an earlier <c>git am</c> stopped on a conflict) is never touched: the
+    ///   operation refuses to start and says so. <c>git am --abort</c> is only issued
+    ///   for a session THIS call started and left mid-apply — the previous code
+    ///   aborted blindly and so could destroy unrelated in-flight work.
+    ///  </para>
     /// </summary>
     public PatchResult ApplyPatch(string repoPath, string patchFile)
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
-        GitArgumentBuilder amArgs = new("am") { patchFile.Quote() };
-        ExecutionResult am = module.GitExecutable.Execute(amArgs, throwOnErrorExit: false);
+        // Raw diff (git diff -p / "Index:" style) → git apply. No mailbox headers,
+        // so git am would fail and there is nothing to gain from trying it.
+        if (IsDiffFile(patchFile))
+        {
+            ExecutionResult applyOnly = module.GitExecutable.Execute(
+                new GitArgumentBuilder("apply") { patchFile.Quote() },
+                throwOnErrorExit: false);
+
+            return new PatchResult(
+                applyOnly.ExitedSuccessfully,
+                (applyOnly.ExitedSuccessfully
+                    ? "the file is a raw diff; git apply succeeded:\n"
+                    : "the file is a raw diff; git apply failed:\n") + applyOnly.AllOutput,
+                Array.Empty<string>());
+        }
+
+        // Mailbox/format-patch file → git am. Refuse when a patch session is already
+        // open: `git am <file>` would fail anyway ("previous rebase directory …"),
+        // and we must not clean up a session we did not create.
+        if (InTheMiddleOfPatch(module))
+        {
+            return new PatchResult(
+                false,
+                "A `git am` / rebase session is already in progress in this repository "
+                + "(.git/rebase-apply exists). Finish it (git am --continue / --skip) or "
+                + "abort it yourself (git am --abort) before applying another patch — "
+                + "this operation will not touch it.",
+                Array.Empty<string>());
+        }
+
+        ExecutionResult am = module.GitExecutable.Execute(
+            new GitArgumentBuilder("am") { patchFile.Quote() },
+            throwOnErrorExit: false);
         if (am.ExitedSuccessfully)
         {
             return new PatchResult(true, "git am succeeded:\n" + am.AllOutput, Array.Empty<string>());
         }
 
-        // am failed: abort any session it may have left mid-apply (harmless if none
-        // is in progress), then fall back to a plain git apply.
-        string amOutput = am.AllOutput;
-        GitArgumentBuilder abortArgs = new("am") { "--abort" };
-        module.GitExecutable.Execute(abortArgs, throwOnErrorExit: false);
+        // am failed. If it stopped mid-apply it left a session behind — that one IS
+        // ours, so aborting it is safe and restores the pre-call state. Report the
+        // failure; we deliberately do NOT retry with `git apply`, because the file is
+        // a mailbox and a fallback would silently drop its author/message metadata.
+        string message = "git am failed:\n" + am.AllOutput;
+        if (InTheMiddleOfPatch(module))
+        {
+            ExecutionResult abort = module.GitExecutable.Execute(
+                new GitArgumentBuilder("am") { "--abort" },
+                throwOnErrorExit: false);
+            message += abort.ExitedSuccessfully
+                ? "\n\nThe half-applied am session this operation started was aborted; the repository is unchanged."
+                : "\n\nThe am session this operation started could NOT be aborted:\n" + abort.AllOutput;
+        }
 
-        GitArgumentBuilder applyArgs = new("apply") { patchFile.Quote() };
-        ExecutionResult apply = module.GitExecutable.Execute(applyArgs, throwOnErrorExit: false);
+        return new PatchResult(false, message, Array.Empty<string>());
+    }
 
-        string combined = apply.ExitedSuccessfully
-            ? "git am did not apply (not a mailbox patch); git apply succeeded:\n" + apply.AllOutput
-            : $"git am failed:\n{amOutput}\n\ngit apply also failed:\n{apply.AllOutput}";
+    /// <summary>
+    ///  Whether a <c>git am</c> / rebase-apply session is in progress. Uses the core
+    ///  <see cref="GitModule.InTheMiddleOfPatch"/> when it can be reached, and falls
+    ///  back to the same on-disk check (<c>.git/rebase-apply</c>) if it throws.
+    /// </summary>
+    private static bool InTheMiddleOfPatch(GitModule module)
+    {
+        try
+        {
+            return module.InTheMiddleOfPatch();
+        }
+        catch (Exception)
+        {
+            try
+            {
+                return Directory.Exists(Path.Combine(module.WorkingDir, ".git", "rebase-apply"));
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+    }
 
-        return new PatchResult(apply.ExitedSuccessfully, combined, Array.Empty<string>());
+    // Port of FormApplyPatch.IsDiffFile: look at the first line only — enough to
+    // tell a raw diff from a mailbox-formatted patch. Never throws; on any problem
+    // it returns false, i.e. the file is treated as a mailbox (git am), exactly
+    // like upstream.
+    private static bool IsDiffFile(string path)
+    {
+        try
+        {
+            using StreamReader reader = new(path);
+            string? line = reader.ReadLine();
+            return line is not null
+                && (line.StartsWith("diff ", StringComparison.Ordinal)
+                    || line.StartsWith("Index: ", StringComparison.Ordinal));
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 }
