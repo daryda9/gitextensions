@@ -1159,10 +1159,26 @@ priorità massima)
       (resta "No file loaded"); il Blame si raggiunge solo dal tab Diff col tasto destro. Coerente
       con 2.1: il File tree è una lista piatta di stringhe. *si chiude con 2.1*
 
+- [ ] 0.19 **CRASH da re-entrancy nella griglia** (regressione introdotta in M53). Cablare
+      "Filter file in grid" a `ApplyRevisionFilter` fa esplodere
+      `InvalidOperationException: Cannot change source while update is in progress`, con lo stack
+      tutto interno: `ApplyRevisionFilter → Reload → ItemsSource → SelectionChanged →
+      UpdateAuthorHighlight → RefreshView → RebindRows → ItemsSource`. Causa: l'autore in grassetto
+      reagisce a `SelectionChanged` e ri-assegna `ItemsSource` mentre l'assegnazione precedente è
+      in corso; rinviare al dispatcher **non** basta. Serve una guardia di re-entrancy vera.
+      *Finché non è chiuso, la voce 1.24 resta scablata.*
+- [ ] 0.20 **Sospetto**: un path filter applicato dal dialogo "Filter…" lascerebbe la griglia con
+      **tutti** i commit. Osservato di sfuggita mentre si indagava 0.19, non confermato: da
+      verificare contro `git log` reale prima di trattarlo come difetto.
+- [ ] 0.21 Il logo `GitExtensionsLogoWide.png` esiste in `setup/assets/Logo/` ma è **fuori dal
+      glob** del csproj (`src/app/GitUI/Resources/Icons/*.png`), quindi non è risolvibile come
+      `avares:`. Servono due cose insieme: la riga nel csproj **e** il codice che lo carica; oggi
+      la dashboard tiene il wordmark testuale invece di sostituire artwork a caso. *banale*
+
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
 
-- [ ] 1.1 **Titolo finestra** fisso a "Git Extensions (Avalonia / Linux)" (`MainWindow.cs:133`),
+- [x] 1.1 **Titolo finestra** fisso a "Git Extensions (Avalonia / Linux)" (`MainWindow.cs:133`),
       mai aggiornato. Upstream: `"{pathFilter}{repo} ({branch}) - Git Extensions"`
       (`AppTitleGenerator.cs:38-59`). *banale, valore alto* (alt-tab con più istanze)
 - [x] 1.2 **Menu Navigate**: 15 voci upstream (`RevisionGridMenuCommands.cs:91-198`), il port ne
@@ -1172,18 +1188,18 @@ nel port, manca il punto d'accesso)
       "Grid info", "Columns", "Sorting", "Settings persistence") e voci checkable; il port ne ha 2
       + tema/lingua. La maggior parte è già implementata nei flyout dell'header della griglia
       (View/Branches/Columns/Date): serve esporla nel menu come voci checkable. *banale*
-- [ ] 1.4 **Menu Repository — tre dialoghi esistenti e non raggiungibili**: `RemotesDialog`
+- [x] 1.4 **Menu Repository — tre dialoghi esistenti e non raggiungibili**: `RemotesDialog`
       (oggi solo da `PullDialog.cs:651`), `SubmodulesDialog` (solo da `RepoObjectsTree.cs:1264`),
       `WorktreesDialog` (solo da `:1336`); più "Update all submodules" e "Synchronize all
       submodules" (`SubmoduleService.UpdateAll`/`SynchronizeAll` già presenti) e "Refresh" in
       testa. *banale*
-- [ ] 1.5 **Menu Dashboard** assente del tutto (`FormBrowse.Designer.cs:1295-1301`): top-level
+- [x] 1.5 **Menu Dashboard** assente del tutto (`FormBrowse.Designer.cs:1295-1301`): top-level
       visibile solo in dashboard mode, con "Refresh". *banale*
-- [ ] 1.6 **Nessuno shortcut mostrato nei menu**: `MainMenu.Item()` non imposta mai
+- [x] 1.6 **Nessuno shortcut mostrato nei menu**: `MainMenu.Item()` non imposta mai
       `InputGesture`. Il dato c'è (`HotkeyService`). Attenzione: `MainToolbar.cs:865-874` legge
       `HotkeyService.Defaults`, non le binding effettive → **con override attivi le etichette
       mentono**: passare l'istanza reale. *banale/media*
-- [ ] 1.7 **Nessuna logica enable/disable** in tutto il menu: upstream nasconde interi menu senza
+- [x] 1.7 **Nessuna logica enable/disable** in tutto il menu: upstream nasconde interi menu senza
       repo valido (`FormBrowse.cs:926-929`), disabilita 13 voci su repo **bare** (`:1014-1034`) e
       gating per selezione in `CommandsToolStripMenuItem_DropDownOpening` (`:2330-2366`). Serve la
       nozione di bare repo (assente nei service) + un handler `Opening`. *media*
@@ -1204,7 +1220,7 @@ nel port, manca il punto d'accesso)
 - [x] 1.12 **Split-button Stash**: il port ha un pulsante secco che fa `stash save "WIP"`. Upstream
       (`Designer.cs:348-405`): corpo = dialogo stash, freccia = Stash / Stash staged / Stash pop /
       — / Manage stashes… / Create a stash…, e il testo porta il **contatore `(n)`**. *media*
-- [ ] 1.13 **Caricamento non lazy del pannello inferiore**: `MainWindow.OnRevisionSelected`
+- [x] 1.13 **Caricamento non lazy del pannello inferiore**: `MainWindow.OnRevisionSelected`
       (`:1565-1568`) lancia *sempre* `ShowCommit` su Commit+Diff+File tree+GPG → a ogni movimento
       di selezione partono 4 catene di git (incluso `--show-signature` e `ls-tree -r`) di cui 3
       invisibili. Upstream carica solo il tab selezionato (`FormBrowse.cs:1240,1251,1306`). *banale*
@@ -1218,7 +1234,7 @@ nel port, manca il punto d'accesso)
       `GitRevisionTester.cs:97-109`, più Ctrl+V nel buffer. *banale*
 - [x] 1.17 Autore della revisione selezionata in **bold** su tutte le righe
       (`AuthorRevisionHighlighting`). *banale*
-- [ ] 1.18 `CommitDetailView` — la **data di commit spare quando autore == committer**: upstream
+- [x] 1.18 `CommitDetailView` — la **data di commit spare quando autore == committer**: upstream
       mostra la riga extra se le *date* differiscono (`CommitDataHeaderRenderer.cs:87-111`), il
       port se differisce la *persona* → su rebase/amend/cherry-pick la data di commit si perde. *banale*
 - [x] 1.19 Blame: **gutter a bande** (upstream collassa hash+autore per righe consecutive dello
@@ -1228,11 +1244,11 @@ nel port, manca il punto d'accesso)
 - [x] 1.20 GPG: **icone di stato della firma** (`CommitSignatureOk/Warning/Error`) e il port
       **mostra troppo** — `--pretty=medium` stampa anche il corpo del commit, upstream solo il
       messaggio di verifica. Le 7 icone sono **già linkate** dal glob `Assets/Icons/`. *banale*
-- [ ] 1.21 Stash: checkbox **"Keep index"** (`StashOpsService.cs:65` cabla `keepIndex: false`) +
+- [x] 1.21 Stash: checkbox **"Keep index"** (`StashOpsService.cs:65` cabla `keepIndex: false`) +
       riquadro del messaggio dello stash + hotkey next/prev stash. *banale*
 - [x] 1.22 File history: pulsante **Reload** e aggancio al refresh globale (`MainWindow` non
       richiama mai `ShowHistory`); **doppio clic** su una riga (idem in Blame). *banale*
-- [ ] 1.23 Dashboard: **casella di ricerca** con filtro incrementale (Enter apre il primo, ↓ passa
+- [x] 1.23 Dashboard: **casella di ricerca** con filtro incrementale (Enter apre il primo, ↓ passa
       alla lista) e i link **Clone / Create** oggi solo nel menu. *banale*
 - [ ] 1.24 Diff: **"Filter file in grid"** (`RevisionService.PathFilter` e il `_pathFilter` del
       dialogo esistono già: basta spingerci il path e refreshare). *banale*
@@ -1254,7 +1270,7 @@ nel port, manca il punto d'accesso)
 - [x] 2.2 **GPG firma del tag** — sezione separata + 4 icone `TagOk/Error/Many/Warning`, layout
       50/50 vs 100/0. `GitCommands.Git.Gpg.GitGpgController` **non dipende da GitUI** → il port
       può istanziarlo direttamente (`CommitStatus`, `TagStatus`, `GetTagVerifyMessage`). *banale/media*
-- [ ] 2.3 **Stash: lista file dello stash** → sblocca **"Stash selected changes"**. Serve un
+- [x] 2.3 **Stash: lista file dello stash** → sblocca **"Stash selected changes"**. Serve un
       metodo in `StashOpsService` che dia la lista file di uno stash (`git stash show
       --name-status`); l'anteprima per-file è già coperta da `DiffTextService`/`DiffService`, e il
       consumatore (`FileStatusListView`) è pronto. Più la voce "Current working directory changes"
@@ -1271,7 +1287,7 @@ nel port, manca il punto d'accesso)
       posizioni esiste, riparte sempre da `BelowGraph`); più le opzioni del **diff viewer**, gli
       **switch della file history**, i **filtri del left panel** e la **MRU dei filtri di
       revisione**. *banale ciascuno*
-- [ ] 3.3 **Dashboard: menu contestuale** (Show in folder / Categories ▸ / Remove from list /
+- [~] 3.3 **Dashboard: menu contestuale** (Show in folder / Categories ▸ / Remove from list /
       Remove missing projects) — serve `RemoveRecentAsync` in `RecentRepositoriesService`, che oggi
       ha solo Load/Add. Nota: il port **elimina in silenzio** le voci morte
       (`RecentRepositoriesService.cs:35-77`) mentre upstream le evidenzia e chiede: scelta
@@ -1572,6 +1588,58 @@ ripresi dal transcript dopo l'interruzione (vedi sotto), quattro commit più due
   comando del port consuma una multiselezione → sarebbe un pulsante finto), la toolbar di
   raggruppamento (upstream la nasconde in file-tree mode), le icone per estensione (manca la mappa)
   e il toggle `ShowGpgInformation` (non esiste nel port).
+
+**M55** (2026-07-28) — **BLOCCO 1 quasi chiuso e BLOCCO 2 chiuso del tutto**. Iterazione 5, tre
+subagent più due voci fatte direttamente nel `MainWindow` (che nessun subagent può toccare).
+
+- **Barra dei menu** (`608a6d673`, `c33178651`, `48e6098f2`, `9280e6544`, cablaggio `08965953d`) —
+  chiuse 1.4–1.7. Menu **Repository** nell'ordine upstream con i tre dialoghi che esistevano ma
+  erano irraggiungibili (`Remote repositories…`, `Manage submodules…`, `Manage worktrees…`), più
+  Update/Synchronize all submodules, Refresh in testa, `Close (go to Dashboard)` spostato qui da
+  Start, Fetch/Pull/Push spostati in **Commands** come upstream, e il submenu **Git maintenance**
+  a quattro voci. Menu **Dashboard** (Refresh, visibile solo in dashboard mode). **Scorciatoie
+  nelle voci**, lette dall'istanza reale di `HotkeyService`. **Gating** per stato: menu nascosti
+  senza repo, insieme upstream disabilitato su repo **bare**, voci di Commands gated sulla
+  selezione via il nuovo `RevisionGridView.SelectionSummary` (la griglia non pubblicava la
+  selezione, quindi il gating non aveva nulla da leggere) e nuovo
+  `Services/RepositoryStateService.cs` per `--is-bare-repository`.
+  *Verificato a schermo su un `git init --bare` vero*: in grigio esattamente l'insieme upstream.
+  *Scelte contro il pulsante finto*: Exit / File Explorer / Git command log **non** mostrano
+  scorciatoia perché nel port non esiste un `BrowseCommand` che le dispatchi (l'etichetta
+  mentirebbe); "Recover lost objects…" punta al `MaintenanceDialog` esistente, che esegue lo
+  stesso `git fsck`, invece di fingere il `FormVerify` upstream con il restore per oggetto.
+- **Tab Stash** (`60da263fc`, `38bc11724`, cablaggio `fff7d3725`) — **ultimo residuo di M51**.
+  Lista file **per stash** (inclusi i file untracked, che vivono in `stash@{0}^3` e il cui diff
+  rende `--- /dev/null`: è il caso che sparirebbe in silenzio diffando contro `^..ref`), voce
+  "current working directory changes" con i due gruppi **Commit index** / **Working directory**,
+  **"Stash selected changes"** abilitato come upstream solo su quella voce, **Keep index**
+  (prima `keepIndex: false` era cablato) e riquadro del messaggio.
+  *Verificato con git reale*: la lista è byte-identica a `git stash show --name-status`, e lo
+  stash parziale ha contenuto **solo** i due file selezionati (`git status` da tre voci a una).
+  Il conflitto Ctrl+N/Ctrl+P con `GoToChild`/`GoToParent` (che upstream non ha, perché `FormStash`
+  è una finestra separata) è risolto cedendo le due gesture al tab quando ha il fuoco.
+  *Rinviata*: la multi-selezione **incrociata** fra i due gruppi — upstream li tiene in un'unica
+  lista, qui servono due istanze perché `FileStatusListView` deriva le intestazioni dal group mode
+  e non accetta etichette arbitrarie.
+- **Dashboard e due difetti isolati** (`8f3a7901a`, `eeb94cbf6`, `e3439f46d`, `dc228491a`,
+  `ff23f2280`, `1be53d570`) — dashboard con **casella di ricerca** (filtro incrementale, ↓ nella
+  lista, ↑ ritorno, Invio apre il primo), **menu contestuale** (Show in folder / Remove / Remove
+  missing projects, quest'ultima visibile solo se serve), link **Create** e **Clone**, nome del
+  **branch corrente** per riga (letto fuori dal thread UI), apertura a clic singolo e F5.
+  **Scelta dichiarata**: la potatura *silenziosa* dei repo mancanti è stata **rimossa** — era
+  perdita di dati e rendeva irraggiungibile "Remove missing projects", perché nulla di mancante
+  sopravviveva al caricamento; ora restano, marcati con icona d'errore, e li rimuove l'utente.
+  Restano potati in silenzio solo i duplicati e i checkout effimeri in `.claude/worktrees`.
+  **1.18 chiuso**: la riga della data di commit dipende ora dalle **date**, non dall'identità —
+  prima su rebase/amend/cherry-pick (stessa persona, date diverse: il caso comune) la data di
+  commit spariva. Aggiunti i link `mailto:`.
+- **Nel `MainWindow`** (`b77234d3f`) — **caricamento pigro** del pannello inferiore: prima ogni
+  selezione lanciava quattro catene git (Commit, Diff, File tree, GPG), tre delle quali invisibili,
+  incluse `--show-signature` e un `ls-tree -r` sull'intero albero; ora si carica solo il tab
+  visibile e gli altri restano marcati stantii. E il **titolo della finestra** nel formato upstream
+  `<repo> (<branch>) - Git Extensions`, prima fisso.
+- **Da verificare a schermo** (integrati ma non ancora provati): titolo via `WM_NAME` e lazy load
+  (una selezione deve produrre **una** catena di comandi nel tab Output, non quattro).
 
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
