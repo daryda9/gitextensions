@@ -502,16 +502,9 @@ public sealed class PushDialog : Window
     private static string PushAllTagsCaption => T("Push all tags");
 
     // Abbreviates the home directory to "~", like the toolbar and the revision grid.
-    // TODO: fold into the shared CollapseHome helper — another agent is unifying the
-    // two existing copies (MainToolbar / RevisionGridView) in this same round, so
-    // this one only leans on the shared UserHome.Path and stays local for now.
-    private static string CollapseHome(string path)
-    {
-        string home = UserHome.Path.TrimEnd('/');
-        return home.Length > 0 && (path == home || path.StartsWith(home + "/", StringComparison.Ordinal))
-            ? "~" + path[home.Length..]
-            : path;
-    }
+    // The local copy this dialog used to carry is gone: PathDisplay.CollapseHome is
+    // now the single implementation shared by every caption that shows a repo path.
+    private static string CollapseHome(string path) => PathDisplay.CollapseHome(path);
 
     private static string T(string english) => TranslationService.T(english);
 

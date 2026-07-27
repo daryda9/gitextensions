@@ -45,6 +45,7 @@ public sealed class CommitDialog : Window
     // context-menu entries, plus a banner while the merge is unresolved.
     private readonly Border _conflictBanner;
     private readonly TextBlock _conflictText;
+    private readonly TextBlock _conflictHint;
     private readonly MenuItem _mergetoolItem = new();
     private readonly MenuItem _takeOursItem = new();
     private readonly MenuItem _takeTheirsItem = new();
@@ -121,6 +122,12 @@ public sealed class CommitDialog : Window
 
         Width = 1000;
         Height = 680;
+
+        // Floor for the button rows: below this the wrapped rows start stacking one
+        // caption per line, which is ugly but still fully usable — narrower than
+        // this and even a single translated caption would be clipped.
+        MinWidth = 760;
+        MinHeight = 480;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
@@ -232,6 +239,16 @@ public sealed class CommitDialog : Window
             TextWrapping = TextWrapping.Wrap,
             Foreground = Brush("App.Foreground", Brushes.Gainsboro),
         };
+        // The explanatory sentence is a line of its own, never glued onto the
+        // upstream one. Concatenating "translated sentence" + ". " + "English
+        // sentence" produced a stray period at the start of the wrapped second
+        // line in every language whose translation is longer than English.
+        _conflictHint = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+            Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+        };
         _conflictBanner = new Border
         {
             Background = Brush("App.Accent", Brushes.DarkRed),
@@ -239,7 +256,7 @@ public sealed class CommitDialog : Window
             Padding = new Thickness(8, 4),
             IsVisible = false,
             ClipToBounds = true,
-            Child = _conflictText,
+            Child = new StackPanel { Children = { _conflictText, _conflictHint } },
         };
 
         _stageBtn = MakeButton(StageSelected);
@@ -247,13 +264,20 @@ public sealed class CommitDialog : Window
         _stageAllBtn = MakeButton(StageAll);
         _unstageAllBtn = MakeButton(UnstageAll);
 
-        StackPanel stageButtons = new()
+        // A WrapPanel, not a horizontal StackPanel: "Stage all" / "Unstage all"
+        // become "Inserisci tutto nello stage" / "Rimuovi tutto dallo stage" in
+        // Italian (longer still in German) and a StackPanel simply overflowed the
+        // left column, pushing the last button past the dialog border.
+        WrapPanel stageButtons = new()
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 4,
             Margin = new Thickness(0, 4),
             Children = { _stageBtn, _unstageBtn, _stageAllBtn, _unstageAllBtn },
         };
+        foreach (Control c in stageButtons.Children)
+        {
+            c.Margin = new Thickness(0, 0, 4, 4);
+        }
 
         Grid leftPanel = new()
         {
@@ -385,10 +409,14 @@ public sealed class CommitDialog : Window
         _ignoreExtItem.Header = T("Ignore by extension");
         _ignoreFolderItem.Header = T("Ignore in folder");
 
-        _conflictText.Text = T("FormCommit/SolveMergeconflicts.Text", "There are unresolved merge conflicts")
-            + ". "
-            + T("Right-click a file marked \"U\" in the unstaged list to open the mergetool, "
-                + "take ours/theirs or mark it resolved.");
+        // Headline: the upstream trans-unit that is a *complete* sentence, period
+        // included, in every catalogue — unlike FormCommit/SolveMergeconflicts.Text,
+        // whose translations are bare fragments that need punctuation glued on.
+        _conflictText.Text = T(
+            "FormCommit/_mergeConflicts.Text",
+            "There are unresolved merge conflicts, solve merge conflicts before committing.");
+        _conflictHint.Text = T("Right-click a file marked \"U\" in the unstaged list to open the mergetool, "
+            + "take ours/theirs or mark it resolved.");
 
         _stageBtn.Content = StageCaption + " ▼";
         _unstageBtn.Content = UnstageCaption + " ▲";
