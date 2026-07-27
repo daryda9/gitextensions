@@ -20,6 +20,41 @@ public sealed class UiState
     /// <summary>Restored window height in device-independent pixels.</summary>
     public double WindowHeight { get; set; } = 820;
 
+    /// <summary>
+    ///  Restored window position, in physical screen pixels (the unit Avalonia's
+    ///  <c>Window.Position</c> uses), or null the first time round — the window then
+    ///  opens centred.
+    ///
+    ///  <para>Always re-validated against the screens actually present at start-up:
+    ///  a position saved on a second monitor, or a size saved on a larger screen,
+    ///  must not put the window out of reach.</para>
+    /// </summary>
+    public int? WindowX { get; set; }
+
+    /// <summary>Restored window position (see <see cref="WindowX"/>).</summary>
+    public int? WindowY { get; set; }
+
+    /// <summary>
+    ///  Whether the window was maximized when it was last closed. The width/height
+    ///  and position above then describe its <i>restored</i> (normal) bounds, so
+    ///  un-maximizing lands where the user left it.
+    /// </summary>
+    public bool WindowMaximized { get; set; }
+
+    /// <summary>
+    ///  The selected tab of the bottom panel, as a stable key ("Commit", "Diff",
+    ///  "FileTree", "Gpg", "Console", "Output", "Stash", "Blame", "History") rather
+    ///  than an index: the Diff tab is removed from the strip while split view is
+    ///  on, so positions are not stable across sessions.
+    /// </summary>
+    public string BottomTab { get; set; } = "Commit";
+
+    /// <summary>
+    ///  Whether the app refreshes itself when the repository changes on disk
+    ///  (<see cref="RepositoryWatcherService"/>). Off means F5 only.
+    /// </summary>
+    public bool AutoRefresh { get; set; } = true;
+
     /// <summary>Left repository-tree column width (pixels).</summary>
     public double TreeWidth { get; set; } = 260;
 
@@ -117,9 +152,19 @@ public sealed class UiStateService
         s.DetailStar = Clamp(s.DetailStar, 0.1, 1000, 2);
         s.DiffStar = Clamp(s.DiffStar, 0.1, 1000, 3);
         s.Theme = s.Theme == "Light" ? "Light" : "Dark";
+        s.BottomTab = string.IsNullOrWhiteSpace(s.BottomTab) ? "Commit" : s.BottomTab.Trim();
+
+        // A corrupt coordinate is dropped rather than clamped: with no position the
+        // window centres itself, which is always a valid answer. Real clamping to
+        // the current screen happens at restore time, where the screens are known.
+        s.WindowX = SanePosition(s.WindowX);
+        s.WindowY = SanePosition(s.WindowY);
         s.Language = string.IsNullOrWhiteSpace(s.Language) ? "English" : s.Language.Trim();
         return s;
     }
+
+    private static int? SanePosition(int? v)
+        => v is null || v.Value < -100000 || v.Value > 100000 ? null : v;
 
     private static double Clamp(double v, double min, double max, double fallback)
     {

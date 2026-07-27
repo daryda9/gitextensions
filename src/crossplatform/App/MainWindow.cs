@@ -101,6 +101,19 @@ public sealed class MainWindow : Window
     private CommitInfoPosition _commitInfoPosition;
     private bool _splitHorizontal;
 
+    // Watches the working tree and the git dir so a commit, checkout or pull made
+    // in a terminal shows up here without the user pressing F5 (unit F2).
+    private readonly RepositoryWatcherService _watcher = new();
+
+    // Native X11 drop receiver (see X11DropTarget): null off X11 or on failure.
+    private X11DropTarget? _dropTarget;
+
+    // Last known NORMAL (non-maximized) geometry: what gets persisted, so that
+    // closing while maximized still restores sensible bounds afterwards.
+    private PixelPoint? _normalPosition;
+    private double _normalWidth;
+    private double _normalHeight;
+
     private string? _repoPath;
     private string? _lastSelectedHash;
 
@@ -118,6 +131,14 @@ public sealed class MainWindow : Window
         Title = "Git Extensions (Avalonia / Linux)";
         Width = _uiState.WindowWidth;
         Height = _uiState.WindowHeight;
+        _normalWidth = _uiState.WindowWidth;
+        _normalHeight = _uiState.WindowHeight;
+
+        // A remembered position is only honoured once it has been checked against
+        // the screens present now (see RestoreWindowPlacement); until then let
+        // Avalonia centre the window, which is the right answer when there is no
+        // usable saved position.
+        WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = (IBrush)Application.Current!.Resources["App.Window"]!;
 
         // Commit-info position is session-local (the original FormBrowse default:
@@ -210,10 +231,16 @@ public sealed class MainWindow : Window
         KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.O, KeyModifiers.Control), Command = new RelayCommand(() => _ = PickRepositoryAsync()) });
 
         WireEvents();
+        WireDragAndDrop();
+        WireWatcher();
         _toolbar.SetSplitView(_splitHorizontal);
 
         Opened += (_, _) =>
         {
+            RestoreWindowPlacement();
+            RestoreBottomTab();
+            InstallNativeDropTarget();
+
             // Populate View → Language. The catalogue itself was already parsed
             // before this window was constructed (Program.Main → BeginPreload →
             // App.OnFrameworkInitializationCompleted → WaitForPreload), so the
@@ -237,9 +264,328 @@ public sealed class MainWindow : Window
         // time they are opened and pick the new catalogue up on their own).
         TranslationService.LanguageChanged += () => Dispatcher.UIThread.Post(ApplyTabTranslations);
 
-        // Persist window size + splitter positions when the window closes.
-        Closing += (_, _) => PersistLayout();
+        // Track the restored geometry continuously: once the window is maximized
+        // its own Position/Width/Height describe the maximized frame, so the values
+        // worth saving have to be captured while it is still normal.
+        PositionChanged += (_, _) => CaptureNormalPlacement();
+        SizeChanged += (_, _) => CaptureNormalPlacement();
+
+        // Persist window size/position + splitter positions when the window closes.
+        Closing += (_, _) =>
+        {
+            PersistLayout();
+            _watcher.Dispose();
+            _dropTarget?.Dispose();
+        };
     }
+
+    // Remembers the window's non-maximized bounds (see the fields' comment).
+    private void CaptureNormalPlacement()
+    {
+        if (WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        _normalPosition = Position;
+        if (Width > 0 && !double.IsNaN(Width))
+        {
+            _normalWidth = Width;
+        }
+
+        if (Height > 0 && !double.IsNaN(Height))
+        {
+            _normalHeight = Height;
+        }
+    }
+
+    /// <summary>
+    ///  Applies the persisted position/size/maximized state, <b>clamped to the
+    ///  screens that exist right now</b>. Without the clamp a window saved on a
+    ///  larger or second monitor comes back partly (or entirely) off-screen, with
+    ///  its title bar out of reach — the known defect this fixes.
+    /// </summary>
+    private void RestoreWindowPlacement()
+    {
+        try
+        {
+            if (_uiState.WindowMaximized)
+            {
+                // Size/position stay as loaded: they are the restored bounds the
+                // user gets back when un-maximizing.
+                WindowState = WindowState.Maximized;
+                return;
+            }
+
+            bool hasPosition = _uiState.WindowX is int && _uiState.WindowY is int;
+
+            // Work out which screen to measure against: the one holding the saved
+            // position, else the one the window opened on. The SIZE is clamped even
+            // when no position was saved — a window restored larger than the screen
+            // is centred, which pushes its title bar off the top.
+            PixelPoint saved = new(_uiState.WindowX ?? 0, _uiState.WindowY ?? 0);
+            global::Avalonia.Platform.Screen? screen =
+                (hasPosition ? Screens.ScreenFromPoint(saved) : null)
+                ?? Screens.ScreenFromWindow(this)
+                ?? Screens.Primary;
+            if (screen is null)
+            {
+                return;
+            }
+
+            PixelRect area = screen.WorkingArea;
+            double scale = screen.Scaling > 0 ? screen.Scaling : 1.0;
+
+            // Position is in physical pixels, Width/Height in device-independent
+            // ones; everything below is compared in physical pixels.
+            int wanted = (int)Math.Round(_normalWidth * scale);
+            int high = (int)Math.Round(_normalHeight * scale);
+            int width = Math.Min(wanted, area.Width);
+            int height = Math.Min(high, area.Height);
+
+            if (width != wanted || height != high)
+            {
+                Width = width / scale;
+                Height = height / scale;
+                _normalWidth = Width;
+                _normalHeight = Height;
+            }
+
+            if (!hasPosition)
+            {
+                // Nothing to place: the (now clamped) size is centred by Avalonia.
+                return;
+            }
+
+            int x = Math.Clamp(saved.X, area.X, Math.Max(area.X, area.X + area.Width - width));
+            int y = Math.Clamp(saved.Y, area.Y, Math.Max(area.Y, area.Y + area.Height - height));
+
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Position = new PixelPoint(x, y);
+            _normalPosition = Position;
+        }
+        catch
+        {
+            // Geometry restore is a convenience: a screen enumeration that fails
+            // must leave the window where the toolkit put it, not stop start-up.
+        }
+    }
+
+    // Re-selects the bottom panel tab the user was last on. Keyed by name because
+    // the Diff tab leaves the strip while split view is on (SyncDiffTab).
+    private void RestoreBottomTab()
+    {
+        try
+        {
+            TabItem? tab = _uiState.BottomTab switch
+            {
+                "Diff" => _diffTab,
+                "FileTree" => _fileTreeTab,
+                "Gpg" => _gpgTab,
+                "Console" => _consoleTab,
+                "Output" => _outputTab,
+                "Stash" => _stashTab,
+                "Blame" => _blameTab,
+                "History" => _historyTab,
+                _ => _commitInfoTab,
+            };
+
+            if (_bottom.Items.Contains(tab))
+            {
+                _bottom.SelectedItem = tab;
+            }
+        }
+        catch
+        {
+            // Falls back to whatever the tab strip selected by default.
+        }
+    }
+
+    private string CurrentBottomTabKey()
+    {
+        object? selected = _bottom.SelectedItem;
+        if (ReferenceEquals(selected, _diffTab)) { return "Diff"; }
+        if (ReferenceEquals(selected, _fileTreeTab)) { return "FileTree"; }
+        if (ReferenceEquals(selected, _gpgTab)) { return "Gpg"; }
+        if (ReferenceEquals(selected, _consoleTab)) { return "Console"; }
+        if (ReferenceEquals(selected, _outputTab)) { return "Output"; }
+        if (ReferenceEquals(selected, _stashTab)) { return "Stash"; }
+        if (ReferenceEquals(selected, _blameTab)) { return "Blame"; }
+        if (ReferenceEquals(selected, _historyTab)) { return "History"; }
+        return "Commit";
+    }
+
+    // ---- drag & drop -------------------------------------------------------------
+
+    /// <summary>
+    ///  Lets a folder dropped on the window open as the repository, the way the
+    ///  original does on its dashboard (<c>UserRepositoriesList.OnDragDrop</c>:
+    ///  build a module, refuse it with a message when
+    ///  <c>IsValidGitWorkingDir()</c> is false, otherwise switch to it).
+    ///  A dropped file resolves to its containing directory, so dragging any file
+    ///  out of a checkout opens that checkout.
+    /// </summary>
+    private void WireDragAndDrop()
+    {
+        DragDrop.SetAllowDrop(this, true);
+
+        AddHandler(DragDrop.DragOverEvent, (_, e) =>
+        {
+            e.DragEffects = e.Data.Contains(DataFormats.Files)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+            e.Handled = true;
+        });
+
+        AddHandler(DragDrop.DropEvent, (_, e) =>
+        {
+            e.Handled = true;
+            string? dropped = FirstLocalPath(e.Data);
+            if (dropped is not null)
+            {
+                HandleDroppedPath(dropped);
+            }
+        });
+    }
+
+    /// <summary>
+    ///  Opens a dropped path as the repository, or explains why it cannot be one.
+    ///  Shared by the managed Avalonia handler and the X11 receiver below, so both
+    ///  routes behave identically. Must be called on the UI thread.
+    /// </summary>
+    private void HandleDroppedPath(string dropped)
+    {
+        try
+        {
+            // A file identifies its directory; a directory identifies itself.
+            string? directory = Directory.Exists(dropped)
+                ? dropped
+                : File.Exists(dropped) ? Path.GetDirectoryName(dropped) : null;
+
+            if (directory is null)
+            {
+                _statusBar.SetText(TF("Path no longer exists: {0}", dropped));
+                return;
+            }
+
+            // Accept a subdirectory of a checkout too (FindRepositoryRoot walks
+            // up), which is what a user dropping "src/" plainly means. Mirrors the
+            // original's dashboard drop, which refuses anything that is not a valid
+            // working directory and says so.
+            string? root = FindRepositoryRoot(directory);
+            if (root is null)
+            {
+                _statusBar.SetText(TF("{0} is not a valid git repository.", directory));
+                return;
+            }
+
+            if (string.Equals(root, _repoPath, StringComparison.Ordinal))
+            {
+                _statusBar.SetText(TF("{0} is already open.", root));
+                return;
+            }
+
+            OpenRepository(root);
+            _statusBar.SetText(TF("Opened {0}", root));
+        }
+        catch (Exception ex)
+        {
+            // A malformed drop payload must not take the window down.
+            _statusBar.SetText(TF("Could not open the dropped folder: {0}", ex.Message));
+        }
+    }
+
+    /// <summary>
+    ///  Installs the native X11 drop receiver. Avalonia 11.3's X11 backend does not
+    ///  implement XDND at all (no <c>XdndAware</c>, no atoms — the support landed
+    ///  upstream for 12.1 and was not backported), so on Linux the managed handlers
+    ///  wired above are never reached and this is what makes a dropped folder open.
+    ///  A no-op anywhere it cannot work.
+    /// </summary>
+    private void InstallNativeDropTarget()
+    {
+        try
+        {
+            IntPtr handle = TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            _dropTarget = X11DropTarget.TryCreate(handle, paths =>
+            {
+                // Called on the receiver's own X thread.
+                string first = paths[0];
+                Dispatcher.UIThread.Post(() => HandleDroppedPath(first));
+            });
+        }
+        catch
+        {
+            // No drag and drop, same as before this existed.
+        }
+    }
+
+    // First dropped item that has a real local path (a drop can carry remote or
+    // virtual items, which have none).
+    private static string? FirstLocalPath(IDataObject data)
+    {
+        IEnumerable<IStorageItem>? items = data.GetFiles();
+        if (items is null)
+        {
+            return null;
+        }
+
+        foreach (IStorageItem item in items)
+        {
+            string? path = item.TryGetLocalPath();
+            if (!string.IsNullOrEmpty(path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    // ---- automatic refresh -------------------------------------------------------
+
+    /// <summary>
+    ///  Connects <see cref="RepositoryWatcherService"/> to the window. The service
+    ///  raises its events on a thread-pool thread and never runs git itself, so the
+    ///  only thing done here is to hop onto the UI thread and reuse the ordinary
+    ///  refresh path (whose panels each load their data in <c>Task.Run</c>).
+    /// </summary>
+    private void WireWatcher()
+    {
+        _watcher.Changed += _ => Dispatcher.UIThread.Post(AutoRefresh);
+        _watcher.Degraded += message => Dispatcher.UIThread.Post(() => _statusBar.SetText(message));
+    }
+
+    // The watcher's refresh: identical to F5 except that it stays quiet when there
+    // is nothing to refresh, and never surfaces an error of its own.
+    private void AutoRefresh()
+    {
+        try
+        {
+            if (_repoPath is null || _dashboardShowing)
+            {
+                return;
+            }
+
+            // Opt-in trace (GE_WATCH_TRACE=1): the only way to tell "one refresh
+            // for the whole burst" from "one per file" from outside the process.
+            if (Environment.GetEnvironmentVariable("GE_WATCH_TRACE") == "1")
+            {
+                Console.Error.WriteLine($"[watch] auto-refresh at {DateTime.Now:HH:mm:ss.fff}");
+            }
+
+            RefreshAll();
+        }
+        catch
+        {
+            // Never throw from a refresh path (HANDOFF §3).
+        }
+    }
+
+    // Suppresses automatic refreshes while a git command started by the app runs:
+    // its writes are the app's own, and every one of these paths ends with an
+    // explicit RefreshAll. Returns a scope to dispose when the operation is done.
+    private IDisposable SuspendWatcher() => _watcher.Suspend();
 
     /// <summary>
     ///  Populates View → Language with the catalogues shipped next to the
@@ -306,9 +652,17 @@ public sealed class MainWindow : Window
         try
         {
             CaptureSplitStars();
+            CaptureNormalPlacement();
             _uiState.SplitView = _splitHorizontal;
-            _uiState.WindowWidth = Width;
-            _uiState.WindowHeight = Height;
+
+            // Save the RESTORED bounds, not the maximized frame, so un-maximizing
+            // after a restart lands the window back where the user had it.
+            _uiState.WindowWidth = _normalWidth;
+            _uiState.WindowHeight = _normalHeight;
+            _uiState.WindowX = _normalPosition?.X;
+            _uiState.WindowY = _normalPosition?.Y;
+            _uiState.WindowMaximized = WindowState == WindowState.Maximized;
+            _uiState.BottomTab = CurrentBottomTabKey();
             _uiState.TreeWidth = _treeCol.Width.Value;
             _uiState.RevisionsStar = _revRow.Height.Value;
             _uiState.BottomStar = _bottomRow.Height.Value;
@@ -561,11 +915,11 @@ public sealed class MainWindow : Window
         // The two artificial top rows both open the commit dialog on the repo.
         _revisions.WorkingDirectorySelected += () =>
         {
-            if (_repoPath is not null) _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+            if (_repoPath is not null) _ = ShowCommitDialogAsync();
         };
         _revisions.CommitIndexSelected += () =>
         {
-            if (_repoPath is not null) _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+            if (_repoPath is not null) _ = ShowCommitDialogAsync();
         };
         _fileHistory.RevisionSelected += OnRevisionSelected;
         // Parent/child hash links in the commit detail navigate the grid: select the
@@ -854,6 +1208,7 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
+            using IDisposable watch = SuspendWatcher();
             _statusBar.SetText(TF("{0}…", label));
             BisectResult result;
             try
@@ -952,6 +1307,7 @@ public sealed class MainWindow : Window
     // already aborts a stuck rebase, so this never leaves a half-rebase behind.
     private async Task RunEditAsync(string label, Func<CommitEditResult> op)
     {
+        using IDisposable watch = SuspendWatcher();
         _statusBar.SetText(TF("{0}…", label));
         CommitEditResult result;
         try
@@ -1375,6 +1731,12 @@ public sealed class MainWindow : Window
         _tree.LoadRepository(_repoPath);
         _statusBar.LoadRepository(_repoPath);
         RefreshToolbarState();
+
+        // Tell the watcher the window is now up to date: it drops the events that
+        // led here and holds off briefly, so the reads this refresh performs (which
+        // do touch the repository) cannot schedule the next refresh — the endless
+        // refresh loop this guard exists to prevent.
+        _watcher.NotifyRefreshed();
     }
 
     // Opens the dedicated modal commit window (mirroring the original Git
@@ -1389,7 +1751,21 @@ public sealed class MainWindow : Window
             return;
         }
 
-        _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
+        _ = ShowCommitDialogAsync();
+    }
+
+    // Runs the commit dialog with the watcher muted: staging/unstaging rewrites the
+    // index continuously, and those are our own writes — the dialog already calls
+    // back into RefreshAll when it is done.
+    private async Task ShowCommitDialogAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        using IDisposable watch = SuspendWatcher();
+        await CommitDialog.ShowAsync(this, repo, RefreshAll);
     }
 
     // Opens the Push configuration dialog (remote/branch/force + Pull/Push),
@@ -1402,8 +1778,21 @@ public sealed class MainWindow : Window
             return;
         }
 
-        _ = PushDialog.ShowAsync(this, _repoPath)
-            .ContinueWith(_ => Dispatcher.UIThread.Post(RefreshAll));
+        _ = ShowPushDialogAsync();
+    }
+
+    // As ShowCommitDialogAsync: the push is ours, so the watcher stays muted until
+    // the dialog is gone and the window has refreshed.
+    private async Task ShowPushDialogAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        using IDisposable watch = SuspendWatcher();
+        await PushDialog.ShowAsync(this, repo);
+        RefreshAll();
     }
 
     // Recomputes the dynamic toolbar state (ahead/behind, staged/unstaged) off
@@ -1474,6 +1863,10 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
+            // A fetch/pull rewrites refs and can rewrite the whole work tree; every
+            // byte of that is ours, and the RefreshAll at the end covers it.
+            using IDisposable watch = SuspendWatcher();
+
             _statusBar.SetText(TF("{0}…", label));
 
             RemoteService svc = new();
@@ -1926,6 +2319,10 @@ public sealed class MainWindow : Window
                 return;
             }
 
+            // The repository is about to be written by US: mute the watcher so the
+            // resulting file storm is not mistaken for an outside change.
+            using IDisposable watch = SuspendWatcher();
+
             _statusBar.SetText(TF("{0}…", label));
             bool ok;
             try
@@ -1961,6 +2358,7 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
+            using IDisposable watch = SuspendWatcher();
             _statusBar.SetText(TF("{0}…", label));
             RevertArchiveResult result;
             try
@@ -2463,6 +2861,11 @@ public sealed class MainWindow : Window
         RefreshToolbarState();
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _menu.SetPlugins(PluginService.Instance.Plugins);
+
+        // Follow the new repository (or stop following anything, when the user
+        // turned automatic refresh off in ui-state.json).
+        _watcher.Watch(_uiState.AutoRefresh ? repoPath : null);
+        _watcher.NotifyRefreshed();
         _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
     }
@@ -2512,6 +2915,8 @@ public sealed class MainWindow : Window
             _dashboardShowing = true;
         }
 
+        // No repository on screen → nothing to watch.
+        _watcher.Stop();
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _ = LoadDashboardAsync();
         _statusBar.SetText(T("FormBrowse/dashboardToolStripMenuItem.Text", "Dashboard"));
