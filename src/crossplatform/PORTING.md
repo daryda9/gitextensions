@@ -1142,6 +1142,19 @@ priorità massima)
       branch nuovo sul remote (`FormPush.cs:291-310`), nome remote duplicato
       (`FormRemotes.cs:464-483`). *banale ciascuna*
 
+- [ ] 0.16 **La finestra non risponde a `WM_DELETE_WINDOW`**: la toplevel Avalonia non espone il
+      protocollo in `WM_PROTOCOLS` e ignora il ClientMessage → con un window manager reale la "X"
+      della decorazione **non chiude l'app** e `PersistLayout()` non gira, quindi *tutto* lo stato
+      UI (geometria, splitter, tab, collasso, pull action) si perde. Oggi solo `Start → Exit` passa
+      da `Closing`/`PersistLayout`. Scoperto durante la verifica GUI di M52. *da indagare, valore
+      alto*
+- [ ] 0.17 `RevisionsStar`/`BottomStar` vengono salvati come valori **simil-pixel** (es. 199 / 525)
+      invece di rapporti star normalizzati: passano il `Clamp(0.1, 1000)` di `Sanitize` quindi non
+      rompono nulla, ma il ripristino dipende dalla dimensione della finestra. *banale*
+- [ ] 0.18 Nel tab **File tree** il clic (singolo e doppio) su un file **non carica il Blame**
+      (resta "No file loaded"); il Blame si raggiunge solo dal tab Diff col tasto destro. Coerente
+      con 2.1: il File tree è una lista piatta di stringhe. *si chiude con 2.1*
+
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
 
