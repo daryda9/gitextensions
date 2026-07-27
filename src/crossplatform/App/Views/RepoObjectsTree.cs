@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -23,6 +24,10 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class RepoObjectsTree : UserControl
 {
+    // "<category> (<count>)" — a format, not a concatenation, so a translation is
+    // free to place the count differently.
+    private const string CategoryCountFormat = "{0} ({1})";
+
     private readonly BranchTagService _branchTagService = new();
     private readonly StashOpsService _stashService = new();
     private readonly SubmoduleService _submoduleService = new();
@@ -99,7 +104,19 @@ public sealed class RepoObjectsTree : UserControl
 
         Background = Brush("App.Panel", Brushes.Transparent);
         Content = _tree;
+
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // A language switch re-labels the tree from the snapshot already in memory —
+    // no git, no I/O, so this is safe to do straight on the UI thread once posted.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        if (_snapshot is { } snapshot)
+        {
+            BuildTree(snapshot);
+        }
+    });
 
     /// <summary>
     ///  Points the tree at <paramref name="repoPath"/> and loads its objects.
@@ -153,7 +170,10 @@ public sealed class RepoObjectsTree : UserControl
                 }
                 else
                 {
-                    _tree.ItemsSource = new[] { Category($"Error: {error}", null, null) };
+                    _tree.ItemsSource = new[]
+                    {
+                        Category(string.Format(CultureInfo.CurrentCulture, "{0}: {1}", T("TranslatedStrings/_error.Text", "Error"), error), null, null),
+                    };
                 }
             });
         });
@@ -178,7 +198,7 @@ public sealed class RepoObjectsTree : UserControl
         List<TreeViewItem> roots = [];
 
         // Branches (local).
-        TreeViewItem branchesNode = Category("Branches", "Branch", local.Count);
+        TreeViewItem branchesNode = Category(T("RepoObjectsTree/tsbShowBranches.ToolTipText", "Branches"), "Branch", local.Count);
         branchesNode.ContextMenu = RefSortMenu();
         foreach (BranchTagRow row in OrderLocalBranches(local))
         {
@@ -191,7 +211,7 @@ public sealed class RepoObjectsTree : UserControl
         roots.Add(branchesNode);
 
         // Remotes (remote branches grouped by remote name, e.g. "origin/...").
-        TreeViewItem remotesNode = Category("Remotes", "Remotes", remote.Count);
+        TreeViewItem remotesNode = Category(T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), "Remotes", remote.Count);
         remotesNode.ContextMenu = RemotesRootMenu();
         foreach (IGrouping<string, BranchTagRow> group in remote
                      .GroupBy(RemoteName, StringComparer.OrdinalIgnoreCase)
@@ -213,7 +233,7 @@ public sealed class RepoObjectsTree : UserControl
         roots.Add(remotesNode);
 
         // Tags.
-        TreeViewItem tagsNode = Category("Tags", "Tag", tags.Count);
+        TreeViewItem tagsNode = Category(T("RepoObjectsTree/tsbShowTags.ToolTipText", "Tags"), "Tag", tags.Count);
         tagsNode.ContextMenu = RefSortMenu();
         foreach (BranchTagRow row in SortRefs(tags))
         {
@@ -225,7 +245,7 @@ public sealed class RepoObjectsTree : UserControl
         roots.Add(tagsNode);
 
         // Stashes.
-        TreeViewItem stashesNode = Category("Stashes", "stash", stashes.Count);
+        TreeViewItem stashesNode = Category(T("RepoObjectsTree/tsbShowStashes.ToolTipText", "Stashes"), "stash", stashes.Count);
         foreach (StashRow row in stashes)
         {
             TreeViewItem leaf = Leaf($"{row.Name}: {row.Message}", "stash", row, isCurrent: false);
@@ -238,14 +258,14 @@ public sealed class RepoObjectsTree : UserControl
         // Submodules. The root node carries "Update all"; each leaf carries
         // "Open" (open the submodule as the active repository, via
         // OpenRepositoryRequested) plus "Update" for its own path.
-        TreeViewItem submodulesNode = Category("Submodules", "SubmodulesManage", submodules.Count);
+        TreeViewItem submodulesNode = Category(T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), "SubmodulesManage", submodules.Count);
         submodulesNode.ContextMenu = SubmoduleRootMenu();
         foreach (SubmoduleRow row in submodules)
         {
             string label = row.Status switch
             {
-                SubmoduleState.NotInitialized => $"{row.Display} (not initialized)",
-                SubmoduleState.OutOfDate => $"{row.Display} (out of date)",
+                SubmoduleState.NotInitialized => TF("{0} (not initialized)", row.Display),
+                SubmoduleState.OutOfDate => TF("{0} (out of date)", row.Display),
                 _ => row.Display,
             };
             TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false);
@@ -258,7 +278,7 @@ public sealed class RepoObjectsTree : UserControl
         // Worktrees. The root node carries "Add…" and "Prune"; each leaf carries
         // "Open" (open the worktree as the active repository, via
         // OpenRepositoryRequested) plus "Remove" for its own path.
-        TreeViewItem worktreesNode = Category("Worktrees", "WorkTree", worktrees.Count);
+        TreeViewItem worktreesNode = Category(T("RepoObjectsTree/tsbShowWorktrees.ToolTipText", "Worktrees"), "WorkTree", worktrees.Count);
         worktreesNode.ContextMenu = WorktreeRootMenu();
         foreach (WorktreeRow row in worktrees)
         {
@@ -286,7 +306,7 @@ public sealed class RepoObjectsTree : UserControl
 
     private TreeViewItem Category(string text, string? icon, int? count)
     {
-        string header = count is { } c ? $"{text} ({c})" : text;
+        string header = count is { } c ? string.Format(CultureInfo.CurrentCulture, CategoryCountFormat, text, c) : text;
         return new TreeViewItem
         {
             Header = HeaderPanel(header, icon, bold: true),
@@ -334,27 +354,27 @@ public sealed class RepoObjectsTree : UserControl
         ContextMenu menu = new();
         if (!row.IsRemote)
         {
-            menu.Items.Add(MenuItem("Checkout", "BranchCheckout", () => DoCheckout(row)));
+            menu.Items.Add(MenuItem(T("BranchMenuItemsStrings/Checkout.Text", "Checkout"), "BranchCheckout", () => DoCheckout(row)));
         }
 
-        menu.Items.Add(MenuItem("Merge into current", "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name))));
-        menu.Items.Add(MenuItem("Rebase current onto", "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current"), "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("BranchMenuItemsStrings/Rebase.Text", "Rebase current onto"), "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
 
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Name)));
+        menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Name)));
 
         if (!row.IsRemote)
         {
-            menu.Items.Add(MenuItem("Move up", null, () => MoveBranch(row, up: true)));
-            menu.Items.Add(MenuItem("Move down", null, () => MoveBranch(row, up: false)));
+            menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnMoveUp.Text", "Move up"), null, () => MoveBranch(row, up: true)));
+            menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnMoveDown.Text", "Move down"), null, () => MoveBranch(row, up: false)));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MenuItem("Rename branch…", "BranchRename", () => _ = DoRenameBranchAsync(row)));
-            menu.Items.Add(MenuItem("Delete", "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
+            menu.Items.Add(MenuItem(T("MenuItemsStrings/Rename.Text", "Rename branch…"), "BranchRename", () => _ = DoRenameBranchAsync(row)));
+            menu.Items.Add(MenuItem(T("BranchMenuItemsStrings/Delete.Text", "Delete"), "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
         }
         else
         {
             menu.Items.Add(new Separator());
-            menu.Items.Add(MenuItem("Delete remote branch…", "BranchDelete", () => _ = DoDeleteRemoteBranchAsync(row)));
+            menu.Items.Add(MenuItem(T("RemoteBranchMenuItemsStrings/Delete.Text", "Delete remote branch…"), "BranchDelete", () => _ = DoDeleteRemoteBranchAsync(row)));
         }
 
         return menu;
@@ -366,22 +386,22 @@ public sealed class RepoObjectsTree : UserControl
         // Checkout the tag ref: a plain `git checkout <tag>` lands on a detached
         // HEAD, which is the expected "checkout tag revision" behaviour. Reuses
         // the same BranchTagService.Checkout used for branches/revisions.
-        menu.Items.Add(MenuItem("Checkout tag revision…", "BranchCheckout", () => DoCheckout(row)));
+        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Checkout.Text", "Checkout tag revision…"), "BranchCheckout", () => DoCheckout(row)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Name)));
+        menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Name)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Delete", "TagDelete", () => _ = DoDeleteTagAsync(row)));
+        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Delete.Text", "Delete"), "TagDelete", () => _ = DoDeleteTagAsync(row)));
         return menu;
     }
 
     private ContextMenu WorktreeRootMenu()
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem("Manage worktrees…", "WorkTree", () => _ = DoManageWorktreesAsync()));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnManageWorktreesFromRootNode.Text", "Manage worktrees…"), "WorkTree", () => _ = DoManageWorktreesAsync()));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Add…", "WorkTree", () => _ = DoAddWorktreeAsync()));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnCreateWorktreeFromRootNode.Text", "Add…"), "WorkTree", () => _ = DoAddWorktreeAsync()));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Prune", "CleanupRepo", () => RunWorktree(() => _worktreeService.PruneWorktrees(_repoPath!))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnPruneWorktreesFromRootNode.Text", "Prune"), "CleanupRepo", () => RunWorktree(() => _worktreeService.PruneWorktrees(_repoPath!))));
         return menu;
     }
 
@@ -390,22 +410,22 @@ public sealed class RepoObjectsTree : UserControl
         ContextMenu menu = new();
         // "Open" makes the worktree the active repository, routed to the host via
         // OpenRepositoryRequested (the tree never references MainWindow directly).
-        menu.Items.Add(MenuItem("Open", "RepoOpen", () => OpenRepositoryRequested?.Invoke(row.Path)));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnOpenWorktree.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(row.Path)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Branch.Length > 0 ? row.Branch : System.IO.Path.GetFileName(row.Path.TrimEnd('/', '\\')))));
-        menu.Items.Add(MenuItem("Copy path", "CopyToClipboard", () => CopyText(row.Path)));
+        menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Branch.Length > 0 ? row.Branch : System.IO.Path.GetFileName(row.Path.TrimEnd('/', '\\')))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnCopyWorktreePath.Text", "Copy path"), "CopyToClipboard", () => CopyText(row.Path)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Remove", "Remove", () => _ = DoRemoveWorktreeAsync(row)));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnDeleteWorktree.Text", "Remove"), "Remove", () => _ = DoRemoveWorktreeAsync(row)));
         return menu;
     }
 
     private ContextMenu StashMenu(StashRow row)
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem("Apply", null, () => RunStash(() => _stashService.StashApply(_repoPath!, row.Name))));
-        menu.Items.Add(MenuItem("Pop", null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnApplyStash.Text", "Apply"), null, () => RunStash(() => _stashService.StashApply(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnPopStash.Text", "Pop"), null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Drop", null, () => _ = DoDropStashAsync(row)));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnDropStash.Text", "Drop"), null, () => _ = DoDropStashAsync(row)));
         return menu;
     }
 
@@ -414,41 +434,41 @@ public sealed class RepoObjectsTree : UserControl
         ContextMenu menu = new();
         // "Open" makes the submodule the active repository, routed to the host via
         // OpenRepositoryRequested (the tree never references MainWindow directly).
-        menu.Items.Add(MenuItem("Open", "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row))));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Update", "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
-        menu.Items.Add(MenuItem("Update (merge)…", "Merge", () => _ = DoMergeSubmoduleAsync(row)));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnUpdateSubmodule.Text", "Update"), "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
+        menu.Items.Add(MenuItem(T("Update (merge)…"), "Merge", () => _ = DoMergeSubmoduleAsync(row)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(row.Path)));
-        menu.Items.Add(MenuItem("Copy path", "CopyToClipboard", () => CopyText(SubmoduleFullPath(row))));
+        menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Path)));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnCopyWorktreePath.Text", "Copy path"), "CopyToClipboard", () => CopyText(SubmoduleFullPath(row))));
         return menu;
     }
 
     private ContextMenu SubmoduleRootMenu()
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem("Manage submodules…", "SubmodulesManage", () => _ = DoManageSubmodulesAsync()));
+        menu.Items.Add(MenuItem(T("FormBrowse/manageSubmodulesToolStripMenuItem.Text", "Manage submodules…"), "SubmodulesManage", () => _ = DoManageSubmodulesAsync()));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Update all", "SubmodulesSync", () => RunSubmodule(() => _submoduleService.UpdateAll(_repoPath!))));
+        menu.Items.Add(MenuItem(T("FormBrowse/updateAllSubmodulesToolStripMenuItem.Text", "Update all"), "SubmodulesSync", () => RunSubmodule(() => _submoduleService.UpdateAll(_repoPath!))));
         return menu;
     }
 
     private ContextMenu RemotesRootMenu()
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem("Manage remotes…", "Remotes", () => _ = DoManageRemotesAsync()));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnuBtnManageRemotesFromRootNode.ToolTipText", "Manage remotes…"), "Remotes", () => _ = DoManageRemotesAsync()));
         return menu;
     }
 
     private ContextMenu RemoteGroupMenu(string remote)
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem("Copy name", "CopyToClipboard", () => CopyText(remote)));
+        menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(remote)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Edit URL…", "Remote", () => _ = DoEditRemoteUrlAsync(remote)));
-        menu.Items.Add(MenuItem("Rename…", "Remote", () => _ = DoRenameRemoteAsync(remote)));
+        menu.Items.Add(MenuItem(T("Edit URL…"), "Remote", () => _ = DoEditRemoteUrlAsync(remote)));
+        menu.Items.Add(MenuItem(T("TranslatedStrings/_actionRename.Text", "Rename…"), "Remote", () => _ = DoRenameRemoteAsync(remote)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("Remove", "Remove", () => _ = DoRemoveRemoteAsync(remote)));
+        menu.Items.Add(MenuItem(T("FormSubmodules/RemoveSubmodule.Text", "Remove"), "Remove", () => _ = DoRemoveRemoteAsync(remote)));
         return menu;
     }
 
@@ -471,11 +491,11 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu RefSortMenu()
     {
         ContextMenu menu = new();
-        menu.Items.Add(SortKeyItem("Sort by name", RefSortKey.Name));
-        menu.Items.Add(SortKeyItem("Sort by commit date", RefSortKey.CommitDate));
+        menu.Items.Add(SortKeyItem(T("Sort by name"), RefSortKey.Name));
+        menu.Items.Add(SortKeyItem(T("Sort by commit date"), RefSortKey.CommitDate));
         menu.Items.Add(new Separator());
-        menu.Items.Add(SortOrderItem("Ascending", RefSortOrder.Ascending));
-        menu.Items.Add(SortOrderItem("Descending", RefSortOrder.Descending));
+        menu.Items.Add(SortOrderItem(T("Ascending"), RefSortOrder.Ascending));
+        menu.Items.Add(SortOrderItem(T("Descending"), RefSortOrder.Descending));
         return menu;
     }
 
@@ -680,7 +700,7 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
-            string? newName = await PromptAsync($"Rename branch '{row.Name}' to:", row.Name);
+            string? newName = await PromptAsync(TF("Rename branch '{0}' to:", row.Name), row.Name, T("FormRenameBranch/$this.Text", "Rename branch"));
             if (newName is { Length: > 0 } target
                 && !string.Equals(target, row.Name, StringComparison.Ordinal))
             {
@@ -702,7 +722,7 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
-            if (await ConfirmAsync($"Delete branch '{row.Name}'?"))
+            if (await ConfirmAsync(TF("Delete branch '{0}'?", row.Name)))
             {
                 RunMutation(() => _branchTagService.DeleteBranch(_repoPath!, row.Name, force: false));
             }
@@ -730,7 +750,8 @@ public sealed class RepoObjectsTree : UserControl
             }
 
             // Destructive and affects the remote: confirm before pushing the delete.
-            if (await ConfirmAsync($"Delete branch '{branch}' on remote '{remote}'?\nThis deletes it on the remote and cannot be undone."))
+            if (await ConfirmAsync(TF("Delete branch '{0}' on remote '{1}'?", branch, remote)
+                + "\n" + T("Deleting a branch on the remote cannot be undone.")))
             {
                 RunMutation(() => _branchTagService.DeleteRemoteBranch(_repoPath!, remote, branch));
             }
@@ -745,7 +766,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (await ConfirmAsync($"Update submodule '{row.Path}' to its remote branch and merge into the current checkout?"))
+            if (await ConfirmAsync(TF("Update submodule '{0}' to its remote branch and merge into the current checkout?", row.Path)))
             {
                 RunSubmodule(() => _submoduleService.UpdateMerge(_repoPath!, row.Path));
             }
@@ -760,7 +781,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (await ConfirmAsync($"Delete tag '{row.Name}'?"))
+            if (await ConfirmAsync(TF("Delete tag '{0}'?", row.Name)))
             {
                 RunMutation(() => _branchTagService.DeleteTag(_repoPath!, row.Name));
             }
@@ -775,7 +796,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (await ConfirmAsync($"Drop stash '{row.Name}'?"))
+            if (await ConfirmAsync(TF("Drop stash '{0}'?", row.Name)))
             {
                 RunStash(() => _stashService.StashDrop(_repoPath!, row.Name));
             }
@@ -838,7 +859,7 @@ public sealed class RepoObjectsTree : UserControl
         {
             // Off the UI thread: the lookup shells out to git (see RemoteService).
             string current = await Task.Run(() => FindRemoteUrl(remote));
-            string? url = await PromptAsync($"URL for remote '{remote}':", current);
+            string? url = await PromptAsync(TF("URL for remote '{0}':", remote), current, T("Edit URL"));
             if (url is { Length: > 0 } target && !string.Equals(target, current, StringComparison.Ordinal))
             {
                 RunRemote(() => _remoteService.SetRemoteUrl(_repoPath!, remote, target));
@@ -854,7 +875,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            string? name = await PromptAsync($"Rename remote '{remote}' to:", remote);
+            string? name = await PromptAsync(TF("Rename remote '{0}' to:", remote), remote, T("TranslatedStrings/_actionRename.Text", "Rename"));
             if (name is { Length: > 0 } target && !string.Equals(target, remote, StringComparison.Ordinal))
             {
                 RunRemote(() => _remoteService.RenameRemote(_repoPath!, remote, target));
@@ -870,7 +891,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (await ConfirmAsync($"Remove remote '{remote}'?"))
+            if (await ConfirmAsync(TF("Remove remote '{0}'?", remote)))
             {
                 RunRemote(() => _remoteService.RemoveRemote(_repoPath!, remote));
             }
@@ -908,14 +929,14 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            string? path = await PromptAsync("New worktree path:", string.Empty);
+            string? path = await PromptAsync(T("FormCreateWorktree/lblNewWorktreeFolder.Text", "New worktree path:"), string.Empty, T("FormCreateWorktree/$this.Text", "Create a new worktree"));
             if (path is not { Length: > 0 } target)
             {
                 return;
             }
 
             // Branch is optional: empty lets git create a branch named after the path.
-            string? branch = await PromptAsync($"Branch/revision for '{target}' (blank = new branch):", string.Empty);
+            string? branch = await PromptAsync(TF("Branch/revision for '{0}' (blank = new branch):", target), string.Empty, T("FormCreateWorktree/$this.Text", "Create a new worktree"));
             RunWorktree(() => _worktreeService.AddWorktree(_repoPath!, target, branch ?? string.Empty));
         }
         catch
@@ -928,7 +949,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (await ConfirmAsync($"Remove worktree '{row.Path}'?"))
+            if (await ConfirmAsync(TF("Remove worktree '{0}'?", row.Path)))
             {
                 RunWorktree(() => _worktreeService.RemoveWorktree(_repoPath!, row.Path));
             }
@@ -1128,11 +1149,13 @@ public sealed class RepoObjectsTree : UserControl
 
         TaskCompletionSource<bool> tcs = new();
 
-        Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
-        Button no = new() { Content = "Cancel" };
+        // Yes/No rather than the former Confirm/Cancel: both words have a real
+        // trans-unit upstream, and it matches the shell's own confirmation dialog.
+        Button yes = new() { Content = T("TranslatedStrings/_yes.Text", "Yes"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("TranslatedStrings/_no.Text", "No") };
         Window dialog = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 340,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1156,7 +1179,10 @@ public sealed class RepoObjectsTree : UserControl
 
     // Minimal modal text prompt mirroring ConfirmAsync; returns the entered text,
     // or null when cancelled / no owner window is available (e.g. headless).
-    private async Task<string?> PromptAsync(string message, string initial)
+    // <paramref name="title"/> is the window caption: it used to be hard-coded to
+    // "Rename", which was wrong for the worktree and remote-URL prompts and had no
+    // sensible translation key either.
+    private async Task<string?> PromptAsync(string message, string initial, string title)
     {
         if (TopLevel.GetTopLevel(this) is not Window owner)
         {
@@ -1166,11 +1192,11 @@ public sealed class RepoObjectsTree : UserControl
         TaskCompletionSource<string?> tcs = new();
 
         TextBox input = new() { Text = initial };
-        Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
-        Button cancel = new() { Content = "Cancel" };
+        Button ok = new() { Content = T("OK"), Margin = new Thickness(0, 0, 6, 0) };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Window dialog = new()
         {
-            Title = "Rename",
+            Title = title,
             Width = 340,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1201,6 +1227,15 @@ public sealed class RepoObjectsTree : UserControl
         await dialog.ShowDialog(owner);
         return await tcs.Task;
     }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    // Short alias for the composite-format overload; data (branch, remote, stash
+    // names) always goes through a placeholder, never string concatenation.
+    private static string TF(string englishFormat, params object?[] args)
+        => TranslationService.TFormat(null, englishFormat, args);
 
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;

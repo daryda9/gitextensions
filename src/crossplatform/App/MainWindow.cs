@@ -139,15 +139,16 @@ public sealed class MainWindow : Window
         //   Stash · Blame · File history.
         // The Commit tab shows the commit DETAIL; the diff moved out to its own
         // Diff tab so both are visible at once.
-        _commitInfoTab = new TabItem { Header = "Commit" };
-        _diffTab = new TabItem { Header = "Diff", Content = _diff };
-        _fileTreeTab = new TabItem { Header = "File tree", Content = _fileTree };
-        _gpgTab = new TabItem { Header = "GPG", Content = _gpg };
-        _consoleTab = new TabItem { Header = "Console", Content = _console };
-        _outputTab = new TabItem { Header = "Output", Content = _output };
-        _stashTab = new TabItem { Header = "Stash", Content = _stash };
-        _blameTab = new TabItem { Header = "Blame", Content = _blame };
-        _historyTab = new TabItem { Header = "File history", Content = _fileHistory };
+        _commitInfoTab = new TabItem();
+        _diffTab = new TabItem { Content = _diff };
+        _fileTreeTab = new TabItem { Content = _fileTree };
+        _gpgTab = new TabItem { Content = _gpg };
+        _consoleTab = new TabItem { Content = _console };
+        _outputTab = new TabItem { Content = _output };
+        _stashTab = new TabItem { Content = _stash };
+        _blameTab = new TabItem { Content = _blame };
+        _historyTab = new TabItem { Content = _fileHistory };
+        ApplyTabTranslations();
 
         // The Console tab's "Open terminal here" button reuses the external-tool
         // terminal launcher against the current repository.
@@ -213,9 +214,11 @@ public sealed class MainWindow : Window
 
         Opened += (_, _) =>
         {
-            // Discover the .xlf catalogues and apply the remembered language. Both
-            // steps hit the disk (and XmlSerializer), so they run off the UI thread;
-            // the menu re-labels itself when the catalogue is in.
+            // Populate View → Language. The catalogue itself was already parsed
+            // before this window was constructed (Program.Main → BeginPreload →
+            // App.OnFrameworkInitializationCompleted → WaitForPreload), so the
+            // controls above were built translated; this only fills the picker,
+            // and only re-parses if the pre-load did not run or was overtaken.
             _ = InitializeTranslationsAsync();
 
             string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory());
@@ -229,6 +232,11 @@ public sealed class MainWindow : Window
             }
         };
 
+        // The tab strip is the only long-lived caption owned by this window, so a
+        // language switch just re-labels it in place (the dialogs are rebuilt each
+        // time they are opened and pick the new catalogue up on their own).
+        TranslationService.LanguageChanged += () => Dispatcher.UIThread.Post(ApplyTabTranslations);
+
         // Persist window size + splitter positions when the window closes.
         Closing += (_, _) => PersistLayout();
     }
@@ -238,12 +246,18 @@ public sealed class MainWindow : Window
     ///  executable and applies the persisted choice. Falls back to English when the
     ///  remembered language no longer has an <c>.xlf</c> (e.g. after a partial
     ///  install). Never throws: a translation problem must not stop the shell.
+    ///
+    ///  <para>The common path does <b>no</b> work: the start-up pre-load already
+    ///  discovered the languages and installed the catalogue, so this just hands the
+    ///  list to the menu. The disk scan / parse below only happens when the pre-load
+    ///  did not run (English) or did not produce what was asked for.</para>
     /// </summary>
     private async Task InitializeTranslationsAsync()
     {
         try
         {
-            IReadOnlyList<string> languages = await Task.Run(TranslationService.AvailableLanguages);
+            IReadOnlyList<string> languages = TranslationService.PreloadedLanguages
+                ?? await Task.Run(TranslationService.AvailableLanguages);
 
             string wanted = _uiState.Language;
             if (!languages.Any(l => string.Equals(l, wanted, StringComparison.OrdinalIgnoreCase)))
@@ -253,9 +267,10 @@ public sealed class MainWindow : Window
 
             _menu.SetLanguages(languages, wanted);
 
-            if (!string.Equals(wanted, TranslationService.EnglishLanguage, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(wanted, TranslationService.CurrentLanguage, StringComparison.OrdinalIgnoreCase))
             {
-                // Raises LanguageChanged → the menu rebuilds itself translated.
+                // Only reached if the pre-load was skipped or failed. Raises
+                // LanguageChanged → every wired view re-labels itself.
                 await TranslationService.LoadAsync(wanted);
             }
         }
@@ -425,7 +440,7 @@ public sealed class MainWindow : Window
 
         return new TextBlock
         {
-            Text = "Commit info is shown beside the graph. The diff is in the Diff tab.",
+            Text = T("Commit info is shown beside the graph. The diff is in the Diff tab."),
             Margin = new Thickness(16),
             TextWrapping = TextWrapping.Wrap,
             Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
@@ -516,9 +531,9 @@ public sealed class MainWindow : Window
         _uiState.SplitView = _splitHorizontal;
         _statusBar.SetText(_splitHorizontal
             ? (DiffInSplit
-                ? "Split view: commit detail and diff side by side"
-                : "Split view on (applies with the commit info below the graph)")
-            : "Split view off: the diff is in its own tab");
+                ? T("Split view: commit detail and diff side by side")
+                : T("Split view on (applies with the commit info below the graph)"))
+            : T("Split view off: the diff is in its own tab"));
     }
 
     // Repositions the commit-info (detail) panel relative to the revision grid.
@@ -533,9 +548,9 @@ public sealed class MainWindow : Window
         RebuildRightRegion();
         _statusBar.SetText(position switch
         {
-            CommitInfoPosition.LeftOfGraph => "Commit info: left of graph",
-            CommitInfoPosition.RightOfGraph => "Commit info: right of graph",
-            _ => "Commit info: below graph",
+            CommitInfoPosition.LeftOfGraph => T("FormBrowse/commitInfoLeftwardMenuItem.Text", "Commit info: left of graph"),
+            CommitInfoPosition.RightOfGraph => T("FormBrowse/commitInfoRightwardMenuItem.Text", "Commit info: right of graph"),
+            _ => T("FormBrowse/commitInfoBelowMenuItem.Text", "Commit info: below graph"),
         });
     }
 
@@ -576,7 +591,7 @@ public sealed class MainWindow : Window
             }
             else
             {
-                _statusBar.SetText($"Repository no longer exists: {repo}");
+                _statusBar.SetText(TF("Repository no longer exists: {0}", repo));
             }
         };
         _dashboard.OpenOtherRequested += () => _ = PickRepositoryAsync();
@@ -691,7 +706,7 @@ public sealed class MainWindow : Window
             }
             else
             {
-                _statusBar.SetText($"Favorite no longer exists: {repo}");
+                _statusBar.SetText(TF("Favorite no longer exists: {0}", repo));
             }
         };
         _menu.AddFavoriteRequested += AddCurrentToFavorites;
@@ -811,7 +826,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -839,7 +854,7 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
-            _statusBar.SetText($"{label}…");
+            _statusBar.SetText(TF("{0}…", label));
             BisectResult result;
             try
             {
@@ -859,7 +874,7 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                _statusBar.SetText($"{label} failed: {ex.Message}");
+                _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
                 return;
             }
 
@@ -867,8 +882,8 @@ public sealed class MainWindow : Window
 
             string firstLine = result.Output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
             _statusBar.SetText(result.Success
-                ? (firstLine.Length > 0 ? $"{label}: {firstLine}" : $"{label} done.")
-                : $"{label} failed: {firstLine}");
+                ? (firstLine.Length > 0 ? TF("{0}: {1}", label, firstLine) : TF("{0} done.", label))
+                : TF("{0} failed: {1}", label, firstLine));
         }
     }
 
@@ -900,7 +915,7 @@ public sealed class MainWindow : Window
         if (dlg.ArchivedPath is { Length: > 0 } path)
         {
             string shortHash = hash.Length > 8 ? hash[..8] : hash;
-            _statusBar.SetText($"Archived {shortHash} → {path}");
+            _statusBar.SetText(TF("Archived {0} → {1}", shortHash, path));
         }
     }
 
@@ -919,17 +934,17 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"{label} failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
             return false;
         }
 
         if (dirty)
         {
-            _statusBar.SetText($"{label} refused: you have uncommitted changes. Commit or stash them first.");
+            _statusBar.SetText(TF("{0} refused: you have uncommitted changes. Commit or stash them first.", label));
             return false;
         }
 
-        return await ConfirmAsync("This rewrites history on the current branch. Continue?");
+        return await ConfirmAsync(T("This rewrites history on the current branch. Continue?"));
     }
 
     // Runs a commit-edit operation off the UI thread, then refreshes the grid and
@@ -937,7 +952,7 @@ public sealed class MainWindow : Window
     // already aborts a stuck rebase, so this never leaves a half-rebase behind.
     private async Task RunEditAsync(string label, Func<CommitEditResult> op)
     {
-        _statusBar.SetText($"{label}…");
+        _statusBar.SetText(TF("{0}…", label));
         CommitEditResult result;
         try
         {
@@ -945,19 +960,19 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"{label} failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
             return;
         }
 
         RefreshAll();
         if (result.Success)
         {
-            _statusBar.SetText($"{label} done.");
+            _statusBar.SetText(TF("{0} done.", label));
         }
         else
         {
             string firstLine = result.Output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
-            _statusBar.SetText($"{label} failed: {firstLine}");
+            _statusBar.SetText(TF("{0} failed: {1}", label, firstLine));
         }
     }
 
@@ -986,11 +1001,11 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"Reword failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", T("Reword"), ex.Message));
             return;
         }
 
-        string? message = await PromptAsync("Reword commit", "New commit message:", current.Trim(), multiline: true);
+        string? message = await PromptAsync(T("Reword commit"), T("New commit message:"), current.Trim(), multiline: true);
         if (string.IsNullOrWhiteSpace(message))
         {
             return;
@@ -1020,13 +1035,13 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"{label} failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
             return;
         }
 
         if (!hasParent)
         {
-            _statusBar.SetText($"{label} not possible: the root commit has no previous commit to combine with.");
+            _statusBar.SetText(TF("{0} not possible: the root commit has no previous commit to combine with.", label));
             return;
         }
 
@@ -1044,11 +1059,11 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                _statusBar.SetText($"Squash failed: {ex.Message}");
+                _statusBar.SetText(TF("{0} failed: {1}", T("Squash"), ex.Message));
                 return;
             }
 
-            string? message = await PromptAsync("Squash with previous", "Combined commit message:", combined.Trim(), multiline: true);
+            string? message = await PromptAsync(T("Squash with previous"), T("Combined commit message:"), combined.Trim(), multiline: true);
             if (string.IsNullOrWhiteSpace(message))
             {
                 return;
@@ -1107,7 +1122,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -1146,7 +1161,7 @@ public sealed class MainWindow : Window
         FocusDiff();
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;
-        _statusBar.SetText($"Comparing {shortBase}..{shortOther}");
+        _statusBar.SetText(TF("Comparing {0}..{1}", shortBase, shortOther));
     }
 
     // Remembers the chosen commit as the comparison BASE (the "old" side of a
@@ -1160,7 +1175,7 @@ public sealed class MainWindow : Window
 
         _compareBaseHash = hash;
         string shortHash = hash.Length > 8 ? hash[..8] : hash;
-        _statusBar.SetText($"Selected {shortHash} as compare BASE. Use \"Compare to BASE\" on another commit.");
+        _statusBar.SetText(TF("Selected {0} as compare BASE. Use \"Compare to BASE\" on another commit.", shortHash));
     }
 
     // Diffs BASE..selected (BASE the "old" side) and renders the changed files +
@@ -1174,7 +1189,7 @@ public sealed class MainWindow : Window
 
         if (_compareBaseHash is not { Length: > 0 } baseHash)
         {
-            _statusBar.SetText("No BASE selected. Right-click a commit and choose \"Select as BASE to compare\" first.");
+            _statusBar.SetText(T("No BASE selected. Right-click a commit and choose \"Select as BASE to compare\" first."));
             return;
         }
 
@@ -1183,7 +1198,7 @@ public sealed class MainWindow : Window
 
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
-        _statusBar.SetText($"Comparing {shortBase} .. {shortOther}");
+        _statusBar.SetText(TF("Comparing {0} .. {1}", shortBase, shortOther));
     }
 
     // Diffs the selected commit against the current working tree (git diff <hash>)
@@ -1199,7 +1214,7 @@ public sealed class MainWindow : Window
         FocusDiff();
 
         string shortHash = hash.Length > 8 ? hash[..8] : hash;
-        _statusBar.SetText($"Comparing {shortHash} .. working tree");
+        _statusBar.SetText(TF("Comparing {0} .. working tree", shortHash));
     }
 
     // Lists local branches, lets the user pick one, then diffs that branch vs the
@@ -1210,7 +1225,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -1222,13 +1237,13 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"Compare to branch failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", T("FormCompareToBranch/$this.Text", "Compare to branch"), ex.Message));
             return;
         }
 
         if (localBranches.Count == 0)
         {
-            _statusBar.SetText("No local branches to compare against.");
+            _statusBar.SetText(T("No local branches to compare against."));
             return;
         }
 
@@ -1246,7 +1261,7 @@ public sealed class MainWindow : Window
         FocusDiff();
 
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
-        _statusBar.SetText($"Comparing {chosen.Name} .. {shortOther}");
+        _statusBar.SetText(TF("Comparing {0} .. {1}", chosen.Name, shortOther));
     }
 
     // Modal single-select branch picker; returns the chosen branch, or null on cancel.
@@ -1261,11 +1276,11 @@ public sealed class MainWindow : Window
             MinHeight = 220,
         };
 
-        Button ok = new() { Content = "Compare", MinWidth = 90 };
-        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        Button ok = new() { Content = T("FormCompareToBranch/btnCompare.Text", "Compare"), MinWidth = 90 };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
         Window dlg = new()
         {
-            Title = "Compare to branch",
+            Title = T("FormCompareToBranch/$this.Text", "Compare to branch"),
             Width = 420,
             Height = 360,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1275,7 +1290,7 @@ public sealed class MainWindow : Window
                 Margin = new Thickness(16),
                 Children =
                 {
-                    new TextBlock { Text = "Diff against branch (branch .. selected commit):", Margin = new Thickness(0, 0, 0, 6), [DockPanel.DockProperty] = Dock.Top },
+                    new TextBlock { Text = T("Diff against branch (branch .. selected commit):"), Margin = new Thickness(0, 0, 0, 6), [DockPanel.DockProperty] = Dock.Top },
                     new StackPanel
                     {
                         Orientation = Orientation.Horizontal,
@@ -1318,7 +1333,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -1370,7 +1385,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -1383,7 +1398,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -1459,7 +1474,7 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
-            _statusBar.SetText($"{label}…");
+            _statusBar.SetText(TF("{0}…", label));
 
             RemoteService svc = new();
 
@@ -1513,7 +1528,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        _statusBar.SetText("Checking the last commit…");
+        _statusBar.SetText(T("Checking the last commit…"));
 
         (bool Ok, bool HasParent, string Summary, string Error) head;
         try
@@ -1538,42 +1553,42 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText("Undo last commit failed: " + ex.Message);
+            _statusBar.SetText(TF("{0} failed: {1}", UndoLastCommitCaption, ex.Message));
             return;
         }
 
         if (!head.Ok)
         {
             _statusBar.SetText(head.Error.Length > 0
-                ? "Undo last commit failed: " + head.Error
-                : "Undo last commit failed: no commit to undo.");
+                ? TF("{0} failed: {1}", UndoLastCommitCaption, head.Error)
+                : TF("{0} failed: {1}", UndoLastCommitCaption, T("no commit to undo.")));
             return;
         }
 
         if (!head.HasParent)
         {
             await InfoAsync(
-                "Undo last commit",
-                "The current commit has no parent (this is the very first commit on this branch), "
-                + "so it cannot be undone with a soft reset.\n\nNothing was changed.");
-            _statusBar.SetText("Undo last commit: no previous commit.");
+                UndoLastCommitCaption,
+                T("The current commit has no parent (this is the very first commit on this branch), "
+                  + "so it cannot be undone with a soft reset.\n\nNothing was changed."));
+            _statusBar.SetText(TF("{0}: {1}", UndoLastCommitCaption, T("no previous commit.")));
             return;
         }
 
         bool confirmed = await ConfirmUndoLastCommitAsync(head.Summary);
         if (!confirmed)
         {
-            _statusBar.SetText("Undo last commit cancelled.");
+            _statusBar.SetText(TF("{0}: {1}", UndoLastCommitCaption, T("cancelled.")));
             return;
         }
 
         WorkingDirectoryService service = new();
-        _statusBar.SetText("Undoing last commit…");
+        _statusBar.SetText(T("Undoing last commit…"));
 
         WorkingDirCommitResult? result = null;
         await Views.GitProcessDialog.RunAsync(
             this,
-            "Undo last commit (git reset --soft HEAD~1)",
+            TF("{0} (git reset --soft HEAD~1)", UndoLastCommitCaption),
             () =>
             {
                 result = service.UndoLastCommit(repo);
@@ -1581,8 +1596,8 @@ public sealed class MainWindow : Window
             });
 
         _statusBar.SetText(result is { Success: true }
-            ? "Last commit undone — its changes are staged in the working tree."
-            : "Undo last commit failed — see the process output.");
+            ? T("Last commit undone — its changes are staged in the working tree.")
+            : TF("{0} — {1}", UndoLastCommitCaption, T("failed, see the process output.")));
         RefreshAll();
     }
 
@@ -1591,8 +1606,8 @@ public sealed class MainWindow : Window
     // kept) so the wording matches the service behaviour.
     private async Task<bool> ConfirmUndoLastCommitAsync(string headSummary)
     {
-        Button undo = new() { Content = "Undo commit", MinWidth = 90 };
-        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        Button undo = new() { Content = T("Undo commit"), MinWidth = 90 };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
 
         StackPanel panel = new()
         {
@@ -1601,11 +1616,11 @@ public sealed class MainWindow : Window
             {
                 new TextBlock
                 {
-                    Text = "Undo the last commit?\n\n"
-                        + "This runs \"git reset --soft HEAD~1\": the commit is removed from the "
-                        + "branch, but all of its changes are kept and left staged in the working "
-                        + "tree, so nothing is lost. Anything already pushed would need a force "
-                        + "push to match.",
+                    Text = T("Undo the last commit?") + "\n\n"
+                        + T("This runs \"git reset --soft HEAD~1\": the commit is removed from the "
+                            + "branch, but all of its changes are kept and left staged in the working "
+                            + "tree, so nothing is lost. Anything already pushed would need a force "
+                            + "push to match."),
                     TextWrapping = TextWrapping.Wrap,
                 },
             },
@@ -1634,7 +1649,7 @@ public sealed class MainWindow : Window
 
         Window dlg = new()
         {
-            Title = "Undo last commit",
+            Title = UndoLastCommitCaption,
             Width = 460,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1665,18 +1680,18 @@ public sealed class MainWindow : Window
         bool? includeStaged = await ConfirmResetAsync();
         if (includeStaged is null)
         {
-            _statusBar.SetText("Reset cancelled.");
+            _statusBar.SetText(TF("{0}: {1}", ResetChangesCaption, T("cancelled.")));
             return;
         }
 
         bool staged = includeStaged.Value;
         WorkingDirectoryService service = new();
-        _statusBar.SetText("Resetting tracked changes…");
+        _statusBar.SetText(T("Resetting tracked changes…"));
 
         WorkingDirCommitResult? result = null;
         await Views.GitProcessDialog.RunAsync(
             this,
-            staged ? "Reset changes (worktree + index)" : "Reset changes (worktree only)",
+            TF("{0} ({1})", ResetChangesCaption, staged ? T("worktree + index") : T("worktree only")),
             () =>
             {
                 result = service.ResetChanges(repo, staged);
@@ -1684,8 +1699,8 @@ public sealed class MainWindow : Window
             });
 
         _statusBar.SetText(result is { Success: true }
-            ? "Tracked changes discarded."
-            : "Reset failed — see the process output.");
+            ? T("Tracked changes discarded.")
+            : TF("{0} — {1}", ResetChangesCaption, T("failed, see the process output.")));
         RefreshAll();
     }
 
@@ -1702,7 +1717,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        _statusBar.SetText("Previewing clean…");
+        _statusBar.SetText(T("Previewing clean…"));
         WorkingDirectoryService service = new();
 
         (bool Ok, string Error, string Plain, string WithIgnored) preview;
@@ -1722,26 +1737,26 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText("Clean preview failed: " + ex.Message);
+            _statusBar.SetText(TF("{0} failed: {1}", T("Clean preview"), ex.Message));
             return;
         }
 
         if (!preview.Ok)
         {
-            _statusBar.SetText("Clean preview failed: " + preview.Error);
+            _statusBar.SetText(TF("{0} failed: {1}", T("Clean preview"), preview.Error));
             return;
         }
 
         if (preview.Plain.Length == 0 && preview.WithIgnored.Length == 0)
         {
-            _statusBar.SetText("Nothing to clean (no untracked files).");
+            _statusBar.SetText(T("Nothing to clean (no untracked files)."));
             return;
         }
 
         bool? includeIgnored = await ConfirmCleanAsync(preview.Plain, preview.WithIgnored);
         if (includeIgnored is null)
         {
-            _statusBar.SetText("Clean cancelled.");
+            _statusBar.SetText(TF("{0}: {1}", CleanCaption, T("cancelled.")));
             return;
         }
 
@@ -1749,13 +1764,15 @@ public sealed class MainWindow : Window
         // streaming runner (stdout+stderr, unbuffered) is worth it here.
         string args = includeIgnored.Value ? "clean -f -d -x" : "clean -f -d";
         int exitCode = -1;
-        await Views.GitProcessDialog.RunStreamingAsync(this, "Clean working directory", emit =>
+        await Views.GitProcessDialog.RunStreamingAsync(this, CleanCaption, emit =>
         {
             exitCode = GitStreamRunner.Run(repo, args, emit);
             return new Views.GitProcessOutcome(exitCode == 0, exitCode == 0 ? string.Empty : $"git clean exited with code {exitCode}.");
         });
 
-        _statusBar.SetText(exitCode == 0 ? "Working directory cleaned." : "Clean failed — see the process output.");
+        _statusBar.SetText(exitCode == 0
+            ? T("Working directory cleaned.")
+            : TF("{0} — {1}", CleanCaption, T("failed, see the process output.")));
         RefreshAll();
     }
 
@@ -1764,16 +1781,16 @@ public sealed class MainWindow : Window
     {
         CheckBox alsoStaged = new()
         {
-            Content = "Also discard staged changes (git reset --hard HEAD)",
+            Content = T("Also discard staged changes (git reset --hard HEAD)"),
             IsChecked = true,
             Margin = new Thickness(0, 12, 0, 0),
         };
-        Button reset = new() { Content = "Reset", MinWidth = 90 };
-        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        Button reset = new() { Content = T("FormResetChanges/btnReset.Text", "Reset"), MinWidth = 90 };
+        Button cancel = new() { Content = T("FormResetChanges/btnCancel.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
 
         Window dlg = new()
         {
-            Title = "Reset changes",
+            Title = ResetChangesCaption,
             Width = 460,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1785,8 +1802,9 @@ public sealed class MainWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = "Discard uncommitted changes to tracked files? This cannot be undone.\n"
-                            + "Untracked files are left alone — use \"Clean working directory…\" for those.",
+                        Text = T("Discard uncommitted changes to tracked files?") + " "
+                            + T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone.") + "\n"
+                            + T("Untracked files are left alone — use \"Clean working directory…\" for those."),
                         TextWrapping = TextWrapping.Wrap,
                     },
                     alsoStaged,
@@ -1821,13 +1839,13 @@ public sealed class MainWindow : Window
         };
         CheckBox ignored = new()
         {
-            Content = "Include ignored files (git clean -x)",
+            Content = T("Include ignored files (git clean -x)"),
             IsChecked = false,
             Margin = new Thickness(0, 10, 0, 0),
         };
 
-        Button clean = new() { Content = "Clean", MinWidth = 90 };
-        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        Button clean = new() { Content = T("FormCleanupRepository/Cleanup.Text", "Clean"), MinWidth = 90 };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
 
         ScrollViewer scroll = new()
         {
@@ -1848,9 +1866,10 @@ public sealed class MainWindow : Window
                 ? 0
                 : text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
             header.Text = count == 0
-                ? "Nothing would be removed with these options."
-                : $"The following {count} untracked file(s)/directory(ies) will be permanently removed. This cannot be undone.";
-            list.Text = text.Length > 0 ? text : "(nothing to remove)";
+                ? T("Nothing would be removed with these options.")
+                : TF("The following {0} untracked file(s)/directory(ies) will be permanently removed.", count)
+                  + " " + T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone.");
+            list.Text = text.Length > 0 ? text : T("(nothing to remove)");
             scroll.Height = Math.Clamp((Math.Max(count, 1) * 19) + 18, 40, 280);
         }
 
@@ -1859,7 +1878,7 @@ public sealed class MainWindow : Window
 
         Window dlg = new()
         {
-            Title = "Clean working directory",
+            Title = CleanCaption,
             Width = 640,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1902,12 +1921,12 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
-            if (confirm && !await ConfirmAsync($"{label}? This may discard work."))
+            if (confirm && !await ConfirmAsync(TF("{0}? This may discard work.", label)))
             {
                 return;
             }
 
-            _statusBar.SetText($"{label}…");
+            _statusBar.SetText(TF("{0}…", label));
             bool ok;
             try
             {
@@ -1915,14 +1934,14 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                _statusBar.SetText($"{label} failed: {ex.Message}");
+                _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
                 return;
             }
 
             RefreshAll();
             if (!ok)
             {
-                _statusBar.SetText($"{label} failed — see the panel output.");
+                _statusBar.SetText(TF("{0} failed — see the panel output.", label));
             }
         }
     }
@@ -1942,7 +1961,7 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
-            _statusBar.SetText($"{label}…");
+            _statusBar.SetText(TF("{0}…", label));
             RevertArchiveResult result;
             try
             {
@@ -1950,7 +1969,7 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                _statusBar.SetText($"{label} failed: {ex.Message}");
+                _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
                 return;
             }
 
@@ -1958,7 +1977,7 @@ public sealed class MainWindow : Window
             if (!result.Success)
             {
                 string firstLine = result.Output.Split('\n')[0].Trim();
-                _statusBar.SetText($"{label} stopped: {firstLine} — see the panel output.");
+                _statusBar.SetText(TF("{0} stopped: {1} — see the panel output.", label, firstLine));
             }
         }
     }
@@ -2005,13 +2024,13 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
         string? baseRef = await PromptAsync(
-            "Format patch",
-            "Base ref/commit (patches are produced for <base>..HEAD):",
+            FormatPatchCaption,
+            T("Base ref/commit (patches are produced for <base>..HEAD):"),
             "HEAD~1");
         if (string.IsNullOrWhiteSpace(baseRef))
         {
@@ -2028,7 +2047,7 @@ public sealed class MainWindow : Window
             await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
                 AllowMultiple = false,
-                Title = "Choose an output directory for the patch files",
+                Title = T("Choose an output directory for the patch files"),
             });
 
         if (folders.Count == 0)
@@ -2039,12 +2058,12 @@ public sealed class MainWindow : Window
         string? outDir = folders[0].TryGetLocalPath();
         if (string.IsNullOrEmpty(outDir))
         {
-            _statusBar.SetText("The selected folder has no local path.");
+            _statusBar.SetText(T("The selected folder has no local path."));
             return;
         }
 
         string trimmedBase = baseRef.Trim();
-        _statusBar.SetText("Generating patches…");
+        _statusBar.SetText(T("Generating patches…"));
 
         PatchResult result;
         try
@@ -2053,21 +2072,21 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"Format patch failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", FormatPatchCaption, ex.Message));
             return;
         }
 
         if (result.Success)
         {
             _statusBar.SetText(result.Files.Count > 0
-                ? $"Wrote {result.Files.Count} patch file(s) to {outDir}"
-                : $"format-patch produced no patches for {trimmedBase}..HEAD");
+                ? TF("Wrote {0} patch file(s) to {1}", result.Files.Count, outDir)
+                : TF("format-patch produced no patches for {0}..HEAD", trimmedBase));
         }
         else
         {
             string firstLine = result.Output.Split('\n').FirstOrDefault(l => l.Trim().Length > 0)?.Trim() ?? string.Empty;
-            _statusBar.SetText($"Format patch failed: {firstLine}");
-            await new PatchOutputWindow("Format patch — failed", result.Output).ShowDialog(this);
+            _statusBar.SetText(TF("{0} failed: {1}", FormatPatchCaption, firstLine));
+            await new PatchOutputWindow(TF("{0} — {1}", FormatPatchCaption, T("failed")), result.Output).ShowDialog(this);
         }
     }
 
@@ -2077,17 +2096,17 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
-        string? file = await PickPatchFileAsync("Choose a patch file to apply");
+        string? file = await PickPatchFileAsync(T("Choose a patch file to apply"));
         if (file is null)
         {
             return;
         }
 
-        _statusBar.SetText("Applying patch…");
+        _statusBar.SetText(T("Applying patch…"));
 
         PatchResult result;
         try
@@ -2096,7 +2115,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"Apply patch failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", ApplyPatchCaption, ex.Message));
             return;
         }
 
@@ -2104,12 +2123,12 @@ public sealed class MainWindow : Window
 
         if (result.Success)
         {
-            _statusBar.SetText($"Applied patch {Path.GetFileName(file)}");
+            _statusBar.SetText(TF("Applied patch {0}", Path.GetFileName(file)));
         }
         else
         {
-            _statusBar.SetText($"Apply patch failed for {Path.GetFileName(file)} — see output.");
-            await new PatchOutputWindow("Apply patch — failed", result.Output).ShowDialog(this);
+            _statusBar.SetText(TF("Apply patch failed for {0} — see output.", Path.GetFileName(file)));
+            await new PatchOutputWindow(TF("{0} — {1}", ApplyPatchCaption, T("failed")), result.Output).ShowDialog(this);
         }
     }
 
@@ -2117,7 +2136,7 @@ public sealed class MainWindow : Window
     // read-only patch viewer (same colouring as DiffView).
     private async Task ViewPatchAsync()
     {
-        string? file = await PickPatchFileAsync("Choose a patch file to view");
+        string? file = await PickPatchFileAsync(T("Choose a patch file to view"));
         if (file is null)
         {
             return;
@@ -2130,7 +2149,7 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"Could not read {Path.GetFileName(file)}: {ex.Message}");
+            _statusBar.SetText(TF("Could not read {0}: {1}", Path.GetFileName(file), ex.Message));
             return;
         }
 
@@ -2154,8 +2173,8 @@ public sealed class MainWindow : Window
                 Title = title,
                 FileTypeFilter = new[]
                 {
-                    new FilePickerFileType("Patch files") { Patterns = new[] { "*.patch", "*.diff" } },
-                    new FilePickerFileType("All files") { Patterns = new[] { "*" } },
+                    new FilePickerFileType(T("FormApplyPatch/_selectPatchFileFilter.Text", "Patch files")) { Patterns = new[] { "*.patch", "*.diff" } },
+                    new FilePickerFileType(T("All files")) { Patterns = new[] { "*" } },
                 },
             });
 
@@ -2167,7 +2186,7 @@ public sealed class MainWindow : Window
         string? path = files[0].TryGetLocalPath();
         if (string.IsNullOrEmpty(path))
         {
-            _statusBar.SetText("The selected file has no local path.");
+            _statusBar.SetText(T("The selected file has no local path."));
             return null;
         }
 
@@ -2195,7 +2214,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -2205,7 +2224,7 @@ public sealed class MainWindow : Window
 
         async Task RunAsync()
         {
-            _statusBar.SetText($"Running plugin '{name}'…");
+            _statusBar.SetText(TF("Running plugin '{0}'…", name));
 
             bool refresh;
             try
@@ -2222,7 +2241,7 @@ public sealed class MainWindow : Window
             }
             catch (Exception ex)
             {
-                _statusBar.SetText($"Plugin '{name}' failed: {ex.Message}");
+                _statusBar.SetText(TF("Plugin '{0}' failed: {1}", name, ex.Message));
                 return;
             }
 
@@ -2234,7 +2253,7 @@ public sealed class MainWindow : Window
             string? output = (plugin as SampleGreetPlugin)?.LastResult;
             _statusBar.SetText(output is { Length: > 0 }
                 ? output
-                : $"Plugin '{name}' finished{(refresh ? " (view refreshed)" : string.Empty)}.");
+                : TF("Plugin '{0}' finished{1}.", name, refresh ? " " + T("(view refreshed)") : string.Empty));
         }
     }
 
@@ -2245,7 +2264,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -2253,7 +2272,7 @@ public sealed class MainWindow : Window
         RegisterPlugin(plugin, commands);
 
         await PluginSettingsWindow.ShowAsync(this, plugin, commands.GetEffectiveSettings());
-        _statusBar.SetText($"Closed settings for '{plugin.Name ?? plugin.GetType().Name}'.");
+        _statusBar.SetText(TF("Closed settings for '{0}'.", plugin.Name ?? plugin.GetType().Name));
     }
 
     // Ensures the plugin has a settings container and binds it to the repository's
@@ -2278,7 +2297,7 @@ public sealed class MainWindow : Window
         RepositoryPickerView picker = new();
         Window dlg = new()
         {
-            Title = "Open Git repository",
+            Title = T("Open Git repository"),
             Width = 640,
             Height = 460,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -2302,7 +2321,7 @@ public sealed class MainWindow : Window
 
         if (dlg.ClonedRepoPath is { Length: > 0 } repo && Directory.Exists(repo))
         {
-            _statusBar.SetText($"Cloned into {repo}");
+            _statusBar.SetText(TF("Cloned into {0}", repo));
             OpenRepository(repo);
         }
     }
@@ -2321,7 +2340,7 @@ public sealed class MainWindow : Window
             await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
                 AllowMultiple = false,
-                Title = "Choose a directory for the new repository",
+                Title = T("Choose a directory for the new repository"),
             });
 
         if (folders.Count == 0)
@@ -2332,11 +2351,11 @@ public sealed class MainWindow : Window
         string? dir = folders[0].TryGetLocalPath();
         if (string.IsNullOrEmpty(dir))
         {
-            _statusBar.SetText("The selected folder has no local path.");
+            _statusBar.SetText(T("The selected folder has no local path."));
             return;
         }
 
-        _statusBar.SetText("Initialising repository…");
+        _statusBar.SetText(T("Initialising repository…"));
 
         CloneInitResult result;
         try
@@ -2345,18 +2364,18 @@ public sealed class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _statusBar.SetText($"Init failed: {ex.Message}");
+            _statusBar.SetText(TF("{0} failed: {1}", T("FormInit/$this.Text", "Init"), ex.Message));
             return;
         }
 
         if (result.Success && result.RepoPath is not null)
         {
-            _statusBar.SetText($"Initialised repository at {result.RepoPath}");
+            _statusBar.SetText(TF("Initialised repository at {0}", result.RepoPath));
             OpenRepository(result.RepoPath);
         }
         else
         {
-            _statusBar.SetText("Init failed — see output: " + result.Output);
+            _statusBar.SetText(TF("{0} — {1}: {2}", T("FormInit/$this.Text", "Init"), T("failed, see output"), result.Output));
         }
     }
 
@@ -2371,7 +2390,7 @@ public sealed class MainWindow : Window
         }
         else
         {
-            _statusBar.SetText($"Path no longer exists: {path}");
+            _statusBar.SetText(TF("Path no longer exists: {0}", path));
         }
     }
 
@@ -2495,7 +2514,7 @@ public sealed class MainWindow : Window
 
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _ = LoadDashboardAsync();
-        _statusBar.SetText("Dashboard");
+        _statusBar.SetText(T("FormBrowse/dashboardToolStripMenuItem.Text", "Dashboard"));
     }
 
     // Restores the repository work area (used whenever a repository is opened).
@@ -2536,7 +2555,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open to add to favorites.");
+            _statusBar.SetText(T("No repository is open to add to favorites."));
             return;
         }
 
@@ -2548,7 +2567,7 @@ public sealed class MainWindow : Window
             _ = LoadDashboardAsync();
         }
 
-        _statusBar.SetText($"Added to favorites: {_repoPath}");
+        _statusBar.SetText(TF("Added to favorites: {0}", _repoPath));
     }
 
     // Opens the Git maintenance dialog for the current repository.
@@ -2556,7 +2575,7 @@ public sealed class MainWindow : Window
     {
         if (_repoPath is null)
         {
-            _statusBar.SetText("No repository is open.");
+            _statusBar.SetText(T("No repository is open."));
             return;
         }
 
@@ -2570,7 +2589,7 @@ public sealed class MainWindow : Window
     // Informational dialog with a single OK button (no choice to make).
     private async Task InfoAsync(string title, string message)
     {
-        Button ok = new() { Content = "OK", MinWidth = 80 };
+        Button ok = new() { Content = T("OK"), MinWidth = 80 };
         Window dlg = new()
         {
             Title = title,
@@ -2600,11 +2619,11 @@ public sealed class MainWindow : Window
 
     private async Task<bool> YesNoAsync(string message)
     {
-        Button yes = new() { Content = "Yes", MinWidth = 80 };
-        Button no = new() { Content = "No", MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
+        Button yes = new() { Content = T("TranslatedStrings/_yes.Text", "Yes"), MinWidth = 80 };
+        Button no = new() { Content = T("TranslatedStrings/_no.Text", "No"), MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
         Window dlg = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -2643,8 +2662,8 @@ public sealed class MainWindow : Window
             input.TextWrapping = TextWrapping.Wrap;
             input.MinHeight = 120;
         }
-        Button ok = new() { Content = "OK", MinWidth = 80 };
-        Button cancel = new() { Content = "Cancel", MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
+        Button ok = new() { Content = T("OK"), MinWidth = 80 };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
         Window dlg = new()
         {
             Title = title,
@@ -2715,4 +2734,48 @@ public sealed class MainWindow : Window
 
         return null;
     }
+
+    // ---- translation -----------------------------------------------------------------
+
+    // Captions reused by a dialog title, its process-dialog banner and the matching
+    // status-bar lines. Properties, not constants: the active catalogue can change
+    // while the window is open, so each read must go through the service.
+    private static string UndoLastCommitCaption => T("FormBrowse/_undoLastCommitCaption.Text", "Undo last commit");
+
+    private static string ResetChangesCaption => T("FormResetChanges/$this.Text", "Reset changes");
+
+    private static string CleanCaption => T("FormCleanupRepository/$this.Text", "Clean working directory");
+
+    private static string FormatPatchCaption => T("FormFormatPatch/$this.Text", "Format patch");
+
+    private static string ApplyPatchCaption => T("FormApplyPatch/$this.Text", "Apply patch");
+
+    /// <summary>
+    ///  (Re-)labels the bottom panel's tab strip. Called from the constructor and
+    ///  again whenever the language changes — the tabs are long-lived controls, so
+    ///  unlike the dialogs (rebuilt per use) they have to be re-labelled in place.
+    /// </summary>
+    private void ApplyTabTranslations()
+    {
+        _commitInfoTab.Header = T("FormBrowse/CommitInfoTabPage.Text", "Commit");
+        _diffTab.Header = T("FormBrowse/DiffTabPage.Text", "Diff");
+        _fileTreeTab.Header = T("FormBrowse/TreeTabPage.Text", "File tree");
+        _gpgTab.Header = T("FormBrowse/GpgInfoTabPage.Text", "GPG");
+        _consoleTab.Header = T("FormBrowse/_consoleTabCaption.Text", "Console");
+        _outputTab.Header = T("FormBrowse/_outputHistoryTabCaption.Text", "Output");
+        _stashTab.Header = T("FormStash/$this.Text", "Stash");
+        _blameTab.Header = T("FormFileHistory/BlameTab.Text", "Blame");
+
+        // No FormBrowse item for this one (the port has a tab where upstream has a
+        // separate window); matched by source text instead.
+        _historyTab.Header = T("File history");
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    // Short alias for the composite-format overload: these call sites are dense.
+    private static string TF(string englishFormat, params object?[] args)
+        => TranslationService.TFormat(null, englishFormat, args);
 }

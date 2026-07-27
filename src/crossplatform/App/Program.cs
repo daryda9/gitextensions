@@ -59,8 +59,33 @@ internal static class Program
             }
         }
 
+        // Start parsing the remembered translation catalogue NOW, on the thread
+        // pool, so it runs concurrently with Avalonia's own start-up and the shell
+        // can be built already translated (App.OnFrameworkInitializationCompleted
+        // joins it just before the first window). Doing this later — from the
+        // window's Opened handler, as the first version did — made a non-English UI
+        // appear in English and re-label itself about a second afterwards.
+        // English is the default and costs nothing here: BeginPreload returns
+        // immediately without touching the disk.
+        try
+        {
+            BeginTranslationPreload();
+        }
+        catch
+        {
+            // A missing/corrupt ui-state.json just means "English".
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
+
+    /// <summary>
+    ///  Reads the persisted UI language (a few hundred bytes of JSON) and hands it
+    ///  to <see cref="Services.TranslationService.BeginPreload"/>. Kept in its own
+    ///  method so <see cref="Main"/> stays readable.
+    /// </summary>
+    private static void BeginTranslationPreload()
+        => Services.TranslationService.BeginPreload(new Services.UiStateService().Load().Language);
 
     /// <summary>
     ///  Asks git itself which credential helper it resolves for <paramref name="repo"/>,

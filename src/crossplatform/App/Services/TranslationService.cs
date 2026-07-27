@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Globalization;
 using System.Text;
 using GitExtensions.Extensibility.Translations;
 using GitExtensions.Extensibility.Translations.Xliff;
@@ -65,9 +66,22 @@ public static class TranslationService
 
     private static Catalog _catalog = Catalog.Empty;
 
+    // Startup pre-load (see BeginPreload): the catalogue parse kicked off before
+    // Avalonia has built anything, plus the language list discovered by the same
+    // background pass so the shell does not have to re-scan the disk.
+    private static Task? _preload;
+    private static IReadOnlyList<string>? _preloadedLanguages;
+
     /// <summary>Raised (on the thread that completed the load) after the active
     /// language changed, so views can re-label themselves.</summary>
     public static event Action? LanguageChanged;
+
+    /// <summary>
+    ///  The language list discovered by <see cref="BeginPreload"/>, or null when no
+    ///  pre-load ran (English) or it has not finished. Lets the shell skip a second
+    ///  disk scan.
+    /// </summary>
+    public static IReadOnlyList<string>? PreloadedLanguages => _preloadedLanguages;
 
     /// <summary>The active language name, or <see cref="EnglishLanguage"/>.</summary>
     public static string CurrentLanguage => _catalog.Language;
@@ -129,6 +143,72 @@ public static class TranslationService
     }
 
     /// <summary>
+    ///  Starts loading <paramref name="language"/> on the thread pool as early as
+    ///  possible — before any view exists — so the shell's controls can be built
+    ///  already translated instead of being re-labelled a second later.
+    ///
+    ///  <para>English costs exactly nothing: no task, no disk access, no XML. For
+    ///  any other language this parses the catalogue <em>concurrently</em> with
+    ///  Avalonia's own start-up, and <see cref="WaitForPreload"/> joins the two just
+    ///  before the first window is constructed.</para>
+    ///
+    ///  <para>No <see cref="LanguageChanged"/> is raised: by design nothing is
+    ///  subscribed yet, and the views read the catalogue as they build. Never
+    ///  throws — a failure simply leaves the English literals in place.</para>
+    /// </summary>
+    public static void BeginPreload(string? language)
+    {
+        string name = string.IsNullOrWhiteSpace(language) ? EnglishLanguage : language.Trim();
+        if (name.Equals(EnglishLanguage, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _preload = Task.Run(() =>
+        {
+            IReadOnlyList<string> languages = AvailableLanguages();
+            _preloadedLanguages = languages;
+
+            if (!languages.Any(l => string.Equals(l, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                // The remembered catalogue is gone (partial install): stay English.
+                return;
+            }
+
+            Catalog catalog = Build(name);
+            if (catalog.Count > 0)
+            {
+                _catalog = catalog;
+            }
+        });
+    }
+
+    /// <summary>
+    ///  Joins a <see cref="BeginPreload"/> started earlier, waiting at most
+    ///  <paramref name="timeout"/>. Returns true when there was nothing to wait for
+    ///  or the catalogue is in. Called once, from the start-up path, before the main
+    ///  window exists — never from a live UI thread.
+    /// </summary>
+    public static bool WaitForPreload(TimeSpan timeout)
+    {
+        Task? preload = _preload;
+        if (preload is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            return preload.Wait(timeout);
+        }
+        catch
+        {
+            // A faulted pre-load means "no catalogue"; the literals stay English.
+            return false;
+        }
+    }
+
+    /// <summary>
     ///  Translates by English source text: <c>T("Fetch")</c> → <c>"Recupera"</c>.
     ///  Returns <paramref name="english"/> unchanged when there is no catalog or no
     ///  match. Accelerator style (<c>_Start</c> ↔ <c>&amp;Start</c>) and ellipsis
@@ -165,6 +245,36 @@ public static class TranslationService
         }
 
         return string.IsNullOrEmpty(target) ? english : Restyle(target, english);
+    }
+
+    /// <summary>
+    ///  Translates a <b>composite format</b> string and fills it in:
+    ///  <c>TFormat(null, "{0} ({1})", "Branches", 7)</c>. Always prefer this over
+    ///  concatenating a translated fragment with data — word order differs between
+    ///  languages, and only a format string lets a translator move the pieces.
+    ///
+    ///  <para>A translation whose placeholders do not match the English original
+    ///  would throw inside <see cref="string.Format(IFormatProvider, string, object?[])"/>;
+    ///  that case silently falls back to the English format, never to an exception.</para>
+    /// </summary>
+    public static string TFormat(string? key, string englishFormat, params object?[] args)
+    {
+        string format = T(key, englishFormat);
+        try
+        {
+            return string.Format(CultureInfo.CurrentCulture, format, args);
+        }
+        catch (FormatException)
+        {
+            try
+            {
+                return string.Format(CultureInfo.CurrentCulture, englishFormat, args);
+            }
+            catch (FormatException)
+            {
+                return englishFormat;
+            }
+        }
     }
 
     // ---- catalog -----------------------------------------------------------

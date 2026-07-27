@@ -1,9 +1,11 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands;
+using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -19,8 +21,17 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class StatusBarView : UserControl
 {
+    // Layout of the summary line: repository name, separator, detail. A format
+    // string rather than a concatenation so a translated detail can never be glued
+    // on in the wrong order.
+    private const string LineFormat = "{0}  —  {1}";
+
     private readonly TextBlock _text;
     private int _generation;
+
+    // The repository the line currently describes, so a language switch can
+    // recompute it instead of leaving a stale English caption behind.
+    private string? _repoPath;
 
     public StatusBarView()
     {
@@ -28,7 +39,7 @@ public sealed class StatusBarView : UserControl
 
         _text = new TextBlock
         {
-            Text = "No repository open.",
+            Text = T("No repository open."),
             Foreground = Brush("App.TextDim", "#9B9B9B"),
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
@@ -40,7 +51,25 @@ public sealed class StatusBarView : UserControl
             Padding = new Thickness(10, 3),
             Child = _text,
         };
+
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // A language switch re-computes the line in the new language. The recompute
+    // goes through LoadRepository, so the git work stays off the UI thread; with no
+    // repository open there is only the placeholder to swap.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        if (_repoPath is { Length: > 0 } repo)
+        {
+            LoadRepository(repo);
+        }
+        else
+        {
+            _generation++;
+            _text.Text = T("No repository open.");
+        }
+    });
 
     /// <summary>
     ///  Sets an arbitrary status message (UI thread).
@@ -58,9 +87,10 @@ public sealed class StatusBarView : UserControl
     /// </summary>
     public void LoadRepository(string repoPath)
     {
+        _repoPath = repoPath;
         int generation = ++_generation;
         string repoName = SafeFolderName(repoPath);
-        _text.Text = $"{repoName}  —  loading…";
+        _text.Text = string.Format(CultureInfo.CurrentCulture, LineFormat, repoName, T("FormBrowse/_loading.Text", "Loading…"));
 
         _ = Task.Run(() => Compute(repoPath)).ContinueWith(t =>
         {
@@ -89,13 +119,13 @@ public sealed class StatusBarView : UserControl
 
             if (string.IsNullOrEmpty(branch))
             {
-                return $"{repoName}  —  (detached HEAD)";
+                return string.Format(CultureInfo.CurrentCulture, LineFormat, repoName, T("(detached HEAD)"));
             }
 
             string upstream = module.GetRemoteBranch(branch);
             if (string.IsNullOrEmpty(upstream))
             {
-                return $"{repoName}  —  {branch}";
+                return string.Format(CultureInfo.CurrentCulture, LineFormat, repoName, branch);
             }
 
             // ahead  = commits on HEAD not on upstream
@@ -105,11 +135,11 @@ public sealed class StatusBarView : UserControl
 
             if (ahead is null && behind is null)
             {
-                return $"{repoName}  —  {branch}  →  {upstream}";
+                return string.Format(CultureInfo.CurrentCulture, LineFormat, repoName, $"{branch}  →  {upstream}");
             }
 
             string track = $"↑{ahead ?? 0} ↓{behind ?? 0}";
-            return $"{repoName}  —  {branch}  →  {upstream}  {track}";
+            return string.Format(CultureInfo.CurrentCulture, LineFormat, repoName, $"{branch}  →  {upstream}  {track}");
         }
         catch
         {
@@ -130,6 +160,10 @@ public sealed class StatusBarView : UserControl
             return repoPath;
         }
     }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     private static IBrush Brush(string key, string fallback)
         => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b

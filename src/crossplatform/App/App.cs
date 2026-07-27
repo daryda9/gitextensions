@@ -43,6 +43,15 @@ public class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            // Join the catalogue pre-load started in Program.Main before building
+            // any control, so a non-English shell is born translated rather than
+            // flashing English first. The parse has been running in parallel with
+            // Avalonia's start-up, so by now it is normally already done; the
+            // timeout is only there so a pathological catalogue can never hang the
+            // app — it would just start in English. English never gets here at all
+            // (no pre-load task → returns immediately).
+            Services.TranslationService.WaitForPreload(TimeSpan.FromSeconds(5));
+
             desktop.MainWindow = new MainWindow();
         }
 
