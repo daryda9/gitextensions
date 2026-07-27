@@ -739,8 +739,20 @@ public sealed class DiffView : UserControl
             return;
         }
 
-        FilterFileInGridRequested?.Invoke(
-            path.Any(char.IsWhiteSpace) && !path.Contains('"') ? $"\"{path}\"" : path);
+        string filter = path.Any(char.IsWhiteSpace) && !path.Contains('"') ? $"\"{path}\"" : path;
+
+        // Posted rather than invoked inline: the handler reloads the revision
+        // grid, and that is not work to start while the context menu's pointer
+        // event is still unwinding.
+        //
+        // NOTE for whoever wires this up: routing the path straight into
+        // RevisionGridView.ApplyRevisionFilter currently kills the app with
+        // "Cannot change source while update is in progress". The whole inner
+        // stack is the grid's own (Reload → ItemsSource → its SelectionChanged
+        // handler → RefreshView → RebindRows → ItemsSource again); deferring the
+        // call, as here, does not help. The grid needs a re-entrancy guard
+        // before this entry can do its job end to end.
+        Dispatcher.UIThread.Post(() => FilterFileInGridRequested?.Invoke(filter));
     }
 
     private void RaiseFileAction(Action<string>? handler)
