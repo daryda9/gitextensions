@@ -1102,7 +1102,7 @@ priorità massima)
 - [x] 0.2 `GitProcessDialog.cs:132` — **Abort chiude solo la finestra**: git continua a girare e
       l'`index.lock` resta orfano. Upstream: `KillCommandProcess()` + `UnlockIndex(includeSubmodules)`
       (`FormStatus.cs:260-272`). *media*
-- [ ] 0.3 `FileHistoryView.cs:399` — **"Save as" salva il blob sbagliato** (o fallisce) per ogni
+- [x] 0.3 `FileHistoryView.cs:399` — **"Save as" salva il blob sbagliato** (o fallisce) per ogni
       commit anteriore a un rename: `--follow` è attivo (`FileHistoryService.cs:104`) ma il path
       usato è quello *attuale*. Upstream: `GetFileNameForRevision` (`FormFileHistory.cs:225-235`).
       Serve un campo nome-file in `FileHistoryRow`. *media*
@@ -1137,7 +1137,7 @@ priorità massima)
 - [x] 0.14 `BlameView.ShowBlame` (`:274-301`) — **nessuna cancellazione del blame in volo**
       (`Task.Run` nudo, `CancellationToken.None` a `BlameService.cs:76`): due cambi di file rapidi
       possono lasciare le righe di A sotto lo status di B. *banale*
-- [~] 0.15 Mancano **tutte le conferme distruttive** dei dialoghi: amend "rewrite history"
+- [x] 0.15 Mancano **tutte le conferme distruttive** dei dialoghi: amend "rewrite history"
       (`FormCommit.cs:1098-1111`), merge-commit vuoto (`:1113-1123`), detached-HEAD (`:1191-1231`),
       branch nuovo sul remote (`FormPush.cs:291-310`), nome remote duplicato
       (`FormRemotes.cs:464-483`). *banale ciascuna*
@@ -1161,10 +1161,10 @@ nel port, manca il punto d'accesso)
 - [ ] 1.1 **Titolo finestra** fisso a "Git Extensions (Avalonia / Linux)" (`MainWindow.cs:133`),
       mai aggiornato. Upstream: `"{pathFilter}{repo} ({branch}) - Git Extensions"`
       (`AppTitleGenerator.cs:38-59`). *banale, valore alto* (alt-tab con più istanze)
-- [ ] 1.2 **Menu Navigate**: 15 voci upstream (`RevisionGridMenuCommands.cs:91-198`), il port ne
+- [x] 1.2 **Menu Navigate**: 15 voci upstream (`RevisionGridMenuCommands.cs:91-198`), il port ne
       ha 4 e nessuna delle upstream. Le azioni esistono già nel flyout "Go to" e nel menu
       contestuale della griglia. *banale* (eccetto merge-base, vedi 4.x)
-- [ ] 1.3 **Menu View**: 30 voci upstream con group header ("Branches", "Commits", "Grid labels",
+- [x] 1.3 **Menu View**: 30 voci upstream con group header ("Branches", "Commits", "Grid labels",
       "Grid info", "Columns", "Sorting", "Settings persistence") e voci checkable; il port ne ha 2
       + tema/lingua. La maggior parte è già implementata nei flyout dell'header della griglia
       (View/Branches/Columns/Date): serve esporla nel menu come voci checkable. *banale*
@@ -1183,21 +1183,21 @@ nel port, manca il punto d'accesso)
       repo valido (`FormBrowse.cs:926-929`), disabilita 13 voci su repo **bare** (`:1014-1034`) e
       gating per selezione in `CommandsToolStripMenuItem_DropDownOpening` (`:2330-2366`). Serve la
       nozione di bare repo (assente nei service) + un handler `Opening`. *media*
-- [ ] 1.8 **Ordine colonne della griglia invertito** rispetto all'originale: upstream è
+- [x] 1.8 **Ordine colonne della griglia invertito** rispetto all'originale: upstream è
       graph → **Message** → notes → avatar → author → date → **CommitId ultimo**
       (`RevisionGridControl.cs:342-351`); il port ha hash in seconda e subject in ultima. È la
       divergenza visiva di primo impatto (cfr. `GUI.png`). *banale*
-- [ ] 1.9 **Batch hotkey della griglia** su azioni **già esistenti**: Ctrl+I, Ctrl+Shift+I,
+- [x] 1.9 **Batch hotkey della griglia** su azioni **già esistenti**: Ctrl+I, Ctrl+Shift+I,
       Ctrl+Shift+C, Ctrl+Shift+G, Ctrl+P/Ctrl+N, Ctrl+Shift+A/U/T, Ctrl+Shift+B, Ctrl+Alt+T,
       Ctrl+Shift+R. Più tre **divergenze** da sanare: Alt+↑/↓ (upstream = quick-search prev/next,
       parent/child sono Ctrl+P/Ctrl+N), Ctrl+G (upstream `GoToCommit` è Ctrl+Shift+G e Ctrl+G è
       GitBash → oggi conflitto reale), F3. *banale*
-- [ ] 1.10 **Binding registrati ma inerti** già chiudibili: `AddNotes` Ctrl+Shift+N
+- [x] 1.10 **Binding registrati ma inerti** già chiudibili: `AddNotes` Ctrl+Shift+N
       (`CommitDetailView.EditNotes` e `AddNotesDialog` esistono), `ManageWorkTrees` Ctrl+Alt+W
       (`WorktreesDialog` esiste), `GoToChild` Ctrl+N. *banale*
-- [ ] 1.11 **Toolbar**: manca il pulsante **Settings** (`Designer.cs:529-536`) e il **toggle del
+- [x] 1.11 **Toolbar**: manca il pulsante **Settings** (`Designer.cs:529-536`) e il **toggle del
       pannello sinistro** (`:247-254`, azione già esistente come sola hotkey). *banale*
-- [ ] 1.12 **Split-button Stash**: il port ha un pulsante secco che fa `stash save "WIP"`. Upstream
+- [x] 1.12 **Split-button Stash**: il port ha un pulsante secco che fa `stash save "WIP"`. Upstream
       (`Designer.cs:348-405`): corpo = dialogo stash, freccia = Stash / Stash staged / Stash pop /
       — / Manage stashes… / Create a stash…, e il testo porta il **contatore `(n)`**. *media*
 - [ ] 1.13 **Caricamento non lazy del pannello inferiore**: `MainWindow.OnRevisionSelected`
@@ -1208,16 +1208,16 @@ nel port, manca il punto d'accesso)
       `RevisionGridView.cs:513-531` esce prima di emettere l'evento e `ArtificialRowActivated`
       non ha subscriber → i tab restano sul commit precedente, cioè mostrano contenuto **stantio**
       (il caso peggiore). *banale per Commit, media per Diff/File tree*
-- [ ] 1.15 `MaxGraphLanes` 8 → 40 come upstream (`RevisionGraph.cs:20`): oltre l'ottava lane il
+- [x] 1.15 `MaxGraphLanes` 8 → 40 come upstream (`RevisionGraph.cs:20`): oltre l'ottava lane il
       grafo non disegna. *banale*
-- [ ] 1.16 Quick-search: cercare anche **nomi dei ref** e **prefisso hash** come
+- [x] 1.16 Quick-search: cercare anche **nomi dei ref** e **prefisso hash** come
       `GitRevisionTester.cs:97-109`, più Ctrl+V nel buffer. *banale*
-- [ ] 1.17 Autore della revisione selezionata in **bold** su tutte le righe
+- [x] 1.17 Autore della revisione selezionata in **bold** su tutte le righe
       (`AuthorRevisionHighlighting`). *banale*
 - [ ] 1.18 `CommitDetailView` — la **data di commit spare quando autore == committer**: upstream
       mostra la riga extra se le *date* differiscono (`CommitDataHeaderRenderer.cs:87-111`), il
       port se differisce la *persona* → su rebase/amend/cherry-pick la data di commit si perde. *banale*
-- [ ] 1.19 Blame: **gutter a bande** (upstream collassa hash+autore per righe consecutive dello
+- [x] 1.19 Blame: **gutter a bande** (upstream collassa hash+autore per righe consecutive dello
       stesso commit, `BlameControl.cs:402-405`; il port ripete l'hash su ogni riga) e la **data
       d'autore già calcolata e mai mostrata** (`BlameService.cs:86` la riempie, `BuildRow` la
       ignora). *banale entrambi*
@@ -1226,7 +1226,7 @@ nel port, manca il punto d'accesso)
       messaggio di verifica. Le 7 icone sono **già linkate** dal glob `Assets/Icons/`. *banale*
 - [ ] 1.21 Stash: checkbox **"Keep index"** (`StashOpsService.cs:65` cabla `keepIndex: false`) +
       riquadro del messaggio dello stash + hotkey next/prev stash. *banale*
-- [ ] 1.22 File history: pulsante **Reload** e aggancio al refresh globale (`MainWindow` non
+- [x] 1.22 File history: pulsante **Reload** e aggancio al refresh globale (`MainWindow` non
       richiama mai `ShowHistory`); **doppio clic** su una riga (idem in Blame). *banale*
 - [ ] 1.23 Dashboard: **casella di ricerca** con filtro incrementale (Enter apre il primo, ↓ passa
       alla lista) e i link **Clone / Create** oggi solo nel menu. *banale*
@@ -1331,7 +1331,7 @@ nel port, manca il punto d'accesso)
       filter** (oggi `LoadRepository(string)` è l'unico loader) chiuderebbe in un colpo grafo,
       decorazioni ref, righe artificiali e multi-selezione nel tab File history, che oggi
       reimplementa una lista nuda. *media/alta*
-- [ ] 4.10 Toolbar, resto: **shell-picker** (upstream `userShell` è uno split-button che elenca le
+- [~] 4.10 Toolbar, resto: **shell-picker** (upstream `userShell` è uno split-button che elenca le
       shell disponibili, il port ha un "Terminal" secco), dropdown **WorkingDir** ricco (ricerca,
       preferiti categorizzati, Open/Close repository, "Configure this menu…"), voce **"Checkout
       branch…"** in testa al dropdown branch, corpo cliccabile di **CommitInfoPosition** (cicla le
@@ -1466,6 +1466,67 @@ cablaggio minimo in `MainWindow` fatto dal loop. Nove commit.
   Cambio di comportamento voluto: i campi identità mostrano il valore del **livello selezionato**,
   non quello effettivo, quindi su un repo senza identità locale la pagina Local è vuota dove prima
   mostrava il valore globale ereditato.
+
+**M53** (2026-07-28) — **BLOCCO 0 chiuso del tutto** (0.3 e 0.15) e **grosso taglio nel BLOCCO 1**.
+Iterazione 3, tre subagent in worktree su file disgiunti più il cablaggio del loop. Undici commit
+(`0dcd51534`…`c480d1a43`).
+
+- **Menu Navigate/View + parità della griglia** (`0dcd51534`, `ef97b94a2`, `3af4b121a`,
+  `b49578edd`, cablaggio `a18bccdc1`) — le colonne tornano nell'ordine upstream
+  (`graph, Subject(*), avatar, author, date, hash`, **SHA-1 ultimo**, Subject come colonna che
+  riempie); `MaxGraphLanes` 8 → 40; l'autore della revisione selezionata è in **bold** su tutte le
+  righe che lo condividono. La quick-search cerca anche i **nomi dei ref** e il **prefisso hash**
+  (> 2 caratteri) e accetta Ctrl+V. Nuova superficie pubblica della griglia chiavata sui
+  `MenuCommand.Name` upstream (`ExecuteMenuCommand`, `ViewOptions`, `ViewOptionsChanged`, 20 metodi
+  `Toggle*`/`Set*`), su cui il menu **Navigate** (15 voci nell'ordine upstream) e **View** (group
+  header Branches/Commits/Grid labels/Grid info/Columns/Sorting, voci checkable) sono un
+  *mirror*: **una sola fonte di verità**, i flyout dell'header e il menu si aggiornano a vicenda e
+  nessun flyout viene ricostruito mentre è aperto. Nuovo `Services/MergeBaseService.cs` (`git
+  merge-base`) e `--author-date-order` in `RevisionService`. Hotkey riallineate a
+  `HotkeySettingsManager`: Ctrl+P/Ctrl+N parent/child, Alt+↑/↓ quick-search, Ctrl+Shift+G go-to,
+  Ctrl+Shift+K merge base, Ctrl+I / Ctrl+Shift+I filtro, Ctrl+Shift+A/U/T scope, Ctrl+Shift+B,
+  Ctrl+Shift+R, Ctrl+Alt+T; **Ctrl+G e F3 liberati** (Ctrl+G era in conflitto reale con GitBash).
+  *Due difetti trovati e corretti dal subagent stesso*: la cella del subject era uno `StackPanel`,
+  che misura su larghezza infinita → il testo veniva dipinto **sopra** il nome dell'autore (ora
+  `DockPanel` con clipping ed ellissi); e lo swap di `ItemsSource` in `RebindRows` ri-annunciava
+  `RevisionSelected`/`RangeSelected` → ogni clic sparava l'evento due volte (flag `_rebinding`).
+  *Verificato a schermo*: menu con group header, "Show SHA-1 column" dal menu che nasconde la
+  colonna **e** toglie la spunta nel flyout Columns, Ctrl+Shift+K che atterra esattamente su
+  `git merge-base side HEAD`, Ctrl+G non più catturato.
+- **File history e commit dialog** (`771f803dc`, `46fb91463`, `594da0f69`, `4d2b79513`, cablaggio
+  `8690b59e7`) — **il bug 0.3 è chiuso**: `FileHistoryRow` porta ora il nome che il file aveva *in
+  quella revisione* (una passata `git log --format="????%H" --name-only --diff-merges=separate`
+  parsata come `RevisionGridControl.ParseFileNames`, con encoding lossless), e "Save as" lo usa.
+  *Prova su repo reale con `git mv`*: per i commit anteriori al rename il servizio restituisce
+  `src/old.txt` e il contenuto salvato è **byte-identico** a `git show <sha>:src/old.txt`, dove il
+  codice precedente falliva del tutto. Aggiunti il marcatore "file non identificato in questa
+  revisione" (via `GetFileBlobHash`), il pulsante Load/Reload con `Reload()` pubblico agganciato al
+  refresh globale, il doppio clic (`RevisionActivated`) e la colonna **data d'autore**.
+  Nel `CommitDialog`: le tre conferme distruttive di upstream (amend che riscrive la storia, merge
+  commit vuoto — distinguendo il caso legittimo via `MERGE_HEAD` —, HEAD staccato, saltata durante
+  un rebase), e il **filtro regex di selezione** con throttle 250 ms, contatore `n/m`, bordo rosso
+  **sul contatore** (Fluent lo maschera sul TextBox) e caption che diventano "Stage filtered"/
+  "Unstage filtered" agendo solo sui match. *Difetto corretto strada facendo*: la riselezione
+  programmatica del toggle della colonna data faceva saltare il pannello inferiore sul tab Commit.
+- **Toolbar** (`155f55fd2`, `c1e3cee8d`, `ac2aa9a89`, cablaggio `c480d1a43`) — tutti gli otto punti
+  T1–T8. Split-button **Stash** (corpo = tab Stash, freccia coi sei comandi upstream e le gesture
+  reali, caption `Stash (n)`); pulsanti **Settings** e **toggle del pannello sinistro** con stato
+  checked che segue anche la hotkey; **commit-info** diventa uno split il cui corpo cicla le tre
+  posizioni cambiando icona, col radio sulla posizione attiva; **Push** mostra il *behind* e scambia
+  l'icona con `Unstage` quando behind > 0; **Commit** prende le icone `RepoState*` (7 stati);
+  dropdown branch con **"Checkout branch… Ctrl+."** in testa e tasto destro che apre il picker;
+  **Worktrees** con il corrente spuntato e inerte e i prunable in grigio; **"Fetch all" nascosto**
+  con un solo remote. Nuovo `Services/ToolbarStateService.cs` per ciò che la toolbar non può
+  calcolare (conteggio stash, stato repo, tracking) — senza il probe i display **degradano a
+  "sconosciuto" invece di mentire**. *Verificato a schermo*, incluse due prove di controllo:
+  "Fetch all" sparisce con un remote e **ricompare** aggiungendone un secondo, e a 1150px di
+  larghezza i pulsanti nuovi finiscono nel menu di overflow `»` restando funzionanti.
+
+**Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
+sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
+diff sono state salvate in `/tmp/loop-salvage/*.patch` e gli agent sono stati **ripresi dal loro
+transcript** invece di ripartire da zero. Lezione: istruire i subagent a **committare presto e
+spesso**, non solo a fine unità.
 
 **Nota di metodo** (costata due tentativi): `pkill -f "<pattern>"` negli script di verifica GUI
 **uccide la shell che lo lancia** se il pattern compare anche nella propria riga di comando (es.
