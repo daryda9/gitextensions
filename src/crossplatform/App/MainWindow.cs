@@ -1024,6 +1024,10 @@ public sealed class MainWindow : Window
 
         _diff.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _diff.FileHistoryRequested += path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
+        // Same two jumps from the file tree, now that it is a real tree.
+        _fileTree.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
+        _fileTree.FileHistoryRequested +=
+            path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
 
         // Toolbar actions.
         _toolbar.OpenRepoRequested += () => _ = PickRepositoryAsync();
