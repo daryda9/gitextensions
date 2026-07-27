@@ -2,10 +2,13 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Presenters;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using GitCommands.Git;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 using GitExtensions.Extensibility.Git;
@@ -43,8 +46,24 @@ public enum CommitInfoPosition
 ///  One entry in a toolbar split-button dropdown (a submodule or worktree the
 ///  host can open as the active repository). <paramref name="Icon"/> names the
 ///  <see cref="IconLoader"/> icon to show; empty falls back to the button icon.
+///
+///  The three trailing flags exist for the worktrees drop-down, which upstream
+///  renders with state (<c>toolStripWorktrees_DropDownOpening</c>): the worktree
+///  the window is currently on is <paramref name="IsChecked"/> and disabled, and a
+///  worktree git reports as prunable/deleted is disabled and greyed. They default
+///  to "a plain, enabled entry", so callers that only pass the first three
+///  arguments — the submodules and recent-repositories providers — are unaffected.
 /// </summary>
-public readonly record struct RepoLink(string Label, string Path, string Icon);
+/// <param name="IsChecked">Show a check mark (the current worktree).</param>
+/// <param name="IsEnabled">False leaves the entry visible but inert.</param>
+/// <param name="IsDim">Paint the label in the dim/disabled colour (a deleted worktree).</param>
+public readonly record struct RepoLink(
+    string Label,
+    string Path,
+    string Icon,
+    bool IsChecked = false,
+    bool IsEnabled = true,
+    bool IsDim = false);
 
 public sealed class MainToolbar : UserControl
 {
@@ -82,9 +101,69 @@ public sealed class MainToolbar : UserControl
     public event Action<GitPullAction>? DefaultPullActionChanged;
     public event Action? PushRequested;
     public event Action? CommitRequested;
+
+    /// <summary>
+    ///  Plain "Stash" — save the working directory to a new stash. Raised by the
+    ///  stash split button's "Stash" drop-down entry (upstream
+    ///  <c>stashChangesToolStripMenuItem</c>).
+    /// </summary>
     public event Action? StashRequested;
+
+    /// <summary>Stash the staged (index) changes only (upstream <c>stashStagedToolStripMenuItem</c>).</summary>
+    public event Action? StashStagedRequested;
+
+    /// <summary>Apply and drop the most recent stash (upstream <c>stashPopToolStripMenuItem</c>).</summary>
+    public event Action? StashPopRequested;
+
+    /// <summary>
+    ///  Show the stash management surface. Raised by the split button's BODY and by
+    ///  its "Manage stashes…" entry — upstream both call
+    ///  <c>UICommands.StartStashDialog</c>. In the port the surface is the bottom
+    ///  panel's Stash tab, so the host answers this by selecting that tab.
+    /// </summary>
+    public event Action? ManageStashesRequested;
+
+    /// <summary>
+    ///  Open the "create a stash" prompt (upstream <c>createAStashToolStripMenuItem</c>,
+    ///  i.e. <c>StartStashDialog(this, false)</c>). In the port this is the Stash
+    ///  panel's "Stash…" flow, which asks for a message and an untracked-files flag.
+    /// </summary>
+    public event Action? CreateStashRequested;
+
     public event Action? RefreshRequested;
     public event Action? NewBranchRequested;
+
+    /// <summary>
+    ///  Open the Settings window (upstream's <c>EditSettings</c> toolbar button, the
+    ///  last item of the external-tools group).
+    /// </summary>
+    public event Action? SettingsRequested;
+
+    /// <summary>
+    ///  Show/hide the left (repository objects) panel — upstream's
+    ///  <c>toggleLeftPanel</c>. The toolbar does not know the resulting state; the
+    ///  host pushes it back through <see cref="SetLeftPanelVisible"/>.
+    /// </summary>
+    public event Action? ToggleLeftPanelRequested;
+
+    /// <summary>
+    ///  Open the "checkout branch" dialog: the branch drop-down's leading
+    ///  "Checkout branch…" entry, and a right-click on the branch button itself
+    ///  (upstream <c>branchSelect_MouseUp</c> → <c>CheckoutBranchToolStripMenuItemClick</c>).
+    /// </summary>
+    public event Action? CheckoutBranchRequested;
+
+    /// <summary>
+    ///  Open "Manage worktrees": the worktrees split button's BODY and its
+    ///  "Manage worktrees…" entry (upstream <c>toolStripWorktrees_ButtonClick</c>).
+    /// </summary>
+    public event Action? ManageWorktreesRequested;
+
+    /// <summary>Create a new worktree (upstream's <c>TranslatedStrings.CreateWorktree</c> entry).</summary>
+    public event Action? CreateWorktreeRequested;
+
+    /// <summary>Run <c>git worktree prune</c> (upstream's <c>PruneWorktrees</c> entry).</summary>
+    public event Action? PruneWorktreesRequested;
 
     // View / layout controls (added to match the original FormBrowse toolbar).
     public event Action? SplitViewToggleRequested;
@@ -143,6 +222,68 @@ public sealed class MainToolbar : UserControl
     // host's current layout state (checked caption + highlighted chrome).
     private Button? _splitButton;
     private TextBlock? _splitCaption;
+
+    // Left-panel toggle (upstream toggleLeftPanel): a checked/pressed button whose
+    // state mirrors whether the host's left panel is showing.
+    private Button? _leftPanelButton;
+    private TextBlock? _leftPanelCaption;
+    private bool _leftPanelVisible = true;
+
+    // Commit-info position split button (upstream menuCommitInfoPosition): the body
+    // cycles the three positions, and both icon and tooltip are copied from the
+    // entry matching the active position.
+    private Button? _commitInfoButton;
+    private Image? _commitInfoIcon;
+    private CommitInfoPosition _commitInfoPosition = CommitInfoPosition.BelowGraph;
+
+    // Stash split button: its caption carries the "(n)" stash count.
+    private TextBlock? _stashCaption;
+    private Border? _stashHost;
+
+    // Worktrees split button: hidden entirely while the repository has a single
+    // worktree, exactly as upstream's UpdateWorktreeToolStripVisibility does.
+    private Control? _worktreesHost;
+
+    // Widest the Commit button has ever been, applied as a MinWidth so the strip
+    // does not shuffle sideways every time the change count gains or loses a digit
+    // (upstream freezes the button's Width for the same reason).
+    private double _commitMinWidth;
+
+    /// <summary>
+    ///  The window's live hotkey map, used ONLY to label menu entries and tooltips
+    ///  with the gesture actually in force. Optional: while it is null the labels
+    ///  fall back to <see cref="HotkeyService.Defaults"/>, which is upstream's own
+    ///  FormBrowse map but ignores user overrides — so a host with a hotkey service
+    ///  should assign this.
+    ///
+    ///  Assigning it rebuilds the strip, because the tooltips baked in by
+    ///  <see cref="Build"/> (which runs from the constructor, before a host can set
+    ///  this) would otherwise keep showing the default gestures forever.
+    /// </summary>
+    public HotkeyService? Hotkeys
+    {
+        get => _hotkeys;
+        set
+        {
+            if (ReferenceEquals(_hotkeys, value))
+            {
+                return;
+            }
+
+            _hotkeys = value;
+            Rebuild();
+        }
+    }
+
+    private HotkeyService? _hotkeys;
+
+    /// <summary>
+    ///  Repository-wide facts the toolbar cannot compute itself (stash count, repo
+    ///  state, worktree/remote counts, upstream tracking). Refreshed by
+    ///  <see cref="UpdateState(int, int, int, int, string, string, ToolbarRepoState?)"/>
+    ///  and replayed after a language rebuild.
+    /// </summary>
+    private ToolbarRepoState _state = new();
 
     // Far-right working-directory indicator (repo name + ~-collapsed path); created
     // lazily on the first UpdateState() call and reused thereafter.
@@ -235,18 +376,33 @@ public sealed class MainToolbar : UserControl
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
-    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(Rebuild);
+
+    /// <summary>
+    ///  Re-creates the strip and replays every piece of state the host has pushed in,
+    ///  so neither a language switch nor a late <see cref="Hotkeys"/> assignment can
+    ///  blank a badge or leave a stale gesture in a tooltip.
+    /// </summary>
+    private void Rebuild()
     {
         Build();
 
         // Replay whatever the host last told us, so badges/captions survive.
         if (_hasState)
         {
-            UpdateState(_lastAhead, _lastBehind, _lastStaged, _lastUnstaged, _lastRepoPath, _lastBranch);
+            UpdateState(_lastAhead, _lastBehind, _lastStaged, _lastUnstaged, _lastRepoPath, _lastBranch, _state);
+        }
+        else
+        {
+            // Even without a host update the fresh controls must not lie about
+            // visibility (worktrees) or enablement (stash).
+            ApplyRepoState();
         }
 
         SetSplitView(_splitViewOn);
-    });
+        SetLeftPanelVisible(_leftPanelVisible);
+        SetCommitInfoPosition(_commitInfoPosition);
+    }
 
     /// <summary>
     ///  (Re-)creates the whole toolbar strip. Called from the constructor and again
@@ -300,8 +456,7 @@ public sealed class MainToolbar : UserControl
             out _commitCaption, out _commitIcon);
         bar.AddItem(_commitButton);
         bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("stash", T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash"),
-            T("FormBrowse/stashChangesToolStripMenuItem.ToolTipText", "Stash changes"), () => StashRequested?.Invoke()));
+        bar.AddItem(MakeStashSplitButton(border));
         bar.AddItem(Separator(border));
         bar.AddItem(MakeButton("ReloadRevisions", T("FormBrowse/RefreshButton.ToolTipText", "Refresh"),
             T("FormBrowse/RefreshButton.ToolTipText", "Refresh"), () => RefreshRequested?.Invoke()));
@@ -316,12 +471,31 @@ public sealed class MainToolbar : UserControl
         bar.AddItem(MakeRepoLinkButton("SubmodulesManage", T("TranslatedStrings/_submodulesText.Text", "Submodules"),
             T("Open a submodule (or the parent super-project) as the active repository"),
             () => SubmodulesProvider, border));
-        bar.AddItem(MakeRepoLinkButton("WorkTree", T("TranslatedStrings/_worktreesText.Text", "Worktrees"),
-            T("Open a worktree as the active repository"),
-            () => WorktreesProvider, border));
+
+        // Worktrees is a real split button: the body opens "Manage worktrees" (as
+        // upstream's toolStripWorktrees_ButtonClick does) and the drop-down lists the
+        // worktrees plus the create/prune/manage commands. ApplyRepoState() hides the
+        // whole thing while the repository has a single worktree.
+        _worktreesHost = MakeRepoLinkButton("WorkTree", T("TranslatedStrings/_worktreesText.Text", "Worktrees"),
+            T("FormBrowse/toolStripWorktrees.ToolTipText", "Worktrees"),
+            () => WorktreesProvider, border,
+            bodyAction: () => ManageWorktreesRequested?.Invoke(),
+            extraItems: WorktreeExtraItems);
+        bar.AddItem(_worktreesHost);
 
         // ---- view / layout group -------------------------------------------------
         bar.AddItem(Separator(border));
+
+        // Toggle left panel — upstream's toggleLeftPanel, which sits immediately
+        // before the split-view toggle and carries a pressed/checked state bound to
+        // whether the panel is showing (FormBrowse.RefreshLayoutToggleButtonStates).
+        _leftPanelButton = MakeButton("LayoutSidebarLeft", T("Left panel"),
+            TipWithGesture(T("FormBrowse/toggleLeftPanel.ToolTipText", "Toggle left panel"),
+                BrowseCommand.ToggleLeftPanel),
+            () => ToggleLeftPanelRequested?.Invoke(),
+            out _leftPanelCaption, out _);
+        bar.AddItem(_leftPanelButton);
+
         // Split view is a TOGGLE: the caption carries a check mark while it is on,
         // which also labels the entry the overflow menu builds from LiveCaption.
         _splitButton = MakeButton("LayoutFooter", T("Split view"),
@@ -329,13 +503,7 @@ public sealed class MainToolbar : UserControl
             () => SplitViewToggleRequested?.Invoke(),
             out _splitCaption, out _);
         bar.AddItem(_splitButton);
-        bar.AddItem(MakeMenuButton("LayoutSidebarLeft", T("Commit info"),
-            T("FormBrowse/menuCommitInfoPosition.ToolTipText", "Commit-info position"), new[]
-        {
-            ("LayoutFooter", T("FormBrowse/commitInfoBelowMenuItem.Text", "Below graph"), (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.BelowGraph))),
-            ("LayoutSidebarTopLeft", T("FormBrowse/commitInfoLeftwardMenuItem.Text", "Left of graph"), (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.LeftOfGraph))),
-            ("LayoutSidebarTopRight", T("FormBrowse/commitInfoRightwardMenuItem.Text", "Right of graph"), (Action)(() => CommitInfoPositionChanged?.Invoke(CommitInfoPosition.RightOfGraph))),
-        }));
+        bar.AddItem(MakeCommitInfoSplitButton(border));
 
         // ---- external tools group ------------------------------------------------
         bar.AddItem(Separator(border));
@@ -344,6 +512,12 @@ public sealed class MainToolbar : UserControl
             () => FileExplorerRequested?.Invoke()));
         bar.AddItem(MakeButton("Console", T("Terminal"), T("Open a terminal in the repository directory"),
             () => OpenTerminalRequested?.Invoke()));
+
+        // Settings closes the external-tools group, exactly as upstream's
+        // EditSettings closes ToolStripMain.
+        bar.AddItem(MakeButton("Settings", T("FormBrowse/EditSettings.ToolTipText", "Settings"),
+            TipWithGesture(T("FormBrowse/EditSettings.ToolTipText", "Settings"), BrowseCommand.OpenSettings),
+            () => SettingsRequested?.Invoke()));
 
         // ---- branch-scope + filter group (right side) ---------------------------
         // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
@@ -409,6 +583,19 @@ public sealed class MainToolbar : UserControl
     /// <param name="repoPath">Absolute path of the active repository (may be empty).</param>
     /// <param name="branch">Current branch name (may be empty).</param>
     public void UpdateState(int ahead, int behind, int staged, int unstaged, string repoPath, string branch)
+        => UpdateState(ahead, behind, staged, unstaged, repoPath, branch, state: null);
+
+    /// <summary>
+    ///  As <see cref="UpdateState(int, int, int, int, string, string)"/>, plus the
+    ///  repository-wide facts the toolbar cannot read itself (see
+    ///  <see cref="ToolbarRepoState"/>): the stash count, the working-directory
+    ///  state driving the Commit icon, the worktree and remote counts, and whether
+    ///  the branch's upstream is tracked / gone. Produce it off the UI thread with
+    ///  <see cref="ToolbarStateService.Probe"/> and pass it here on the UI thread.
+    ///  Passing <c>null</c> keeps the previously supplied state.
+    /// </summary>
+    public void UpdateState(int ahead, int behind, int staged, int unstaged, string repoPath, string branch,
+        ToolbarRepoState? state)
     {
         // Remembered so a language rebuild can replay it onto the fresh captions.
         _hasState = true;
@@ -418,25 +605,22 @@ public sealed class MainToolbar : UserControl
         _lastUnstaged = unstaged;
         _lastRepoPath = repoPath ?? string.Empty;
         _lastBranch = branch ?? string.Empty;
+        if (state is not null)
+        {
+            _state = state;
+        }
 
         IBrush text = Brush("App.Text", "#DCDCDC");
         IBrush dim = Brush("App.TextDim", "#8A8A8A");
         IBrush accent = Brush("App.Accent", "#007ACC");
-        IBrush green = Brush("App.GraphGreen", "#3FB950");
-        IBrush orange = new SolidColorBrush(Color.Parse("#E6A700"));
 
-        // Push: light up with an "ahead" badge when there are commits to push.
+        // Push: mirror upstream's ToolStripPushButton — the caption is
+        // AheadBehindData.ToDisplay() ("1↑ 2↓", "0↑↓", or "✗" for a gone upstream),
+        // the icon becomes Images.Unstage while the branch is behind, and the tooltip
+        // spells out both halves.
         if (_pushCaption is not null)
         {
-            bool lit = ahead > 0;
-            _pushCaption.Text = lit
-                ? string.Format(T("{0} ↑{1}"), T("FormBrowse/toolStripButtonPush.Text", "Push"), ahead)
-                : T("FormBrowse/toolStripButtonPush.Text", "Push");
-            _pushCaption.Foreground = lit ? accent : text;
-            if (_pushIcon is not null)
-            {
-                _pushIcon.Opacity = lit ? 1.0 : 0.85;
-            }
+            ApplyPushState(ahead, behind, text, accent);
         }
 
         // Pull: light up with a "behind" badge when there are commits to pull.
@@ -453,20 +637,16 @@ public sealed class MainToolbar : UserControl
             }
         }
 
-        // Commit: colour by working-directory state and show a change count.
+        // Commit: icon from the repository state (upstream's RepoStateVisualiser),
+        // caption "Commit (n)" and a state-matched colour.
         if (_commitCaption is not null)
         {
-            int changes = staged + unstaged;
-            IBrush commitColour = staged > 0 ? green : unstaged > 0 ? orange : dim;
-            _commitCaption.Text = changes > 0
-                ? string.Format(T("{0} ({1})"), T("FormBrowse/toolStripButtonCommit.Text", "Commit"), changes)
-                : T("FormBrowse/toolStripButtonCommit.Text", "Commit");
-            _commitCaption.Foreground = commitColour;
-            if (_commitIcon is not null)
-            {
-                _commitIcon.Opacity = changes > 0 ? 1.0 : 0.6;
-            }
+            ApplyCommitState(staged, unstaged);
         }
+
+        // Everything driven purely by the repo-wide state (stash count + enablement,
+        // worktrees visibility) — also called on its own after a language rebuild.
+        ApplyRepoState();
 
         // Inline branch dropdown caption: current branch (or "(no branch)").
         _currentBranch = branch ?? string.Empty;
@@ -557,6 +737,294 @@ public sealed class MainToolbar : UserControl
         }
     }
 
+    /// <summary>
+    ///  Reflects whether the host's left (repository objects) panel is showing, as
+    ///  upstream's <c>RefreshLayoutToggleButtonStates</c> does with
+    ///  <c>toggleLeftPanel.Checked = !MainSplitContainer.Panel1Collapsed</c>. The
+    ///  toolbar only displays the state — the host owns it, and should call this
+    ///  both at start-up and after every toggle (including the hotkey path, which
+    ///  does not go through the button).
+    /// </summary>
+    public void SetLeftPanelVisible(bool visible)
+    {
+        _leftPanelVisible = visible;
+        if (_leftPanelCaption is null)
+        {
+            return;
+        }
+
+        // Same "checked" idiom as the split-view toggle: a ✓ in the caption (which
+        // the overflow menu picks up through LiveCaption) plus an accented colour.
+        _leftPanelCaption.Text = visible ? string.Format(T("{0} ✓"), T("Left panel")) : T("Left panel");
+        _leftPanelCaption.Foreground = visible ? Brush("App.Accent", "#3399FF") : Brush("App.Text", "#DCDCDC");
+    }
+
+    /// <summary>
+    ///  Reflects the active commit-info position WITHOUT raising
+    ///  <see cref="CommitInfoPositionChanged"/>, so the host can push the value it
+    ///  restored from its persisted layout. Copies the icon and the tooltip from the
+    ///  entry matching <paramref name="position"/>, exactly as upstream's
+    ///  <c>RefreshLayoutToggleButtonStates</c> copies them out of
+    ///  <c>menuCommitInfoPosition.DropDownItems[(int)position]</c>.
+    /// </summary>
+    public void SetCommitInfoPosition(CommitInfoPosition position)
+    {
+        _commitInfoPosition = position;
+
+        (string icon, string label) = CommitInfoEntry(position);
+        if (_commitInfoIcon is not null)
+        {
+            _commitInfoIcon.Source = IconLoader.Load(icon);
+        }
+
+        if (_commitInfoButton is not null)
+        {
+            ToolTip.SetTip(_commitInfoButton, label);
+        }
+    }
+
+    // ---- Push button (upstream ToolStripPushButton) ---------------------------
+
+    // Renders the ahead/behind pair through the core's own AheadBehindData.ToDisplay(),
+    // so the port cannot drift from upstream's formatting rules ("0↑↓" when in sync,
+    // "2↑ 1↓" when diverged, "✗" when the upstream ref is gone). Reuses upstream's
+    // two tooltip sentences, and swaps in Images.Unstage while the branch is behind —
+    // the visual warning that a plain push will be rejected.
+    private void ApplyPushState(int ahead, int behind, IBrush text, IBrush accent)
+    {
+        string push = T("FormBrowse/toolStripButtonPush.Text", "Push");
+
+        // Unknown tracking state (no host probe yet) is inferred from the counts: a
+        // non-zero ahead/behind can only come from a tracked branch.
+        bool hasUpstream = _state.HasUpstream ?? (ahead > 0 || behind > 0);
+
+        if (!hasUpstream)
+        {
+            // No upstream configured: nothing meaningful to count, so the button
+            // stays in its plain resting state rather than claiming "0↑↓".
+            _pushCaption!.Text = push;
+            _pushCaption.Foreground = text;
+            SetPushIcon("Push", lit: false);
+            SetPushTip(T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"));
+            return;
+        }
+
+        AheadBehindData data = _state.UpstreamGone
+            ? new AheadBehindData(_lastBranch, string.Empty, AheadBehindData.Gone, string.Empty)
+            : new AheadBehindData(
+                _lastBranch,
+                string.Empty,
+                ahead.ToString(),
+                behind > 0 ? behind.ToString() : string.Empty);
+
+        _pushCaption!.Text = string.Format(T("{0} {1}"), push, data.ToDisplay());
+        bool lit = ahead > 0 || behind > 0 || _state.UpstreamGone;
+        _pushCaption.Foreground = lit ? accent : text;
+
+        // Upstream: "if (!string.IsNullOrEmpty(data.BehindCount)) Image = Images.Unstage".
+        SetPushIcon(behind > 0 ? "Unstage" : "Push", lit);
+
+        SetPushTip(PushTooltip(ahead, behind));
+    }
+
+    // The Push button only exists between Build() calls, so the tip is set defensively.
+    private void SetPushTip(string tooltip)
+    {
+        if (_pushButton is not null)
+        {
+            ToolTip.SetTip(_pushButton, tooltip);
+        }
+    }
+
+    private void SetPushIcon(string iconName, bool lit)
+    {
+        if (_pushIcon is null)
+        {
+            return;
+        }
+
+        Bitmap? bitmap = IconLoader.Load(iconName);
+        if (bitmap is not null)
+        {
+            _pushIcon.Source = bitmap;
+        }
+
+        _pushIcon.Opacity = lit ? 1.0 : 0.85;
+    }
+
+    // Upstream's ToolStripPushButton.GetToolTipText, with its two translated
+    // sentences joined by a newline when the branch has diverged both ways.
+    private string PushTooltip(int ahead, int behind)
+    {
+        if (_state.UpstreamGone)
+        {
+            return T("The upstream branch is gone");
+        }
+
+        List<string> lines = [];
+        if (ahead > 0)
+        {
+            lines.Add(string.Format(
+                T("ToolStripPushButton/_aheadCommitsToPush.Text", "{0} new commit(s) will be pushed"), ahead));
+        }
+
+        if (behind > 0)
+        {
+            lines.Add(string.Format(
+                T("ToolStripPushButton/_behindCommitsTointegrateOrForcePush.Text",
+                    "{0} commit(s) should be integrated (or will be lost if force pushed)"), behind));
+        }
+
+        return lines.Count == 0
+            ? T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote")
+            : string.Join(Environment.NewLine, lines);
+    }
+
+    // ---- Commit button (upstream UpdateCommitButtonAndGetBrush) ---------------
+
+    // Icon straight from the repository state (the upstream RepoState*.png set) and
+    // "Commit (n)" for the change count. The button's MinWidth only ever grows, which
+    // is the port's equivalent of upstream freezing Width so the strip stops jittering
+    // as the count changes width.
+    private void ApplyCommitState(int staged, int unstaged)
+    {
+        // Prefer the probed state; with no probe yet, derive the obvious cases from
+        // the counts the host always supplies so the icon is never simply wrong.
+        RepoState state = _state.State != RepoState.Unknown
+            ? _state.State
+            : (staged, unstaged) switch
+            {
+                (0, 0) => RepoState.Clean,
+                (0, _) => RepoState.Dirty,
+                (_, 0) => RepoState.Staged,
+                _ => RepoState.Mixed,
+            };
+
+        int changes = _state.State != RepoState.Unknown && _state.ChangeCount > 0
+            ? _state.ChangeCount
+            : staged + unstaged;
+
+        _commitCaption!.Text = changes > 0
+            ? string.Format(T("{0} ({1})"), T("FormBrowse/toolStripButtonCommit.Text", "Commit"), changes)
+            : T("FormBrowse/toolStripButtonCommit.Text", "Commit");
+        _commitCaption.Foreground = CommitStateBrush(state);
+
+        if (_commitIcon is not null)
+        {
+            Bitmap? bitmap = IconLoader.Load(ToolbarStateService.IconFor(state));
+            if (bitmap is not null)
+            {
+                _commitIcon.Source = bitmap;
+            }
+
+            // The state icons are meaningful in their own right, so unlike the old
+            // fixed icon they are never dimmed.
+            _commitIcon.Opacity = 1.0;
+        }
+
+        FreezeCommitWidth();
+    }
+
+    // Upstream's RepoStateVisualiser pairs each state with a colour; those colours are
+    // offered as theme keys first (so a theme can override them) and fall back to the
+    // upstream values.
+    private IBrush CommitStateBrush(RepoState state) => state switch
+    {
+        RepoState.Clean => Brush("App.RepoStateClean", "#8A8A8A"),
+        RepoState.Dirty => Brush("App.RepoStateDirty", "#FFA07A"),
+        RepoState.DirtySubmodules => Brush("App.RepoStateDirtySubmodules", "#FFA500"),
+        RepoState.Mixed => Brush("App.RepoStateMixed", "#E6A700"),
+        RepoState.Staged => Brush("App.RepoStateStaged", "#87CEFA"),
+        RepoState.UntrackedOnly => Brush("App.RepoStateUntrackedOnly", "#8A63D2"),
+        _ => Brush("App.TextDim", "#8A8A8A"),
+    };
+
+    // Grows (never shrinks) the Commit button's MinWidth to the widest it has been
+    // measured at, so gaining/losing a digit does not shift the whole strip.
+    private void FreezeCommitWidth()
+    {
+        if (_commitButton is null)
+        {
+            return;
+        }
+
+        // Measured width is only known after a layout pass, so re-check next beat.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_commitButton is null)
+            {
+                return;
+            }
+
+            double width = _commitButton.Bounds.Width;
+            if (width > _commitMinWidth)
+            {
+                _commitMinWidth = width;
+                _commitButton.MinWidth = width;
+            }
+        }, DispatcherPriority.Background);
+    }
+
+    // ---- repository-wide state (stash count, enablement, visibility) ----------
+
+    // Applies everything that depends only on _state: the stash caption's "(n)" and
+    // its enablement, and whether the worktrees button exists on the strip at all.
+    private void ApplyRepoState()
+    {
+        bool canStash = _state.IsValidWorkingDir && !_state.IsBare;
+
+        if (_stashCaption is not null)
+        {
+            string stash = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash");
+
+            // Upstream puts the bare count in the button's Text ("(3)"); the port
+            // keeps the word too, because its buttons are captioned, not icon-only.
+            _stashCaption.Text = _state.StashCount > 0
+                ? string.Format(T("{0} ({1})"), stash, _state.StashCount)
+                : stash;
+            _stashCaption.Foreground = canStash
+                ? Brush("App.Text", "#DCDCDC")
+                : Brush("App.TextDim", "#8A8A8A");
+        }
+
+        if (_stashHost is not null)
+        {
+            // Disabling the Border disables both halves of the split button.
+            _stashHost.IsEnabled = canStash;
+        }
+
+        if (_worktreesHost is not null)
+        {
+            // Upstream: toolStripWorktrees.Visible = worktrees.Count > 1, and false
+            // outright when the directory is not a valid working dir. The button is
+            // removed from / restored to the strip rather than merely hidden, so the
+            // OverflowPanel does not reserve room for an invisible item and the
+            // overflow menu does not list it either.
+            // A negative count means "nobody has probed yet", and the button stays.
+            bool show = _state.IsValidWorkingDir && (_state.WorktreeCount < 0 || _state.WorktreeCount > 1);
+            SetItemPresent(_worktreesHost, show);
+        }
+    }
+
+    // Adds/removes a built toolbar item without rebuilding the strip, keeping its
+    // original position so the button does not jump to the end when it comes back.
+    private void SetItemPresent(Control item, bool present)
+    {
+        if (present == _bar.Contains(item))
+        {
+            return;
+        }
+
+        if (present)
+        {
+            _bar.RestoreItem(item);
+        }
+        else
+        {
+            _bar.RemoveItem(item);
+        }
+    }
+
     private Button MakeButton(string iconName, string label, string tooltip, Action onClick)
         => MakeButton(iconName, label, tooltip, onClick, out _, out _);
 
@@ -613,6 +1081,332 @@ public sealed class MainToolbar : UserControl
         };
         return button;
     }
+
+    // ---- Stash split button (upstream toolStripSplitStash) --------------------
+
+    // Body = "Manage stashes" (upstream's ToolStripSplitStashButtonClick calls
+    // StartStashDialog, the same command as the "Manage stashes…" entry); arrow drops
+    // Stash / Stash staged / Stash pop / — / Manage stashes… / Create a stash…, in
+    // upstream's order. The caption carries the "(n)" stash count (UpdateStashCount).
+    private Control MakeStashSplitButton(IBrush border)
+    {
+        StackPanel bodyContent = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        Image? icon = IconLoader.Image("stash", 16);
+        if (icon is not null)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            bodyContent.Children.Add(icon);
+        }
+
+        _stashCaption = new TextBlock
+        {
+            Text = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+        };
+        bodyContent.Children.Add(_stashCaption);
+
+        Button body = new()
+        {
+            Content = bodyContent,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        body.Classes.Add("toolbtn");
+        ToolTip.SetTip(body, T("FormBrowse/toolStripSplitStash.ToolTipText", "Manage stashes"));
+        body.Click += (_, _) => ManageStashesRequested?.Invoke();
+
+        Border divider = new()
+        {
+            Width = 1,
+            Margin = new Thickness(0, 4),
+            Background = border,
+        };
+
+        Button arrow = new()
+        {
+            Content = new TextBlock
+            {
+                Text = "▾",
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 10,
+            },
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        arrow.Classes.Add("toolbtn");
+        ToolTip.SetTip(arrow, T("FormBrowse/stashChangesToolStripMenuItem.ToolTipText", "Stash changes"));
+
+        // Populated BEFORE ShowAt and rebuilt on every click — Avalonia 11.3.x
+        // measures a MenuFlyout's content when the popup opens and never re-measures,
+        // so items added later would leave a thin empty sliver. Rebuilding also keeps
+        // "Stash staged" in step with the probed git-version support.
+        MenuFlyout flyout = new();
+        arrow.Click += (_, _) =>
+        {
+            BuildStashMenu(flyout);
+            flyout.ShowAt(arrow);
+        };
+
+        _stashHost = new Border
+        {
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { body, divider, arrow },
+            },
+        };
+
+        _overflow[_stashHost] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash"),
+            Icon = "stash",
+            LiveCaption = _stashCaption,
+            ShowMenu = anchor =>
+            {
+                BuildStashMenu(flyout);
+                flyout.ShowAt(anchor);
+                return Task.CompletedTask;
+            },
+        };
+
+        return _stashHost;
+    }
+
+    // Upstream's toolStripSplitStash.DropDownItems, in order.
+    private void BuildStashMenu(MenuFlyout flyout)
+    {
+        flyout.Items.Clear();
+
+        flyout.Items.Add(StashItem(
+            T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash"),
+            T("FormBrowse/stashChangesToolStripMenuItem.ToolTipText", "Stash changes"),
+            "stash", BrowseCommand.Stash, () => StashRequested?.Invoke()));
+
+        // Upstream gates this on Module.GitVersion.SupportStashStaged (git 2.35+
+        // introduced "git stash push --staged"), and so does the port's probe.
+        if (_state.SupportsStashStaged)
+        {
+            flyout.Items.Add(StashItem(
+                T("FormBrowse/stashStagedToolStripMenuItem.Text", "Stash staged"),
+                T("FormBrowse/stashStagedToolStripMenuItem.ToolTipText", "Stash staged changes"),
+                "stash", BrowseCommand.StashStaged, () => StashStagedRequested?.Invoke()));
+        }
+
+        flyout.Items.Add(StashItem(
+            T("FormBrowse/stashPopToolStripMenuItem.Text", "Stash pop"),
+            T("FormBrowse/stashPopToolStripMenuItem.ToolTipText", "Apply and drop single stash"),
+            "stash", BrowseCommand.StashPop, () => StashPopRequested?.Invoke()));
+
+        flyout.Items.Add(new MenuSeparator());
+
+        flyout.Items.Add(StashItem(
+            T("FormBrowse/manageStashesToolStripMenuItem.Text", "Manage stashes…"),
+            T("FormBrowse/manageStashesToolStripMenuItem.ToolTipText", "Manage stashes"),
+            "stash", command: null, () => ManageStashesRequested?.Invoke()));
+
+        flyout.Items.Add(StashItem(
+            T("FormBrowse/createAStashToolStripMenuItem.Text", "Create a stash…"),
+            tooltip: null, "stash", command: null, () => CreateStashRequested?.Invoke()));
+    }
+
+    // One stash drop-down entry. Entries whose event nobody wired are shown disabled
+    // rather than silently doing nothing when clicked.
+    private MenuItem StashItem(string header, string? tooltip, string icon,
+        BrowseCommand? command, Action onClick)
+    {
+        MenuItem item = new()
+        {
+            Header = header,
+            Icon = IconLoader.Image(icon, 16),
+        };
+
+        if (command is { } c && GestureFor(c) is { } gesture)
+        {
+            // Display only: the window-level HotkeyService owns the real binding.
+            item.InputGesture = gesture;
+        }
+
+        if (!string.IsNullOrEmpty(tooltip))
+        {
+            ToolTip.SetTip(item, tooltip);
+        }
+
+        item.Click += (_, _) => onClick();
+        return item;
+    }
+
+    // ---- Commit-info position split button (upstream menuCommitInfoPosition) ---
+
+    // Body cycles the three positions ((pos + 1) % 3, upstream CommitInfoPositionClick);
+    // the arrow drops the three entries with a radio mark on the active one. Both the
+    // icon and the tooltip track the active position through SetCommitInfoPosition.
+    private Control MakeCommitInfoSplitButton(IBrush border)
+    {
+        (string activeIcon, string activeLabel) = CommitInfoEntry(_commitInfoPosition);
+
+        StackPanel bodyContent = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        _commitInfoIcon = IconLoader.Image(activeIcon, 16);
+        if (_commitInfoIcon is not null)
+        {
+            _commitInfoIcon.VerticalAlignment = VerticalAlignment.Center;
+            bodyContent.Children.Add(_commitInfoIcon);
+        }
+
+        bodyContent.Children.Add(new TextBlock
+        {
+            Text = T("Commit info"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+        });
+
+        Button body = new()
+        {
+            Content = bodyContent,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        body.Classes.Add("toolbtn");
+        ToolTip.SetTip(body, activeLabel);
+        body.Click += (_, _) => CycleCommitInfoPosition();
+        _commitInfoButton = body;
+
+        Border divider = new()
+        {
+            Width = 1,
+            Margin = new Thickness(0, 4),
+            Background = border,
+        };
+
+        Button arrow = new()
+        {
+            Content = new TextBlock
+            {
+                Text = "▾",
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 10,
+            },
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        arrow.Classes.Add("toolbtn");
+        ToolTip.SetTip(arrow, T("FormBrowse/menuCommitInfoPosition.ToolTipText", "Commit info position"));
+
+        MenuFlyout flyout = new();
+        arrow.Click += (_, _) =>
+        {
+            BuildCommitInfoMenu(flyout);
+            flyout.ShowAt(arrow);
+        };
+
+        Border host = new()
+        {
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { body, divider, arrow },
+            },
+        };
+
+        _overflow[host] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = T("Commit info"),
+            Icon = activeIcon,
+            ShowMenu = anchor =>
+            {
+                BuildCommitInfoMenu(flyout);
+                flyout.ShowAt(anchor);
+                return Task.CompletedTask;
+            },
+        };
+
+        return host;
+    }
+
+    // Upstream: SetCommitInfoPosition((CommitInfoPosition)(((int)current + 1) % 3)).
+    private void CycleCommitInfoPosition()
+    {
+        CommitInfoPosition next = (CommitInfoPosition)(
+            ((int)_commitInfoPosition + 1) % Enum.GetValues<CommitInfoPosition>().Length);
+
+        // Reflect it immediately so the icon follows the click even if the host is
+        // slow (or declines) to echo the new position back.
+        SetCommitInfoPosition(next);
+        CommitInfoPositionChanged?.Invoke(next);
+    }
+
+    private void BuildCommitInfoMenu(MenuFlyout flyout)
+    {
+        flyout.Items.Clear();
+        foreach (CommitInfoPosition position in Enum.GetValues<CommitInfoPosition>())
+        {
+            (string icon, string label) = CommitInfoEntry(position);
+            CommitInfoPosition captured = position;
+            MenuItem item = new()
+            {
+                Header = label,
+                Icon = IconLoader.Image(icon, 16),
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = position == _commitInfoPosition,
+            };
+            item.Click += (_, _) =>
+            {
+                SetCommitInfoPosition(captured);
+                CommitInfoPositionChanged?.Invoke(captured);
+            };
+            flyout.Items.Add(item);
+        }
+    }
+
+    // The icon + menu text upstream pairs with each position. The enum order matches
+    // upstream's AppSettings.CommitInfoPosition (BelowList/Leftward/Rightward), which
+    // is what makes the "index the drop-down by the enum value" trick work there.
+    private static (string Icon, string Label) CommitInfoEntry(CommitInfoPosition position) => position switch
+    {
+        CommitInfoPosition.LeftOfGraph => ("LayoutSidebarTopLeft",
+            T("FormBrowse/commitInfoLeftwardMenuItem.Text", "Commit info left of graph")),
+        CommitInfoPosition.RightOfGraph => ("LayoutSidebarTopRight",
+            T("FormBrowse/commitInfoRightwardMenuItem.Text", "Commit info right of graph")),
+        _ => ("LayoutFooterTab", T("FormBrowse/commitInfoBelowMenuItem.Text", "Commit info below graph")),
+    };
 
     // ---- Pull split button ---------------------------------------------------
 
@@ -776,6 +1570,11 @@ public sealed class MainToolbar : UserControl
 
         foreach ((GitPullAction action, string label) in PullActions())
         {
+            if (IsHiddenPullAction(action))
+            {
+                continue;
+            }
+
             MenuItem item = new()
             {
                 Header = label,
@@ -794,6 +1593,11 @@ public sealed class MainToolbar : UserControl
         };
         foreach ((GitPullAction action, string label) in PullActions())
         {
+            if (IsHiddenPullAction(action))
+            {
+                continue;
+            }
+
             GitPullAction captured = action;
             MenuItem item = new()
             {
@@ -818,6 +1622,18 @@ public sealed class MainToolbar : UserControl
 
         flyout.Items.Add(setDefault);
     }
+
+    /// <summary>
+    ///  Upstream's <c>UpdateFetchAllVisibility</c>: with a single remote, "Fetch all"
+    ///  is redundant with plain "Fetch", so it is dropped both from the drop-down and
+    ///  from the "Set default Pull button action" submenu. Note upstream hides ONLY
+    ///  <c>fetchAllToolStripMenuItem</c> — "Fetch and prune all" stays, because prune
+    ///  is still meaningful against one remote.
+    /// </summary>
+    private bool IsHiddenPullAction(GitPullAction action)
+        => action == GitPullAction.FetchAll
+            && _state.IsValidWorkingDir
+            && _state.RemoteCount is >= 0 and <= 1;
 
     // The five actions the split button offers, with their upstream captions.
     private static (GitPullAction Action, string Label)[] PullActions() =>
@@ -861,19 +1677,39 @@ public sealed class MainToolbar : UserControl
         }
     }
 
-    // Gestures shown next to the drop-down entry and in the body's tooltip. They
-    // are read from the hotkey DEFAULTS, which are upstream's own FormBrowse map:
-    // F8 = pull with the default action, Ctrl+Down = open the pull dialog. A user
-    // override of either binding is not reflected here (the toolbar has no
-    // HotkeyService instance) — a display-only limitation.
-    private static KeyGesture? DefaultPullGesture => GestureFor(BrowseCommand.QuickPullOrFetch);
+    // Gestures shown next to a drop-down entry and appended to tooltips.
+    private KeyGesture? DefaultPullGesture => GestureFor(BrowseCommand.QuickPullOrFetch);
 
-    private static KeyGesture? OpenPullDialogGesture => GestureFor(BrowseCommand.PullOrFetch);
+    private KeyGesture? OpenPullDialogGesture => GestureFor(BrowseCommand.PullOrFetch);
 
-    private static KeyGesture? GestureFor(BrowseCommand command)
-        => HotkeyService.Defaults.TryGetValue(command, out HotkeyGesture g)
+    /// <summary>
+    ///  The gesture actually in force for <paramref name="command"/>. Read from the
+    ///  host's live <see cref="Hotkeys"/> service when one was assigned, so a user
+    ///  override is shown rather than the shipped default — with overrides active the
+    ///  <see cref="HotkeyService.Defaults"/> labels would simply lie. A command the
+    ///  user cleared yields <c>null</c> and no gesture is shown at all.
+    /// </summary>
+    private KeyGesture? GestureFor(BrowseCommand command)
+    {
+        if (Hotkeys is { } service)
+        {
+            return service.GestureFor(command) is { } bound
+                ? new KeyGesture(bound.Key, bound.Modifiers)
+                : null;
+        }
+
+        return HotkeyService.Defaults.TryGetValue(command, out HotkeyGesture g)
             ? new KeyGesture(g.Key, g.Modifiers)
             : null;
+    }
+
+    // "Toggle left panel (Ctrl+Alt+C)" — upstream's UpdateTooltipWithShortcut, which
+    // suffixes a button's tooltip with its shortcut.
+    private string TipWithGesture(string tooltip, BrowseCommand command)
+    {
+        string gesture = GestureFor(command)?.ToString() ?? string.Empty;
+        return gesture.Length == 0 ? tooltip : string.Format(T("{0} ({1})"), tooltip, gesture);
+    }
 
     // Raises the explicit-action event, falling back to the legacy parameterless
     // PullRequested while no host has wired the new one, so a not-yet-updated host
@@ -965,8 +1801,20 @@ public sealed class MainToolbar : UserControl
     // thread). Each entry opens that path as the active repository via
     // OpenRepositoryRequested. The provider is read lazily through
     // <paramref name="provider"/> so the host can wire it after construction.
-    private Button MakeRepoLinkButton(string iconName, string label, string tooltip,
-        Func<Func<Task<IReadOnlyList<RepoLink>>>?> provider, IBrush border)
+    /// <param name="bodyAction">
+    ///  When set, the button becomes a true split button: this runs on the body and
+    ///  only the chevron opens the drop-down (upstream's worktrees button, whose body
+    ///  opens "Manage worktrees"). When null the whole button opens the drop-down,
+    ///  which is what the submodules button does.
+    /// </param>
+    /// <param name="extraItems">
+    ///  Appended after the provider's entries, behind a separator — the worktrees
+    ///  drop-down's Create / Prune / Manage commands.
+    /// </param>
+    private Control MakeRepoLinkButton(string iconName, string label, string tooltip,
+        Func<Func<Task<IReadOnlyList<RepoLink>>>?> provider, IBrush border,
+        Action? bodyAction = null,
+        Func<(string Icon, string Text, Action OnClick)[]>? extraItems = null)
     {
         StackPanel content = new()
         {
@@ -989,13 +1837,19 @@ public sealed class MainToolbar : UserControl
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
         });
-        content.Children.Add(new TextBlock
+
+        // With a body action the chevron becomes its own button (see below), so it is
+        // not part of the body's content.
+        if (bodyAction is null)
         {
-            Text = "▾",
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Brush("App.Text", "#DCDCDC"),
-            FontSize = 10,
-        });
+            content.Children.Add(new TextBlock
+            {
+                Text = "▾",
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 10,
+            });
+        }
 
         // NOTE: we deliberately do NOT assign this flyout to button.Flyout and
         // populate it lazily via the Opening event. Under Avalonia 11.3.x the
@@ -1018,30 +1872,116 @@ public sealed class MainToolbar : UserControl
         };
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, tooltip);
-        button.Click += async (_, _) =>
+
+        async Task ShowLinksAsync(Control anchor)
         {
-            await PopulateRepoLinksAsync(flyout, iconName, provider());
-            flyout.ShowAt(button);
+            await PopulateRepoLinksAsync(flyout, iconName, provider(), extraItems?.Invoke());
+            flyout.ShowAt(anchor);
+        }
+
+        // Click handlers return void, so an unobserved exception here would take the
+        // process down: a drop-down that cannot be listed must never do that.
+        void ShowLinks(Control anchor) => Dispatcher.UIThread.Post(async () =>
+        {
+            try
+            {
+                await ShowLinksAsync(anchor);
+            }
+            catch
+            {
+                // PopulateRepoLinksAsync already degrades to "(unable to list)"; this
+                // catches anything the flyout itself might throw.
+            }
+        });
+
+        if (bodyAction is null)
+        {
+            button.Click += (_, _) => ShowLinks(button);
+            _overflow[button] = new OverflowEntry
+            {
+                Kind = OverflowKind.LazyMenu,
+                Label = label,
+                Icon = iconName,
+                ShowMenu = ShowLinksAsync,
+            };
+            return button;
+        }
+
+        // Split form: the body runs the primary command, a hairline-separated arrow
+        // drops the list. Same two-real-Buttons-in-one-Border shape as the Pull and
+        // Stash split buttons, so each half keeps its own hover feedback while the
+        // overflow menu still sees a single item.
+        button.Click += (_, _) => bodyAction();
+
+        Border divider = new()
+        {
+            Width = 1,
+            Margin = new Thickness(0, 4),
+            Background = border,
         };
-        _overflow[button] = new OverflowEntry
+
+        Button arrow = new()
+        {
+            Content = new TextBlock
+            {
+                Text = "▾",
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 10,
+            },
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        arrow.Classes.Add("toolbtn");
+        ToolTip.SetTip(arrow, tooltip);
+        arrow.Click += (_, _) => ShowLinks(arrow);
+
+        Border host = new()
+        {
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { button, divider, arrow },
+            },
+        };
+
+        _overflow[host] = new OverflowEntry
         {
             Kind = OverflowKind.LazyMenu,
             Label = label,
             Icon = iconName,
-            ShowMenu = async anchor =>
-            {
-                await PopulateRepoLinksAsync(flyout, iconName, provider());
-                flyout.ShowAt(anchor);
-            },
+            ShowMenu = ShowLinksAsync,
         };
-        return button;
+
+        return host;
     }
+
+    // The worktrees drop-down's trailing commands, after the worktree list and a
+    // separator — upstream's Create worktree… / Prune worktrees / Manage worktrees…
+    // (toolStripWorktrees_DropDownOpening).
+    private (string Icon, string Text, Action OnClick)[] WorktreeExtraItems() =>
+    [
+        ("WorkTree", T("TranslatedStrings/_createWorktree.Text", "Create worktree..."),
+            () => CreateWorktreeRequested?.Invoke()),
+        ("WorkTree", T("TranslatedStrings/_pruneWorktrees.Text", "Prune worktrees"),
+            () => PruneWorktreesRequested?.Invoke()),
+        ("WorkTree", T("TranslatedStrings/_manageWorktrees.Text", "Manage worktrees..."),
+            () => ManageWorktreesRequested?.Invoke()),
+    ];
 
     // Rebuilds a split-button flyout from the host provider. Shows a disabled
     // placeholder while the (off-thread) provider runs, then lists each entry;
     // never throws — a provider failure degrades to a disabled "(error)" item.
     private async Task PopulateRepoLinksAsync(MenuFlyout flyout, string fallbackIcon,
-        Func<Task<IReadOnlyList<RepoLink>>>? provider)
+        Func<Task<IReadOnlyList<RepoLink>>>? provider,
+        (string Icon, string Text, Action OnClick)[]? extraItems = null)
     {
         flyout.Items.Clear();
         if (provider is null)
@@ -1068,24 +2008,59 @@ public sealed class MainToolbar : UserControl
         if (links.Count == 0)
         {
             flyout.Items.Add(new MenuItem { Header = T("(none)"), IsEnabled = false });
-            return;
         }
 
         foreach (RepoLink link in links)
         {
-            // A string MenuItem header goes through Avalonia's access-key parser,
-            // so an underscore in the data ("git_ext_mod") is escaped to survive.
-            // (Captions rendered by a plain TextBlock must NOT be escaped — the
-            // glyphs would show up doubled.)
-            MenuItem item = new() { Header = link.Label.Replace("_", "__") };
-            Image? mIcon = IconLoader.Image(string.IsNullOrEmpty(link.Icon) ? fallbackIcon : link.Icon, 16);
-            if (mIcon is not null)
+            MenuItem item = new()
             {
-                item.Icon = mIcon;
+                // A string MenuItem header goes through Avalonia's access-key parser,
+                // so an underscore in the data ("git_ext_mod") is escaped to survive.
+                // (Captions rendered by a plain TextBlock must NOT be escaped — the
+                // glyphs would show up doubled.)
+                Header = link.IsDim
+                    ? new TextBlock
+                    {
+                        // A deleted/prunable worktree is greyed out, upstream's
+                        // item.ForeColor = SystemColors.GrayText.
+                        Text = link.Label,
+                        Foreground = Brush("App.TextDim", "#8A8A8A"),
+                    }
+                    : link.Label.Replace("_", "__"),
+                IsEnabled = link.IsEnabled,
+            };
+
+            if (link.IsChecked)
+            {
+                // Upstream marks the current worktree Checked (and disables it, since
+                // "switching" to where you already are is a no-op).
+                item.ToggleType = MenuItemToggleType.CheckBox;
+                item.IsChecked = true;
+            }
+            else
+            {
+                Image? mIcon = IconLoader.Image(string.IsNullOrEmpty(link.Icon) ? fallbackIcon : link.Icon, 16);
+                if (mIcon is not null)
+                {
+                    item.Icon = mIcon;
+                }
             }
 
             string path = link.Path;
             item.Click += (_, _) => OpenRepositoryRequested?.Invoke(path);
+            flyout.Items.Add(item);
+        }
+
+        if (extraItems is not { Length: > 0 })
+        {
+            return;
+        }
+
+        flyout.Items.Add(new MenuSeparator());
+        foreach ((string ic, string text, Action onClick) in extraItems)
+        {
+            MenuItem item = new() { Header = text, Icon = IconLoader.Image(ic, 16) };
+            item.Click += (_, _) => onClick();
             flyout.Items.Add(item);
         }
     }
@@ -1146,6 +2121,18 @@ public sealed class MainToolbar : UserControl
             await PopulateBranchesAsync(flyout, BranchesProvider);
             flyout.ShowAt(button);
         };
+
+        // Upstream's branchSelect_MouseUp: a RIGHT click on the button skips the list
+        // and opens the checkout dialog straight away. Handled on the tunnelling
+        // (preview) event so the Button's own press handling cannot swallow it.
+        button.AddHandler(PointerReleasedEvent, (_, e) =>
+        {
+            if (e.InitialPressMouseButton == MouseButton.Right)
+            {
+                e.Handled = true;
+                CheckoutBranchRequested?.Invoke();
+            }
+        }, RoutingStrategies.Tunnel);
         _overflow[button] = new OverflowEntry
         {
             Kind = OverflowKind.LazyMenu,
@@ -1274,6 +2261,21 @@ public sealed class MainToolbar : UserControl
         }
 
         flyout.Items.Clear();
+
+        // Upstream's CurrentBranchDropDownOpening leads with "Checkout branch..." and
+        // a separator before the branch list.
+        MenuItem checkout = new()
+        {
+            Header = T("FormBrowse/checkoutBranchToolStripMenuItem.Text", "Checkout branch..."),
+            Icon = IconLoader.Image("BranchCheckout", 16),
+            InputGesture = GestureFor(BrowseCommand.CheckoutBranch),
+            // Nothing wired yet → shown, but inert rather than misleading.
+            IsEnabled = CheckoutBranchRequested is not null,
+        };
+        checkout.Click += (_, _) => CheckoutBranchRequested?.Invoke();
+        flyout.Items.Add(checkout);
+        flyout.Items.Add(new MenuSeparator());
+
         if (branches.Count == 0)
         {
             flyout.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
@@ -1281,7 +2283,10 @@ public sealed class MainToolbar : UserControl
         }
 
         Image? currentIcon = IconLoader.Image("Branch", 16);
-        foreach (string name in branches)
+
+        // Upstream caps the list at 100 refs: "Git Extensions will hang when the drop
+        // down is too large".
+        foreach (string name in branches.Take(100))
         {
             bool isCurrent = string.Equals(name, _currentBranch, StringComparison.Ordinal);
             MenuItem item = new()
@@ -1567,6 +2572,10 @@ public sealed class MainToolbar : UserControl
         internal const string SeparatorTag = "toolbar-separator";
 
         private readonly Control _overflowButton;
+
+        // Insertion rank per item, so an item removed by SetItemPresent can be put
+        // back at its original place on the strip.
+        private readonly Dictionary<Control, int> _order = new();
         private int _visibleCount;
 
         public OverflowPanel(Control overflowButton)
@@ -1590,7 +2599,48 @@ public sealed class MainToolbar : UserControl
         public IEnumerable<Control> HiddenItems => Items.Skip(_visibleCount);
 
         /// <summary>Appends a toolbar item, keeping the overflow button last.</summary>
-        public void AddItem(Control item) => Children.Insert(Children.Count - 1, item);
+        public void AddItem(Control item)
+        {
+            _order[item] = _order.Count;
+            Children.Insert(Children.Count - 1, item);
+        }
+
+        /// <summary>True while <paramref name="item"/> is on the strip.</summary>
+        public bool Contains(Control item) => Children.Contains(item);
+
+        /// <summary>
+        ///  Takes an item off the strip. Its original position is remembered, so
+        ///  <see cref="RestoreItem"/> puts it back where it belongs instead of at the
+        ///  end. Removal (rather than <c>IsVisible = false</c>) is deliberate: a
+        ///  collapsed-but-present child would still be measured, would still consume
+        ///  overflow budget, and would still be listed in the overflow menu.
+        /// </summary>
+        public void RemoveItem(Control item) => Children.Remove(item);
+
+        /// <summary>Puts a previously removed item back at its original index.</summary>
+        public void RestoreItem(Control item)
+        {
+            if (Children.Contains(item) || !_order.TryGetValue(item, out int rank))
+            {
+                return;
+            }
+
+            // Insert before the first present item that was added after this one; the
+            // overflow button is always last, so the fallback lands just before it.
+            int at = Children.Count - 1;
+            for (int i = 0; i < Children.Count - 1; i++)
+            {
+                if (Children[i] is Control sibling
+                    && _order.TryGetValue(sibling, out int siblingRank)
+                    && siblingRank > rank)
+                {
+                    at = i;
+                    break;
+                }
+            }
+
+            Children.Insert(at, item);
+        }
 
         protected override Size MeasureOverride(Size availableSize)
         {
