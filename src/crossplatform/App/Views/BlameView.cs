@@ -2,9 +2,12 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -16,13 +19,24 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="DiffView"/>. Built on a <see cref="ListBox"/> with a templated
 ///  multi-column row so no extra NuGet package (e.g. DataGrid) is required.
 ///
+///  <para>Upstream's <c>BlameControl</c> (which <c>FormBlame</c> merely hosts —
+///  there is no toolbar in this tab) adds three things on top of the grid, all
+///  ported here: the context menu (<c>BlameControl.Designer.cs:23-32</c>) with
+///  <i>Blame this revision</i> / <i>Blame previous revision</i> /
+///  <i>Show changes</i> / <i>Copy to clipboard ▸ hash|message|all info</i>, the
+///  commit-details panel above the grid (<c>:20</c>, upstream a <c>CommitInfo</c>,
+///  here a reused <see cref="CommitDetailView"/>) and the hover tooltip
+///  (<c>blameTooltip</c>, <c>:33</c>) carrying the commit of the line under the
+///  pointer.</para>
+///
 ///  <para>Captions go through <see cref="TranslationService"/>. Upstream's
 ///  <c>FormBlame</c> carries a single trans-unit (the window title) and its blame
 ///  grid headers are hard-coded in code, so only the columns that do have an
 ///  upstream equivalent are keyed (<c>FormVerify/columnHash</c>,
 ///  <c>TranslatedStrings/_author</c>); "Line" and "Text" fall back to the
 ///  one-argument overload and therefore stay English until a catalogue gains them.
-///  The header and the status line are rebuilt on
+///  The menu captions do have upstream ids (category <c>BlameControl</c>). The
+///  header, the menu and the status line are rebuilt on
 ///  <see cref="TranslationService.LanguageChanged"/>.</para>
 /// </summary>
 public sealed class BlameView : UserControl
@@ -33,6 +47,10 @@ public sealed class BlameView : UserControl
     private const double HashWidth = 90;
     private const double AuthorWidth = 160;
     private const double LineWidth = 60;
+
+    // Upstream keeps the commit-info panel a fixed-size splitter panel
+    // (BlameControl.Designer.cs:49-63, SplitterDistance 160).
+    private const double DetailHeight = 170;
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
     private static readonly IBrush MetaBrush = B("App.TextDim");
@@ -46,11 +64,55 @@ public sealed class BlameView : UserControl
     private readonly TextBlock _status;
     private readonly Border _headerHost;
 
+    // The commit-details panel: CommitDetailView is reused as-is (its public
+    // surface — ShowCommit + CommitNavigated — is all this needs), exactly as
+    // MainWindow drives it.
+    private readonly CommitDetailView _detail = new();
+
+    private readonly MenuItem _blameThisItem;
+    private readonly MenuItem _blamePreviousItem;
+    private readonly MenuItem _showChangesItem;
+    private readonly MenuItem _copyMenuItem;
+    private readonly MenuItem _copyHashItem;
+    private readonly MenuItem _copyMessageItem;
+    private readonly MenuItem _copyAllItem;
+
     // Last successful load, kept so a language switch can re-word the status line
     // without re-running git.
     private string? _shownFile;
     private string? _shownCommit;
     private int _shownLines;
+    private string? _repoPath;
+
+    // Full hash the blamed revision resolved to, used to word "Blame previous
+    // revision" like upstream does (see UpdateMenuState).
+    private string _resolvedCommit = string.Empty;
+
+    // Commit currently rendered in the details panel, so re-selecting a line of
+    // the same commit does not re-run git (upstream SelectedLineChanged does the
+    // same ReferenceEquals check).
+    private string? _detailHash;
+
+    // First parent of the selected line's commit, resolved off the UI thread on
+    // every selection change so the context menu can enable/disable "Blame
+    // previous revision" without doing git work while the popup opens.
+    private string? _selectedParent;
+    private string? _selectedParentOf;
+
+    /// <summary>
+    ///  Raised with a full commit hash when the user picks "Show changes" for a
+    ///  blamed line. Upstream opens <c>FormCommitDiff</c>; the port already shows
+    ///  commit diffs in <see cref="DiffView"/>, so the host (MainWindow) decides
+    ///  where to route it. Unwired is harmless.
+    /// </summary>
+    public event Action<string>? ShowChangesRequested;
+
+    /// <summary>
+    ///  Forwarded from the embedded <see cref="CommitDetailView"/>: a full commit
+    ///  hash the user reached by clicking a parent/child link in the details
+    ///  panel. The host may navigate the grid to it. Unwired is harmless.
+    /// </summary>
+    public event Action<string>? CommitNavigated;
 
     public BlameView()
     {
@@ -71,8 +133,57 @@ public sealed class BlameView : UserControl
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
             BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<BlameLineRow>((row, _) => BuildRow(row), supportsRecycling: true),
+
+            // No recycling: each row's cells and its tooltip are built from the
+            // row instance, and a recycled container would only get a new
+            // DataContext, keeping the previous line's text and tooltip. The
+            // flip side is that clearing a container re-runs the template with a
+            // null item (Avalonia's ContentPresenter.UpdateChild on unset), so
+            // BuildRow must tolerate null.
+            ItemTemplate = new FuncDataTemplate<BlameLineRow>((row, _) => BuildRow(row), supportsRecycling: false),
         };
+
+        _blameThisItem = new MenuItem();
+        _blameThisItem.Click += (_, _) => BlameSelectedRevision();
+        _blamePreviousItem = new MenuItem();
+        _blamePreviousItem.Click += (_, _) => BlamePreviousRevision();
+        _showChangesItem = new MenuItem();
+        _showChangesItem.Click += (_, _) => ShowChangesForSelection();
+        _copyHashItem = new MenuItem();
+        _copyHashItem.Click += (_, _) => CopyFromSelection(r => r.CommitHash);
+        _copyMessageItem = new MenuItem();
+        _copyMessageItem.Click += (_, _) => CopyFromSelection(r => r.Summary);
+        _copyAllItem = new MenuItem();
+        _copyAllItem.Click += (_, _) => CopyFromSelection(r => r.Details);
+        _copyMenuItem = new MenuItem
+        {
+            ItemsSource = new[] { _copyHashItem, _copyMessageItem, _copyAllItem },
+        };
+
+        // Items (including the submenu's) are built in full here: mutating them
+        // from Opening leaves the popup mis-measured. Opening only flips
+        // IsEnabled and re-words the "previous revision" header.
+        ContextMenu menu = new()
+        {
+            ItemsSource = new Control[]
+            {
+                _blameThisItem,
+                _blamePreviousItem,
+                _showChangesItem,
+                new Separator(),
+                _copyMenuItem,
+            },
+        };
+        menu.Opening += (_, _) => UpdateMenuState();
+        _list.ContextMenu = menu;
+
+        // A ListBox does not select on right-click, so the menu would act on
+        // whatever was selected before. Tunnelling with handledEventsToo: the
+        // ListBoxItem's own handler runs first and marks the event handled.
+        _list.AddHandler(PointerPressedEvent, OnListPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+        _list.SelectionChanged += OnSelectionChanged;
+
+        _detail.CommitNavigated += hash => CommitNavigated?.Invoke(hash);
 
         ScrollViewer scroll = new()
         {
@@ -89,15 +200,32 @@ public sealed class BlameView : UserControl
             Child = BuildHeader(),
         };
 
-        DockPanel root = new() { Background = B("App.Window") };
-        DockPanel.SetDock(_status, Dock.Top);
-        DockPanel.SetDock(_headerHost, Dock.Top);
+        GridSplitter splitter = new()
+        {
+            ResizeDirection = GridResizeDirection.Rows,
+            Background = B("App.Border"),
+            Height = 4,
+        };
+
+        Grid root = new()
+        {
+            Background = B("App.Window"),
+            RowDefinitions = new RowDefinitions($"Auto,{DetailHeight},Auto,Auto,*"),
+        };
+        Grid.SetRow(_status, 0);
+        Grid.SetRow(_detail, 1);
+        Grid.SetRow(splitter, 2);
+        Grid.SetRow(_headerHost, 3);
+        Grid.SetRow(scroll, 4);
         root.Children.Add(_status);
+        root.Children.Add(_detail);
+        root.Children.Add(splitter);
         root.Children.Add(_headerHost);
         root.Children.Add(scroll);
 
         Content = root;
 
+        Retranslate();
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
@@ -109,7 +237,21 @@ public sealed class BlameView : UserControl
     {
         _headerHost.Child = BuildHeader();
         _status.Text = _shownFile is null ? T("No file loaded.") : StatusLine();
+
+        _blameThisItem.Header = T("BlameControl/blameRevisionToolStripMenuItem.Text", "Blame _this revision");
+        _blamePreviousItem.Header = ActualPreviousHeader;
+        _showChangesItem.Header = T("BlameControl/showChangesToolStripMenuItem.Text", "_Show changes");
+        _copyMenuItem.Header = T("BlameControl/copyToClipboardToolStripMenuItem.Text", "_Copy to clipboard");
+        _copyHashItem.Header = T("BlameControl/commitHashToolStripMenuItem.Text", "Commit _hash");
+        _copyMessageItem.Header = T("BlameControl/commitMessageToolStripMenuItem.Text", "Commit _message");
+        _copyAllItem.Header = T("BlameControl/allCommitInfoToolStripMenuItem.Text", "_All commit info");
     }
+
+    private static string ActualPreviousHeader
+        => T("BlameControl/_blameActualPreviousRevision.Text", "_Blame previous revision");
+
+    private static string VisiblePreviousHeader
+        => T("BlameControl/_blameVisiblePreviousRevision.Text", "_Blame previous visible revision");
 
     private string StatusLine() => string.Format(
         T("{0}  —  {1} line(s)  @ {2}"), _shownFile, _shownLines, _shownCommit);
@@ -123,20 +265,33 @@ public sealed class BlameView : UserControl
     {
         _list.ItemsSource = null;
         _shownFile = null;
+        _repoPath = repoPath;
+        _detailHash = null;
+        _selectedParent = null;
+        _selectedParentOf = null;
         _status.Text = string.Format(T("Blaming {0}…"), filePath);
 
         _ = Task.Run(() =>
         {
             try
             {
-                IReadOnlyList<BlameLineRow> rows = _service.GetBlame(repoPath, filePath, commit);
+                BlameResult result = _service.GetBlameResult(repoPath, filePath, commit);
                 Dispatcher.UIThread.Post(() =>
                 {
-                    _list.ItemsSource = rows;
+                    _list.ItemsSource = result.Lines;
+                    _resolvedCommit = result.ResolvedCommit;
                     _shownFile = filePath;
                     _shownCommit = commit ?? "HEAD";
-                    _shownLines = rows.Count;
+                    _shownLines = result.Lines.Count;
                     _status.Text = StatusLine();
+
+                    // Upstream shows the revision just blamed in the panel until a
+                    // line is selected (ProcessBlame → CommitInfo.SetRevisionWithChildren).
+                    if (_detailHash != result.ResolvedCommit)
+                    {
+                        _detailHash = result.ResolvedCommit;
+                        _detail.ShowCommit(repoPath, result.ResolvedCommit);
+                    }
                 });
             }
             catch (Exception ex)
@@ -145,6 +300,184 @@ public sealed class BlameView : UserControl
             }
         });
     }
+
+    // ---- selection ---------------------------------------------------------
+
+    private BlameLineRow? Selected => _list.SelectedItem as BlameLineRow;
+
+    private void OnListPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(_list).Properties.IsRightButtonPressed)
+        {
+            return;
+        }
+
+        if ((e.Source as Visual)?.FindAncestorOfType<ListBoxItem>(includeSelf: true) is { DataContext: BlameLineRow row })
+        {
+            _list.SelectedItem = row;
+        }
+    }
+
+    private void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        BlameLineRow? row = Selected;
+        if (row is null || row.IsUncommitted || _repoPath is null)
+        {
+            return;
+        }
+
+        if (row.CommitHash != _detailHash)
+        {
+            _detailHash = row.CommitHash;
+            _detail.ShowCommit(_repoPath, row.CommitHash);
+        }
+
+        // Pre-resolve the parent so the context menu never runs git while opening.
+        if (row.CommitHash != _selectedParentOf)
+        {
+            string repo = _repoPath;
+            string hash = row.CommitHash;
+            _selectedParentOf = hash;
+            _selectedParent = null;
+            _ = Task.Run(() =>
+            {
+                string? parent = null;
+                try
+                {
+                    parent = _service.ResolveParent(repo, hash);
+                }
+                catch (Exception)
+                {
+                    // A missing parent is a disabled menu item, never an error.
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_selectedParentOf == hash)
+                    {
+                        _selectedParent = parent;
+                    }
+                });
+            });
+        }
+    }
+
+    // ---- context menu ------------------------------------------------------
+
+    // Opening-time work is limited to IsEnabled/Header (adding or removing Items
+    // here would leave the popup mis-measured).
+    private void UpdateMenuState()
+    {
+        BlameLineRow? row = Selected;
+        bool hasCommit = row is not null && !row.IsUncommitted && _repoPath is not null;
+
+        _blameThisItem.IsEnabled = hasCommit;
+        _showChangesItem.IsEnabled = hasCommit;
+        _copyMenuItem.IsEnabled = hasCommit;
+        _blamePreviousItem.IsEnabled = hasCommit && _selectedParent is not null;
+
+        // Upstream words this item after where the parent it will blame comes
+        // from: "previous revision" when the actual parent is present in the
+        // revision grid, "previous *visible* revision" otherwise
+        // (BlameControl.cs:576-588). BlameView has no grid to ask, so the port
+        // uses the only equivalent signal it has: when the line was last touched
+        // by the revision being blamed, its parent really is the previous
+        // revision; when the line comes from an older commit, this view is not
+        // showing what lies between, so "previous visible revision" is the
+        // honest wording.
+        _blamePreviousItem.Header = row is not null && row.CommitHash == _resolvedCommit
+            ? ActualPreviousHeader
+            : VisiblePreviousHeader;
+    }
+
+    private void BlameSelectedRevision()
+    {
+        BlameLineRow? row = Selected;
+        if (row is null || row.IsUncommitted || _repoPath is null)
+        {
+            return;
+        }
+
+        // Upstream blames the path as it was named in that commit, which git
+        // blame --porcelain reports per line (it may have been renamed since).
+        ShowBlame(_repoPath, FileOf(row), row.CommitHash);
+    }
+
+    private void BlamePreviousRevision()
+    {
+        BlameLineRow? row = Selected;
+        if (row is null || row.IsUncommitted || _repoPath is null)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string file = FileOf(row);
+        string? parent = _selectedParent;
+        if (parent is not null)
+        {
+            ShowBlame(repo, file, parent);
+            return;
+        }
+
+        // Not pre-resolved yet (menu opened before the lookup landed): resolve
+        // now, still off the UI thread.
+        string hash = row.CommitHash;
+        _ = Task.Run(() =>
+        {
+            string? resolved = null;
+            try
+            {
+                resolved = _service.ResolveParent(repo, hash);
+            }
+            catch (Exception)
+            {
+                // Fall through to the status message below.
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (resolved is null)
+                {
+                    _status.Text = string.Format(T("{0} has no previous revision."), hash[..Math.Min(8, hash.Length)]);
+                    return;
+                }
+
+                ShowBlame(repo, file, resolved);
+            });
+        });
+    }
+
+    private string FileOf(BlameLineRow row)
+        => row.OriginFileName.Length > 0 ? row.OriginFileName : _shownFile!;
+
+    private void ShowChangesForSelection()
+    {
+        BlameLineRow? row = Selected;
+        if (row is not null && !row.IsUncommitted)
+        {
+            ShowChangesRequested?.Invoke(row.CommitHash);
+        }
+    }
+
+    private void CopyFromSelection(Func<BlameLineRow, string> formatter)
+    {
+        BlameLineRow? row = Selected;
+        if (row is null || row.IsUncommitted)
+        {
+            return;
+        }
+
+        string text = formatter(row);
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
+    }
+
+    // ---- rows --------------------------------------------------------------
 
     private static Grid MakeColumns()
         => new()
@@ -165,15 +498,30 @@ public sealed class BlameView : UserControl
         return grid;
     }
 
-    private static Control BuildRow(BlameLineRow row)
+    private static Control BuildRow(BlameLineRow? row)
     {
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(8, 0, 8, 0);
+
+        // Container being cleared (unset content): nothing to render.
+        if (row is null)
+        {
+            return grid;
+        }
 
         AddCell(grid, 0, row.ShortHash, foreground: MetaBrush);
         AddCell(grid, 1, row.Author, foreground: MetaBrush);
         AddCell(grid, 2, row.LineNumber.ToString(), foreground: MetaBrush);
         AddCell(grid, 3, row.Text, trim: false);
+
+        // Upstream's blameTooltip shows the commit of the line under the pointer,
+        // formatted by GitBlameCommit.ToString() — the same text BlameService
+        // already carries in Details, so hovering costs no git work.
+        if (row.Details.Length > 0)
+        {
+            ToolTip.SetTip(grid, row.Details);
+            ToolTip.SetShowDelay(grid, 400);
+        }
 
         return grid;
     }
