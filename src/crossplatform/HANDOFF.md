@@ -11,10 +11,10 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `f1caa6512` (round 4 + bugfix M43–M44) |
+| HEAD al momento dell'handoff | `dfd0b9fdb` (round 4 + bugfix M43–M44 + follow-up 1 / M45) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** chiusi |
+| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** chiusi |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
 | Push su remote | eseguito dall'utente (origin allineato). Portachiavi **vuoto**: il prossimo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
@@ -59,8 +59,9 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **Pannello inferiore**: Commit · Diff · File tree · GPG · Console · Output ·
   Stash · Blame · File history. Il tab **Console** è un **terminale PTY realmente
   incorporato** (libc P/Invoke, parser VT100/xterm, alternate screen, job control).
-  La vista working-directory è una finestra utility (Commands → "Working directory…",
-  Ctrl+Shift+W), non più un tab.
+  Non c'è nessuna vista "working directory": le sue funzioni vivono nel `CommitDialog`
+  (conflitti, discard, copy path, .gitignore) e nel menu `Commands` (Reset changes…,
+  Clean working directory…, Undo last commit…), come nell'originale.
 - **Commit detail**: avatar identicon, Author/Date rel+abs, Committer, Parent/Child
   come link che navigano la grid, "Contained in branches/tags", "Derives from tag".
 - **Operazioni git**: fetch/pull/push (con credenziali in-app + persistenza nel
@@ -163,12 +164,17 @@ elencati nelle versioni precedenti di questa sezione sono stati risolti e verifi
 GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
 
 ### Follow-up aperti (nessuno bloccante)
-1. **`WorkingDirectoryView`** — il tab è stato rimosso (l'originale non ce l'ha) ma la view
-   sopravvive come finestra utility (Commands → "Working directory…", Ctrl+Shift+W) perché
-   è l'unico posto con risoluzione conflitti, `git clean` con preview, discard per file, le
-   tre voci .gitignore e undo-last-commit. Per la fedeltà piena: spostare quelle azioni in
-   `CommitDialog` + `MainMenu` ("Reset changes…", "Clean working directory…"), poi
-   cancellare la utility window e la view.
+1. ✅ **RISOLTO M45** (round 5, una iterazione) — `WorkingDirectoryView` **non esiste più**.
+   Conflitti di merge e menu contestuale per file (discard / copy path / tre voci
+   .gitignore) sono nel `CommitDialog`; "Reset changes…", "Clean working directory…" e
+   "Undo last commit…" sono nel menu `Commands` negli slot di `FormBrowse.Designer.cs`;
+   finestra utility e `Ctrl+Shift+W` rimossi. `App/Services/WorkingDirectoryService.cs`
+   **resta** (backend dei nuovi chiamanti). Dettaglio in `PORTING.md` → "Blocco FOLLOW-UP 1
+   (round 5)". Code smell residui, tutti minori e registrati lì: discard solo mono-file
+   (liste `SelectionMode.Single`), niente drag&drop tra liste (assente anche
+   nell'originale), acceleratori Enter/Space/Ctrl+Enter non replicati, e la guardia
+   "Nothing staged to commit." che può rifiutare un merge commit legittimo (servirebbe
+   rilevare `MERGE_HEAD`).
 2. **Traduzioni** — il port è **inglese per costruzione** (verificato in M42/D11): il motore
    XLIFF del core funziona su Linux, ma nessun `.xlf` viene copiato in output/`.deb`, non
    esiste un layer `ITranslate` (ogni stringa delle view è un letterale) e non c'è selettore
@@ -223,14 +229,13 @@ LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4: convenzioni Avalonia, tr
 ricetta di verifica GUI headless, follow-up aperti.
 
 LAVORARE sui follow-up della sezione 4, in quest'ordine:
-1. Spostare risoluzione conflitti / git clean con preview / discard per file / le tre voci
-   .gitignore / undo-last-commit da WorkingDirectoryView dentro CommitDialog + MainMenu
-   ("Reset changes…", "Clean working directory…"), poi cancellare la finestra utility
-   (Commands → "Working directory…") e WorkingDirectoryView.
-2. Traduzioni: copia MSBuild di src/app/GitUI/Translation/*.xlf in $(OutDir)Translation e
+1. Traduzioni: copia MSBuild di src/app/GitUI/Translation/*.xlf in $(OutDir)Translation e
    nel .deb, layer ITranslate + Translator.Translate sulle view Avalonia, selettore lingua
    persistito. Verificare in GUI con una lingua non inglese.
-3. Header della revision grid: abbreviare il path con ~ come già fa la toolbar.
+2. Header della revision grid: abbreviare il path con ~ come già fa la toolbar.
+3. Facoltativa: guardia "Nothing staged to commit." che rifiuta un merge commit legittimo
+   (rilevare MERGE_HEAD nel CommitDialog); discard multi-file (liste SelectionMode.Single);
+   acceleratori Enter/Space/Ctrl+Enter nel CommitDialog.
 NON lavorare su repository-host GitHub né colonna build status: SKIP fuori scope.
 
 METODO: il loop NON scrive codice a mano — DELEGA a subagent CLAUDE in worktree isolati

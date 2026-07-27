@@ -973,6 +973,64 @@ Menu + toolbar:
   installa GCM) → configurato `git-credential-libsecret` (compilato dal contrib di git,
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
+### Blocco FOLLOW-UP 1 (round 5) — fine della ridondanza `WorkingDirectoryView`
+> **Iterazione: 1 / 15 — BLOCCO CHIUSO** in una sola iterazione (stop per condizione (a):
+> W1–W5 tutte integrate e verificate in GUI, `App/Views/WorkingDirectoryView.cs`
+> cancellata, nessuna funzione rimasta irraggiungibile). Metodo invariato: delega a
+> subagent Claude in worktree isolati su file disgiunti, cherry-pick uno alla volta +
+> build check, verifica GUI headless del loop su albero integrato.
+
+**M45** (2026-07-27) — le funzioni esclusive della vecchia finestra utility "Working
+directory" sono state spostate dove le mette l'originale Windows, e la view è stata
+cancellata (−1203 righe). Cinque unità, cinque commit di feature:
+
+- **W1** (`3b2232ec4`) — **risoluzione conflitti nel `CommitDialog`**, come `FormCommit`:
+  i file unmerged compaiono nella lista unstaged con stato `U conflict`, con context menu
+  condizionale *Open in mergetool · Take ours · Take theirs · Mark resolved* (Items
+  statici, in `Opening` si tocca solo `IsEnabled`), banner accent in testa finché
+  esistono path non risolti, commit rifiutato con la dicitura originale ("There are
+  unresolved merge conflicts, solve merge conflicts before committing."), doppio clic su
+  una riga in conflitto = mergetool. Take ours/theirs passano da `ConfirmThen`.
+- **W2** (`e70f339e9`) — **menu contestuale per file completo**: `Discard changes`
+  (solo riga tracciata non in conflitto → `WorkingDirectoryService.ResetFile`, con
+  conferma), `Copy path` su entrambe le liste, e le tre voci .gitignore (`Add to
+  .gitignore` / `Ignore by extension` / `Ignore in folder`, abilitate solo per un
+  **singolo file untracked**, stessa semantica della vecchia view). La lista staged, che
+  non aveva menu, ora ha `Unstage` + `Copy path`.
+- **W3** (`967941dda`) — **`Commands → Reset changes…` e `Clean working directory…`**
+  nello slot esatto di `FormBrowse.Designer.cs` (dopo Stash). Clean: entrambe le preview
+  dry-run (`git clean -nd` con e senza `-x`) pre-calcolate in un solo `Task.Run`, così la
+  checkbox "include ignored" scambia solo stringhe già caricate; preview vuota → "Nothing
+  to clean" e nessuna esecuzione; conferma → esecuzione via `GitProcessDialog` +
+  `GitStreamRunner` con output live, poi `RefreshAll()`.
+- **W4** (`989597e2a`) — **`Commands → Undo last commit…`** subito dopo Commit, come nel
+  Designer originale (`undoLastCommitToolStripMenuItem`, icona `ResetFileTo`). Conferma
+  esplicita che spiega che è `git reset --soft HEAD~1` (commit rimosso, modifiche
+  conservate), caso limite HEAD senza parent gestito con dialog informativo e nessuna
+  esecuzione.
+- **W5** (`dfd0b9fdb`) — rimossi voce `Commands → "Working directory…"`, binding
+  `Ctrl+Shift+W`, `OpenWorkingDirectoryWindow`, campo `_workingDir` e i refresh morti in
+  `MainWindow`; `git rm App/Views/WorkingDirectoryView.cs`. `grep -rn WorkingDirectoryView
+  --include=*.cs` → zero. **`App/Services/WorkingDirectoryService.cs` resta**: è il backend
+  di tutti i nuovi chiamanti.
+
+Build `Errori: 0` dopo ogni cherry-pick. Verifica GUI headless del loop (xvfb `:141`,
+mini-WM, XTEST, repo di prova `/tmp/loop-testrepo` con conflitto reale + file untracked,
+screenshot guardati): banner + riga `U conflict`; menu contestuale nei tre stati (file
+tracciato modificato / file in conflitto / nessuna selezione) con le abilitazioni giuste e
+diff `--cc` corretto; menu Commands finale = Commit… · Undo last commit… · Stash · Reset
+changes… · Clean working directory… · New branch/tag · patch, **senza** "Working
+directory…" e senza separatore orfano.
+
+**Gap residui accettati** (registrati, non bloccanti): discard **multi-file** — le liste
+del `CommitDialog` sono `SelectionMode.Single`, la vecchia view aveva "Discard changes (N
+files)"; **drag&drop** tra unstaged/staged — non esiste nemmeno in `FormCommit`, scartato;
+**acceleratori da tastiera** della vecchia view (Enter/Space = stage/unstage, Ctrl+Enter =
+commit) non replicati, le azioni restano raggiungibili da bottoni e menu.
+**Difetto noto emerso in W1**: dopo aver risolto tutti i conflitti, un merge commit
+legittimo che non lascia diff in index può essere rifiutato dalla guardia "Nothing staged
+to commit." — servirebbe rilevare `MERGE_HEAD`; unità futura.
+
 ### Blocco RIFINITURE (round 4) — chiusura residui A/B/C
 > **Iterazione rifiniture: 4 / 20 — BLOCCO CHIUSO** (stop anticipato: tutti i residui
 > A1–C10 + D11/D12 esauriti). Metodo invariato (delega a subagent Claude in worktree
