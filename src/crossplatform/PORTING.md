@@ -980,6 +980,12 @@ Menu + toolbar:
 > Windows in `~/Documents/process dialog with terminal command/GUI.png` e
 > `~/Documents/pullù/` (`button.png`, `menu.png`, `pull dialog.png`).
 > I riferimenti `file:riga` valgono per l'albero al momento della stesura: verificarli.
+>
+> **STATO al 27/07/2026 (round 8, M50)**: **P1 CHIUSA**, **P3 CHIUSA**, **P2 chiusa per 2a+2b**
+> (barra pulsanti + ricerca nella colonna sinistra, icone nei tab); **restano aperti 2c e 2d**
+> (altri pulsanti/split-button della toolbar in alto, toolbar ricca della lista file, opzioni del
+> viewer diff). Dettaglio in "Blocco PRIORITÀ P1–P3 (round 8)". I punti 4–6 qui sotto sono ancora
+> aperti.
 
 1. [PRIORITA' UTENTE] GRAFO: nell'originale, evidenziando un commit restano colorate solo le
    lane del percorso che porta a quel commit, il resto diventa GRIGIO. Due meccanismi separati:
@@ -1058,6 +1064,96 @@ Menu + toolbar:
 `Ctrl+M`/`Ctrl+Shift+E`/`Ctrl+Alt+W` senza entry point in `MainWindow`); difetti noti aperti;
 minori (opzioni merge/cherry-pick, continue/skip/abort per rebase, filtro dei cataloghi
 `.xlf` a inglese + italiano per togliere ~19 MB dal `.deb`).
+
+### Blocco PRIORITÀ P1–P3 (round 8) — grafo, chrome, Pull
+
+> **Iterazione 1.** Le tre priorità indicate dall'utente il 27/07/2026 sono **CHIUSE** nella
+> portata concordata (P2 limitata a barra pulsanti + ricerca e icone dei tab; i punti 2c/2d
+> restano aperti). Tre subagent in parallelo su file disgiunti, più un giro di fix su P1.
+
+**M50** (2026-07-27) — sei commit.
+
+- **P1 grafo** (`7dc5cc943`, fix `cea46f2d9`) — evidenziazione **fedele all'originale** in
+  `RevisionGridView.cs`. I "relatives" ora sono **l'ancora + i suoi soli antenati** (upstream
+  `HighlightBranch` → `MakeRelative`, che risale i parent): il walk sui *children* che il port
+  faceva è stato rimosso. Nuovo `_highlightAnchor` (null = HEAD): all'avvio l'ancora è HEAD e
+  `_drawNonRelativesGray` è ora `true` come upstream, quindi il grigio si vede subito; **Alt+clic**
+  ri-ancora sulla riga sotto il puntatore (righe artificiali → HEAD), il **clic normale non
+  cambia nulla**. Handler in `Tunnel` con `handledEventsToo` che **non** marca l'evento handled,
+  quindi selezione/multi-selezione/menu contestuale/doppio clic sono intatti; la riga si risolve
+  da qualunque punto (`GetSelfAndVisualAncestors` fino a `_list`, fallback per hit-test della Y su
+  `GetRealizedContainers()`, scrollbar esclusa). **Ora sono grigie anche le LANE**, non solo il
+  testo: `ComputeGraphRelatives()` produce per ogni riga un flag di nodo più un flag per segmento
+  (nell'ordine in cui `WithHeadConnector`/`ArtificialSegments` li costruiscono), portando il flag
+  *giù* per le lane; `RevisionGraphControl` riceve `relativeSegments`/`relativeNode`/
+  `nonRelativeBrush` (`B("App.TextDim")`, nessun colore hardcodato) e disegna prima le grigie, così
+  le colorate vincono le sovrapposizioni (come `GraphRenderer` con il suo `OrderBy(IsRelative)`).
+  Extra: voce "Highlight current branch's history" nel flyout View che ri-ancora a HEAD.
+  Due fix collaterali necessari a renderlo visibile: `RebindRows` assegna una **nuova** lista
+  invece di `_rows` (con la stessa istanza il pannello virtualizzante teneva i container già
+  realizzati → le righe visibili restavano con i visual vecchi; colpiva anche gli altri toggle
+  basati su `RefreshView`), e il ripristino dello scroll è riapplicato a
+  `DispatcherPriority.Background` (al primo tentativo l'extent è ancora corto e viene clampato).
+  Verifica GUI su repo di topologia nota (`A-B-C-D` + `S` che stacca da `B`): all'avvio `S` grigio
+  e la linea di HEAD colorata; Alt+clic su `B` → `B` e `A` colorati, `D`/`S`/`C` grigi in **lane,
+  nodo, hash e subject**. *Limite*: la relatività dei segmenti è dedotta dal bookkeeping delle lane
+  (i `RevisionGraphSegment` del port non portano hash), quindi per un parent di merge che **riusa**
+  una lane già aperta i due flag vengono OR-ati e quella lane può restare colorata dove l'upstream
+  disegnerebbe due segmenti distinti; lane a figlio singolo esatte. Avalonia non muove la selezione
+  su Alt+clic (Alt non è un modificatore di selezione) mentre la griglia Windows seleziona e
+  ri-ancora in un colpo: lasciato così per non disturbare multi-selezione e range-diff.
+- **P2 chrome** (`5e1bd9524`, `57b2627f9`) — `RepoObjectsTree` non è più il solo `TreeView`: griglia
+  a 3 righe con **barra pulsanti** (collapse-all + un toggle per categoria nell'ordine del
+  `leftPanelToolStrip` upstream: local/remote/worktrees/tag/submodule/stash, icone
+  `CollapseAll`/`LocalBranchRoot`/`RemoteBranchRoot`/`WorkTree`/`TagHorizontal`/`FolderSubmodule`/
+  `stash`, tutte già presenti; `WrapPanel` su bordo `App.Toolbar` così la colonna stretta va a capo
+  invece di tagliare) e **casella di ricerca** con la lente upstream (`Images.Preview`): filtro
+  incrementale case-insensitive che pota ai match più i loro antenati (espansi), un nodo che matcha
+  tiene tutto il sottoalbero, Escape pulisce, Enter e la lente ciclano la selezione fra i match come
+  la coda rotante upstream; le foglie ref matchano sul **nome completo** (`FullPath`), quindi
+  `avalonia` trova `origin/linux-avalonia-port` anche se l'etichetta è accorciata dal gruppo remoto.
+  Key handling in tunneling con `handledEventsToo` perché il `TextBox` non mangi Enter/Escape.
+  I nove **tab del pannello inferiore** hanno le icone con lo stesso mapping di
+  `FormBrowse.InitCommitDetails` (Commit→`CommitSummary`, Diff→`Diff`, File tree→`FileTree`,
+  GPG→`Key`, Console→`Console`, Output→`GitCommandLog`; i tre tab solo-port su
+  `stash`/`Blame`/`FileHistory`), costruite dal nuovo `App/Views/IconText.cs` con fallback al
+  caption nudo se l'icona manca. Nessun nuovo evento da cablare: Enter-per-selezionare passa dal
+  `RefSelected` esistente. *Limiti*: stato dei toggle e testo del filtro **session-local** (il port
+  non ha l'equivalente di `AppSettings.RepoObjectsTreeShow*`); i conteggi di categoria restano
+  quelli non filtrati; nessun autocomplete sotto la casella; divergenza voluta dall'upstream, che
+  tinge i match senza nascondere nulla, mentre qui si filtra.
+- **P3 Pull** (`ece3f9810`, `11813e897`, cablaggio `735d29ace`) — il pulsante secco è diventato uno
+  **split-button**: il corpo esegue l'azione predefinita persistita, la freccia apre il menu
+  upstream (`Open pull dialog… Ctrl+Down` | Pull - merge | Pull - rebase | Fetch | Fetch all |
+  Fetch and prune all | --- | `Set default Pull button action ▸` con i radio sull'attuale). Enum
+  riusato dal core (`GitExtensions.Extensibility.Git.GitPullAction`), default persistito in
+  `UiState.DefaultPullAction` (default `Merge`, sanificato al load) — verificato: scelta "Pull -
+  rebase" → `"DefaultPullAction": "Rebase"` nello stato e icona rebase sul corpo dopo riavvio.
+  Nuovo `App/Views/PullDialog.cs` su modello `FormPull`: Pull from (Remote + Manage remotes | URL +
+  Browse), Branch (local read-only + remote), Merge options (merge / rebase / solo fetch), Tag
+  options (follow tagopt / no tag / all tags), Prune remote branches, Prune remote branches and
+  tags, e in fondo Solve conflicts | Stash changes | Auto stash | Pull; l'illustrazione upstream è
+  omessa. Remote e branch caricati in `Task.Run` e passati al costruttore (i service bloccano
+  sync-over-async: chiamarli dall'UI thread congela tutto — bug M43). `RemoteService` ha ora
+  `PullOptions` (azione, remote o URL, branch remoto, tag policy, prune, prune-tags, autostash,
+  unshallow), `PullStreaming(repo, PullOptions, …)`, `FetchAllStreaming`,
+  `FetchAndPruneAllStreaming`; la vecchia firma `PullStreaming(…, bool rebase, …)` resta e delega,
+  così i chiamanti storici compilano. **I due `rebase: false` cablati sono spariti**: il corpo del
+  toolbar passa da `RunPullAction(action)`, `Commands → Pull` e `Ctrl+Down` aprono il dialogo.
+  Corretto anche l'inverso rispetto all'upstream nelle hotkey: `PullOrFetch` (Ctrl+Down) apre il
+  dialogo (`DoPull(isSilent: false)`), `QuickPullOrFetch` (F8) è il clic del pulsante, cioè
+  l'azione predefinita, `QuickPull` è un merge silenzioso. *Limiti*: l'autostash usa `--autostash`
+  di git invece dello stash/pop separato dell'upstream; il local branch è read-only quindi non si
+  genera mai un refspec locale; "Solve conflicts" non ha un `FormResolveConflicts` portato e lancia
+  il merge tool configurato per ogni path in conflitto; `Unshallow` esiste in `PullOptions` ma non
+  ha checkbox; Avalonia rende la gesture come "Ctrl+Down Arrow"; le hotkey mostrate vengono dai
+  default, gli override utente non sono riflessi.
+
+**Restano aperti di P2** (fuori portata di questa iterazione, erano i punti 2c/2d): toolbar in alto
+con gli altri pulsanti/split-button dell'originale, toolbar ricca della lista file (raggruppamento
+per path/estensione/stato, ricerca, toggle ignorati/skip-worktree/untracked —
+`FileStatusList.Toolbar.cs`) e opzioni del viewer diff (evidenziazione sintattica, copia versione
+nuova/vecchia — `FileViewer.Designer.cs:27-48`).
 
 ### Blocco FEATURE E INTEGRAZIONE GUI (round 7)
 > **Iterazioni 1–3.** Direzione data dall'utente: **le lingue non interessano oltre inglese

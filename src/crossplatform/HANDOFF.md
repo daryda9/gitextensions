@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M49,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M50,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `be80f3dec` + questo commit di documentazione (… + M45 + M46 + **feature e integrazione GUI / M47–M49**) |
-| Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
+| HEAD al momento dell'handoff | `cea46f2d9` + questo commit di documentazione (… + M45–M49 + **priorità P1–P3 / M50**) |
+| Build | `Errori: 0` (20–21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + **M49 fix scroll/selezione grid** |
+| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **origin NON allineato: ~32 commit locali non pushati** (M45–M49; conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi **vuoto**: il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: 11 commit locali non pushati** al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M49**), tiene il contatore iterazione.
+  libera: **M51**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -129,6 +129,16 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 - **GUARDARE davvero lo screenshot** (tool Read sull'immagine), non fidarsi del build.
 - Agenti concorrenti che condividono lo stesso `DISPLAY` si vedono le finestre a
   vicenda: usare display privati (`:97`, `:137`, …) per verifiche affidabili.
+- Le `sleep` di shell vengono **uccise dall'harness** (exit 144) anche in background:
+  usare `python3 -c "import time;time.sleep(N)"`. Controllare l'**mtime** dello screenshot
+  prima di leggerlo, per non guardare l'immagine di un run precedente.
+- Script riusabili in `/tmp/loop-verify/` (`miniwm.py`, `click.py`, `ctrlclick.py`,
+  `g2_type.py`, `esc.py`, e in `r8/`: `altclick.py`, `ctrlkey.py`).
+- Per verificare il **grafo** serve una topologia nota: costruire un repo minuscolo in
+  `/tmp` (es. `A-B-C-D` più un branch che stacca da `B`) invece di ragionare su
+  `git_ext_mod`, dove le lane lunghe rendono ambiguo cosa dovrebbe essere grigio. Attenzione:
+  `git_ext_mod` è condiviso con altri agent, un auto-refresh ri-ancora l'evidenziazione a HEAD
+  e falsa le misure.
 
 ### Convenzioni di codice
 - Brush tematici SOLO da `Application.Current.Resources` via l'helper locale
@@ -143,6 +153,12 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
   `Task.Run` e passare i dati al costruttore.
 - **Split-button / MenuFlyout**: popolare gli `Items` **prima** di `ShowAt`, mai mutarli
   dentro l'evento `Opening` (il popup non ri-misura → si vede solo una riga sottile).
+- **Virtualizzazione**: ri-assegnare la *stessa* istanza di lista a `ItemsSource` non
+  ricrea i container già realizzati → le righe visibili restano con i visual vecchi e il
+  cambio si vede solo su quelle che entrano dopo. Assegnare una **nuova** lista (scoperto
+  in M50 su `RebindRows`, colpiva tutti i toggle basati su `RefreshView`).
+- Il ripristino dello scroll va riapplicato a `DispatcherPriority.Background`: al primo
+  tentativo (`Loaded`) l'extent del pannello è ancora corto e l'offset viene clampato.
 - Per output git live usare `Services/GitStreamRunner.cs` (Process diretto, stdout+stderr
   async): il core `IExecutable`/`IProcess` **bufferizza stderr**, dove git scrive il
   progress.
@@ -165,17 +181,21 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
 
 ### Follow-up aperti (nessuno bloccante)
 
-> **PRIORITÀ indicate dall'utente il 27/07/2026**. Titoli qui e nel prompt della sezione 5;
-> **dettaglio operativo con i riferimenti `file:riga` in `PORTING.md` → "Priorità aperte
-> (P1–P3) e coda di lavoro"**:
-> **P1 — grafo**: evidenziando un commit devono restare colorate solo le lane del percorso
-> che porta a quel commit, il resto grigio (oggi il port ingrigisce solo il *testo*, e
-> rispetto a HEAD invece che alla selezione).
-> **P2 — chrome mancante**: barra pulsanti + casella di ricerca nella colonna sinistra,
-> icone nei tab del pannello inferiore, pulsanti della toolbar in alto.
-> **P3 — Pull**: split-button con azione predefinita + menu (Open pull dialog / merge /
-> rebase / fetch / fetch all / fetch and prune all / Set default action) e il dialogo
-> `FormPull` dedicato; oggi il port ha un pulsante secco con `rebase: false` cablato.
+> **PRIORITÀ dell'utente del 27/07/2026 — CHIUSE in M50 (round 8)**, tranne un residuo di P2.
+> Dettaglio in `PORTING.md` → "Blocco PRIORITÀ P1–P3 (round 8)".
+> **P1 — grafo: FATTA.** Relatives = ancora + soli antenati, Alt+clic ri-ancora (clic normale
+> no), lane/nodo/testo non-relative in grigio, `_drawNonRelativesGray` default `true` come
+> upstream. Limite: la relatività dei segmenti è dedotta dalle lane, quindi una lane riusata da
+> un parent di merge può restare colorata.
+> **P2 — chrome: FATTA per 2a+2b** (barra pulsanti + casella di ricerca sopra l'albero, icone
+> nei nove tab del pannello inferiore). **RESTANO 2c e 2d**: gli altri pulsanti/split-button
+> della toolbar in alto, la toolbar ricca della lista file (`FileStatusList.Toolbar.cs`) e le
+> opzioni del viewer diff (`FileViewer.Designer.cs:27-48`).
+> **P3 — Pull: FATTA.** Split-button (corpo = azione predefinita persistita in
+> `UiState.DefaultPullAction`, freccia = menu upstream con il sottomenu "Set default"),
+> `PullDialog` su modello `FormPull`, `PullOptions` in `RemoteService` con tag policy/prune/
+> autostash + `FetchAll`/`FetchAndPruneAll`. I due `rebase: false` cablati non esistono più;
+> corrette anche le hotkey invertite (Ctrl+Down = dialogo, F8 = azione predefinita).
 
 1. ✅ **RISOLTO M45** (round 5, una iterazione) — `WorkingDirectoryView` **non esiste più**.
    Conflitti di merge e menu contestuale per file (discard / copy path / tre voci
@@ -239,10 +259,8 @@ infine A/B con e senza fix.
 
 ## 5. Prompt pronto per riprendere
 
-I blocchi M45–M48 sono chiusi. Il prossimo lavoro sensato è la lista qui sotto, che nasce da
-un **audit di parità funzionale** fra `src/app/GitUI` e il port (la checklist di `PORTING.md`
-conta le *voci di menu*, non la profondità: era al 98% mentre mancavano interazioni
-quotidiane). Prompt riutilizzabile (incollabile in `/loop`):
+I blocchi M45–M50 sono chiusi, **priorità P1 e P3 comprese**. Resta il pezzo 2c/2d di P2 più
+la coda dell'audit di parità funzionale. Prompt riutilizzabile (incollabile in `/loop`):
 
 ```
 Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/. Branch:
@@ -255,20 +273,22 @@ ricetta di verifica GUI headless, follow-up aperti.
 DIREZIONE DATA DALL'UTENTE (27/07/2026): le LINGUE non interessano oltre inglese e italiano
 -> blocco traduzioni CHIUSO, non aprirne altre unita'. Contano FEATURE e INTEGRAZIONE GUI.
 
-LAVORARE sulle PRIORITA' P1-P3 e poi sul resto. Titoli qui, DETTAGLIO OPERATIVO completo
-(con i riferimenti file:riga sia dell'originale sia del port) in PORTING.md, sezione
-"Priorita' aperte (P1-P3) e coda di lavoro" -- LEGGERLA prima di iniziare un punto.
+P1 (grafo), P3 (Pull) e P2 punti a+b (barra pulsanti + ricerca a sinistra, icone dei tab) sono
+FATTI in M50: non riaprirli. DETTAGLIO OPERATIVO in PORTING.md, sezione "Priorita' aperte
+(P1-P3) e coda di lavoro" (stato in testa) e "Blocco PRIORITA' P1-P3 (round 8)" -- LEGGERLE
+prima di iniziare un punto.
 
-1. [P1] GRAFO: evidenziando un commit devono restare colorate solo le lane del percorso che
-   porta a quel commit, il resto grigio. Deciso dall'utente: FEDELE all'originale, quindi
-   riferimento HEAD all'avvio e ALT+CLIC per ri-ancorare; il clic normale non cambia nulla.
-   Oggi il port ingrigisce solo il TESTO e sempre rispetto a HEAD.
-2. [P2] CHROME MANCANTE: barra pulsanti + casella di ricerca sopra l'albero di sinistra;
-   icone nei tab del pannello inferiore; pulsanti/split-button della toolbar in alto; e la
-   toolbar ricca della lista file + opzioni del viewer diff gia' note dall'audit.
-3. [P3] PULL: split-button con azione predefinita persistita + menu (Open pull dialog /
-   merge / rebase / fetch / fetch all / fetch and prune all / Set default action) e il
-   dialogo FormPull dedicato. Oggi il port ha un pulsante secco con rebase CABLATO a false.
+1. [P2 residuo, 2c] TOOLBAR IN ALTO: gli altri pulsanti/split-button dell'originale non ancora
+   portati (confronto con ~/Documents/process dialog with terminal command/GUI.png e
+   FormBrowse.Designer.cs). Lo scheletro split-button ora esiste in MainToolbar.cs (Pull):
+   riusarlo.
+2. [P2 residuo, 2d] TOOLBAR RICCA DELLA LISTA FILE (raggruppamento per path/estensione/stato,
+   casella di ricerca, toggle ignorati/skip-worktree/untracked -- FileStatusList.Toolbar.cs) e
+   OPZIONI DEL VIEWER diff (evidenziazione sintattica, copia versione nuova/vecchia --
+   FileViewer.Designer.cs:27-48).
+3. [P1 residuo minore] La relativita' dei segmenti del grafo e' dedotta dal bookkeeping delle
+   lane: una lane riusata da un parent di merge puo' restare colorata dove l'upstream
+   disegnerebbe due segmenti distinti. Serve un hash sui RevisionGraphSegment del port.
 4. Code da M48: push del branch dal menu grid, edit commit e rebase interattivo (serve un
    harness GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested da cablare, gesture Ctrl+M /
    Ctrl+Shift+E / Ctrl+Alt+W (i service esistono, manca l'entry point in MainWindow).
@@ -298,5 +318,5 @@ Verifica GUI headless: xvfb-run -n <display privato> --server-args="-screen 0 14
 eccede lo schermo; per forzare stati scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/
 ui-state.json), mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero
 l'immagine. Niente xdotool: python-Xlib fake_input (XTEST).
-Aggiornare PORTING.md (prossima milestone libera: M45) e HANDOFF.md a ogni iterazione.
+Aggiornare PORTING.md (prossima milestone libera: M51) e HANDOFF.md a ogni iterazione.
 ```
