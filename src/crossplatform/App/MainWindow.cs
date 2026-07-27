@@ -935,6 +935,28 @@ public sealed class MainWindow : Window
                 OnRevisionSelected(h);
             }
         };
+        // The blame view's own details panel navigates the grid the same way, and
+        // "Show changes" on a blamed line selects that commit and brings its diff
+        // forward (upstream opens FormCommitDiff; the port already shows the diff of
+        // the selected revision in the bottom panel).
+        _blame.CommitNavigated += h =>
+        {
+            if (_repoPath is not null)
+            {
+                _revisions.SelectCommit(h);
+                OnRevisionSelected(h);
+            }
+        };
+        _blame.ShowChangesRequested += h =>
+        {
+            if (_repoPath is not null)
+            {
+                _revisions.SelectCommit(h);
+                OnRevisionSelected(h);
+                Dispatcher.UIThread.Post(() => _bottom.SelectedItem = _diffTab);
+            }
+        };
+
         _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
