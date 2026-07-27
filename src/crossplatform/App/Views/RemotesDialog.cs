@@ -148,13 +148,19 @@ public sealed class RemotesDialog : Window
             return;
         }
 
+        if (RemoteExists(name))
+        {
+            await ShowErrorAsync("Add remote", $"A remote named '{name}' already exists.");
+            return;
+        }
+
         string? url = await PromptAsync($"URL for remote '{name}':", string.Empty);
         if (url is not { Length: > 0 })
         {
             return;
         }
 
-        RunMutation(() => _service.AddRemote(_repoPath, name, url));
+        RunMutation($"Add remote '{name}'", () => _service.AddRemote(_repoPath, name, url));
     }
 
     private async Task DoEditUrlAsync()
@@ -167,7 +173,7 @@ public sealed class RemotesDialog : Window
         string? url = await PromptAsync($"URL for remote '{row.Name}':", row.FetchUrl);
         if (url is { Length: > 0 } target && !string.Equals(target, row.FetchUrl, StringComparison.Ordinal))
         {
-            RunMutation(() => _service.SetRemoteUrl(_repoPath, row.Name, target));
+            RunMutation($"Set URL of '{row.Name}'", () => _service.SetRemoteUrl(_repoPath, row.Name, target));
         }
     }
 
@@ -179,10 +185,18 @@ public sealed class RemotesDialog : Window
         }
 
         string? name = await PromptAsync($"Rename remote '{row.Name}' to:", row.Name);
-        if (name is { Length: > 0 } target && !string.Equals(target, row.Name, StringComparison.Ordinal))
+        if (name is not { Length: > 0 } target || string.Equals(target, row.Name, StringComparison.Ordinal))
         {
-            RunMutation(() => _service.RenameRemote(_repoPath, row.Name, target));
+            return;
         }
+
+        if (RemoteExists(target))
+        {
+            await ShowErrorAsync("Rename remote", $"A remote named '{target}' already exists.");
+            return;
+        }
+
+        RunMutation($"Rename '{row.Name}' to '{target}'", () => _service.RenameRemote(_repoPath, row.Name, target));
     }
 
     private async Task DoRemoveAsync()
@@ -194,11 +208,21 @@ public sealed class RemotesDialog : Window
 
         if (await ConfirmAsync($"Remove remote '{row.Name}'?"))
         {
-            RunMutation(() => _service.RemoveRemote(_repoPath, row.Name));
+            RunMutation($"Remove remote '{row.Name}'", () => _service.RemoveRemote(_repoPath, row.Name));
         }
     }
 
-    private void RunMutation(Func<RemoteOpResult> work)
+    /// <summary>
+    ///  Runs a remote mutation off the UI thread and — crucially — SHOWS git's own
+    ///  message when it fails. The previous version kept only
+    ///  <see cref="RemoteOpResult.Success"/> and threw the output away, so a
+    ///  rejected add/rename/remove looked exactly like a successful one: the list
+    ///  simply reloaded unchanged. Upstream surfaces the same text
+    ///  (<c>FormRemotes</c> shows <c>result.UserMessage</c> / the <c>RemoveRemote</c>
+    ///  output in a message box).
+    /// </summary>
+    /// <param name="label">What was attempted, used as the error caption.</param>
+    private void RunMutation(string label, Func<RemoteOpResult> work)
     {
         if (_busy)
         {
@@ -208,28 +232,90 @@ public sealed class RemotesDialog : Window
         _busy = true;
         _ = Task.Run(() =>
         {
-            bool success;
+            RemoteOpResult result;
             try
             {
-                success = work().Success;
+                result = work();
             }
-            catch
+            catch (Exception ex)
             {
-                success = false;
+                result = new RemoteOpResult(false, ex.GetBaseException().Message, AuthFailed: false);
             }
 
             Dispatcher.UIThread.Post(() =>
             {
                 _busy = false;
-                if (success)
+                if (result.Success)
                 {
                     Changed = true;
                 }
 
                 ReloadList();
+
+                if (!result.Success)
+                {
+                    // Git sometimes fails with no output at all (killed process,
+                    // missing git); still tell the user something concrete.
+                    string message = string.IsNullOrWhiteSpace(result.Output)
+                        ? "git reported no output."
+                        : result.Output.Trim();
+                    _ = ShowErrorAsync(label, message);
+                }
             });
         });
     }
+
+    /// <summary>Shows git's failure text in a modal, dismissable box.</summary>
+    private async Task ShowErrorAsync(string label, string message)
+    {
+        TaskCompletionSource<bool> tcs = new();
+
+        Button ok = new() { Content = "OK", HorizontalAlignment = HorizontalAlignment.Right };
+        Window dialog = new()
+        {
+            Title = label,
+            Width = 480,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Panel", Brushes.DimGray),
+        };
+        ok.Click += (_, _) => dialog.Close();
+        dialog.Closed += (_, _) => tcs.TrySetResult(true);
+
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock
+        {
+            Text = $"{label} failed:",
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        content.Children.Add(new TextBox
+        {
+            Text = message,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            MaxHeight = 220,
+            TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("monospace"),
+            Background = Brush("App.Control", Brushes.Black),
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        });
+        content.Children.Add(ok);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(this);
+        await tcs.Task;
+    }
+
+    /// <summary>
+    ///  True when <paramref name="name"/> is already a configured remote. Adding or
+    ///  renaming onto an existing name is refused up front, with the reason — git
+    ///  would fail anyway, and upstream validates the same thing in
+    ///  <c>FormRemotes.ValidateRemoteDoesNotExist</c>.
+    /// </summary>
+    private bool RemoteExists(string name)
+        => _list.ItemsSource is IEnumerable<RemoteRow> rows
+            && rows.Any(r => string.Equals(r.Name, name, StringComparison.Ordinal));
 
     // --- Inline prompt / confirm (mirrors RepoObjectsTree helpers) --------
 
