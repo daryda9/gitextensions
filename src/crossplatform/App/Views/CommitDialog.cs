@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -85,6 +86,28 @@ public sealed class CommitDialog : Window
     private readonly MenuItem _selectAllLinesItem = new();
     private readonly MenuItem _copyDiffItem = new();
     private ContextMenu _diffMenu = new();
+    // Upstream's selectionFilter toolbar (FormCommit.Designer.cs:253-278): a regular
+    // expression that SELECTS the matching unstaged files, throttled by 250 ms, with
+    // the pattern error surfaced in a tooltip. The invalid-pattern outline sits on the
+    // COUNTER, not on the TextBox: Fluent's focus border draws over a TextBox's own
+    // border, so the red went invisible exactly while the user was typing.
+    private readonly TextBox _selectionFilterBox;
+    private readonly Border _selectionFilterCount;
+    private readonly TextBlock _selectionFilterCountText = new()
+    {
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(4, 0, 4, 0),
+    };
+
+    private readonly DispatcherTimer _selectionFilterTimer = new()
+    {
+        Interval = TimeSpan.FromMilliseconds(250),
+    };
+
+    // The last applied pattern, empty when the filter is off. Non-empty ONLY while it
+    // compiles, so "filter active" and "pattern usable" are the same condition.
+    private string _selectionFilter = string.Empty;
+
     private readonly TextBlock _unstagedHeader = MakeHeaderLabel();
     private readonly TextBlock _stagedHeader = MakeHeaderLabel();
     private readonly Button _stageBtn;
@@ -349,14 +372,43 @@ public sealed class CommitDialog : Window
             c.Margin = new Thickness(0, 0, 4, 4);
         }
 
+        _selectionFilterBox = new TextBox { MinWidth = 120 };
+        _selectionFilterBox.TextChanged += (_, _) =>
+        {
+            // Restart the window on every keystroke: upstream throttles the same way,
+            // so a regex is compiled once per pause and not once per character.
+            _selectionFilterTimer.Stop();
+            _selectionFilterTimer.Start();
+        };
+        _selectionFilterTimer.Tick += (_, _) =>
+        {
+            _selectionFilterTimer.Stop();
+            ApplySelectionFilter();
+        };
+
+        _selectionFilterCount = new Border
+        {
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brushes.Transparent,
+            Padding = new Thickness(2, 0),
+            Child = _selectionFilterCountText,
+        };
+
+        DockPanel filterRow = new() { Margin = new Thickness(0, 0, 0, 2) };
+        DockPanel.SetDock(_selectionFilterCount, Dock.Right);
+        filterRow.Children.Add(_selectionFilterCount);
+        filterRow.Children.Add(_selectionFilterBox);
+
         Grid leftPanel = new()
         {
-            RowDefinitions = new RowDefinitions("*,Auto,*"),
+            RowDefinitions = new RowDefinitions("Auto,*,Auto,*"),
         };
-        leftPanel.Children.Add(WrapWithHeader(_unstagedHeader, _unstagedList, 0));
-        Grid.SetRow(stageButtons, 1);
+        Grid.SetRow(filterRow, 0);
+        leftPanel.Children.Add(filterRow);
+        leftPanel.Children.Add(WrapWithHeader(_unstagedHeader, _unstagedList, 1));
+        Grid.SetRow(stageButtons, 2);
         leftPanel.Children.Add(stageButtons);
-        leftPanel.Children.Add(WrapWithHeader(_stagedHeader, _stagedList, 2));
+        leftPanel.Children.Add(WrapWithHeader(_stagedHeader, _stagedList, 3));
 
         // ---- top region: left | right split ----
         Grid split = new()
@@ -505,8 +557,12 @@ public sealed class CommitDialog : Window
 
         _stageBtn.Content = StageCaption + " ▼";
         _unstageBtn.Content = UnstageCaption + " ▲";
-        _stageAllBtn.Content = T("FormCommit/_stageAll.Text", "Stage all");
-        _unstageAllBtn.Content = T("FormCommit/_unstageAll.Text", "Unstage all");
+        ApplyFilterCaptions();
+
+        _selectionFilterBox.Watermark = T(
+            "FileStatusList/cboFilterComboBox.Watermark",
+            "Filter files using a regular expression...");
+        ToolTip.SetTip(_selectionFilterBox, SelectionFilterTip);
 
         _messageBox.Watermark = T("FormCommit/_enterCommitMessageHint.Text", "Enter commit message");
         _amendBox.Content = T("FormCommit/_amendCommitCaption.Text", "Amend commit");
@@ -558,6 +614,28 @@ public sealed class CommitDialog : Window
                 {
                     e.Handled = true;
                     DoCommit(push: false);
+                    return;
+                }
+
+                // Upstream's ToggleSelectionFilter hotkey (Ctrl+F). Upstream hides and
+                // shows the whole filter toolbar; here the box is always visible, so
+                // the toggle is "focus it" / "clear it and hand focus back to the
+                // list", which is what the hotkey is actually used for.
+                if (e.Key == Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                {
+                    e.Handled = true;
+                    if (_selectionFilterBox.IsFocused)
+                    {
+                        _selectionFilterBox.Text = string.Empty;
+                        _selectionFilterTimer.Stop();
+                        ApplySelectionFilter();
+                        _unstagedList.Focus();
+                    }
+                    else
+                    {
+                        _selectionFilterBox.Focus();
+                        _selectionFilterBox.SelectAll();
+                    }
                 }
             },
             RoutingStrategies.Tunnel);
@@ -1178,9 +1256,11 @@ public sealed class CommitDialog : Window
         }
     }
 
+    // "Stage all" / "Stage filtered": with a filter on, the button acts on the matching
+    // files only — upstream's StageAllAccordingToFilter.
     private void StageAll()
     {
-        var rows = _unstagedList.Items.OfType<WorkingDirFileRow>().ToList();
+        List<WorkingDirFileRow> rows = [.. Filtered(_unstagedList)];
         if (rows.Count > 0)
         {
             RunGit(() => _service.Stage(_repoPath, rows));
@@ -1189,12 +1269,110 @@ public sealed class CommitDialog : Window
 
     private void UnstageAll()
     {
-        var rows = _stagedList.Items.OfType<WorkingDirFileRow>().ToList();
+        List<WorkingDirFileRow> rows = [.. Filtered(_stagedList)];
         if (rows.Count > 0)
         {
             RunGit(() => _service.Unstage(_repoPath, rows));
         }
     }
+
+    // ---------- selection filter (regex) ----------
+
+    /// <summary>True while a usable (compiling, non-empty) pattern is applied.</summary>
+    private bool IsSelectionFilterActive => _selectionFilter.Length > 0;
+
+    private IEnumerable<WorkingDirFileRow> Filtered(ListBox list)
+    {
+        IEnumerable<WorkingDirFileRow> rows = list.Items.OfType<WorkingDirFileRow>();
+        return IsSelectionFilterActive
+            ? rows.Where(r => Regex.IsMatch(r.Path, _selectionFilter, RegexOptions.IgnoreCase))
+            : rows;
+    }
+
+    // Compiles the pattern and, on success, SELECTS the matching unstaged rows the way
+    // upstream's FileStatusList.SetSelectionFilter does, so the plain "Stage" button
+    // acts on them. An invalid pattern leaves the previous selection alone and only
+    // reports itself.
+    private void ApplySelectionFilter()
+    {
+        string pattern = (_selectionFilterBox.Text ?? string.Empty).Trim();
+
+        if (pattern.Length == 0)
+        {
+            _selectionFilter = string.Empty;
+            _selectionFilterCount.BorderBrush = Brushes.Transparent;
+            _selectionFilterCountText.Text = string.Empty;
+            ToolTip.SetTip(_selectionFilterBox, SelectionFilterTip);
+            ApplyFilterCaptions();
+            return;
+        }
+
+        try
+        {
+            // Compile before anything else: an invalid pattern must not touch the
+            // selection or the captions.
+            _ = Regex.IsMatch(string.Empty, pattern, RegexOptions.IgnoreCase);
+        }
+        catch (ArgumentException ex)
+        {
+            _selectionFilter = string.Empty;
+            _selectionFilterCount.BorderBrush = Brushes.OrangeRed;
+            _selectionFilterCountText.Text = "!";
+            ToolTip.SetTip(
+                _selectionFilterBox,
+                string.Format(T("FormCommit/_selectionFilterErrorToolTip.Text", "Error {0}"), ex.Message));
+            ApplyFilterCaptions();
+            return;
+        }
+
+        _selectionFilter = pattern;
+        _selectionFilterCount.BorderBrush = Brushes.Transparent;
+        ToolTip.SetTip(_selectionFilterBox, SelectionFilterTip);
+
+        List<WorkingDirFileRow> matches = [.. Filtered(_unstagedList)];
+        _unstagedList.SelectedItems?.Clear();
+        foreach (WorkingDirFileRow row in matches)
+        {
+            _unstagedList.SelectedItems?.Add(row);
+        }
+
+        _selectionFilterCountText.Text = string.Format(
+            "{0}/{1}",
+            matches.Count,
+            _unstagedList.Items.Count);
+        ApplyFilterCaptions();
+    }
+
+    // The two "all" buttons say what they will actually do. Upstream re-captions
+    // "Stage all" from the unstaged filter and "Unstage all" from the staged list's own
+    // filter widget; the port's dialog has a single filter box, so the one pattern
+    // drives both sides.
+    private void ApplyFilterCaptions()
+    {
+        _stageAllBtn.Content = IsSelectionFilterActive
+            ? T("FormCommit/_stageFiltered.Text", "Stage filtered")
+            : T("FormCommit/_stageAll.Text", "Stage all");
+        _unstageAllBtn.Content = IsSelectionFilterActive
+            ? T("FormCommit/_unstageFiltered.Text", "Unstage filtered")
+            : T("FormCommit/_unstageAll.Text", "Unstage all");
+    }
+
+    private void RefreshSelectionFilterCount()
+    {
+        if (!IsSelectionFilterActive)
+        {
+            return;
+        }
+
+        _selectionFilterCountText.Text = string.Format(
+            "{0}/{1}",
+            Filtered(_unstagedList).Count(),
+            _unstagedList.Items.Count);
+    }
+
+    private static string SelectionFilterTip => T(
+        "FormCommit/_selectionFilterToolTip.Text",
+        "Enter a regular expression to select unstaged files.");
 
     // ---------- per-file actions (discard / copy path / .gitignore) ----------
 
@@ -2214,6 +2392,11 @@ public sealed class CommitDialog : Window
             _conflictBanner.IsVisible = _conflictPaths.Count > 0;
             RestoreDiffSelection();
             RenderStatus();
+
+            // The lists are new objects, so the filter's match count is stale. Only the
+            // COUNT is refreshed: re-selecting here would fight RestoreDiffSelection,
+            // which has just put the user back on the file they were staging hunks of.
+            RefreshSelectionFilterCount();
         }), TaskScheduler.Default);
     }
 
