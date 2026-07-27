@@ -2018,6 +2018,14 @@ public sealed class MainWindow : Window
             return (ctrl && gesture.Key is Key.F or Key.G or Key.C) || gesture.Key == Key.F3;
         }
 
+        // StashPanel: upstream's NextStash / PreviousStash. Ctrl+N / Ctrl+P are global
+        // here (GoToChild / GoToParent) only because FormStash upstream is a separate
+        // dialog, so the window has to yield them while the stash tab has the focus.
+        if (_stash.IsKeyboardFocusWithin)
+        {
+            return ctrl && gesture.Key is Key.N or Key.P;
+        }
+
         // RevisionGridView.OnListKeyDown: Ctrl+C (copy hash), Ctrl+G (go to commit),
         // Alt+↑/↓ (quick search), Alt+←/→ (navigation history, M47/F1), F3.
         if (_revisions.IsKeyboardFocusWithin)
