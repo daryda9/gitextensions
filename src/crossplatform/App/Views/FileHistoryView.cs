@@ -109,6 +109,12 @@ public sealed class FileHistoryView : UserControl
     // True for the duration of a right-button press dispatch.
     private bool _rightPressed;
 
+    // True while the view puts a selection back by hand after replacing ItemsSource.
+    // The host reacts to RevisionSelected by switching the bottom panel to the commit
+    // tab, which would pull the file history out from under the user for what was only
+    // a column re-render (seen headless while toggling the date column).
+    private bool _restoringSelection;
+
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
     /// </summary>
@@ -174,7 +180,7 @@ public sealed class FileHistoryView : UserControl
 
         _list.SelectionChanged += (_, _) =>
         {
-            if (_rightPressed)
+            if (_rightPressed || _restoringSelection)
             {
                 // Selecting by right-click must stay inside this view: the host
                 // reacts to RevisionSelected by switching the bottom panel to the
@@ -327,11 +333,19 @@ public sealed class FileHistoryView : UserControl
             // be put back by hand, since the items are different objects only by
             // reference for the ListBox.
             FileHistoryRow? selected = _list.SelectedItem as FileHistoryRow;
-            List<FileHistoryRow> fresh = _rows.ToList();
-            _list.ItemsSource = fresh;
-            if (selected is not null)
+            _restoringSelection = true;
+            try
             {
-                _list.SelectedItem = fresh.Find(r => r.Hash == selected.Hash);
+                List<FileHistoryRow> fresh = _rows.ToList();
+                _list.ItemsSource = fresh;
+                if (selected is not null)
+                {
+                    _list.SelectedItem = fresh.Find(r => r.Hash == selected.Hash);
+                }
+            }
+            finally
+            {
+                _restoringSelection = false;
             }
         };
 
