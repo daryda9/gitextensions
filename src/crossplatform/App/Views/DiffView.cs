@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -17,6 +18,16 @@ namespace GitExtensions.Avalonia.Views;
 ///  A two-pane view of a single commit's diff: the changed-files list on the
 ///  left, the unified diff of the selected file on the right. Heavy git work is
 ///  performed off the UI thread, matching <c>MainWindow</c>.
+///
+///  <para>Captions go through <see cref="TranslationService"/>. The XLIFF ids
+///  come from the two upstream controls this view merges: <c>FileStatusList</c>
+///  (the changed-files list and its context menu) and <c>FileViewer</c> (the
+///  diff pane's toolbar strip and its settings menu). Strings with no upstream
+///  equivalent — the zoom commands, the encoding tooltip, the status line —
+///  use the source-text overload and simply stay English when a catalogue has
+///  no match. The view re-labels itself in place on
+///  <see cref="TranslationService.LanguageChanged"/>; it is never rebuilt, so
+///  the loaded diff and the scroll position survive a language switch.</para>
 /// </summary>
 public sealed class DiffView : UserControl
 {
@@ -53,6 +64,25 @@ public sealed class DiffView : UserControl
     private readonly ToggleButton _nonPrintingButton;
     private readonly ToggleButton _wordDiffButton;
     private readonly ComboBox _encodingBox;
+
+    // Kept so a language switch can re-label them in place (see ApplyTranslations).
+    private readonly MenuItem _copyPathItem;
+    private readonly MenuItem _blameItem;
+    private readonly MenuItem _historyItem;
+    private readonly MenuItem _difftoolItem;
+    private readonly MenuItem _compareWorkingDirItem;
+    private readonly MenuItem _copyDiffItem;
+    private readonly MenuItem _selectAllCopyItem;
+    private readonly Button _prevChangeButton;
+    private readonly Button _nextChangeButton;
+    private readonly Button _zoomInButton;
+    private readonly Button _zoomOutButton;
+    private readonly Button _settingsButton;
+
+    // False while the view shows its "nothing loaded yet" placeholder, so a
+    // language switch can re-translate that placeholder without clobbering a
+    // real status message (a command line, an error) with a stale one.
+    private bool _hasCommit;
 
     // Line indices (into the currently rendered diff) of each hunk header, and
     // where the ▲/▼ navigation currently sits.
@@ -109,27 +139,27 @@ public sealed class DiffView : UserControl
             Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")) },
         });
 
-        MenuItem copyPathItem = new() { Header = "Copy file path" };
-        copyPathItem.Click += (_, _) => CopySelectedFilePath();
-        MenuItem blameItem = new() { Header = "Blame" };
-        blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
-        MenuItem historyItem = new() { Header = "File history" };
-        historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
-        MenuItem difftoolItem = new() { Header = "Open in external difftool" };
-        difftoolItem.Click += (_, _) => OpenSelectedInExternalDiffTool();
-        MenuItem compareWorkingDirItem = new() { Header = "Compare file to working directory" };
-        compareWorkingDirItem.Click += (_, _) => CompareSelectedToWorkingDirectory();
+        _copyPathItem = new MenuItem();
+        _copyPathItem.Click += (_, _) => CopySelectedFilePath();
+        _blameItem = new MenuItem();
+        _blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
+        _historyItem = new MenuItem();
+        _historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
+        _difftoolItem = new MenuItem();
+        _difftoolItem.Click += (_, _) => OpenSelectedInExternalDiffTool();
+        _compareWorkingDirItem = new MenuItem();
+        _compareWorkingDirItem.Click += (_, _) => CompareSelectedToWorkingDirectory();
         _files.ContextMenu = new ContextMenu
         {
             ItemsSource = new Control[]
             {
-                copyPathItem,
+                _copyPathItem,
                 new Separator(),
-                blameItem,
-                historyItem,
+                _blameItem,
+                _historyItem,
                 new Separator(),
-                difftoolItem,
-                compareWorkingDirItem,
+                _difftoolItem,
+                _compareWorkingDirItem,
             },
         };
 
@@ -142,11 +172,11 @@ public sealed class DiffView : UserControl
             TextWrapping = TextWrapping.NoWrap,
         };
 
-        MenuItem copyDiffItem = new() { Header = "Copy diff" };
-        copyDiffItem.Click += (_, _) => CopyDiffText();
-        MenuItem selectAllCopyItem = new() { Header = "Select all + copy" };
-        selectAllCopyItem.Click += (_, _) => SelectAllAndCopy();
-        _diff.ContextMenu = new ContextMenu { ItemsSource = new[] { copyDiffItem, selectAllCopyItem } };
+        _copyDiffItem = new MenuItem();
+        _copyDiffItem.Click += (_, _) => CopyDiffText();
+        _selectAllCopyItem = new MenuItem();
+        _selectAllCopyItem.Click += (_, _) => SelectAllAndCopy();
+        _diff.ContextMenu = new ContextMenu { ItemsSource = new[] { _copyDiffItem, _selectAllCopyItem } };
 
         _diff.FontSize = _options.FontSize;
 
@@ -161,13 +191,15 @@ public sealed class DiffView : UserControl
         // ---- diff toolbar (mirrors the Windows diff viewer's right-hand strip) ----
         AddToolbarStyles();
 
-        Button prevChange = ToolButton("▲", "Go to previous change (hunk)", GoToPreviousChange);
-        Button nextChange = ToolButton("▼", "Go to next change (hunk)", GoToNextChange);
-        Button zoomIn = ToolButton("A+", "Increase text size", () => Zoom(+1));
-        Button zoomOut = ToolButton("A−", "Decrease text size", () => Zoom(-1));
+        // Tooltips are not passed here: every one of them is (re-)applied by
+        // ApplyTranslations, which also runs on a language switch.
+        _prevChangeButton = ToolButton("▲", GoToPreviousChange);
+        _nextChangeButton = ToolButton("▼", GoToNextChange);
+        _zoomInButton = ToolButton("A+", () => Zoom(+1));
+        _zoomOutButton = ToolButton("A−", () => Zoom(-1));
 
         _ignoreWhitespaceButton = ToggleTool(
-            "-w", "Ignore whitespace changes (git diff -w)", _options.IgnoreWhitespace,
+            "-w", _options.IgnoreWhitespace,
             v =>
             {
                 _options.IgnoreWhitespace = v;
@@ -175,7 +207,7 @@ public sealed class DiffView : UserControl
             });
 
         _nonPrintingButton = ToggleTool(
-            "¶", "Show nonprinting characters (spaces, tabs, CR)", _options.ShowNonPrinting,
+            "¶", _options.ShowNonPrinting,
             v =>
             {
                 _options.ShowNonPrinting = v;
@@ -183,7 +215,7 @@ public sealed class DiffView : UserControl
             });
 
         _wordDiffButton = ToggleTool(
-            "<div>", "Word diff (git diff --word-diff)", _options.WordDiff,
+            "<div>", _options.WordDiff,
             v =>
             {
                 _options.WordDiff = v;
@@ -206,7 +238,6 @@ public sealed class DiffView : UserControl
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        ToolTip.SetTip(_encodingBox, "Encoding used to decode the diff text");
         _encodingBox.SelectionChanged += (_, _) =>
         {
             if (_encodingBox.SelectedItem is not string name)
@@ -218,9 +249,11 @@ public sealed class DiffView : UserControl
             ReloadDiff();
         };
 
-        Button settings = ToolButton("⚙", "Diff view settings", null);
-        settings.Click += (_, _) => ShowSettingsMenu(settings);
+        _settingsButton = ToolButton("⚙", null);
+        _settingsButton.Click += (_, _) => ShowSettingsMenu(_settingsButton);
 
+        // Every item here is a glyph or a data-driven combo box, so no caption
+        // grows when the UI is translated and a plain horizontal strip is safe.
         StackPanel toolbar = new()
         {
             Orientation = Orientation.Horizontal,
@@ -228,18 +261,18 @@ public sealed class DiffView : UserControl
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(4, 2, 6, 2),
         };
-        toolbar.Children.Add(nextChange);
-        toolbar.Children.Add(prevChange);
+        toolbar.Children.Add(_nextChangeButton);
+        toolbar.Children.Add(_prevChangeButton);
         toolbar.Children.Add(ToolSeparator());
-        toolbar.Children.Add(zoomIn);
-        toolbar.Children.Add(zoomOut);
+        toolbar.Children.Add(_zoomInButton);
+        toolbar.Children.Add(_zoomOutButton);
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(_ignoreWhitespaceButton);
         toolbar.Children.Add(_nonPrintingButton);
         toolbar.Children.Add(_wordDiffButton);
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(_encodingBox);
-        toolbar.Children.Add(settings);
+        toolbar.Children.Add(_settingsButton);
 
         Border toolbarBar = new()
         {
@@ -261,7 +294,6 @@ public sealed class DiffView : UserControl
             Foreground = B("App.TextDim"),
             FontSize = 12,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            Text = "No commit selected.",
         };
 
         Grid split = new()
@@ -294,9 +326,67 @@ public sealed class DiffView : UserControl
 
         Content = root;
 
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+
         // Ctrl+C: copy the file path when the file list is focused, otherwise the diff.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
     }
+
+    // ------------------------------------------------------------ translation
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string F(string format, params object?[] args)
+        => string.Format(CultureInfo.CurrentCulture, format, args);
+
+    /// <summary>The catalogue's word for "Error", used to prefix a raw git message.</summary>
+    private static string ErrorWord() => T("TranslatedStrings/_error.Text", "Error");
+
+    // The load-time labelling pass, re-run whenever the language changes. It
+    // touches captions and tooltips only, never the loaded content, so a switch
+    // costs nothing and loses nothing.
+    private void ApplyTranslations()
+    {
+        _copyPathItem.Header = T("FileStatusList/tsmiCopyPaths.Text", "Copy file path");
+        _blameItem.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
+        _historyItem.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
+        _difftoolItem.Header = T("FileStatusList/tsmiOpenWithDifftool.Text", "Open in external difftool");
+        _compareWorkingDirItem.Header = T(
+            "RevisionGridControl/compareToWorkingDirectoryMenuItem.Text", "Compare file to working directory");
+
+        // No usable upstream id: FileViewer's "Copy &patch" is mistranslated as
+        // "copy and apply" in at least one catalogue, so these two stay on the
+        // source-text lookup and fall back to English.
+        _copyDiffItem.Header = T("Copy diff");
+        _selectAllCopyItem.Header = T("Select all + copy");
+
+        ToolTip.SetTip(_prevChangeButton, T("FileViewer/previousChangeButton.ToolTipText", "Previous change"));
+        ToolTip.SetTip(_nextChangeButton, T("FileViewer/nextChangeButton.ToolTipText", "Next change"));
+        ToolTip.SetTip(_zoomInButton, T("Increase text size"));
+        ToolTip.SetTip(_zoomOutButton, T("Decrease text size"));
+
+        // The git flag is appended outside the translated sentence: it is a
+        // command-line token, identical in every language.
+        ToolTip.SetTip(_ignoreWhitespaceButton,
+            F("{0}  ({1})", T("FileViewer/ignoreAllWhitespaces.ToolTipText", "Ignore all whitespace changes"), "git diff -w"));
+        ToolTip.SetTip(_nonPrintingButton,
+            T("FileViewer/showNonPrintChars.ToolTipText", "Show nonprinting characters"));
+        ToolTip.SetTip(_wordDiffButton,
+            F("{0}  ({1})", T("FileViewer/showGitWordColoringToolStripMenuItem.Text", "Word diff"), "git diff --word-diff"));
+
+        ToolTip.SetTip(_encodingBox, T("Encoding used to decode the diff text"));
+        ToolTip.SetTip(_settingsButton, T("FileViewer/settingsButton.ToolTipText", "Settings"));
+
+        if (!_hasCommit)
+        {
+            _status.Text = T("No commit selected.");
+        }
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
 
     // A changed-file row: a coloured status glyph (M/A/D/R/C) followed by the path.
     private static Control BuildFileRow(DiffFileRow? row)
@@ -396,7 +486,7 @@ public sealed class DiffView : UserControl
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = "Difftool error: " + ex.Message);
+                Dispatcher.UIThread.Post(() => _status.Text = F(T("Difftool error: {0}"), ex.Message));
             }
         });
     }
@@ -454,8 +544,8 @@ public sealed class DiffView : UserControl
 
         LoadFileList(
             () => DiffService.GetChangedFiles(repoPath, commitHash),
-            count => $"{commitHash}  —  {count} changed file(s)",
-            $"Loading changed files for {commitHash}…");
+            count => F(ChangedFilesFormat(), commitHash, count),
+            F(LoadingFilesFormat(), commitHash));
     }
 
     /// <summary>
@@ -473,10 +563,12 @@ public sealed class DiffView : UserControl
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;
 
+        string range = F("{0} .. {1}", shortBase, shortOther);
+
         LoadFileList(
             () => DiffService.GetDiffFilesBetween(repoPath, baseHash, otherHash),
-            count => $"{shortBase} .. {shortOther}  —  {count} changed file(s)",
-            $"Loading changed files for {shortBase}..{shortOther}…");
+            count => F(ChangedFilesFormat(), range, count),
+            F(LoadingFilesFormat(), range));
     }
 
     /// <summary>
@@ -493,11 +585,20 @@ public sealed class DiffView : UserControl
 
         string shortHash = commitHash.Length > 8 ? commitHash[..8] : commitHash;
 
+        string range = F("{0} .. {1}", shortHash, T("TranslatedStrings/_workingDirectoryText.Text", "working directory"));
+
         LoadFileList(
             () => DiffService.GetChangedFilesAgainstWorkingTree(repoPath, commitHash),
-            count => $"{shortHash} .. working tree  —  {count} changed file(s)",
-            $"Loading changes since {shortHash}…");
+            count => F(ChangedFilesFormat(), range, count),
+            F(LoadingFilesFormat(), range));
     }
+
+    // Composed status texts are single formats with placeholders, never
+    // assembled from translated fragments: {0} is the comparison being shown
+    // (a hash or a range) and {1} the file count.
+    private static string ChangedFilesFormat() => T("{0}  —  {1} changed file(s)");
+
+    private static string LoadingFilesFormat() => T("Loading changed files for {0}…");
 
     // Shared changed-file-list loader: clears the panes, loads the file rows off
     // the UI thread, then populates the list and auto-selects the first row so
@@ -512,6 +613,7 @@ public sealed class DiffView : UserControl
         _diff.Text = string.Empty;
         _currentDiffText = string.Empty;
         _status.Text = loadingText;
+        _hasCommit = true;
 
         _ = Task.Run(() =>
         {
@@ -530,7 +632,7 @@ public sealed class DiffView : UserControl
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = "Error: " + ex.Message);
+                Dispatcher.UIThread.Post(() => _status.Text = F("{0}: {1}", ErrorWord(), ex.Message));
             }
         });
     }
@@ -584,7 +686,9 @@ public sealed class DiffView : UserControl
         Chrome<ToggleButton>([":checked", ":pointerover"], selection, B("App.Accent"));
     }
 
-    private Button ToolButton(string glyph, string tip, Action? onClick)
+    // The caption is always a glyph, never a translated word; the tooltip is set
+    // separately by ApplyTranslations so a language switch can revisit it.
+    private Button ToolButton(string glyph, Action? onClick)
     {
         Button button = new()
         {
@@ -603,7 +707,6 @@ public sealed class DiffView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
         button.Classes.Add("difftool");
-        ToolTip.SetTip(button, tip);
 
         if (onClick is not null)
         {
@@ -613,7 +716,7 @@ public sealed class DiffView : UserControl
         return button;
     }
 
-    private ToggleButton ToggleTool(string glyph, string tip, bool isChecked, Action<bool> onChanged)
+    private ToggleButton ToggleTool(string glyph, bool isChecked, Action<bool> onChanged)
     {
         ToggleButton button = new()
         {
@@ -633,7 +736,6 @@ public sealed class DiffView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
         button.Classes.Add("difftool");
-        ToolTip.SetTip(button, tip);
         button.IsCheckedChanged += (_, _) => onChanged(button.IsChecked == true);
 
         return button;
@@ -653,7 +755,8 @@ public sealed class DiffView : UserControl
     {
         MenuItem ignore = new()
         {
-            Header = "Ignore whitespace changes  (-w)",
+            Header = F("{0}  ({1})",
+                T("FileViewer/ignoreAllWhitespaceChangesToolStripMenuItem.Text", "Ignore all whitespace changes"), "-w"),
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = _options.IgnoreWhitespace,
         };
@@ -661,7 +764,7 @@ public sealed class DiffView : UserControl
 
         MenuItem nonPrinting = new()
         {
-            Header = "Show nonprinting characters",
+            Header = T("FileViewer/showNonprintableCharactersToolStripMenuItem.Text", "Show nonprinting characters"),
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = _options.ShowNonPrinting,
         };
@@ -669,20 +772,26 @@ public sealed class DiffView : UserControl
 
         MenuItem word = new()
         {
-            Header = "Word diff  (--word-diff)",
+            Header = F("{0}  ({1})",
+                T("FileViewer/showGitWordColoringToolStripMenuItem.Text", "Word diff"), "--word-diff"),
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = _options.WordDiff,
         };
         word.Click += (_, _) => _wordDiffButton.IsChecked = !_options.WordDiff;
 
-        MenuItem zoomIn = new() { Header = "Increase text size" };
+        MenuItem zoomIn = new() { Header = T("Increase text size") };
         zoomIn.Click += (_, _) => Zoom(+1);
-        MenuItem zoomOut = new() { Header = "Decrease text size" };
+        MenuItem zoomOut = new() { Header = T("Decrease text size") };
         zoomOut.Click += (_, _) => Zoom(-1);
-        MenuItem zoomReset = new() { Header = "Reset text size" };
+        MenuItem zoomReset = new() { Header = T("Reset text size") };
         zoomReset.Click += (_, _) => Zoom(0);
 
-        MenuItem encodingReset = new() { Header = "Reset encoding to " + DiffTextService.DefaultEncodingName };
+        // The encoding name is data: it must not be looked up, and its
+        // underscores (if any) must be escaped so the access-key parser keeps them.
+        MenuItem encodingReset = new()
+        {
+            Header = F(T("Reset encoding to {0}"), DiffTextService.DefaultEncodingName.Replace("_", "__")),
+        };
         encodingReset.Click += (_, _) => _encodingBox.SelectedItem = DiffTextService.DefaultEncodingName;
 
         MenuFlyout flyout = new()
@@ -714,7 +823,7 @@ public sealed class DiffView : UserControl
 
         _options.FontSize = size;
         _diff.FontSize = size;
-        _status.Text = $"Text size {size:0}pt";
+        _status.Text = F(T("Text size {0:0}pt"), size);
     }
 
     // ------------------------------------------------------- hunk navigation
@@ -727,7 +836,7 @@ public sealed class DiffView : UserControl
     {
         if (_hunkLines.Count == 0)
         {
-            _status.Text = "No changes to navigate in this file.";
+            _status.Text = T("No changes to navigate in this file.");
             return;
         }
 
@@ -737,7 +846,7 @@ public sealed class DiffView : UserControl
 
         _hunkIndex = next;
         ScrollToLine(_hunkLines[next]);
-        _status.Text = $"Change {next + 1} of {_hunkLines.Count}";
+        _status.Text = F(T("Change {0} of {1}"), next + 1, _hunkLines.Count);
     }
 
     // The diff pane is a uniform monospace block, so a line's offset is simply
@@ -791,7 +900,7 @@ public sealed class DiffView : UserControl
         };
 
         _diff.Inlines?.Clear();
-        _diff.Text = "Loading diff…";
+        _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
 
         _ = Task.Run(async () =>
         {
@@ -826,7 +935,7 @@ public sealed class DiffView : UserControl
                     if (!token.IsCancellationRequested)
                     {
                         _diff.Inlines?.Clear();
-                        _diff.Text = "Error: " + ex.Message;
+                        _diff.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                     }
                 });
             }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -5,6 +6,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands;
+using GitExtensions.Avalonia.Services;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
 using GitExtUtils;
@@ -16,6 +18,14 @@ namespace GitExtensions.Avalonia.Views;
 ///  &lt;hash&gt;</c>), one path per row, in a scrollable monospace list. Mirrors the
 ///  original browse window's "File tree" tab. All git work runs off the UI thread
 ///  and never throws — failures surface as a status line.
+///
+///  <para>The header line goes through <see cref="TranslationService"/>. The tab
+///  itself is named by <c>FormBrowse/TreeTabPage.Text</c> upstream, but the
+///  status sentences this view composes ("N file(s) at abc1234") have no upstream
+///  equivalent, so they use the source-text overload and stay English where a
+///  catalogue has no match. Each is a single format with placeholders — the
+///  hash and the count are substituted, never concatenated. The header is
+///  re-stated on <see cref="TranslationService.LanguageChanged"/>.</para>
 /// </summary>
 public sealed class FileTreeView : UserControl
 {
@@ -23,6 +33,11 @@ public sealed class FileTreeView : UserControl
 
     private readonly ListBox _list;
     private readonly TextBlock _status;
+
+    // The short hash currently listed, or null while nothing is loaded: it lets
+    // a language switch re-state the header without re-running git.
+    private string? _shortHash;
+    private int _fileCount;
 
     public FileTreeView()
     {
@@ -32,7 +47,6 @@ public sealed class FileTreeView : UserControl
             Foreground = Brush("App.TextDim", Brushes.Gray),
             Background = Brush("App.Toolbar", Brushes.DimGray),
             Padding = new Thickness(4, 4, 4, 4),
-            Text = "No commit selected.",
         };
 
         _list = new ListBox
@@ -59,7 +73,36 @@ public sealed class FileTreeView : UserControl
 
         Content = root;
         ClipToBounds = true;
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // ------------------------------------------------------------ translation
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string F(string format, params object?[] args)
+        => string.Format(CultureInfo.CurrentCulture, format, args);
+
+    // Re-states the header in the active language. An error message is left
+    // alone: it belongs to a git run that already happened.
+    private void ApplyTranslations()
+    {
+        if (_shortHash is not { Length: > 0 } hash)
+        {
+            _status.Text = T("No commit selected.");
+            return;
+        }
+
+        _status.Text = _fileCount > 0
+            ? F(T("{0} file(s) at {1}"), _fileCount, hash)
+            : F(T("(no tracked files at {0})"), hash);
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
 
     /// <summary>
     ///  Loads and lists the files of the tree at <paramref name="commitHash"/> in
@@ -70,7 +113,9 @@ public sealed class FileTreeView : UserControl
     {
         _list.ItemsSource = null;
         string shortHash = commitHash.Length > 8 ? commitHash[..8] : commitHash;
-        _status.Text = $"Loading files at {shortHash}…";
+        _shortHash = null;
+        _fileCount = 0;
+        _status.Text = F(T("Loading files at {0}…"), shortHash);
 
         _ = Task.Run(() =>
         {
@@ -106,14 +151,14 @@ public sealed class FileTreeView : UserControl
             {
                 if (error is { Length: > 0 })
                 {
-                    _status.Text = $"Could not list files at {shortHash}: {error}";
+                    _status.Text = F(T("Could not list files at {0}: {1}"), shortHash, error);
                     return;
                 }
 
                 _list.ItemsSource = files;
-                _status.Text = files.Count > 0
-                    ? $"{files.Count} file(s) at {shortHash}"
-                    : $"(no tracked files at {shortHash})";
+                _shortHash = shortHash;
+                _fileCount = files.Count;
+                ApplyTranslations();
             });
         });
     }

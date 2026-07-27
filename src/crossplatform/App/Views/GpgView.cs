@@ -1,9 +1,11 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands;
+using GitExtensions.Avalonia.Services;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
 using GitExtUtils;
@@ -16,11 +18,22 @@ namespace GitExtensions.Avalonia.Views;
 ///  &lt;hash&gt;</c> (with a <c>git verify-commit</c> fallback) and renders the
 ///  combined stdout/stderr verbatim in a monospace, read-only pane. All git work
 ///  runs off the UI thread and never throws.
+///
+///  <para>Only this view's own wording is translated (through
+///  <see cref="TranslationService"/>, with <c>RevisionGpgInfoControl</c> ids
+///  where upstream has an equivalent): git's own signature output is left
+///  verbatim, because it is what the user would see on the command line. The
+///  placeholder is re-stated on
+///  <see cref="TranslationService.LanguageChanged"/>; a signature already
+///  displayed is not re-verified.</para>
 /// </summary>
 public sealed class GpgView : UserControl
 {
     private readonly TextBox _text;
     private readonly ScrollViewer _scroll;
+
+    // False while the pane shows its placeholder rather than git output.
+    private bool _hasCommit;
 
     public GpgView()
     {
@@ -32,7 +45,6 @@ public sealed class GpgView : UserControl
             FontFamily = new FontFamily("monospace,Consolas,Menlo"),
             Background = Brush("App.Panel", Brushes.Black),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
-            Text = "No commit selected.",
         };
 
         _scroll = new ScrollViewer
@@ -46,7 +58,29 @@ public sealed class GpgView : UserControl
         Content = _scroll;
         Background = Brush("App.Window", Brushes.DimGray);
         ClipToBounds = true;
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // ------------------------------------------------------------ translation
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string F(string format, params object?[] args)
+        => string.Format(CultureInfo.CurrentCulture, format, args);
+
+    private void ApplyTranslations()
+    {
+        if (!_hasCommit)
+        {
+            _text.Text = T("No commit selected.");
+        }
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
 
     /// <summary>
     ///  Loads and shows the signature / verification output for
@@ -56,7 +90,14 @@ public sealed class GpgView : UserControl
     public void ShowCommit(string repoPath, string commitHash)
     {
         string shortHash = commitHash.Length > 8 ? commitHash[..8] : commitHash;
-        _text.Text = $"Verifying signature of {shortHash}…";
+        _hasCommit = true;
+        _text.Text = F(T("Verifying signature of {0}…"), shortHash);
+
+        // Snapshotted on the UI thread: the strings are needed inside the git
+        // run below, and Task.Run must not reach back into the view.
+        string notSigned = F("({0})", T("RevisionGpgInfoControl/_commitNotSigned.Text", "this commit is not signed"));
+        string noInfo = T("(no signature information)");
+        string failedFormat = T("Could not verify signature: {0}");
 
         _ = Task.Run(() =>
         {
@@ -82,15 +123,15 @@ public sealed class GpgView : UserControl
                     string verifyOut = Combine(vr.StandardOutput, vr.StandardError);
                     output = verifyOut.Trim().Length > 0
                         ? verifyOut
-                        : (output.Trim().Length > 0 ? output : "(this commit is not signed)");
+                        : (output.Trim().Length > 0 ? output : notSigned);
                 }
             }
             catch (Exception ex)
             {
-                output = $"Could not verify signature: {ex.Message}";
+                output = F(failedFormat, ex.Message);
             }
 
-            string final = output.Trim().Length > 0 ? output : "(no signature information)";
+            string final = output.Trim().Length > 0 ? output : noInfo;
             Dispatcher.UIThread.Post(() =>
             {
                 _text.Text = final;

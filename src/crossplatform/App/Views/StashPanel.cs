@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -19,6 +20,15 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="StashOpsService"/> only; they are meant to be wired into the
 ///  revision grid's context menu by the integrator, so this panel provides no UI
 ///  for them.
+///
+///  <para>Captions go through <see cref="TranslationService"/>, mostly with
+///  <c>FormStash</c> and <c>RepoObjectsTree</c> XLIFF ids (the upstream stash
+///  dialog and the stash nodes of the left tree). Because the translated verbs
+///  are markedly longer than the English ones — "Drop" becomes "Elimina stash",
+///  "Stash staged" becomes "Stash delle modifiche in stage" — the two button
+///  rows are <see cref="WrapPanel"/>s, not fixed horizontal strips: in a 340 px
+///  column they would otherwise run past the splitter. The panel re-labels
+///  itself on <see cref="TranslationService.LanguageChanged"/>.</para>
 /// </summary>
 public sealed class StashPanel : UserControl
 {
@@ -42,6 +52,7 @@ public sealed class StashPanel : UserControl
     private readonly Button _dropButton;
     private readonly SelectableTextBlock _diff;
     private readonly TextBlock _status;
+    private readonly TextBlock _listTitle;
 
     private string? _repoPath;
     private bool _busy;
@@ -62,44 +73,41 @@ public sealed class StashPanel : UserControl
         };
         _stashList.SelectionChanged += (_, _) => ShowSelectedStashDiff();
 
-        TextBlock listTitle = new()
+        _listTitle = new TextBlock
         {
-            Text = "Stashes",
             FontWeight = FontWeight.Bold,
             Margin = new Thickness(0, 0, 0, 2),
         };
 
-        _messageBox = new TextBox
-        {
-            Watermark = "Stash message (optional)",
-            Margin = new Thickness(0, 0, 0, 4),
-        };
+        _messageBox = new TextBox { Margin = new Thickness(0, 0, 0, 4) };
 
-        _untrackedCheck = new CheckBox
-        {
-            Content = "Include untracked files",
-            Margin = new Thickness(0, 0, 0, 4),
-        };
+        _untrackedCheck = new CheckBox { Margin = new Thickness(0, 0, 0, 4) };
 
-        _saveButton = new Button { Content = "Save stash", Margin = new Thickness(0, 0, 6, 0) };
+        // A trailing margin (rather than the parent's spacing) is what separates
+        // the buttons, so it survives a wrap onto a second line.
+        Thickness gap = new(0, 0, 6, 4);
+
+        _saveButton = new Button { Margin = gap };
         _saveButton.Click += (_, _) => DoSave();
 
-        _stashDialogButton = new Button { Content = "Stash…", Margin = new Thickness(0, 0, 6, 0) };
+        _stashDialogButton = new Button { Margin = gap };
         _stashDialogButton.Click += (_, _) => _ = DoStashDialogAsync();
 
-        _stagedButton = new Button { Content = "Stash staged" };
+        _stagedButton = new Button { Margin = gap };
         _stagedButton.Click += (_, _) => DoStashStaged();
 
-        _applyButton = new Button { Content = "Apply", Margin = new Thickness(0, 0, 6, 0) };
+        _applyButton = new Button { Margin = gap };
         _applyButton.Click += (_, _) => DoApply();
 
-        _popButton = new Button { Content = "Pop", Margin = new Thickness(0, 0, 6, 0) };
+        _popButton = new Button { Margin = gap };
         _popButton.Click += (_, _) => DoPop();
 
-        _dropButton = new Button { Content = "Drop" };
+        _dropButton = new Button { Margin = gap };
         _dropButton.Click += (_, _) => _ = DoDropAsync();
 
-        StackPanel opButtons = new()
+        // WrapPanel, not a horizontal StackPanel: translated verbs are much
+        // wider than the English ones and this column is only 340 px.
+        WrapPanel opButtons = new()
         {
             Orientation = Orientation.Horizontal,
             Margin = new Thickness(0, 4, 0, 0),
@@ -113,14 +121,14 @@ public sealed class StashPanel : UserControl
             RowDefinitions = new RowDefinitions("Auto,*,Auto"),
             Margin = new Thickness(8, 4, 8, 4),
         };
-        Grid.SetRow(listTitle, 0);
+        Grid.SetRow(_listTitle, 0);
         Grid.SetRow(_stashList, 1);
         Grid.SetRow(opButtons, 2);
-        listPanel.Children.Add(listTitle);
+        listPanel.Children.Add(_listTitle);
         listPanel.Children.Add(_stashList);
         listPanel.Children.Add(opButtons);
 
-        StackPanel saveButtons = new() { Orientation = Orientation.Horizontal };
+        WrapPanel saveButtons = new() { Orientation = Orientation.Horizontal };
         saveButtons.Children.Add(_saveButton);
         saveButtons.Children.Add(_stashDialogButton);
         saveButtons.Children.Add(_stagedButton);
@@ -134,7 +142,6 @@ public sealed class StashPanel : UserControl
         {
             Margin = new Thickness(10, 2, 10, 6),
             Foreground = Brushes.Gray,
-            Text = "No repository loaded.",
             TextWrapping = TextWrapping.Wrap,
         };
 
@@ -146,7 +153,6 @@ public sealed class StashPanel : UserControl
             Foreground = B("App.Text"),
             Margin = new Thickness(12, 10, 12, 12),
             TextWrapping = TextWrapping.NoWrap,
-            Text = "Select a stash to view its diff.",
         };
 
         ScrollViewer diffScroll = new()
@@ -186,7 +192,54 @@ public sealed class StashPanel : UserControl
         root.Children.Add(split);
 
         Content = root;
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // ------------------------------------------------------------ translation
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string F(string format, params object?[] args)
+        => string.Format(CultureInfo.CurrentCulture, format, args);
+
+    private static string ErrorWord() => T("TranslatedStrings/_error.Text", "Error");
+
+    // One format with a placeholder for the raw git output, never a translated
+    // prefix glued to a message.
+    private static string FailedFormat() => T("Failed: {0}");
+
+    private void ApplyTranslations()
+    {
+        _listTitle.Text = T("TranslatedStrings/_stashesText.Text", "Stashes");
+        _messageBox.Watermark = T("Stash message (optional)");
+        _untrackedCheck.Content = T("FormStash/chkIncludeUntrackedFiles.Text", "Include untracked files");
+
+        _saveButton.Content = T("FormStash/Stash.Text", "Save stash");
+        _stashDialogButton.Content = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash…");
+        _stagedButton.Content = T("FormBrowse/stashStagedToolStripMenuItem.Text", "Stash staged");
+        _applyButton.Content = T("RepoObjectsTree/mnubtnApplyStash.Text", "Apply");
+        _popButton.Content = T("RepoObjectsTree/mnubtnPopStash.Text", "Pop");
+        _dropButton.Content = T("RepoObjectsTree/mnubtnDropStash.Text", "Drop");
+
+        // Only the idle placeholders are re-stated: a live status line (a result,
+        // an error) belongs to an operation that already happened.
+        if (_repoPath is not { Length: > 0 })
+        {
+            _status.Text = T("No repository loaded.");
+        }
+
+        if (SelectedStash() is null)
+        {
+            _diff.Inlines?.Clear();
+            _diff.Text = T("Select a stash to view its diff.");
+        }
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
 
     /// <summary>
     ///  Points the panel at <paramref name="repoPath"/> and loads its stashes.
@@ -201,17 +254,19 @@ public sealed class StashPanel : UserControl
     {
         if (_repoPath is not { Length: > 0 } repo)
         {
-            _status.Text = "No repository loaded.";
+            _status.Text = T("No repository loaded.");
             return;
         }
 
-        _status.Text = "Loading…";
+        _status.Text = T("FormBrowse/_loading.Text", "Loading…");
         RunGit(
             () => _service.ListStashes(repo),
             stashes =>
             {
                 _stashList.ItemsSource = stashes.ToList();
-                _status.Text = $"{stashes.Count} stash(es).";
+                _status.Text = stashes.Count == 0
+                    ? T("FormStash/_noStashes.Text", "There are no stashes.")
+                    : F(T("{0} stash(es)."), stashes.Count);
             });
     }
 
@@ -225,10 +280,10 @@ public sealed class StashPanel : UserControl
         string message = _messageBox.Text ?? string.Empty;
         bool untracked = _untrackedCheck.IsChecked == true;
 
-        _status.Text = "Saving stash…";
+        _status.Text = T("Saving stash…");
         RunGit(
             () => _service.StashSave(repo, message, untracked),
-            result => OnMutated(result, "Stash saved.", () => _messageBox.Text = string.Empty));
+            result => OnMutated(result, T("Stash saved."), () => _messageBox.Text = string.Empty));
     }
 
     private void DoStashStaged()
@@ -240,10 +295,10 @@ public sealed class StashPanel : UserControl
 
         string message = _messageBox.Text ?? string.Empty;
 
-        _status.Text = "Stashing staged changes…";
+        _status.Text = T("Stashing staged changes…");
         RunGit(
             () => _service.StashStaged(repo, message),
-            result => OnMutated(result, "Staged changes stashed.", () => _messageBox.Text = string.Empty));
+            result => OnMutated(result, T("Staged changes stashed."), () => _messageBox.Text = string.Empty));
     }
 
     private async Task DoStashDialogAsync()
@@ -260,14 +315,14 @@ public sealed class StashPanel : UserControl
                 return;
             }
 
-            _status.Text = "Saving stash…";
+            _status.Text = T("Saving stash…");
             RunGit(
                 () => _service.StashSaveMessage(repo, prompt.Message, prompt.IncludeUntracked),
-                result => OnMutated(result, "Stash saved.", () => _messageBox.Text = string.Empty));
+                result => OnMutated(result, T("Stash saved."), () => _messageBox.Text = string.Empty));
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            _status.Text = F(FailedFormat(), ex.Message);
         }
     }
 
@@ -278,10 +333,10 @@ public sealed class StashPanel : UserControl
             return;
         }
 
-        _status.Text = "Applying…";
+        _status.Text = T("Applying…");
         RunGit(
             () => _service.StashApply(repo, stash.Name),
-            result => OnMutated(result, "Stash applied."));
+            result => OnMutated(result, T("Stash applied.")));
     }
 
     private void DoPop()
@@ -291,10 +346,10 @@ public sealed class StashPanel : UserControl
             return;
         }
 
-        _status.Text = "Popping…";
+        _status.Text = T("Popping…");
         RunGit(
             () => _service.StashPop(repo, stash.Name),
-            result => OnMutated(result, "Stash popped."));
+            result => OnMutated(result, T("Stash popped.")));
     }
 
     private async Task DoDropAsync()
@@ -306,20 +361,29 @@ public sealed class StashPanel : UserControl
                 return;
             }
 
-            bool confirmed = await ConfirmAsync($"Drop {stash.Name}?\n\n{stash.Message}\n\nThis cannot be undone.");
+            // The stash name and message are data and go in verbatim (no
+            // underscore escaping: this is a TextBlock, not a menu header); the
+            // only translated part is the upstream confirmation sentence.
+            string question = T(
+                "TranslatedStrings/_areYouSure.Text",
+                "Are you sure you want to drop the stash? This action cannot be undone.");
+            string title = T("TranslatedStrings/_stashDropConfirmTitle.Text", "Drop Stash Confirmation");
+
+            bool confirmed = await ConfirmAsync(
+                F("{0}\n\n{1}\n\n{2}", stash.Name, stash.Message, question), title);
             if (!confirmed)
             {
                 return;
             }
 
-            _status.Text = "Dropping…";
+            _status.Text = T("Dropping…");
             RunGit(
                 () => _service.StashDrop(repo, stash.Name),
-                result => OnMutated(result, "Stash dropped."));
+                result => OnMutated(result, T("Stash dropped.")));
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            _status.Text = F(FailedFormat(), ex.Message);
         }
     }
 
@@ -334,7 +398,7 @@ public sealed class StashPanel : UserControl
         }
         else
         {
-            _status.Text = "Failed: " + result.Output.Trim();
+            _status.Text = F(FailedFormat(), result.Output.Trim());
         }
     }
 
@@ -353,12 +417,12 @@ public sealed class StashPanel : UserControl
         if (SelectedStash() is not { } stash || _repoPath is not { Length: > 0 } repo)
         {
             _diff.Inlines?.Clear();
-            _diff.Text = "Select a stash to view its diff.";
+            _diff.Text = T("Select a stash to view its diff.");
             return;
         }
 
         _diff.Inlines?.Clear();
-        _diff.Text = "Loading diff…";
+        _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
 
         _ = Task.Run(() =>
         {
@@ -369,7 +433,9 @@ public sealed class StashPanel : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        RenderDiff(string.IsNullOrEmpty(text) ? "(no changes)" : text);
+                        RenderDiff(string.IsNullOrEmpty(text)
+                            ? F("({0})", T("FileStatusList/NoFiles.Text", "no changes"))
+                            : text);
                     }
                 });
             }
@@ -380,7 +446,7 @@ public sealed class StashPanel : UserControl
                     if (!token.IsCancellationRequested)
                     {
                         _diff.Inlines?.Clear();
-                        _diff.Text = "Error: " + ex.Message;
+                        _diff.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                     }
                 });
             }
@@ -447,18 +513,31 @@ public sealed class StashPanel : UserControl
 
         TextBox message = new()
         {
-            Watermark = "Stash message (optional)",
+            Watermark = T("Stash message (optional)"),
             Text = _messageBox.Text ?? string.Empty,
             Margin = new Thickness(0, 0, 0, 8),
         };
         CheckBox untracked = new()
         {
-            Content = "Include untracked files",
+            Content = T("FormStash/chkIncludeUntrackedFiles.Text", "Include untracked files"),
             IsChecked = _untrackedCheck.IsChecked == true,
         };
 
-        Button ok = new() { Content = "Stash", MinWidth = 70, Margin = new Thickness(0, 0, 6, 0), IsDefault = true };
-        Button cancel = new() { Content = "Cancel", MinWidth = 70, IsCancel = true };
+        // MinWidth 70 is a floor, not a cap: the buttons still grow to fit a
+        // longer translated caption ("Annulla"), and the row is right-aligned.
+        Button ok = new()
+        {
+            Content = T("FormStash/$this.Text", "Stash"),
+            MinWidth = 70,
+            Margin = new Thickness(0, 0, 6, 0),
+            IsDefault = true,
+        };
+        Button cancel = new()
+        {
+            Content = T("Globalized/Cancel.Text", "Cancel"),
+            MinWidth = 70,
+            IsCancel = true,
+        };
 
         StackPanel buttons = new()
         {
@@ -472,7 +551,7 @@ public sealed class StashPanel : UserControl
         StackPanel content = new() { Margin = new Thickness(16) };
         content.Children.Add(new TextBlock
         {
-            Text = "Create a new stash from the working directory:",
+            Text = T("Create a new stash from the working directory:"),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         });
@@ -482,7 +561,7 @@ public sealed class StashPanel : UserControl
 
         Window dialog = new()
         {
-            Title = "Stash changes",
+            Title = T("FormBrowse/stashChangesToolStripMenuItem.ToolTipText", "Stash changes"),
             Width = 380,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -504,7 +583,7 @@ public sealed class StashPanel : UserControl
     private sealed record StashPrompt(string Message, bool IncludeUntracked);
 
     // Minimal modal confirmation using base Avalonia only (no message-box package).
-    private async Task<bool> ConfirmAsync(string text)
+    private async Task<bool> ConfirmAsync(string text, string title)
     {
         if (TopLevel.GetTopLevel(this) is not Window owner)
         {
@@ -513,8 +592,13 @@ public sealed class StashPanel : UserControl
 
         bool result = false;
 
-        Button yes = new() { Content = "Yes", MinWidth = 70, Margin = new Thickness(0, 0, 6, 0) };
-        Button no = new() { Content = "No", MinWidth = 70 };
+        Button yes = new()
+        {
+            Content = T("TranslatedStrings/_yes.Text", "Yes"),
+            MinWidth = 70,
+            Margin = new Thickness(0, 0, 6, 0),
+        };
+        Button no = new() { Content = T("TranslatedStrings/_no.Text", "No"), MinWidth = 70 };
 
         StackPanel buttons = new()
         {
@@ -531,7 +615,7 @@ public sealed class StashPanel : UserControl
 
         Window dialog = new()
         {
-            Title = "Confirm",
+            Title = title,
             Width = 360,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -572,7 +656,7 @@ public sealed class StashPanel : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
-                    _status.Text = "Error: " + ex.Message;
+                    _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                 });
             }
         });
