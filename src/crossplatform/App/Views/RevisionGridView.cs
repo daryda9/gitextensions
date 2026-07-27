@@ -41,6 +41,14 @@ public sealed class RevisionGridView : UserControl
     // Graph rendering metrics.
     private const double LaneWidth = 14;
 
+    // Upper bound on the width of the graph column, in lanes. A sparse walk — most
+    // visibly one produced by a revision filter, where each surviving commit tends
+    // to sit in a lane of its own — can reach dozens of lanes and would otherwise
+    // squeeze Author/Date/Subject off the pane. Lanes past this cap are simply
+    // clipped (every graph control has ClipToBounds set), which degrades the DAG
+    // cleanly instead of destroying the row.
+    private const int MaxGraphLanes = 8;
+
     // Row metrics — kept tight for a dense, GitExtensions-like log.
     private const double RowFontSize = 12;
 
@@ -63,6 +71,21 @@ public sealed class RevisionGridView : UserControl
     private readonly Button _columnsButton;
     private readonly Button _branchesButton;
     private readonly Button _viewButton;
+
+    // --- Real (git) revision filter -------------------------------------------
+    //
+    // The criteria edited in RevisionFilterDialog. They are handed to
+    // RevisionService and become `git log` arguments, so the filter applies to the
+    // WHOLE history and paging keeps working on the filtered walk — as opposed to
+    // the quick box below, which only sifts the rows already loaded.
+    private RevisionFilter _gitFilter = RevisionFilter.None;
+
+    // Opens the filter dialog; captioned with a funnel so an active filter is
+    // visible even before reading the status line.
+    private readonly Button _filterButton;
+
+    // Reset affordance, shown only while a git filter is active.
+    private readonly Button _resetFilterButton;
 
     // --- Type-to-search (quick-search) -------------------------------------
     //
@@ -155,13 +178,24 @@ public sealed class RevisionGridView : UserControl
     // (for the subtle alternating-row background).
     private IReadOnlyList<RevisionRow> _rows = [];
 
-    // True while a non-empty filter is applied. The DAG graph is drawn from
-    // segments precomputed against ADJACENT rows in the full list, so showing an
-    // arbitrary subset would leave lane lines/edges pointing at hidden neighbours
-    // (a garbled graph). While filtering we therefore collapse the graph column
-    // to zero width and skip drawing it, restoring it in full when the filter is
-    // cleared. The underlying model (_allRows) is never mutated.
-    private bool _filterActive;
+    // True while the QUICK box (in-memory, over the loaded rows) hides rows. The
+    // DAG graph is drawn from segments precomputed against ADJACENT rows in the
+    // full list, so showing an arbitrary subset would leave lane lines/edges
+    // pointing at hidden neighbours (a garbled graph). While quick-filtering we
+    // therefore collapse the graph column to zero width and skip drawing it,
+    // restoring it in full when the box is cleared. The underlying model
+    // (_allRows) is never mutated.
+    //
+    // The GIT filter (_gitFilter) is different: git itself rewrites the parent
+    // links of the commits it keeps (`--parents`), so the walk it returns is a
+    // self-consistent — merely sparser — DAG. Its graph therefore stays drawn.
+    private bool _quickFilterActive;
+
+    /// <summary>True while the git-side revision filter narrows the walk.</summary>
+    private bool GitFilterActive => _gitFilter.IsActive;
+
+    /// <summary>True while either filter hides commits.</summary>
+    private bool AnyFilterActive => _quickFilterActive || GitFilterActive;
 
     // Path of the loaded repository, for the status line.
     private string _repoLabel = string.Empty;
@@ -213,7 +247,7 @@ public sealed class RevisionGridView : UserControl
     private double _graphWidth = LaneWidth;
 
     // The column width actually used by the header/rows right now (0 while filtering).
-    private double EffectiveGraphWidth => _filterActive ? 0 : _graphWidth;
+    private double EffectiveGraphWidth => _quickFilterActive ? 0 : _graphWidth;
 
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
@@ -353,7 +387,23 @@ public sealed class RevisionGridView : UserControl
         _viewButton = MakeBarButton(Chevron(T("RevisionGridControl/viewToolStripMenuItem.Text", "View")));
         _viewButton.Flyout = BuildViewFlyout();
 
+        // The REAL filter: opens RevisionFilterDialog and re-runs the walk with the
+        // criteria translated into `git log` arguments. Distinct from the quick box
+        // on its left, which only sifts the rows already loaded.
+        _filterButton = MakeBarButton(FilterButtonCaption);
+        _filterButton.Click += (_, _) => _ = ShowFilterDialogAsync();
+
+        // One-click "reset all filters", visible only while a git filter is set.
+        _resetFilterButton = MakeBarButton("✕");
+        _resetFilterButton.IsVisible = false;
+        _resetFilterButton.Click += (_, _) => ResetAllFilters();
+        ToolTip.SetTip(_resetFilterButton, ResetFilterTip);
+
         DockPanel bar = new();
+        DockPanel.SetDock(_resetFilterButton, Dock.Right);
+        DockPanel.SetDock(_filterButton, Dock.Right);
+        bar.Children.Add(_resetFilterButton);
+        bar.Children.Add(_filterButton);
         DockPanel.SetDock(_dateButton, Dock.Right);
         DockPanel.SetDock(_columnsButton, Dock.Right);
         DockPanel.SetDock(_viewButton, Dock.Right);
@@ -672,6 +722,8 @@ public sealed class RevisionGridView : UserControl
         _goToButton.Flyout = BuildGoToFlyout();
 
         _search.Watermark = T("Filter: author / message / hash");
+        UpdateFilterChrome();
+        ToolTip.SetTip(_resetFilterButton, ResetFilterTip);
 
         List<string> selected = _list.SelectedItems is { Count: > 0 } items
             ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
@@ -758,15 +810,23 @@ public sealed class RevisionGridView : UserControl
 
     // Prepends the artificial rows to the filtered commit rows, recording the graph
     // geometry (lane + HEAD position) the row builder needs to link them to HEAD.
-    // While a text filter is active the rows shown are a non-contiguous subset and
-    // the graph column is collapsed, so no artificial node is added.
+    //
+    // They are dropped whenever they could not be drawn honestly:
+    //  * quick (in-memory) filter — the rows shown are a non-contiguous subset and
+    //    the graph column is collapsed anyway, so there is nothing to attach to;
+    //  * git filter that dropped HEAD itself — the "Working directory" node would
+    //    otherwise dangle onto an unrelated commit. (The original instead runs an
+    //    extra `git rev-list` to re-attach them to the nearest surviving ancestor;
+    //    here they simply stay hidden until HEAD is back in the result.)
+    // With a git filter that DID keep HEAD they are shown normally: git rewrites the
+    // parent links, so the surrounding lanes remain meaningful.
     private IReadOnlyList<RevisionRow> BuildDisplayRows(IReadOnlyList<RevisionRow> commits)
     {
         _artificialCount = 0;
         _artificialLane = 0;
         _headDisplayIndex = -1;
 
-        bool wanted = (_unstaged > 0 || _staged > 0) && !_filterActive && commits.Count > 0;
+        bool wanted = (_unstaged > 0 || _staged > 0) && !_quickFilterActive && commits.Count > 0;
         if (!wanted)
         {
             return commits;
@@ -785,6 +845,12 @@ public sealed class RevisionGridView : UserControl
                 lane = commits[i].NodeLane;
                 break;
             }
+        }
+
+        if (headIndex < 0 && GitFilterActive)
+        {
+            // The filter excluded the checked-out commit: nothing to hang them off.
+            return commits;
         }
 
         int laneCount = commits[0].LaneCount;
@@ -879,6 +945,7 @@ public sealed class RevisionGridView : UserControl
         bool showStashes = _showStashes;
         bool topoOrder = _topoOrder;
         int pageSize = _pageSize;
+        RevisionFilter filter = _gitFilter;
 
         IReadOnlyList<RevisionRow> before = restart ? [] : _loaded;
         int skip = before.Count;
@@ -916,7 +983,8 @@ public sealed class RevisionGridView : UserControl
                     showRemotes: showRemotes,
                     showTags: showTags,
                     showStashes: showStashes,
-                    topoOrder: topoOrder);
+                    topoOrder: topoOrder,
+                    filter: filter);
 
                 // Merge and rebuild the DAG here, still off the UI thread.
                 List<RevisionRow> merged = new(before.Count + page.Rows.Count);
@@ -937,7 +1005,7 @@ public sealed class RevisionGridView : UserControl
                     _hasMore = page.HasMore;
 
                     int laneCount = graphed.Count > 0 ? graphed[0].LaneCount : 1;
-                    _graphWidth = Math.Max(1, laneCount) * LaneWidth;
+                    _graphWidth = Math.Clamp(laneCount, 1, MaxGraphLanes) * LaneWidth;
                     _allRows = graphed;
                     // Display-only: _repoPath keeps the absolute path, the status
                     // line shows the same "~" form as the toolbar repo dropdown.
@@ -1080,14 +1148,97 @@ public sealed class RevisionGridView : UserControl
         _search.Text = value;
     }
 
+    /// <summary>
+    ///  The criteria currently narrowing the git walk (never <see langword="null"/>;
+    ///  <see cref="RevisionFilter.None"/> when nothing is filtered).
+    /// </summary>
+    public RevisionFilter CurrentFilter => _gitFilter;
+
+    /// <summary>Raised whenever the git filter changes, with its "is active" state.</summary>
+    public event Action<bool>? FilterStateChanged;
+
+    // Funnel + caption; the funnel is filled while a filter is set, so the state is
+    // readable at a glance (the original swaps the toolbar's funnel icon likewise).
+    private string FilterButtonCaption
+        => string.Format("{0} {1}…", GitFilterActive ? "⧩" : "⧨", T("FormRevisionFilter/$this.Text", "Filter"));
+
+    private static string ResetFilterTip
+        => RevisionFilterDialog.StripMnemonic(
+            T("FormBrowse/tsmiResetAllFilters.Text", "&Reset revision filters"));
+
+    /// <summary>
+    ///  Opens the revision filter dialog and, when confirmed, re-runs the walk with
+    ///  the new criteria. Public so the shell (menu item / toolbar button) can open
+    ///  it too. Safe to call with no top-level window (headless): it does nothing.
+    /// </summary>
+    public async Task ShowFilterDialogAsync()
+    {
+        Window? owner = TopLevel.GetTopLevel(this) as Window;
+        RevisionFilter? updated = await RevisionFilterDialog.AskAsync(owner, _gitFilter);
+        if (updated is null)
+        {
+            return;
+        }
+
+        ApplyRevisionFilter(updated);
+    }
+
+    /// <summary>
+    ///  Applies a set of git filter criteria and restarts the walk (page 1) so the
+    ///  filter is honoured by git itself. A no-op when nothing actually changed.
+    /// </summary>
+    public void ApplyRevisionFilter(RevisionFilter filter)
+    {
+        RevisionFilter value = filter ?? RevisionFilter.None;
+        if (value == _gitFilter)
+        {
+            return;
+        }
+
+        _gitFilter = value;
+        UpdateFilterChrome();
+        FilterStateChanged?.Invoke(GitFilterActive);
+
+        // The criteria change WHICH commits git returns, so the walk restarts from
+        // its first page (paging then indexes into the filtered walk).
+        Reload();
+    }
+
+    /// <summary>
+    ///  The original's "Reset all filters": drops both the git criteria and the
+    ///  quick box, bringing the full history back. Public so the shell can offer it
+    ///  from a menu as well.
+    /// </summary>
+    public void ResetAllFilters()
+    {
+        bool hadGitFilter = GitFilterActive;
+        _search.Text = string.Empty;
+
+        if (!hadGitFilter)
+        {
+            // Only the quick box was set; clearing it already restored every row.
+            ApplyFilterCore(string.Empty);
+            return;
+        }
+
+        ApplyRevisionFilter(RevisionFilter.None);
+    }
+
+    // Keeps the funnel caption and the reset affordance in step with the filter.
+    private void UpdateFilterChrome()
+    {
+        _filterButton.Content = FilterButtonCaption;
+        _resetFilterButton.IsVisible = GitFilterActive;
+    }
+
     private void ApplyFilterCore(string? text)
     {
         string query = (text ?? string.Empty).Trim();
-        bool wasFiltering = _filterActive;
-        _filterActive = query.Length > 0;
+        bool wasFiltering = _quickFilterActive;
+        _quickFilterActive = query.Length > 0;
 
         IReadOnlyList<RevisionRow> filtered;
-        if (!_filterActive)
+        if (!_quickFilterActive)
         {
             filtered = _allRows;
         }
@@ -1119,7 +1270,7 @@ public sealed class RevisionGridView : UserControl
         _list.ItemsSource = null;
         _list.ItemsSource = _rows;
 
-        if (_filterActive)
+        if (_quickFilterActive)
         {
             // One format string with placeholders, never a concatenation: a
             // translator can reorder every part, and the "commits" noun is looked
@@ -1130,11 +1281,29 @@ public sealed class RevisionGridView : UserControl
         }
         else
         {
-            _status.Text = _allRows.Count == 0
-                ? T("No repository loaded.")
-                : string.Format(T("{0}  —  {1} {2}  ({3})"),
-                    _repoLabel, LoadedCountText, CommitsNoun, ScopeLabel);
+            _status.Text = _allRows.Count > 0
+                ? string.Format(T("{0}  —  {1} {2}  ({3})"),
+                    _repoLabel, LoadedCountText, CommitsNoun, ScopeLabel)
+                : GitFilterActive
+                    // An empty result under a filter is a legitimate answer, not an
+                    // unloaded repository — say so, or the ✕ looks like a bug.
+                    ? string.Format(T("{0}  —  no commit matches the filter"), _repoLabel)
+                    : T("No repository loaded.");
         }
+
+        // The GIT filter is reported separately from the quick box, because it is a
+        // different thing: it changed WHICH commits git walked, so the counts above
+        // are counts WITHIN the filtered history. Reset it with the ✕ next to the
+        // "Filter…" button.
+        if (GitFilterActive && _repoLabel.Length > 0)
+        {
+            _status.Text = string.Format(
+                T("{0}  —  git filter: {1}"),
+                _status.Text,
+                _gitFilter.Summarize(T));
+        }
+
+        UpdateFilterChrome();
 
         // The line is ellipsized when the pane is narrow; keep it fully readable.
         ToolTip.SetTip(_status, _status.Text);
@@ -2146,7 +2315,7 @@ public sealed class RevisionGridView : UserControl
         string? from = CurrentHash;
 
         int index = FindIndex(_rows, query);
-        if (index < 0 && _filterActive)
+        if (index < 0 && _quickFilterActive)
         {
             // Drop the filter (ApplyFilter resets _rows to _allRows) and retry.
             _search.Text = string.Empty;
@@ -2383,7 +2552,7 @@ public sealed class RevisionGridView : UserControl
         // segments (which reference adjacent rows in the full list) no longer make
         // sense — the column is collapsed to zero width and the graph is skipped
         // to avoid rendering a garbled DAG. It returns in full once the filter clears.
-        if (!_filterActive)
+        if (!_quickFilterActive)
         {
             RevisionGraphControl graph = new(WithHeadConnector(row, index), row.NodeLane, LaneWidth);
             Grid.SetColumn(graph, 0);
@@ -2501,7 +2670,7 @@ public sealed class RevisionGridView : UserControl
         int index = IndexOf(_rows, row);
         RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
 
-        if (!_filterActive)
+        if (!_quickFilterActive)
         {
             RevisionGraphControl graph = new(
                 ArtificialSegments(index), _artificialLane, LaneWidth, artificialNode: true);

@@ -26,6 +26,280 @@ public enum BranchScope
 }
 
 /// <summary>
+///  The criteria of the revision filter, mirroring the original
+///  <c>FormRevisionFilter</c> / <c>FilterInfo</c> pair. Every criterion is
+///  translated into <c>git log</c> arguments by <see cref="BuildLogArguments"/>
+///  and applied by git DURING THE WALK — never by post-filtering rows in memory,
+///  so the filter sees the whole history and not just the pages already loaded.
+///
+///  <para>An empty instance (<see cref="None"/>) means "no filter": the walk runs
+///  exactly as it did before this type existed.</para>
+/// </summary>
+public sealed record RevisionFilter
+{
+    /// <summary>The neutral filter: every criterion off.</summary>
+    public static readonly RevisionFilter None = new();
+
+    /// <summary>Author pattern → <c>--author=</c>.</summary>
+    public string Author { get; init; } = string.Empty;
+
+    /// <summary>Committer pattern → <c>--committer=</c>.</summary>
+    public string Committer { get; init; } = string.Empty;
+
+    /// <summary>Commit-message pattern → <c>--grep=</c>.</summary>
+    public string Message { get; init; } = string.Empty;
+
+    /// <summary>
+    ///  Diff-content ("pickaxe") search → <c>-S</c> (occurrence count of a literal
+    ///  string changed) or <c>-G</c> (added/removed line matches a regex), per
+    ///  <see cref="DiffContentIsRegex"/>. The original only ever offers <c>-G</c>;
+    ///  <c>-S</c> is added here because it is both cheaper and what most users
+    ///  actually mean by "which commit introduced this text".
+    /// </summary>
+    public string DiffContent { get; init; } = string.Empty;
+
+    /// <summary><see langword="true"/> → <c>-G</c> (regex), otherwise <c>-S</c> (literal).</summary>
+    public bool DiffContentIsRegex { get; init; }
+
+    /// <summary>
+    ///  Lower bound of the date range → <c>--since=</c>. Free text: anything git's
+    ///  approxidate parser accepts ("2024-01-31", "3 weeks ago", "last monday").
+    /// </summary>
+    public string DateFrom { get; init; } = string.Empty;
+
+    /// <summary>Upper bound of the date range → <c>--until=</c>. Same syntax as <see cref="DateFrom"/>.</summary>
+    public string DateTo { get; init; } = string.Empty;
+
+    /// <summary>
+    ///  Path filter: one or more paths/globs restricting the walk to commits that
+    ///  touch them. Emitted AFTER the <c>--</c> separator (see
+    ///  <see cref="BuildPathArgument"/>) — never before it, or git would try to
+    ///  resolve the path as a revision.
+    /// </summary>
+    public string PathFilter { get; init; } = string.Empty;
+
+    /// <summary>
+    ///  Hard cap on how many commits the filtered walk may yield (0 = no cap), the
+    ///  equivalent of the original's "Limit". Applied ACROSS pages, not per page.
+    /// </summary>
+    public int CommitsLimit { get; init; }
+
+    /// <summary>
+    ///  When <see langword="false"/> (the original's default "Ignore case" ticked)
+    ///  the text patterns match case-insensitively → <c>--regexp-ignore-case</c>.
+    /// </summary>
+    public bool CaseSensitive { get; init; }
+
+    /// <summary>
+    ///  When <see langword="false"/> the text patterns are literal →
+    ///  <c>--fixed-strings</c>; when <see langword="true"/> they are git regexes
+    ///  (git's own default). Does not affect <c>-G</c>, which is always a regex,
+    ///  nor <c>-S</c>, which is always literal.
+    /// </summary>
+    public bool UseRegex { get; init; }
+
+    /// <summary>Skip merge commits → <c>--no-merges</c>.</summary>
+    public bool HideMergeCommits { get; init; }
+
+    /// <summary>Follow only the first parent of each merge → <c>--first-parent</c>.</summary>
+    public bool FirstParentOnly { get; init; }
+
+    /// <summary>Keep only commits referenced by a branch/tag → <c>--simplify-by-decoration</c>.</summary>
+    public bool SimplifyByDecoration { get; init; }
+
+    /// <summary>True when at least one text pattern is set (author/committer/message/diff).</summary>
+    public bool HasTextCriteria
+        => Has(Author) || Has(Committer) || Has(Message) || Has(DiffContent);
+
+    /// <summary>
+    ///  True when any criterion is set, i.e. the walk is narrower than the plain
+    ///  history. Drives the "filter active" indicator and the reset affordance.
+    /// </summary>
+    public bool IsActive
+        => HasTextCriteria
+        || Has(DateFrom) || Has(DateTo) || Has(PathFilter)
+        || CommitsLimit > 0
+        || HideMergeCommits || FirstParentOnly || SimplifyByDecoration;
+
+    /// <summary>
+    ///  True when the filter makes git REWRITE parent links (history simplification),
+    ///  which is what keeps the DAG connected across the commits the filter removed.
+    ///  Mirrors the original's <c>HasRevisionFilter</c>.
+    /// </summary>
+    public bool RewritesParents
+        => HasTextCriteria || Has(PathFilter) || HideMergeCommits || SimplifyByDecoration;
+
+    /// <summary>
+    ///  The <c>git log</c> arguments for every criterion EXCEPT the path filter
+    ///  (which must follow the <c>--</c> separator) and the paging window
+    ///  (<c>--max-count</c>/<c>--skip</c>, owned by the caller).
+    ///
+    ///  <para>Values are quoted so that patterns containing spaces survive the
+    ///  command line; <c>--regexp-ignore-case</c> / <c>--fixed-strings</c> are
+    ///  emitted once for the whole set, as git applies them to every pattern.</para>
+    /// </summary>
+    public IReadOnlyList<string> BuildLogArguments()
+    {
+        List<string> args = [];
+
+        if (HideMergeCommits)
+        {
+            args.Add("--no-merges");
+        }
+
+        if (FirstParentOnly)
+        {
+            args.Add("--first-parent");
+        }
+
+        if (SimplifyByDecoration)
+        {
+            args.Add("--simplify-by-decoration");
+        }
+
+        if (Has(DateFrom))
+        {
+            args.Add($"--since={Quote(DateFrom.Trim())}");
+        }
+
+        if (Has(DateTo))
+        {
+            args.Add($"--until={Quote(DateTo.Trim())}");
+        }
+
+        // Case / literalness apply to --author, --committer and --grep alike, so
+        // they are emitted once, before the patterns themselves.
+        if (HasTextCriteria)
+        {
+            if (!CaseSensitive)
+            {
+                args.Add("--regexp-ignore-case");
+            }
+
+            if (!UseRegex)
+            {
+                args.Add("--fixed-strings");
+            }
+        }
+
+        if (Has(Author))
+        {
+            args.Add($"--author={Quote(Author.Trim())}");
+        }
+
+        if (Has(Committer))
+        {
+            args.Add($"--committer={Quote(Committer.Trim())}");
+        }
+
+        if (Has(Message))
+        {
+            args.Add($"--grep={Quote(Message.Trim())}");
+        }
+
+        if (Has(DiffContent))
+        {
+            // -S counts occurrences of a literal string, -G matches a regex against
+            // the added/removed lines. Both are written as a separate argument so a
+            // pattern starting with "-" cannot be mistaken for an option.
+            args.Add(DiffContentIsRegex ? "-G" : "-S");
+            args.Add(Quote(DiffContent.Trim()));
+        }
+
+        // With any history-simplifying criterion, ask git to rewrite the parent
+        // links (%P then reports the nearest SURVIVING ancestors). Without this the
+        // filtered rows would reference parents that are not in the result set and
+        // the DAG would degenerate into disconnected dots.
+        if (RewritesParents)
+        {
+            args.Add("--parents");
+        }
+
+        return args;
+    }
+
+    /// <summary>
+    ///  The path filter as it must appear AFTER the <c>--</c> separator, or an empty
+    ///  string when unset. A single path is quoted as one argument; whitespace in an
+    ///  unquoted value is read as a separator between SEVERAL paths (as upstream
+    ///  does), and a value the user already quoted is passed through untouched.
+    /// </summary>
+    public string BuildPathArgument()
+    {
+        string path = PathFilter.Trim();
+        if (path.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        // Already quoted by the user (single or double): trust it verbatim.
+        if (path.Contains('"') || path.Contains('\''))
+        {
+            return path;
+        }
+
+        string[] parts = path.Split((char[]?)null, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return string.Join(' ', parts.Select(Quote));
+    }
+
+    /// <summary>
+    ///  A short human-readable description of the active criteria, for the grid's
+    ///  status line ("author: foo · path: src/"). Empty when the filter is inert.
+    /// </summary>
+    public string Summarize(Func<string, string> translate)
+    {
+        List<string> parts = [];
+        void Add(string label, string value)
+        {
+            if (Has(value))
+            {
+                parts.Add($"{translate(label)}: {value.Trim()}");
+            }
+        }
+
+        Add("author", Author);
+        Add("committer", Committer);
+        Add("message", Message);
+        if (Has(DiffContent))
+        {
+            parts.Add($"{translate(DiffContentIsRegex ? "diff ~" : "diff")}: {DiffContent.Trim()}");
+        }
+
+        Add("since", DateFrom);
+        Add("until", DateTo);
+        Add("path", PathFilter);
+        if (CommitsLimit > 0)
+        {
+            parts.Add($"{translate("limit")}: {CommitsLimit}");
+        }
+
+        if (HideMergeCommits)
+        {
+            parts.Add(translate("no merges"));
+        }
+
+        if (FirstParentOnly)
+        {
+            parts.Add(translate("first parent"));
+        }
+
+        if (SimplifyByDecoration)
+        {
+            parts.Add(translate("decorated only"));
+        }
+
+        return string.Join(" · ", parts);
+    }
+
+    private static bool Has(string? value) => !string.IsNullOrWhiteSpace(value);
+
+    // git is started through ProcessStartInfo.Arguments, i.e. a single command line
+    // that .NET re-splits with quote-aware rules on Unix too. Wrapping the value in
+    // double quotes (escaping any it contains) keeps spaces inside one argument.
+    private static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";
+}
+
+/// <summary>
 ///  A single commit row, projected from a core <see cref="GitRevision"/> for
 ///  display in the Avalonia revision grid. Field/type names are prefixed with
 ///  <c>Revision</c> to stay unique across sibling views.
@@ -162,6 +436,7 @@ public sealed class RevisionService
         bool showTags = true,
         bool showStashes = false,
         bool topoOrder = false,
+        RevisionFilter? filter = null,
         CancellationToken cancellationToken = default)
         => BuildRevisionGraph(LoadRevisionPage(
             repoPath,
@@ -173,6 +448,7 @@ public sealed class RevisionService
             showTags: showTags,
             showStashes: showStashes,
             topoOrder: topoOrder,
+            filter: filter,
             cancellationToken: cancellationToken).Rows);
 
     /// <summary>
@@ -187,6 +463,12 @@ public sealed class RevisionService
     ///  the caller rebuilds it over the accumulated list via
     ///  <see cref="BuildRevisionGraph"/>. Every other parameter has exactly the meaning
     ///  documented on <see cref="LoadRevisions"/>.</para>
+    ///
+    ///  <para><paramref name="filter"/> narrows the walk ITSELF (author, committer,
+    ///  message, diff content, date range, path, …): the criteria become <c>git log</c>
+    ///  arguments, so the filter applies to the whole history rather than to the pages
+    ///  already loaded, and paging keeps working — <c>--skip</c>/<c>--max-count</c> then
+    ///  index into the FILTERED walk. Its "Limit" caps the total across pages.</para>
     /// </summary>
     public RevisionPage LoadRevisionPage(
         string repoPath,
@@ -198,8 +480,25 @@ public sealed class RevisionService
         bool showTags = true,
         bool showStashes = false,
         bool topoOrder = false,
+        RevisionFilter? filter = null,
         CancellationToken cancellationToken = default)
     {
+        RevisionFilter criteria = filter ?? RevisionFilter.None;
+
+        // The filter's own "Limit" caps the WHOLE filtered walk, not each page: the
+        // window this page may still use is what is left of that budget. Once the
+        // budget is spent the walk is over, without asking git anything.
+        if (criteria.CommitsLimit > 0)
+        {
+            int remaining = criteria.CommitsLimit - Math.Max(0, skip);
+            if (remaining <= 0)
+            {
+                return new RevisionPage([], HasMore: false);
+            }
+
+            maxCount = Math.Min(maxCount, remaining);
+        }
+
         GitModule module = GitContext.CreateModule(repoPath);
 
         // HEAD, ref names and note-carrying commits. Re-read when the walk restarts
@@ -263,14 +562,24 @@ public sealed class RevisionService
         string skipArg = skip > 0 ? $" --skip={skip}" : string.Empty;
 
         string countArgs = $"--max-count={maxCount}{skipArg}{orderArg}";
-        string revisionFilter = scopeArgs.Length == 0
-            ? countArgs
-            : $"{countArgs} {scopeArgs}";
+
+        // Order matters: options first (paging, then the filter criteria), then the
+        // revisions to walk. The path filter is NOT part of this string — it must go
+        // after the "--" separator, which the core's RevisionReader appends itself
+        // (RevisionReader.BuildArguments), or git would read the path as a revision.
+        List<string> logArgs = [countArgs];
+        logArgs.AddRange(criteria.BuildLogArguments());
+        if (scopeArgs.Length > 0)
+        {
+            logArgs.Add(scopeArgs);
+        }
+
+        string revisionFilter = string.Join(' ', logArgs);
 
         reader.GetLog(
             subject: collector,
             revisionFilter: revisionFilter,
-            pathFilter: string.Empty,
+            pathFilter: criteria.BuildPathArgument(),
             hasNotes: false,
             autostashLabel: string.Empty,
             cancellationToken: cancellationToken);
@@ -304,7 +613,14 @@ public sealed class RevisionService
         }
 
         // A full page means the walk very likely continues; a short one is the end.
-        return new RevisionPage(rows, HasMore: maxCount > 0 && rows.Count >= maxCount);
+        // A filter "Limit" that is now exhausted ends it regardless.
+        bool hasMore = maxCount > 0 && rows.Count >= maxCount;
+        if (hasMore && criteria.CommitsLimit > 0 && Math.Max(0, skip) + rows.Count >= criteria.CommitsLimit)
+        {
+            hasMore = false;
+        }
+
+        return new RevisionPage(rows, HasMore: hasMore);
     }
 
     /// <summary>
