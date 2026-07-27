@@ -12,8 +12,8 @@ namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
 ///  Modal commit window rebuilt to mirror the original Git Extensions dedicated
-///  commit form as a self-contained 3-zone layout (it no longer hosts a
-///  <see cref="WorkingDirectoryView"/>):
+///  commit form as a self-contained 3-zone layout (it no longer hosts the old
+///  working-directory panel, which has been removed):
 ///  <list type="bullet">
 ///   <item>LEFT: Unstaged list (top) + Stage/Unstage buttons + Staged list (bottom).</item>
 ///   <item>RIGHT: read-only monospace diff of the selected file.</item>
@@ -55,7 +55,7 @@ public sealed class CommitDialog : Window
     // Stage, "Copy path" and the .gitignore block come last, each after a separator.
     // The original's "Reset file(s) to" is a submenu (index / parent); the port keeps
     // the single meaningful choice here — discard back to the index — and reuses the
-    // wording already used by WorkingDirectoryView.
+    // wording already used by the former working-directory panel.
     private readonly MenuItem _discardItem = new() { Header = "Discard changes" };
     private readonly MenuItem _ignorePathItem = new() { Header = "Add to .gitignore" };
     private readonly MenuItem _ignoreExtItem = new() { Header = "Ignore by extension" };
@@ -149,7 +149,7 @@ public sealed class CommitDialog : Window
             // untracked ones are handled by .gitignore / clean, never discarded here.
             _discardItem.IsEnabled = !conflict && row is not null && row.Status != "new";
 
-            // The .gitignore entries mirror WorkingDirectoryView: a single UNTRACKED
+            // The .gitignore entries mirror the former working-directory panel: a single UNTRACKED
             // file only, plus an extension / a parent folder where applicable.
             WorkingDirFileRow? untracked = SingleUntracked();
             string path = (untracked?.Path ?? string.Empty).Replace('\\', '/');
@@ -486,7 +486,7 @@ public sealed class CommitDialog : Window
     }
 
     // The single selected UNTRACKED row (git "??" → status "new"), or null when the
-    // selection is anything else. Same semantics as WorkingDirectoryView: the ignore
+    // selection is anything else. Same semantics as the former panel: the ignore
     // actions never apply to files git already tracks.
     private WorkingDirFileRow? SingleUntracked()
         => _unstagedList.SelectedItem is WorkingDirFileRow row && row.Status == "new"

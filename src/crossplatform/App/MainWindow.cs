@@ -48,12 +48,6 @@ public sealed class MainWindow : Window
     private readonly GpgView _gpg = new();
     private readonly ConsoleView _console = new();
     private readonly OutputView _output = new();
-    // No longer a bottom tab (the original FormBrowse has no "Working directory"
-    // tab and the stage/commit flow lives in the modal commit form). It survives
-    // as an on-demand utility window for the things the commit dialog does not
-    // cover: merge-conflict resolution, clean, per-file discard/.gitignore.
-    private readonly WorkingDirectoryView _workingDir = new();
-    private Window? _workingDirWindow;
 
     private readonly TabControl _bottom;
     private readonly TabItem _commitInfoTab;
@@ -213,12 +207,6 @@ public sealed class MainWindow : Window
         // Global shortcuts: F5 refresh, Ctrl+O open.
         KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.F5), Command = new RelayCommand(RefreshAll) });
         KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.O, KeyModifiers.Control), Command = new RelayCommand(() => _ = PickRepositoryAsync()) });
-        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.W, KeyModifiers.Control | KeyModifiers.Shift), Command = new RelayCommand(OpenWorkingDirectoryWindow) });
-
-        // The working-directory panel is not a tab any more; expose it from the
-        // Commands menu, next to Commit, the way the original keeps "Reset
-        // changes…" / "Clean working directory…" there.
-        AddWorkingDirectoryMenuEntry();
 
         WireEvents();
         _toolbar.SetSplitView(_splitHorizontal);
@@ -518,7 +506,6 @@ public sealed class MainWindow : Window
                 OnRevisionSelected(h);
             }
         };
-        _workingDir.Committed += RefreshAll;
         _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
@@ -1311,11 +1298,6 @@ public sealed class MainWindow : Window
 
         WarmUpCore(_repoPath);
         _revisions.LoadRepository(_repoPath);
-        if (_workingDirWindow is not null)
-        {
-            _workingDir.LoadRepository(_repoPath);
-        }
-
         _stash.LoadRepository(_repoPath);
         _tree.LoadRepository(_repoPath);
         _statusBar.LoadRepository(_repoPath);
@@ -1335,71 +1317,6 @@ public sealed class MainWindow : Window
         }
 
         _ = CommitDialog.ShowAsync(this, _repoPath, RefreshAll);
-    }
-
-    // Appends "Working directory…" to the existing Commands menu (found by
-    // header so MainMenu itself stays untouched). If the menu is ever
-    // restructured the lookup simply no-ops and the Ctrl+Shift+W shortcut
-    // remains.
-    private void AddWorkingDirectoryMenuEntry()
-    {
-        if (_menu.Content is not Menu bar)
-        {
-            return;
-        }
-
-        foreach (object? item in bar.Items)
-        {
-            if (item is MenuItem top && top.Header as string == "_Commands")
-            {
-                MenuItem entry = new() { Header = "Working directory…" };
-                entry.Click += (_, _) => OpenWorkingDirectoryWindow();
-                top.Items.Add(new Separator());
-                top.Items.Add(entry);
-                return;
-            }
-        }
-    }
-
-    // Shows the working-directory panel in an on-demand utility window. It is
-    // NOT a second commit surface for its own sake: it carries the operations
-    // the commit dialog does not implement (merge-conflict resolution via
-    // mergetool / take ours / take theirs / mark resolved, clean untracked
-    // files, per-file discard and .gitignore entries, undo last commit).
-    private void OpenWorkingDirectoryWindow()
-    {
-        if (_repoPath is null)
-        {
-            _statusBar.SetText("No repository is open.");
-            return;
-        }
-
-        if (_workingDirWindow is not null)
-        {
-            _workingDirWindow.Activate();
-            _workingDir.LoadRepository(_repoPath);
-            return;
-        }
-
-        Window window = new()
-        {
-            Title = "Working directory",
-            Width = 1000,
-            Height = 680,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
-            Content = _workingDir,
-        };
-        window.Closed += (_, _) =>
-        {
-            // Detach so the panel can be re-hosted the next time it is opened.
-            window.Content = null;
-            _workingDirWindow = null;
-        };
-
-        _workingDirWindow = window;
-        _workingDir.LoadRepository(_repoPath);
-        window.Show(this);
     }
 
     // Opens the Push configuration dialog (remote/branch/force + Pull/Push),
@@ -1676,7 +1593,7 @@ public sealed class MainWindow : Window
 
     // Commands → "Reset changes…" (FormBrowse resetToolStripMenuItem). Destructive:
     // asks for explicit confirmation and lets the user choose whether the index is
-    // reset too, mirroring WorkingDirectoryView.ResetChangesAsync (which always
+    // reset too, mirroring the former working-directory panel's reset (which always
     // passes includeStaged: true). The git work runs inside the process dialog, i.e.
     // on a background thread — WorkingDirectoryService blocks on async work and would
     // deadlock the UI thread (M43).
@@ -1715,7 +1632,7 @@ public sealed class MainWindow : Window
     }
 
     // Commands → "Clean working directory…" (FormBrowse cleanupToolStripMenuItem).
-    // Same contract as WorkingDirectoryView.CleanWorkingDirectoryAsync: a `git clean
+    // Same contract as the former working-directory panel's clean: a `git clean
     // -nd` PREVIEW first, explicit confirmation, then the real clean. Both previews
     // (with and without ignored files) are computed up-front in Task.Run so toggling
     // the "include ignored files" box in the dialog never touches git from the UI
@@ -2463,11 +2380,6 @@ public sealed class MainWindow : Window
         WarmUpCore(repoPath);
 
         _revisions.LoadRepository(repoPath);
-        if (_workingDirWindow is not null)
-        {
-            _workingDir.LoadRepository(repoPath);
-        }
-
         _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
