@@ -961,7 +961,21 @@ public sealed class MainWindow : Window
         _toolbar.RefreshRequested += RefreshAll;
         _toolbar.CommitRequested += OpenCommitDialog;
         _toolbar.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
-        _toolbar.PullRequested += () => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
+
+        // Pull is a split button: the body runs the persisted default action, the
+        // arrow menu picks one explicitly, and "Set default…" writes it back to the
+        // UI state (the toolbar applies it to itself, the host only persists it).
+        _toolbar.DefaultPullAction = Enum.TryParse(_uiState.DefaultPullAction, out GitPullAction restored)
+            ? restored
+            : GitPullAction.Merge;
+        _toolbar.PullActionRequested += RunPullAction;
+        _toolbar.OpenPullDialogRequested += OpenPullDialog;
+        _toolbar.DefaultPullActionChanged += action =>
+        {
+            _uiState.DefaultPullAction = action.ToString();
+            _uiStateService.Save(_uiState);
+        };
+
         _toolbar.PushRequested += OpenPushDialog;
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
@@ -1079,7 +1093,8 @@ public sealed class MainWindow : Window
         };
         _menu.LanguageRequested += language => _ = ChangeLanguageAsync(language);
         _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
-        _menu.PullRequested += () => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
+        // Upstream's Commands → Pull opens FormPull (DoPull with isSilent: false).
+        _menu.PullRequested += OpenPullDialog;
         _menu.PushRequested += OpenPushDialog;
         _menu.CommitRequested += OpenCommitDialog;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
@@ -1736,10 +1751,13 @@ public sealed class MainWindow : Window
         // on the same paths as their full counterparts rather than pretending.
         Bind(BrowseCommand.Push, OpenPushDialog);
         Bind(BrowseCommand.QuickPush, OpenPushDialog);
-        Bind(BrowseCommand.PullOrFetch, Pull);
-        Bind(BrowseCommand.QuickPull, Pull);
+        // Upstream: Ctrl+Down (PullOrFetch) opens FormPull, F8 (QuickPullOrFetch) is
+        // the toolbar button's own click, i.e. the persisted default action, and
+        // QuickPull is a silent merge pull.
+        Bind(BrowseCommand.PullOrFetch, OpenPullDialog);
+        Bind(BrowseCommand.QuickPull, () => RunPullAction(GitPullAction.Merge));
         Bind(BrowseCommand.QuickFetch, Fetch);
-        Bind(BrowseCommand.QuickPullOrFetch, Fetch);
+        Bind(BrowseCommand.QuickPullOrFetch, () => RunPullAction(_toolbar.DefaultPullAction));
 
         // --- refs
         Bind(BrowseCommand.CheckoutBranch, () => _ = CheckoutBranchPickerAsync());
@@ -1828,7 +1846,59 @@ public sealed class MainWindow : Window
     // credentials, off-thread execution).
     private void Fetch() => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
 
-    private void Pull() => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
+    // One of the six upstream pull-button actions, run without asking anything: the
+    // three that pull go through PullOptions, the two "all remotes" fetches have no
+    // remote to pick. Mirrors ToolStripSplitButton's body click.
+    private void RunPullAction(GitPullAction action)
+    {
+        switch (action)
+        {
+            case GitPullAction.FetchAll:
+                RunRemoteOp("Fetch all", (s, _, emit, creds) => s.FetchAllStreaming(_repoPath!, emit, creds));
+                break;
+
+            case GitPullAction.FetchPruneAll:
+                RunRemoteOp("Fetch and prune all",
+                    (s, _, emit, creds) => s.FetchAndPruneAllStreaming(_repoPath!, emit, creds));
+                break;
+
+            case GitPullAction.Fetch:
+                RunRemoteOp("Fetch", (s, r, emit, creds) =>
+                    s.PullStreaming(_repoPath!, new PullOptions(GitPullAction.Fetch, Remote: r), emit, creds));
+                break;
+
+            case GitPullAction.Rebase:
+                RunRemoteOp("Pull - rebase", (s, r, emit, creds) =>
+                    s.PullStreaming(_repoPath!, new PullOptions(GitPullAction.Rebase, Remote: r), emit, creds));
+                break;
+
+            default:
+                RunRemoteOp("Pull - merge", (s, r, emit, creds) =>
+                    s.PullStreaming(_repoPath!, new PullOptions(GitPullAction.Merge, Remote: r), emit, creds));
+                break;
+        }
+    }
+
+    // The full FormPull equivalent. The dialog runs the pull itself (process dialog +
+    // credential retry), so the host only has to refresh once it closes.
+    private void OpenPullDialog()
+    {
+        if (_repoPath is not null)
+        {
+            _ = OpenPullDialogAsync(_repoPath);
+        }
+    }
+
+    private async Task OpenPullDialogAsync(string repoPath)
+    {
+        using IDisposable watch = SuspendWatcher();
+
+        PullOptions? options = await Views.PullDialog.ShowAsync(this, repoPath, _toolbar.DefaultPullAction);
+        if (options is not null)
+        {
+            RefreshAll();
+        }
+    }
 
     // Focus helpers. A UserControl is not focusable itself, so "focus this view"
     // means "focus its content" — the grid's row list, the tree's tree, the output's
