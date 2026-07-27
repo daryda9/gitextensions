@@ -3653,18 +3653,23 @@ public sealed class MainWindow : Window
     /// </summary>
     private void ApplyTabTranslations()
     {
-        _commitInfoTab.Header = T("FormBrowse/CommitInfoTabPage.Text", "Commit");
-        _diffTab.Header = T("FormBrowse/DiffTabPage.Text", "Diff");
-        _fileTreeTab.Header = T("FormBrowse/TreeTabPage.Text", "File tree");
-        _gpgTab.Header = T("FormBrowse/GpgInfoTabPage.Text", "GPG");
-        _consoleTab.Header = T("FormBrowse/_consoleTabCaption.Text", "Console");
-        _outputTab.Header = T("FormBrowse/_outputHistoryTabCaption.Text", "Output");
-        _stashTab.Header = T("FormStash/$this.Text", "Stash");
-        _blameTab.Header = T("FormFileHistory/BlameTab.Text", "Blame");
+        // Icons match the original tab strip one for one: upstream's
+        // FormBrowse.InitCommitDetails fills the tab control's ImageList with
+        // CommitSummary / Diff / FileTree / Key / Console / GitCommandLog and assigns
+        // those as the pages' ImageKey. The three port-only tabs reuse the icons their
+        // own features already use elsewhere (stash, Blame, FileHistory).
+        _commitInfoTab.Header = IconText.Header("CommitSummary", T("FormBrowse/CommitInfoTabPage.Text", "Commit"));
+        _diffTab.Header = IconText.Header("Diff", T("FormBrowse/DiffTabPage.Text", "Diff"));
+        _fileTreeTab.Header = IconText.Header("FileTree", T("FormBrowse/TreeTabPage.Text", "File tree"));
+        _gpgTab.Header = IconText.Header("Key", T("FormBrowse/GpgInfoTabPage.Text", "GPG"));
+        _consoleTab.Header = IconText.Header("Console", T("FormBrowse/_consoleTabCaption.Text", "Console"));
+        _outputTab.Header = IconText.Header("GitCommandLog", T("FormBrowse/_outputHistoryTabCaption.Text", "Output"));
+        _stashTab.Header = IconText.Header("stash", T("FormStash/$this.Text", "Stash"));
+        _blameTab.Header = IconText.Header("Blame", T("FormFileHistory/BlameTab.Text", "Blame"));
 
         // No FormBrowse item for this one (the port has a tab where upstream has a
         // separate window); matched by source text instead.
-        _historyTab.Header = T("File history");
+        _historyTab.Header = IconText.Header("FileHistory", T("File history"));
     }
 
     private static string T(string english) => TranslationService.T(english);
