@@ -57,6 +57,18 @@ public sealed class CommitInfoSettings
 /// </summary>
 public sealed class CommitInfoSettingsService
 {
+    /// <summary>
+    ///  Raised after any instance has written the file, on the thread that wrote it.
+    ///
+    ///  <para>The toggles now have two editors — the commit-info panel's context menu
+    ///  and the Settings dialog — and each holds its own <see cref="CommitInfoSettings"/>
+    ///  instance. Without this, the panel would keep rendering from the copy it loaded
+    ///  at start-up and would write that stale copy back over the dialog's at its next
+    ///  own toggle: the same last-writer-wins trap <see cref="UiState"/> has. Listening
+    ///  to this and re-loading makes the file the single source of truth.</para>
+    /// </summary>
+    public static event Action? Changed;
+
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
     private readonly string _path;
@@ -106,6 +118,10 @@ public sealed class CommitInfoSettingsService
         {
             // Persistence is best-effort; a failure must not crash the app.
         }
+
+        // Announced even if the write failed: the in-memory intent still changed, and a
+        // listener re-reading the old file simply keeps what it had.
+        Changed?.Invoke();
     }
 
     // Nothing to clamp: every field is a bool, so a corrupt JSON value cannot

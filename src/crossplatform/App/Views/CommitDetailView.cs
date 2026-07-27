@@ -44,7 +44,13 @@ public sealed class CommitDetailView : UserControl
     private readonly CommitInfoExtrasService _extrasService = new();
     private readonly CommitInfoSettingsService _settingsService = new();
     private readonly ExternalToolService _externalTools = new();
-    private readonly CommitInfoSettings _settings;
+    // Not readonly: the same toggles are also editable from the Settings dialog, and
+    // CommitInfoSettingsService.Changed hands this panel the new state (see the ctor).
+    private CommitInfoSettings _settings;
+
+    // True while this panel is the one writing, so its own Save does not come back
+    // through Changed and re-render a second time.
+    private bool _savingOwnToggle;
 
     private readonly TextBlock _status;
     private readonly Border _avatarHost;
@@ -94,6 +100,11 @@ public sealed class CommitDetailView : UserControl
     public CommitDetailView()
     {
         _settings = _settingsService.Load();
+
+        // The Settings dialog edits the very same toggles. Adopting its write keeps this
+        // panel's copy from going stale — and, more importantly, from being written back
+        // over the dialog's at the next toggle of this menu.
+        CommitInfoSettingsService.Changed += OnCommitInfoSettingsChanged;
 
         _status = new TextBlock
         {
@@ -233,7 +244,16 @@ public sealed class CommitDetailView : UserControl
         item.Click += (_, _) =>
         {
             flip();
-            _settingsService.Save(_settings);
+            _savingOwnToggle = true;
+            try
+            {
+                _settingsService.Save(_settings);
+            }
+            finally
+            {
+                _savingOwnToggle = false;
+            }
+
             ReloadAfterSettingChange();
         };
         return item;
@@ -445,6 +465,26 @@ public sealed class CommitDetailView : UserControl
     ///  Re-fetches whatever the current toggles need (a toggle just turned on may
     ///  require data never loaded) and re-renders. Never throws.
     /// </summary>
+    // Another editor of the toggles (the Settings dialog) saved. Re-read the file, tick
+    // the menu accordingly and re-render. Raised on whichever thread wrote, hence the
+    // hop to the UI thread; the read itself is a small local file.
+    private void OnCommitInfoSettingsChanged()
+    {
+        if (_savingOwnToggle)
+        {
+            return;
+        }
+
+        CommitInfoSettings loaded = _settingsService.Load();
+        Dispatcher.UIThread.Post(() =>
+        {
+            // The menu ticks need no touching here: UpdateMenuState recomputes them from
+            // _settings every time the menu opens.
+            _settings = loaded;
+            ReloadAfterSettingChange();
+        });
+    }
+
     private void ReloadAfterSettingChange()
     {
         if (_rendered is not { } detail)

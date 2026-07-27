@@ -34,6 +34,12 @@ namespace GitExtensions.Avalonia.Views;
 ///   <item>The three blame switches of <c>BlameViewerSettingsPage</c>
 ///    (<c>-w</c> / <c>-M</c> / <c>-C</c>), which change what <c>git blame</c> itself
 ///    computes — see <see cref="BlameOptions"/>.</item>
+///   <item>Three settings the port already consumed but never let anyone change:
+///    automatic refresh (<see cref="UiState.AutoRefresh"/>, which decides whether the
+///    repository watcher follows the repo), the checkout dialog's default for local
+///    changes (<see cref="AppPreferences.DefaultCheckoutLocalChangesAction"/>) and the
+///    commit-info panel's visibility toggles
+///    (<see cref="CommitInfoSettingsService"/>).</item>
 ///   <item>Default pull action (the five actions the toolbar's Pull split button
 ///    offers), persisted in <see cref="UiState.DefaultPullAction"/> — the value the
 ///    split button itself reads.</item>
@@ -88,6 +94,15 @@ public sealed class SettingsWindow : Window
     // The three blame switches (BlameViewerSettingsPage). They are not stored by this
     // dialog: BlameOptions is a view of upstream's AppSettings, which is exactly what
     // the core's GitModule.Blame reads while building the command line.
+    // Behaviour page, beyond the pull action.
+    private readonly CheckBox _autoRefresh;
+    private readonly ComboBox _checkoutLocalChanges;
+
+    // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
+    // CommitInfoChoices.
+    private readonly CheckBox[] _commitInfoChecks;
+    private readonly CommitInfoSettingsService _commitInfoService = new();
+
     private readonly CheckBox _blameIgnoreWhitespace;
     private readonly CheckBox _blameDetectCopyInFile;
     private readonly CheckBox _blameDetectCopyInAll;
@@ -120,6 +135,14 @@ public sealed class SettingsWindow : Window
     // the file from here would be undone at exit: the host has to update its own
     // instance, which is what this callback is for.
     private readonly Action<string>? _pullActionChanged;
+
+    // The automatic-refresh flag the host is using right now, and the callback that
+    // hands a new value back to it. Same reason as the pull action: AutoRefresh lives in
+    // UiState, MainWindow keeps ONE instance of it and re-serialises the whole object on
+    // close, so a write from here would be undone at exit — and the repository watcher
+    // is started from that instance, so only the host can act on the change.
+    private readonly bool? _currentAutoRefresh;
+    private readonly Action<bool>? _autoRefreshChanged;
 
     // Raised on the UI thread after the blame switches have been written, so a Blame
     // tab that is already showing a file can re-run it (BlameView.ReloadBlameOptions).
@@ -198,6 +221,36 @@ public sealed class SettingsWindow : Window
     private const string GitConfigText = "Git config advanced";
     private const string BlameKey = "BlameViewerSettingsPage/groupBoxBlameSettings.Text";
     private const string BlameText = "Blame settings";
+    private const string CommitInfoKey = "CommitInfo/$this.Text";
+    private const string CommitInfoText = "Commit info";
+
+    // What the checkout dialog pre-selects for pending local changes. Tokens are the
+    // names of LocalChangesAction, i.e. exactly what AppPreferences stores and
+    // CheckoutBranchDialog parses back (CheckoutBranchDialog.cs:204). Captions are the
+    // dialog's own, so the two places cannot describe the same choice differently.
+    private static readonly (string Token, string Key, string Label)[] CheckoutChoices =
+    [
+        ("DontChange", "FormCheckoutBranch/rbDontChange.Text", "Don't change"),
+        ("Merge", "FormCheckoutBranch/rbMerge.Text", "Merge"),
+        ("Reset", "FormCheckoutBranch/rbReset.Text", "Reset"),
+        ("Stash", "FormCheckoutBranch/rbStash.Text", "Stash"),
+    ];
+
+    // The commit-info panel's visibility toggles, with the panel's own captions
+    // (CommitDetailView's context menu builds them from the same keys).
+    private static readonly (string Key, string Label)[] CommitInfoChoices =
+    [
+        ("CommitInfo/showContainedInBranchesToolStripMenuItem.Text",
+            "Show local branches containing this commit"),
+        ("CommitInfo/showContainedInBranchesRemoteToolStripMenuItem.Text",
+            "Show remote branches containing this commit"),
+        ("CommitInfo/showContainedInBranchesRemoteIfNoLocalToolStripMenuItem.Text",
+            "Show remote branches only when no local branch contains this commit"),
+        ("CommitInfo/showContainedInTagsToolStripMenuItem.Text", "Show tags containing this commit"),
+        ("CommitInfo/showMessagesOfAnnotatedTagsToolStripMenuItem.Text", "Show messages of annotated tags"),
+        ("CommitInfo/showTagThisCommitDerivesFromMenuItem.Text",
+            "Show the most recent tag this commit derives from"),
+    ];
     private const string BehaviourKey = "GeneralSettingsPage/groupBoxBehaviour.Text";
     private const string BehaviourText = "Behaviour";
     private const string AppearanceKey = "AppearanceSettingsPage/$this.Text";
@@ -207,12 +260,16 @@ public sealed class SettingsWindow : Window
         string? repoPath,
         string? currentPullAction = null,
         Action<string>? pullActionChanged = null,
-        Action? blameOptionsChanged = null)
+        Action? blameOptionsChanged = null,
+        bool? currentAutoRefresh = null,
+        Action<bool>? autoRefreshChanged = null)
     {
         _repoPath = repoPath;
         _currentPullAction = currentPullAction;
         _pullActionChanged = pullActionChanged;
         _blameOptionsChanged = blameOptionsChanged;
+        _currentAutoRefresh = currentAutoRefresh;
+        _autoRefreshChanged = autoRefreshChanged;
 
         IBrush window = Resource("App.Window", "#1E1E1E");
         IBrush panel = Resource("App.Panel", "#252526");
@@ -327,12 +384,63 @@ public sealed class SettingsWindow : Window
             _pullAction.Items.Add(item);
         }
 
+        // Automatic refresh: already persisted in UiState and already consumed by
+        // MainWindow (it decides whether the repository watcher follows the repo at
+        // all) — it simply had no UI, so it could only be changed by editing
+        // ui-state.json by hand.
+        _autoRefresh = new CheckBox();
+        Localize(
+            _autoRefresh,
+            "FormBrowse/toolStripMenuItemReloadRevisions.Text",
+            "Refresh automatically when the repository changes on disk");
+
+        // Checkout's "local changes" default: already in AppPreferences and already
+        // read by CheckoutBranchDialog on every checkout, but only writable through
+        // that dialog's own "set as default" box.
+        _checkoutLocalChanges = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        foreach ((string _, string key, string label) in CheckoutChoices)
+        {
+            ComboBoxItem item = new();
+            Localize(item, key, label);
+            _checkoutLocalChanges.Items.Add(item);
+        }
+
         Panel behaviourPanel = CategoryPanel(
             BehaviourKey, BehaviourText,
-            null, "Chooses what the Pull command does by default in this app.",
+            null, "What the Pull command does by default, whether the app follows the "
+                + "repository on disk, and what the checkout dialog pre-selects when the "
+                + "working tree is dirty.",
             text,
             dim,
-            Field("GeneralSettingsPage/lblDefaultPullAction.Text", "Default pull action", _pullAction, dim));
+            Field("GeneralSettingsPage/lblDefaultPullAction.Text", "Default pull action", _pullAction, dim),
+            _autoRefresh,
+            Field(
+                "FormCheckoutBranch/lblLocalChanges.Text",
+                "Local changes when checking out a branch",
+                _checkoutLocalChanges,
+                dim));
+
+        // ---- Commit info: the panel's own visibility toggles, exposed here too.
+        // Same store the panel writes from its context menu; saving raises
+        // CommitInfoSettingsService.Changed, which every open panel listens to.
+        _commitInfoChecks = new CheckBox[CommitInfoChoices.Length];
+        Control[] commitInfoFields = new Control[CommitInfoChoices.Length];
+        for (int i = 0; i < CommitInfoChoices.Length; i++)
+        {
+            CheckBox box = new();
+            Localize(box, CommitInfoChoices[i].Key, CommitInfoChoices[i].Label);
+            _commitInfoChecks[i] = box;
+            commitInfoFields[i] = box;
+        }
+
+        Panel commitInfoPanel = CategoryPanel(
+            CommitInfoKey, CommitInfoText,
+            null, "Which extra sections the commit details panel shows under a commit. The "
+                + "panel's own context menu carries the same toggles; changing them here "
+                + "updates an open panel straight away.",
+            text,
+            dim,
+            commitInfoFields);
 
         _theme = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
 
@@ -355,6 +463,7 @@ public sealed class SettingsWindow : Window
         _pages.Add(identityPanel);
         _pages.Add(gitConfigPanel);
         _pages.Add(blamePanel);
+        _pages.Add(commitInfoPanel);
         _pages.Add(behaviourPanel);
         _pages.Add(appearancePanel);
 
@@ -392,6 +501,7 @@ public sealed class SettingsWindow : Window
         categories.Items.Add(CategoryItem(IdentityKey, IdentityText));
         categories.Items.Add(CategoryItem(GitConfigKey, GitConfigText));
         categories.Items.Add(CategoryItem(BlameKey, BlameText));
+        categories.Items.Add(CategoryItem(CommitInfoKey, CommitInfoText));
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
@@ -495,8 +605,17 @@ public sealed class SettingsWindow : Window
         string? repoPath,
         string? currentPullAction = null,
         Action<string>? pullActionChanged = null,
-        Action? blameOptionsChanged = null)
-        => new SettingsWindow(repoPath, currentPullAction, pullActionChanged, blameOptionsChanged).ShowDialog(owner);
+        Action? blameOptionsChanged = null,
+        bool? currentAutoRefresh = null,
+        Action<bool>? autoRefreshChanged = null)
+        => new SettingsWindow(
+                repoPath,
+                currentPullAction,
+                pullActionChanged,
+                blameOptionsChanged,
+                currentAutoRefresh,
+                autoRefreshChanged)
+            .ShowDialog(owner);
 
     // ---- translation -------------------------------------------------------
 
@@ -562,8 +681,33 @@ public sealed class SettingsWindow : Window
         int pullIndex = Array.FindIndex(PullChoices, c => c.Token == action);
         _pullAction.SelectedIndex = pullIndex >= 0 ? pullIndex : 0;
 
-        // Theme.
+        // Automatic refresh: the host's live value when it passed one, since its
+        // in-memory UiState is the instance that will be saved at exit.
         UiState ui = _uiStateService.Load();
+        _autoRefresh.IsChecked = _currentAutoRefresh ?? ui.AutoRefresh;
+
+        // Checkout default: its own file, so the file is always the truth.
+        string checkoutAction = new SettingsService().Load().DefaultCheckoutLocalChangesAction;
+        int checkoutIndex = Array.FindIndex(CheckoutChoices, c => c.Token == checkoutAction);
+        _checkoutLocalChanges.SelectedIndex = checkoutIndex >= 0 ? checkoutIndex : 0;
+
+        // Commit-info toggles: likewise their own file.
+        CommitInfoSettings commitInfo = _commitInfoService.Load();
+        bool[] commitInfoValues =
+        [
+            commitInfo.ShowContainedInBranchesLocal,
+            commitInfo.ShowContainedInBranchesRemote,
+            commitInfo.ShowContainedInBranchesRemoteIfNoLocal,
+            commitInfo.ShowContainedInTags,
+            commitInfo.ShowAnnotatedTagsMessages,
+            commitInfo.ShowTagThisCommitDerivesFrom,
+        ];
+        for (int i = 0; i < _commitInfoChecks.Length; i++)
+        {
+            _commitInfoChecks[i].IsChecked = commitInfoValues[i];
+        }
+
+        // Theme.
         _theme.SelectedIndex = ui.Theme == "Light" ? 1 : 0;
         return ui.Theme;
     }
@@ -732,13 +876,40 @@ public sealed class SettingsWindow : Window
             Dispatcher.UIThread.Post(() => _blameOptionsChanged?.Invoke());
         });
 
+        // ---- Checkout default and commit-info toggles: files of their own, no
+        // last-writer-wins hazard with the host's UiState. Saving the commit-info file
+        // raises CommitInfoSettingsService.Changed, which is what makes an open commit
+        // details panel adopt the change instead of overwriting it later.
+        string checkoutAction = CheckoutChoices[Math.Max(0, _checkoutLocalChanges.SelectedIndex)].Token;
+        bool[] commitInfo = Array.ConvertAll(_commitInfoChecks, box => box.IsChecked == true);
+        _ = Task.Run(() =>
+        {
+            SettingsService settings = new();
+            AppPreferences prefs = settings.Load();
+            prefs.DefaultCheckoutLocalChangesAction = checkoutAction;
+            settings.Save(prefs);
+
+            _commitInfoService.Save(new CommitInfoSettings
+            {
+                ShowContainedInBranchesLocal = commitInfo[0],
+                ShowContainedInBranchesRemote = commitInfo[1],
+                ShowContainedInBranchesRemoteIfNoLocal = commitInfo[2],
+                ShowContainedInTags = commitInfo[3],
+                ShowAnnotatedTagsMessages = commitInfo[4],
+                ShowTagThisCommitDerivesFrom = commitInfo[5],
+            });
+        });
+
         // ---- Default pull action: UiState is what the toolbar reads.
         string pullAction = PullChoices[Math.Max(0, _pullAction.SelectedIndex)].Token;
 
         // ---- Theme: persist + apply (already previewed live).
+        bool autoRefresh = _autoRefresh.IsChecked == true;
+
         UiState ui = _uiStateService.Load();
         ui.Theme = _theme.SelectedIndex == 1 ? "Light" : "Dark";
         ui.DefaultPullAction = pullAction;
+        ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
         ThemeManager.Apply(ui.Theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
 
@@ -746,6 +917,10 @@ public sealed class SettingsWindow : Window
         // would otherwise overwrite the value just written to the file. Telling it
         // makes the change effective immediately AND survive the exit save.
         _pullActionChanged?.Invoke(pullAction);
+
+        // Same contract for automatic refresh, which additionally has to start or stop
+        // the repository watcher — only the host can do that.
+        _autoRefreshChanged?.Invoke(autoRefresh);
 
         // An applied theme is the new baseline: a later Cancel must not undo it.
         _applied = true;
