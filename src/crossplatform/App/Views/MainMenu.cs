@@ -59,6 +59,8 @@ public sealed class MainMenu : UserControl
     // ---- Commands
     public event Action? CommitRequested;
     public event Action? StashRequested;
+    public event Action? ResetChangesRequested;
+    public event Action? CleanWorkingDirectoryRequested;
     public event Action? NewBranchRequested;
     public event Action? NewTagRequested;
     public event Action? FormatPatchRequested;
@@ -140,6 +142,11 @@ public sealed class MainMenu : UserControl
         MenuItem commands = new() { Header = "_Commands" };
         commands.Items.Add(Item("Commit…", "CommitSummary", () => CommitRequested?.Invoke()));
         commands.Items.Add(Item("Stash", "stash", () => StashRequested?.Invoke()));
+        // Same slot as the original FormBrowse Commands menu: the two destructive
+        // working-directory actions sit right after Stash and before the separator
+        // that starts the branch block.
+        commands.Items.Add(Item("Reset changes…", "ResetWorkingDirChanges", () => ResetChangesRequested?.Invoke()));
+        commands.Items.Add(Item("Clean working directory…", "CleanupRepo", () => CleanWorkingDirectoryRequested?.Invoke()));
         commands.Items.Add(new Separator());
         commands.Items.Add(Item("New branch…", "BranchCreate", () => NewBranchRequested?.Invoke()));
         commands.Items.Add(Item("New tag…", "TagCreate", () => NewTagRequested?.Invoke()));

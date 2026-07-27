@@ -670,6 +670,8 @@ public sealed class MainWindow : Window
         _menu.PushRequested += OpenPushDialog;
         _menu.CommitRequested += OpenCommitDialog;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
+        _menu.ResetChangesRequested += () => _ = ResetChangesAsync();
+        _menu.CleanWorkingDirectoryRequested += () => _ = CleanWorkingDirectoryAsync();
         _menu.NewBranchRequested += () => _ = NewBranchAsync();
         _menu.NewTagRequested += () => _ = NewTagAsync();
         _menu.FormatPatchRequested += () => _ = FormatPatchAsync();
@@ -1517,6 +1519,247 @@ public sealed class MainWindow : Window
 
             RefreshAll();
         }
+    }
+
+    // Commands → "Reset changes…" (FormBrowse resetToolStripMenuItem). Destructive:
+    // asks for explicit confirmation and lets the user choose whether the index is
+    // reset too, mirroring WorkingDirectoryView.ResetChangesAsync (which always
+    // passes includeStaged: true). The git work runs inside the process dialog, i.e.
+    // on a background thread — WorkingDirectoryService blocks on async work and would
+    // deadlock the UI thread (M43).
+    private async Task ResetChangesAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        bool? includeStaged = await ConfirmResetAsync();
+        if (includeStaged is null)
+        {
+            _statusBar.SetText("Reset cancelled.");
+            return;
+        }
+
+        bool staged = includeStaged.Value;
+        WorkingDirectoryService service = new();
+        _statusBar.SetText("Resetting tracked changes…");
+
+        WorkingDirCommitResult? result = null;
+        await Views.GitProcessDialog.RunAsync(
+            this,
+            staged ? "Reset changes (worktree + index)" : "Reset changes (worktree only)",
+            () =>
+            {
+                result = service.ResetChanges(repo, staged);
+                return new Views.GitProcessOutcome(result.Success, result.Output);
+            });
+
+        _statusBar.SetText(result is { Success: true }
+            ? "Tracked changes discarded."
+            : "Reset failed — see the process output.");
+        RefreshAll();
+    }
+
+    // Commands → "Clean working directory…" (FormBrowse cleanupToolStripMenuItem).
+    // Same contract as WorkingDirectoryView.CleanWorkingDirectoryAsync: a `git clean
+    // -nd` PREVIEW first, explicit confirmation, then the real clean. Both previews
+    // (with and without ignored files) are computed up-front in Task.Run so toggling
+    // the "include ignored files" box in the dialog never touches git from the UI
+    // thread.
+    private async Task CleanWorkingDirectoryAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        _statusBar.SetText("Previewing clean…");
+        WorkingDirectoryService service = new();
+
+        (bool Ok, string Error, string Plain, string WithIgnored) preview;
+        try
+        {
+            preview = await Task.Run(() =>
+            {
+                WorkingDirCommitResult plain = service.CleanDryRun(repo, includeIgnored: false);
+                if (!plain.Success)
+                {
+                    return (false, plain.Output.Trim(), string.Empty, string.Empty);
+                }
+
+                WorkingDirCommitResult ignored = service.CleanDryRun(repo, includeIgnored: true);
+                return (true, string.Empty, plain.Output.Trim(), (ignored.Success ? ignored.Output : plain.Output).Trim());
+            });
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText("Clean preview failed: " + ex.Message);
+            return;
+        }
+
+        if (!preview.Ok)
+        {
+            _statusBar.SetText("Clean preview failed: " + preview.Error);
+            return;
+        }
+
+        if (preview.Plain.Length == 0 && preview.WithIgnored.Length == 0)
+        {
+            _statusBar.SetText("Nothing to clean (no untracked files).");
+            return;
+        }
+
+        bool? includeIgnored = await ConfirmCleanAsync(preview.Plain, preview.WithIgnored);
+        if (includeIgnored is null)
+        {
+            _statusBar.SetText("Clean cancelled.");
+            return;
+        }
+
+        // Live output: git clean prints one "Removing <path>" line per entry, so the
+        // streaming runner (stdout+stderr, unbuffered) is worth it here.
+        string args = includeIgnored.Value ? "clean -f -d -x" : "clean -f -d";
+        int exitCode = -1;
+        await Views.GitProcessDialog.RunStreamingAsync(this, "Clean working directory", emit =>
+        {
+            exitCode = GitStreamRunner.Run(repo, args, emit);
+            return new Views.GitProcessOutcome(exitCode == 0, exitCode == 0 ? string.Empty : $"git clean exited with code {exitCode}.");
+        });
+
+        _statusBar.SetText(exitCode == 0 ? "Working directory cleaned." : "Clean failed — see the process output.");
+        RefreshAll();
+    }
+
+    // Reset confirmation: returns the chosen includeStaged flag, or null on cancel.
+    private async Task<bool?> ConfirmResetAsync()
+    {
+        CheckBox alsoStaged = new()
+        {
+            Content = "Also discard staged changes (git reset --hard HEAD)",
+            IsChecked = true,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        Button reset = new() { Content = "Reset", MinWidth = 90 };
+        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+
+        Window dlg = new()
+        {
+            Title = "Reset changes",
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Discard uncommitted changes to tracked files? This cannot be undone.\n"
+                            + "Untracked files are left alone — use \"Clean working directory…\" for those.",
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    alsoStaged,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Margin = new Thickness(0, 16, 0, 0),
+                        Children = { reset, cancel },
+                    },
+                },
+            },
+        };
+
+        bool? result = null;
+        reset.Click += (_, _) => { result = alsoStaged.IsChecked == true; dlg.Close(); };
+        cancel.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+        return result;
+    }
+
+    // Clean preview + confirmation: shows what `git clean -nd` (or -ndx) reported and
+    // returns the chosen includeIgnored flag, or null on cancel. Both texts are
+    // pre-computed, so the checkbox only swaps already-loaded strings.
+    private async Task<bool?> ConfirmCleanAsync(string plain, string withIgnored)
+    {
+        TextBlock header = new() { TextWrapping = TextWrapping.Wrap };
+        TextBlock list = new()
+        {
+            FontFamily = new FontFamily("monospace"),
+            TextWrapping = TextWrapping.NoWrap,
+        };
+        CheckBox ignored = new()
+        {
+            Content = "Include ignored files (git clean -x)",
+            IsChecked = false,
+            Margin = new Thickness(0, 10, 0, 0),
+        };
+
+        Button clean = new() { Content = "Clean", MinWidth = 90 };
+        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+
+        ScrollViewer scroll = new()
+        {
+            Content = list,
+            HorizontalScrollBarVisibility = global::Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            Margin = new Thickness(0, 10, 0, 0),
+            Background = (IBrush)Application.Current!.Resources["App.Panel"]!,
+            Padding = new Thickness(8),
+        };
+
+        // The height is set explicitly from the line count: inside a StackPanel the
+        // ScrollViewer otherwise settles on a single text line, hiding the rest of
+        // the preview behind a scrollbar the user has no reason to look for.
+        void Update()
+        {
+            string text = ignored.IsChecked == true ? withIgnored : plain;
+            int count = text.Length == 0
+                ? 0
+                : text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+            header.Text = count == 0
+                ? "Nothing would be removed with these options."
+                : $"The following {count} untracked file(s)/directory(ies) will be permanently removed. This cannot be undone.";
+            list.Text = text.Length > 0 ? text : "(nothing to remove)";
+            scroll.Height = Math.Clamp((Math.Max(count, 1) * 19) + 18, 40, 280);
+        }
+
+        ignored.IsCheckedChanged += (_, _) => Update();
+        Update();
+
+        Window dlg = new()
+        {
+            Title = "Clean working directory",
+            Width = 640,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Children =
+                {
+                    header,
+                    scroll,
+                    ignored,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Margin = new Thickness(0, 16, 0, 0),
+                        Children = { clean, cancel },
+                    },
+                },
+            },
+        };
+
+        bool? result = null;
+        clean.Click += (_, _) => { result = ignored.IsChecked == true; dlg.Close(); };
+        cancel.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+        return result;
     }
 
     private void RunOp(string label, Func<bool> op, bool confirm = false)
