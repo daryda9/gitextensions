@@ -1096,48 +1096,48 @@ minori (opzioni merge/cherry-pick, continue/skip/abort per rebase, filtro dei ca
 **BLOCCO 0 — correttezza** (fanno *la cosa sbagliata*, non sono controlli mancanti; costo basso,
 priorità massima)
 
-- [ ] 0.1 `PatchService.cs:70-84` esegue **sempre** `git am` e sul fallimento lancia
+- [x] 0.1 `PatchService.cs:70-84` esegue **sempre** `git am` e sul fallimento lancia
       `git am --abort` → **distrugge una sessione `am` altrui in corso**. Upstream sniffa il file
       (`FormApplyPatch.cs:216-229 IsDiffFile`) e scegle tra `git apply` e `git am`. *banale*
-- [ ] 0.2 `GitProcessDialog.cs:132` — **Abort chiude solo la finestra**: git continua a girare e
+- [x] 0.2 `GitProcessDialog.cs:132` — **Abort chiude solo la finestra**: git continua a girare e
       l'`index.lock` resta orfano. Upstream: `KillCommandProcess()` + `UnlockIndex(includeSubmodules)`
       (`FormStatus.cs:260-272`). *media*
 - [ ] 0.3 `FileHistoryView.cs:399` — **"Save as" salva il blob sbagliato** (o fallisce) per ogni
       commit anteriore a un rename: `--follow` è attivo (`FileHistoryService.cs:104`) ma il path
       usato è quello *attuale*. Upstream: `GetFileNameForRevision` (`FormFileHistory.cs:225-235`).
       Serve un campo nome-file in `FileHistoryRow`. *media*
-- [ ] 0.4 `PushDialog.cs:198-207` — la combo **"Remote branch" è popolata con i rami LOCALI** e
+- [x] 0.4 `PushDialog.cs:198-207` — la combo **"Remote branch" è popolata con i rami LOCALI** e
       non si riaggiorna al cambio remote → crea rami remoti sbagliati in silenzio. Upstream:
       rami remoti del remote selezionato (`FormPush.cs:756-774`). *media*
-- [ ] 0.5 `ConsoleView.RepoPath` **non è mai assegnato** da nessuno: dopo aver aperto un altro
+- [x] 0.5 `ConsoleView.RepoPath` **non è mai assegnato** da nessuno: dopo aver aperto un altro
       repo la shell resta nel repo d'avvio, e nemmeno "Restart shell" la sposta. Upstream fa
       `cd` sulla shell viva a ogni cambio working dir (`FormBrowse.cs:2777-2785`, da `:1732`). *banale*
-- [ ] 0.6 La combo **"Default pull action" di Settings è un pulsante finto**: scrive
+- [x] 0.6 La combo **"Default pull action" di Settings è un pulsante finto**: scrive
       `AppPreferences.DefaultPullAction` (`SettingsWindow.cs:373`) mentre lo split-button Pull
       legge `UiState.DefaultPullAction`. Unificare su `UiState` ed esporre anche
       FetchAll/FetchPruneAll. *banale*
-- [ ] 0.7 **Left panel collassato: la larghezza si perde.** `ToggleLeftPanel` porta `_treeCol.Width`
+- [x] 0.7 **Left panel collassato: la larghezza si perde.** `ToggleLeftPanel` porta `_treeCol.Width`
       a 0, alla chiusura si salva 0 e `Sanitize` (`UiStateService.cs:161`) lo clampa a 260 → al
       riavvio il pannello riappare con larghezza di default. Serve un flag "collapsed" separato
       dalla larghezza. *banale*
-- [ ] 0.8 `PushDialog.cs:823-826` force-pusha i **tag** con `--force-with-lease`, che i tag non
+- [x] 0.8 `PushDialog.cs:823-826` force-pusha i **tag** con `--force-with-lease`, che i tag non
       supportano (upstream usa `--force` puro, `FormPush.cs:496`). Dipende dal force a 3 stati. *banale*
-- [ ] 0.9 `WorktreesDialog.cs:127` offre **Remove sul worktree corrente/principale** (esclude solo
+- [x] 0.9 `WorktreesDialog.cs:127` offre **Remove sul worktree corrente/principale** (esclude solo
       i bare) e git fallisce. Upstream gating a `FormManageWorktree.cs:126-149`. *banale*
-- [ ] 0.10 `RemotesDialog.cs:211-231` **inghiotte tutti gli errori git** (tiene solo `Success`).
+- [x] 0.10 `RemotesDialog.cs:211-231` **inghiotte tutti gli errori git** (tiene solo `Success`).
       Upstream mostra `result.UserMessage` (`FormRemotes.cs:531-535,603-607`). *banale*
-- [ ] 0.11 `OutputView` — **il log non è live**: `CommandLog.CommandsChanged` non è sottoscritto da
+- [x] 0.11 `OutputView` — **il log non è live**: `CommandLog.CommandsChanged` non è sottoscritto da
       nessuna parte (0 hit in `App/`), quindi un comando in volo resta `running` senza durata
       finché non si clicca Refresh. Upstream si iscrive e disiscrive (`FormGitCommandLog.cs:38-58`).
       `GitCommands.Logging.CommandLog` è già referenziato. *banale*
-- [ ] 0.12 `CommitActionsService.cs:50-63` scrive `COMMIT_EDITMSG` **sempre UTF-8** → messaggi
+- [x] 0.12 `CommitActionsService.cs:50-63` scrive `COMMIT_EDITMSG` **sempre UTF-8** → messaggi
       corrotti con `i18n.commitEncoding` non-UTF8. Upstream usa `Module.CommitEncoding`. *banale*
-- [ ] 0.13 `SubmodulesDialog` — il pulsante **"Init all" chiama `UpdateAll`**: duplicato di
+- [x] 0.13 `SubmodulesDialog` — il pulsante **"Init all" chiama `UpdateAll`**: duplicato di
       "Update all" con etichetta fuorviante (upstream non ha "Init all"). *banale*
-- [ ] 0.14 `BlameView.ShowBlame` (`:274-301`) — **nessuna cancellazione del blame in volo**
+- [x] 0.14 `BlameView.ShowBlame` (`:274-301`) — **nessuna cancellazione del blame in volo**
       (`Task.Run` nudo, `CancellationToken.None` a `BlameService.cs:76`): due cambi di file rapidi
       possono lasciare le righe di A sotto lo status di B. *banale*
-- [ ] 0.15 Mancano **tutte le conferme distruttive** dei dialoghi: amend "rewrite history"
+- [~] 0.15 Mancano **tutte le conferme distruttive** dei dialoghi: amend "rewrite history"
       (`FormCommit.cs:1098-1111`), merge-commit vuoto (`:1113-1123`), detached-HEAD (`:1191-1231`),
       branch nuovo sul remote (`FormPush.cs:291-310`), nome remote duplicato
       (`FormRemotes.cs:464-483`). *banale ciascuna*
@@ -1373,6 +1373,91 @@ nel port, manca il punto d'accesso)
   (già coperto non-UI da `HomeDirectoryFix`).
 - **Fuori scope per direzione dell'utente**: lingue oltre inglese/italiano, repository-host
   GitHub (fork/PR/upstream), colonna e integrazione build status.
+
+**M52** (2026-07-27) — **BLOCCO 0 chiuso** per 13 voci su 15 (0.3 e il resto di 0.15 sono
+nell'iterazione successiva). Iterazione 2, tre subagent in worktree su file disgiunti, più il
+cablaggio minimo in `MainWindow` fatto dal loop. Nove commit.
+
+- **Patch, process dialog, encoding** (`29d05133a`, `d326c7501`, `0a739b55f`) — `ApplyPatch` ora
+  **sniffa il file** (porting di `IsDiffFile`: prima riga `diff `/`Index: `) e sceglie `git apply`
+  per un diff nudo, `git am` per una mailbox; prima di partire con `am` controlla
+  `GitModule.InTheMiddleOfPatch()` (raggiungibile dal port; fallback su `.git/rebase-apply`) e
+  **rifiuta** invece di toccare una sessione che non ha creato lei — `am --abort` viene emesso solo
+  se la sessione esiste *dopo* il fallimento del nostro stesso `am`. Nessun fallback su `apply` per
+  le mailbox (perderebbe autore e messaggio in silenzio).
+  Il **process dialog** ha un nuovo `GitProcessScope` in `GitStreamRunner` che raccoglie i `Process`
+  avviati e li lega al flusso logico dell'operazione con un `AsyncLocal`, così **nessun chiamante è
+  cambiato**: Abort ora fa `Kill(entireProcessTree: true)` su ogni processo vivo (e su quelli
+  avviati più tardi nello stesso scope), poi `UnlockIndex(includeSubmodules: true)` **solo se un
+  kill è davvero avvenuto** (così il lock di un git vivo non viene mai cancellato), scrive
+  "Aborted" e restituisce l'esito di abort; OK resta disabilitato fino al termine e chiudere la
+  finestra in anticipo non finge più un successo. Abort è nascosto sul path non-streaming, dove il
+  core `Executable` non dà un handle killabile — come upstream nasconde il pulsante senza callback.
+  `COMMIT_EDITMSG` è scritto con `module.CommitEncoding`; due extra trovati testando: `cp1251` (che
+  git accetta ma la tabella .NET no) cadeva in silenzio su UTF-8 → ora si mappa per codepage, e
+  `i18n.commitEncoding=utf-8` risolveva a un'istanza **con BOM** che infilava un `U+FEFF` nel
+  messaggio → il caso UTF-8 usa ora `UTF8Encoding(false)`.
+  *Verificato con git reale*: mailbox → `am` con autore e subject preservati; diff nudo → `apply`
+  senza lasciare `rebase-apply`; con una sessione `am` conflittuale già aperta la chiamata rifiuta,
+  la sessione **sopravvive**, HEAD è invariato e l'utente può ancora fare `am --skip`; il nostro
+  `am` conflittuale viene abortito e HEAD ripristinato. Abort: `git commit` bloccato da un hook
+  `pre-commit` da 60 s → 3 processi prima, 0 dopo, git esce 137 in 0,7 s, un comando avviato dopo
+  l'abort muore all'arrivo, `UnlockIndex` rimuove `index.lock`. *Non verificato*: il wiring UI del
+  dialogo (visibilità pulsanti, auto-chiusura) è solo compile-verified; `index.lock` nel test era
+  creato sinteticamente, non da una scrittura git interrotta.
+- **Dialoghi push / worktree / remotes / submodules** (`3b29ba7e3`, `d90904e88`, `ebf007a35`,
+  `d71b91e4f`) — la combo "Remote branch" del push non elenca più i rami **locali**: nuovo
+  `UpdateRemoteBranchCombo` la ricostruisce dai rami che esistono davvero sul remote selezionato
+  (nuovo `PushRefsService.LoadRemoteBranches`, da `for-each-ref refs/remotes`, caricato dentro il
+  `Task.Run` di `ShowAsync` — bug M43 rispettato), agganciata al cambio di remote e di ramo locale;
+  resta editabile, e un nome che non esiste sul remote fa scattare una **conferma** (tab singolo e
+  multiplo). Nuovo `enum PushForceMode { None, WithLease, Force }` in `PushRefsService`/
+  `RemoteService`: i **tag** usano `--force` puro, i branch `--force-with-lease`; le firme
+  `bool force` storiche restano come overload che delegano, quindi i chiamanti compilano invariati.
+  In UI una seconda checkbox "Force push" mutuamente esclusiva, con la domanda upstream "usare il
+  più sicuro?". `WorktreeService` parsa ora `prunable` (con la ragione di git) più `IsMain` e
+  `IsSamePath`: **Remove** è abilitato solo se non-main, non-bare, non-prunable e non è il worktree
+  aperto; **Prune** solo se c'è qualcosa di prunable; i cancellati sono barrati e in `App.TextDim`.
+  `RemotesDialog` mostra l'output di git quando un'operazione fallisce (prima teneva solo
+  `Success`) e rifiuta i nomi duplicati su Add e Rename. "Init all" dei submodule esegue davvero
+  `git submodule init` invece di duplicare "Update all".
+  *Verificato con git reale*: `push --force-with-lease` su un tag spostato viene **rifiutato**
+  (`! [rejected] v1 -> v1 (stale info)`, tag remoto invariato) mentre `--force` passa
+  (`+ d06af8d...9802e42 (forced update)`) — il bug era reale; `LoadRemoteBranches` eseguito verbatim
+  su un repo con due remoti a set disgiunti dà i soli rami remoti; il parser worktree distingue
+  main/prunable/aperto su git 2.43; `submodule init` scrive `submodule.sub.active/url` lasciando la
+  directory vuota, quindi non è un doppione di `update --init`. *Nota*: `prunable` in `--porcelain`
+  esiste da git ≥ 2.36; su git più vecchi il gating degrada senza regressioni.
+- **Console, log, blame, settings, stato** (`b756e0653` + cablaggio `f16610488`) —
+  `ConsoleView.RepoPath` è un vero setter: con shell viva digita `` + `cd '<path>'` sul
+  PTY (gli stessi due control char di `MinttyShellRunner.ChangeWorkingDirectory`, per pulire una
+  riga a metà), altrimenti registra la directory, così anche "Restart shell" atterra nel repo
+  nuovo. `OutputView` e `CommandLogWindow` si iscrivono a `CommandLog.CommandsChanged` con
+  **throttle 300 ms** trailing-edge e si disiscrivono su detach/close; la finestra staccata
+  auto-scrolla solo se era già in coda, altrimenti conserva caret e offset. Il blame ha un
+  `CancellationTokenSource` per richiesta che cancella il precedente, token passato fino a
+  `BlameService`, e guardia di staleness prima di postare; più il **gutter a bande** (hash/autore/
+  data solo sulla prima riga di una serie dello stesso commit) e la nuova colonna **Author date**,
+  che il servizio già calcolava e nessuno mostrava. La combo "Default pull action" scrive ora
+  `UiState.DefaultPullAction` (e offre tutti e cinque i valori), con callback verso l'host perché
+  `MainWindow` riserializza l'intera istanza alla chiusura; l'identità ha un selettore **Settings
+  source Local/Global** (prima era una nota fissa "Local" e si scriveva sempre `--local`, quindi
+  **l'identità globale non era impostabile**). `UiState` guadagna `LeftPanelCollapsed` (distinto da
+  `TreeWidth`, che quindi non viene più mangiato dal clamp di `Sanitize`), `CommitInfoPosition` e
+  `LastRepoPath`; il loop ha cablato restore/save, il `cd` su `OpenRepository`, il callback della
+  pull action e la precedenza CLI > cwd > ultimo repo > dashboard.
+  *Verificato a schermo dal loop*: log **live** — 23 → 44 comandi loggati dopo il solo Refresh
+  della toolbar, senza toccare il Refresh del pannello. *Limite dichiarato*: le scritture
+  `--global` non sono mai state eseguite (la sandbox rifiuta l'override di `HOME` e non si tocca il
+  `~/.gitconfig` reale); verificata la lettura del livello Global e la mappatura a `--global`.
+  Cambio di comportamento voluto: i campi identità mostrano il valore del **livello selezionato**,
+  non quello effettivo, quindi su un repo senza identità locale la pagina Local è vuota dove prima
+  mostrava il valore globale ereditato.
+
+**Nota di metodo** (costata due tentativi): `pkill -f "<pattern>"` negli script di verifica GUI
+**uccide la shell che lo lancia** se il pattern compare anche nella propria riga di comando (es.
+`pkill -f "Xvfb :151"` invocato da un comando che contiene quella stessa stringa). Usare un pattern
+auto-escluso (`Xvf[b] :151`) o `kill <PID>`.
 
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 
