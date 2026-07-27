@@ -1065,6 +1065,315 @@ Menu + toolbar:
 minori (opzioni merge/cherry-pick, continue/skip/abort per rebase, filtro dei cataloghi
 `.xlf` a inglese + italiano per togliere ~19 MB dal `.deb`).
 
+### Coda round 9 — audit completo di parità, 8 aree
+
+> **Iterazione 1 (FASE 1).** Otto subagent READ-ONLY in parallelo su aree disgiunte
+> (A barra menu, B toolbar, C RepoObjectsTree, D revision grid, E pannello inferiore,
+> F dialoghi, G impostazioni, H chrome globale), ognuno contro i file upstream corrispondenti
+> con `file:riga`, costo e verifica che il dato/servizio esista già nel port. Base:
+> `a3aae6d0b`, build Errori 0. Fuori scope per direzione dell'utente: lingue/traduzioni,
+> repository-host GitHub, colonna build status.
+>
+> **Dove gli audit hanno stabilito che NON c'è lavoro** (per non inventarlo): la **status bar**
+> — `FormBrowse` upstream *non ha* una status bar (`FormBrowse.Designer.cs:1354`
+> `BottomToolStripPanelVisible = false`), quindi la `StatusBarView` del port è un extra da
+> tenere; il **drag&drop di cartella**, già coperto a livello finestra; lo scope hotkey
+> **`FormBrowse`**, in parità *verbatim* 43/43 gesture più la priorità focused-first; il
+> **tab inferiore persistito** (upstream non lo persiste); **larghezza/ordine delle colonne**
+> della griglia e **testo dei filtri** (upstream non li persiste); **drag&drop e inline rename**
+> nell'albero sinistro (non esistono upstream); il **menu Plugins** (fedele, manca solo il
+> placeholder "Loading…"); la **Console** (confermata la tesi di M51: nessuna toolbar upstream);
+> le 4 azioni del **MaintenanceDialog** (1:1 col submenu `&Git maintenance`; non esiste una
+> feature `git maintenance` upstream, solo `gc` + `fsck`); il **dialogo dei filtri di revisione**
+> (completo, con un extra `-S`/`-G`); la **funnel icon a 2 stati** con summary del filtro.
+>
+> **~35 impostazioni upstream sarebbero pulsanti finti** se portate così come sono (nessun
+> consumatore nel port): blocco avatar-provider/cache, `UseGitColoring`/ruler/continuous-scroll/
+> all-parents, `OutputHistoryDepth`, i font (finché restano hard-coded), i flag di rendering del
+> grafo, e tutto ciò che dipende da feature assenti (stash count, ahead/behind per ref, submodule
+> status, script utente, revision links). Registrato per non spenderci iterazioni.
+
+**BLOCCO 0 — correttezza** (fanno *la cosa sbagliata*, non sono controlli mancanti; costo basso,
+priorità massima)
+
+- [ ] 0.1 `PatchService.cs:70-84` esegue **sempre** `git am` e sul fallimento lancia
+      `git am --abort` → **distrugge una sessione `am` altrui in corso**. Upstream sniffa il file
+      (`FormApplyPatch.cs:216-229 IsDiffFile`) e scegle tra `git apply` e `git am`. *banale*
+- [ ] 0.2 `GitProcessDialog.cs:132` — **Abort chiude solo la finestra**: git continua a girare e
+      l'`index.lock` resta orfano. Upstream: `KillCommandProcess()` + `UnlockIndex(includeSubmodules)`
+      (`FormStatus.cs:260-272`). *media*
+- [ ] 0.3 `FileHistoryView.cs:399` — **"Save as" salva il blob sbagliato** (o fallisce) per ogni
+      commit anteriore a un rename: `--follow` è attivo (`FileHistoryService.cs:104`) ma il path
+      usato è quello *attuale*. Upstream: `GetFileNameForRevision` (`FormFileHistory.cs:225-235`).
+      Serve un campo nome-file in `FileHistoryRow`. *media*
+- [ ] 0.4 `PushDialog.cs:198-207` — la combo **"Remote branch" è popolata con i rami LOCALI** e
+      non si riaggiorna al cambio remote → crea rami remoti sbagliati in silenzio. Upstream:
+      rami remoti del remote selezionato (`FormPush.cs:756-774`). *media*
+- [ ] 0.5 `ConsoleView.RepoPath` **non è mai assegnato** da nessuno: dopo aver aperto un altro
+      repo la shell resta nel repo d'avvio, e nemmeno "Restart shell" la sposta. Upstream fa
+      `cd` sulla shell viva a ogni cambio working dir (`FormBrowse.cs:2777-2785`, da `:1732`). *banale*
+- [ ] 0.6 La combo **"Default pull action" di Settings è un pulsante finto**: scrive
+      `AppPreferences.DefaultPullAction` (`SettingsWindow.cs:373`) mentre lo split-button Pull
+      legge `UiState.DefaultPullAction`. Unificare su `UiState` ed esporre anche
+      FetchAll/FetchPruneAll. *banale*
+- [ ] 0.7 **Left panel collassato: la larghezza si perde.** `ToggleLeftPanel` porta `_treeCol.Width`
+      a 0, alla chiusura si salva 0 e `Sanitize` (`UiStateService.cs:161`) lo clampa a 260 → al
+      riavvio il pannello riappare con larghezza di default. Serve un flag "collapsed" separato
+      dalla larghezza. *banale*
+- [ ] 0.8 `PushDialog.cs:823-826` force-pusha i **tag** con `--force-with-lease`, che i tag non
+      supportano (upstream usa `--force` puro, `FormPush.cs:496`). Dipende dal force a 3 stati. *banale*
+- [ ] 0.9 `WorktreesDialog.cs:127` offre **Remove sul worktree corrente/principale** (esclude solo
+      i bare) e git fallisce. Upstream gating a `FormManageWorktree.cs:126-149`. *banale*
+- [ ] 0.10 `RemotesDialog.cs:211-231` **inghiotte tutti gli errori git** (tiene solo `Success`).
+      Upstream mostra `result.UserMessage` (`FormRemotes.cs:531-535,603-607`). *banale*
+- [ ] 0.11 `OutputView` — **il log non è live**: `CommandLog.CommandsChanged` non è sottoscritto da
+      nessuna parte (0 hit in `App/`), quindi un comando in volo resta `running` senza durata
+      finché non si clicca Refresh. Upstream si iscrive e disiscrive (`FormGitCommandLog.cs:38-58`).
+      `GitCommands.Logging.CommandLog` è già referenziato. *banale*
+- [ ] 0.12 `CommitActionsService.cs:50-63` scrive `COMMIT_EDITMSG` **sempre UTF-8** → messaggi
+      corrotti con `i18n.commitEncoding` non-UTF8. Upstream usa `Module.CommitEncoding`. *banale*
+- [ ] 0.13 `SubmodulesDialog` — il pulsante **"Init all" chiama `UpdateAll`**: duplicato di
+      "Update all" con etichetta fuorviante (upstream non ha "Init all"). *banale*
+- [ ] 0.14 `BlameView.ShowBlame` (`:274-301`) — **nessuna cancellazione del blame in volo**
+      (`Task.Run` nudo, `CancellationToken.None` a `BlameService.cs:76`): due cambi di file rapidi
+      possono lasciare le righe di A sotto lo status di B. *banale*
+- [ ] 0.15 Mancano **tutte le conferme distruttive** dei dialoghi: amend "rewrite history"
+      (`FormCommit.cs:1098-1111`), merge-commit vuoto (`:1113-1123`), detached-HEAD (`:1191-1231`),
+      branch nuovo sul remote (`FormPush.cs:291-310`), nome remote duplicato
+      (`FormRemotes.cs:464-483`). *banale ciascuna*
+
+**BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
+nel port, manca il punto d'accesso)
+
+- [ ] 1.1 **Titolo finestra** fisso a "Git Extensions (Avalonia / Linux)" (`MainWindow.cs:133`),
+      mai aggiornato. Upstream: `"{pathFilter}{repo} ({branch}) - Git Extensions"`
+      (`AppTitleGenerator.cs:38-59`). *banale, valore alto* (alt-tab con più istanze)
+- [ ] 1.2 **Menu Navigate**: 15 voci upstream (`RevisionGridMenuCommands.cs:91-198`), il port ne
+      ha 4 e nessuna delle upstream. Le azioni esistono già nel flyout "Go to" e nel menu
+      contestuale della griglia. *banale* (eccetto merge-base, vedi 4.x)
+- [ ] 1.3 **Menu View**: 30 voci upstream con group header ("Branches", "Commits", "Grid labels",
+      "Grid info", "Columns", "Sorting", "Settings persistence") e voci checkable; il port ne ha 2
+      + tema/lingua. La maggior parte è già implementata nei flyout dell'header della griglia
+      (View/Branches/Columns/Date): serve esporla nel menu come voci checkable. *banale*
+- [ ] 1.4 **Menu Repository — tre dialoghi esistenti e non raggiungibili**: `RemotesDialog`
+      (oggi solo da `PullDialog.cs:651`), `SubmodulesDialog` (solo da `RepoObjectsTree.cs:1264`),
+      `WorktreesDialog` (solo da `:1336`); più "Update all submodules" e "Synchronize all
+      submodules" (`SubmoduleService.UpdateAll`/`SynchronizeAll` già presenti) e "Refresh" in
+      testa. *banale*
+- [ ] 1.5 **Menu Dashboard** assente del tutto (`FormBrowse.Designer.cs:1295-1301`): top-level
+      visibile solo in dashboard mode, con "Refresh". *banale*
+- [ ] 1.6 **Nessuno shortcut mostrato nei menu**: `MainMenu.Item()` non imposta mai
+      `InputGesture`. Il dato c'è (`HotkeyService`). Attenzione: `MainToolbar.cs:865-874` legge
+      `HotkeyService.Defaults`, non le binding effettive → **con override attivi le etichette
+      mentono**: passare l'istanza reale. *banale/media*
+- [ ] 1.7 **Nessuna logica enable/disable** in tutto il menu: upstream nasconde interi menu senza
+      repo valido (`FormBrowse.cs:926-929`), disabilita 13 voci su repo **bare** (`:1014-1034`) e
+      gating per selezione in `CommandsToolStripMenuItem_DropDownOpening` (`:2330-2366`). Serve la
+      nozione di bare repo (assente nei service) + un handler `Opening`. *media*
+- [ ] 1.8 **Ordine colonne della griglia invertito** rispetto all'originale: upstream è
+      graph → **Message** → notes → avatar → author → date → **CommitId ultimo**
+      (`RevisionGridControl.cs:342-351`); il port ha hash in seconda e subject in ultima. È la
+      divergenza visiva di primo impatto (cfr. `GUI.png`). *banale*
+- [ ] 1.9 **Batch hotkey della griglia** su azioni **già esistenti**: Ctrl+I, Ctrl+Shift+I,
+      Ctrl+Shift+C, Ctrl+Shift+G, Ctrl+P/Ctrl+N, Ctrl+Shift+A/U/T, Ctrl+Shift+B, Ctrl+Alt+T,
+      Ctrl+Shift+R. Più tre **divergenze** da sanare: Alt+↑/↓ (upstream = quick-search prev/next,
+      parent/child sono Ctrl+P/Ctrl+N), Ctrl+G (upstream `GoToCommit` è Ctrl+Shift+G e Ctrl+G è
+      GitBash → oggi conflitto reale), F3. *banale*
+- [ ] 1.10 **Binding registrati ma inerti** già chiudibili: `AddNotes` Ctrl+Shift+N
+      (`CommitDetailView.EditNotes` e `AddNotesDialog` esistono), `ManageWorkTrees` Ctrl+Alt+W
+      (`WorktreesDialog` esiste), `GoToChild` Ctrl+N. *banale*
+- [ ] 1.11 **Toolbar**: manca il pulsante **Settings** (`Designer.cs:529-536`) e il **toggle del
+      pannello sinistro** (`:247-254`, azione già esistente come sola hotkey). *banale*
+- [ ] 1.12 **Split-button Stash**: il port ha un pulsante secco che fa `stash save "WIP"`. Upstream
+      (`Designer.cs:348-405`): corpo = dialogo stash, freccia = Stash / Stash staged / Stash pop /
+      — / Manage stashes… / Create a stash…, e il testo porta il **contatore `(n)`**. *media*
+- [ ] 1.13 **Caricamento non lazy del pannello inferiore**: `MainWindow.OnRevisionSelected`
+      (`:1565-1568`) lancia *sempre* `ShowCommit` su Commit+Diff+File tree+GPG → a ogni movimento
+      di selezione partono 4 catene di git (incluso `--show-signature` e `ls-tree -r`) di cui 3
+      invisibili. Upstream carica solo il tab selezionato (`FormBrowse.cs:1240,1251,1306`). *banale*
+- [ ] 1.14 **Righe artificiali (Working directory / Commit index) non raggiungono il pannello**:
+      `RevisionGridView.cs:513-531` esce prima di emettere l'evento e `ArtificialRowActivated`
+      non ha subscriber → i tab restano sul commit precedente, cioè mostrano contenuto **stantio**
+      (il caso peggiore). *banale per Commit, media per Diff/File tree*
+- [ ] 1.15 `MaxGraphLanes` 8 → 40 come upstream (`RevisionGraph.cs:20`): oltre l'ottava lane il
+      grafo non disegna. *banale*
+- [ ] 1.16 Quick-search: cercare anche **nomi dei ref** e **prefisso hash** come
+      `GitRevisionTester.cs:97-109`, più Ctrl+V nel buffer. *banale*
+- [ ] 1.17 Autore della revisione selezionata in **bold** su tutte le righe
+      (`AuthorRevisionHighlighting`). *banale*
+- [ ] 1.18 `CommitDetailView` — la **data di commit spare quando autore == committer**: upstream
+      mostra la riga extra se le *date* differiscono (`CommitDataHeaderRenderer.cs:87-111`), il
+      port se differisce la *persona* → su rebase/amend/cherry-pick la data di commit si perde. *banale*
+- [ ] 1.19 Blame: **gutter a bande** (upstream collassa hash+autore per righe consecutive dello
+      stesso commit, `BlameControl.cs:402-405`; il port ripete l'hash su ogni riga) e la **data
+      d'autore già calcolata e mai mostrata** (`BlameService.cs:86` la riempie, `BuildRow` la
+      ignora). *banale entrambi*
+- [ ] 1.20 GPG: **icone di stato della firma** (`CommitSignatureOk/Warning/Error`) e il port
+      **mostra troppo** — `--pretty=medium` stampa anche il corpo del commit, upstream solo il
+      messaggio di verifica. Le 7 icone sono **già linkate** dal glob `Assets/Icons/`. *banale*
+- [ ] 1.21 Stash: checkbox **"Keep index"** (`StashOpsService.cs:65` cabla `keepIndex: false`) +
+      riquadro del messaggio dello stash + hotkey next/prev stash. *banale*
+- [ ] 1.22 File history: pulsante **Reload** e aggancio al refresh globale (`MainWindow` non
+      richiama mai `ShowHistory`); **doppio clic** su una riga (idem in Blame). *banale*
+- [ ] 1.23 Dashboard: **casella di ricerca** con filtro incrementale (Enter apre il primo, ↓ passa
+      alla lista) e i link **Clone / Create** oggi solo nel menu. *banale*
+- [ ] 1.24 Diff: **"Filter file in grid"** (`RevisionService.PathFilter` e il `_pathFilter` del
+      dialogo esistono già: basta spingerci il path e refreshare). *banale*
+- [ ] 1.25 RepoObjectsTree — voci di menu su **servizi già esistenti**: **tag** (Merge, Rebase,
+      Create branch, Reset current branch to here, doppio clic — oggi solo 3 voci), **remote
+      branch** (Checkout è *esplicitamente escluso* a `:677`, più Create branch e Reset), **root
+      Remotes** (Fetch all / Fetch and prune all: `FetchAllStreaming`/`FetchAndPruneAllStreaming`
+      esistono), **root Stashes** (nessun menu: Stash / Stash staged / Manage stashes…), **branch
+      locale** (Create branch, Reset current branch to here, gating sul branch corrente),
+      **worktree** (gating current/deleted + Show in folder). *banale in blocco*
+
+**BLOCCO 2 — residui M51: costo più basso della stima originale**
+
+- [ ] 2.1 **File tree** — oggi è una `ListBox` di stringhe da `ls-tree -r --name-only`, piatta,
+      senza menu né anteprima. Due appigli abbattono il costo: `IGitModule.GetTreeFiles(oid,
+      full: true)` (`IGitModule.cs:359`, **già linkato**, restituisce `GitItemStatus` mappabile
+      1:1 su `DiffFileRow`) e `DiffTextService.GetFileBytesAsync` (`:279`, già fa `git show
+      <rev>:<path>`) per l'anteprima del contenuto. Consumare `FileStatusListView`. *banale/media*
+- [ ] 2.2 **GPG firma del tag** — sezione separata + 4 icone `TagOk/Error/Many/Warning`, layout
+      50/50 vs 100/0. `GitCommands.Git.Gpg.GitGpgController` **non dipende da GitUI** → il port
+      può istanziarlo direttamente (`CommitStatus`, `TagStatus`, `GetTagVerifyMessage`). *banale/media*
+- [ ] 2.3 **Stash: lista file dello stash** → sblocca **"Stash selected changes"**. Serve un
+      metodo in `StashOpsService` che dia la lista file di uno stash (`git stash show
+      --name-status`); l'anteprima per-file è già coperta da `DiffTextService`/`DiffService`, e il
+      consumatore (`FileStatusListView`) è pronto. Più la voce "Current working directory changes"
+      in testa alla lista, che upstream usa come gate di "Stash selected". *media*
+
+**BLOCCO 3 — persistenza e dashboard (media, alto valore d'uso)**
+
+- [ ] 3.1 **Toggle e colonne della griglia non persistiti**: visibilità colonne, ShowAuthorDate,
+      RelativeDate, topo order, remote branches, tags, stashes, hide merges, first parent, current
+      branch only, non-relatives gray, page size — tutti session-local
+      (`RevisionGridView.cs:210-238`). È il gruppo più visibile: l'utente ri-configura la griglia a
+      ogni avvio. *media*
+- [ ] 3.2 **Posizione del commit-info** e **ultimo repo aperto** non persistiti (la feature a 3
+      posizioni esiste, riparte sempre da `BelowGraph`); più le opzioni del **diff viewer**, gli
+      **switch della file history**, i **filtri del left panel** e la **MRU dei filtri di
+      revisione**. *banale ciascuno*
+- [ ] 3.3 **Dashboard: menu contestuale** (Show in folder / Categories ▸ / Remove from list /
+      Remove missing projects) — serve `RemoveRecentAsync` in `RecentRepositoriesService`, che oggi
+      ha solo Load/Add. Nota: il port **elimina in silenzio** le voci morte
+      (`RecentRepositoriesService.cs:35-77`) mentre upstream le evidenzia e chiede: scelta
+      difendibile, da *dichiarare*. Più branding (logo/sfondo/palette) e il branch corrente per
+      voce. *media*
+- [ ] 3.4 **Banner "operazione git in corso"** (rebase / merge / bisect / cherry-pick) ancorato
+      sopra la griglia (`FormBrowse.Designer.cs:650-668`): oggi nessun indizio visivo che un
+      bisect o un merge è in corso. Serve un rilevatore di `rebase-merge/`, `MERGE_HEAD`,
+      `BISECT_LOG`, `CHERRY_PICK_HEAD`. *media*
+- [ ] 3.5 **UI delle hotkey**: il backend è **completo** (default, parse, `Save()`, `hotkeys.json`)
+      e manca solo la finestra; oggi gli override si scrivono a mano e il duplicato vince "primo
+      che scrive". *media*
+- [ ] 3.6 **Pagina Git config advanced**: 8 chiavi (`pull.rebase`, `fetch.prune`,
+      `merge.autostash`, `rebase.autostash`/`autosquash`/`updaterefs`, `rerere.enabled`/
+      `autoupdate`) — il consumatore è **git**, zero plumbing nel port. Più i 3 flag blame
+      (`IgnoreWhitespaceOnBlame`, `DetectCopy*`) che cambiano davvero l'output di `git blame`
+      (oggi `module.Blame` è chiamato senza alcun flag). Più il selettore **Local/Global** per
+      `user.name`/`user.email`: oggi si scrive sempre `--local`, quindi **l'identità globale non è
+      impostabile**. *media, ottimo rapporto valore/costo*
+
+**BLOCCO 4 — media/alta, da valutare dopo i primi tre**
+
+- [ ] 4.1 **Checkout di rami remoti impossibile**: `CheckoutBranchDialog` è solo il gruppo "Local
+      changes" e `RepoObjectsTree` omette Checkout sui remoti. **Non bloccato**:
+      `Commands.CheckoutBranch(branch, isRemote, localChanges, newBranchMode, newBranchName)`
+      esiste già nel core (`Commands.cs:10`), `BranchTagService.cs:166` usa solo `Commands.Checkout`.
+      Con esso arrivano reset-local-branch, create-with-custom-name e detached. *media/alta*
+- [ ] 4.2 **Flusso "push rejected"**: upstream rileva `! [rejected]`, offre pull default/rebase/
+      merge/force-with-lease e fa `Retry()` **in place** (`FormPush.cs:509-693`); il port ha solo
+      il retry sulle credenziali. Più il **force a 3 stati** (`bool force` → `ForcePushOptions`,
+      che sblocca anche 0.8) e la risoluzione della destinazione via `push.default`/
+      `remote.pushDefault`/`branch.<x>.merge`. *alta*
+- [ ] 4.3 **RepoObjectsTree perde stato expand/collapse e selezione a ogni refresh**: `BuildTree`
+      ricostruisce da zero e riassegna `ItemsSource`, quindi ogni checkout/merge/stash richiude
+      tutto. Upstream salva/ripristina lo stato e ri-seleziona (`Tree.cs:163-183`). Più la
+      **gerarchia a cartelle** per branch/tag (upstream `BranchPathNode`/`BasePathNode`, visibile
+      nello screenshot come `docs/`, `feature/`). *media*
+- [ ] 4.4 **CommitDialog: lista file senza menu contestuale.** `FileStatusListView` non ha
+      `ContextMenu` nel commit dialog e la lista è un `ListBox` di stringhe. Upstream ha ~25 voci
+      (reset file to, interactive add, cherry-pick changes, difftool, open/edit, save as/move/
+      delete, show in file tree, filter in grid, file history, blame, gitignore/exclude,
+      skip-worktree/assume-unchanged, blocco submodule). Più il **filtro regex di selezione**
+      (visibile nello screenshot) e la validazione/persistenza del messaggio. *alta*
+- [ ] 4.5 **Il box "Filter:" della toolbar non filtra via git**: è un setaccio in memoria sulle
+      righe già caricate (`ApplyFilterCore`, `Matches`), mentre upstream applica il filtro **a
+      git** su Invio con un dropdown "Filter type" (message/committer/author/diff contains) e una
+      MRU di 30 voci. `RevisionFilter` supporta già tutti quei campi: è wiring + persistenza. Più
+      il **ref picker** per "Show filtered branches", oggi dichiaratamente uno stub. *media*
+- [ ] 4.6 **Blame: evidenziazione di tutte le righe dello stesso commit** su hover/selezione
+      (l'affordance più usata upstream), **find/F3/go-to-line** (template già in `DiffView`) e il
+      walk accurato "blame previous revision" (upstream mappa la riga nel parent con
+      `GitBlameParser`; il port ri-blama e perde la posizione). *media*
+- [ ] 4.7 **Linkificazione del commit info**: gli hash dentro il corpo del messaggio non sono link
+      (`CommitDataBodyRenderer.cs:44-65`), branch e tag non sono cliccabili (pillole inerti), e
+      "Derives from" stampa `v1.0-5-gabc1234` invece di `v1.2.0 + 66 commits`. *media*
+- [ ] 4.8 **`GitProcessDialog` su PTY**: passarlo a `PtyProcess`/`TerminalEmulator` (**già
+      esistenti**, alimentano `ConsoleView`) sblocca in un colpo output live, barra di progresso
+      dalle righe `\r` e **prompt interattivi** — oggi stdin è chiuso e `GIT_TERMINAL_PROMPT=0`,
+      quindi passphrase e host-key `yes/no` non sono rispondibili. *media/alta*
+- [ ] 4.9 **Leva massima della file history**: dare a `RevisionGridView` un entry point **con path
+      filter** (oggi `LoadRepository(string)` è l'unico loader) chiuderebbe in un colpo grafo,
+      decorazioni ref, righe artificiali e multi-selezione nel tab File history, che oggi
+      reimplementa una lista nuda. *media/alta*
+- [ ] 4.10 Toolbar, resto: **shell-picker** (upstream `userShell` è uno split-button che elenca le
+      shell disponibili, il port ha un "Terminal" secco), dropdown **WorkingDir** ricco (ricerca,
+      preferiti categorizzati, Open/Close repository, "Configure this menu…"), voce **"Checkout
+      branch…"** in testa al dropdown branch, corpo cliccabile di **CommitInfoPosition** (cicla le
+      3 posizioni con icona dinamica), **icona di Commit dallo stato del repo** (7 stati upstream),
+      **behind** sul pulsante Push, visibilità condizionale dei Worktrees, filtri **branch** e
+      **revision** della seconda toolstrip. *banale→media, molte voci*
+- [ ] 4.11 Dialoghi, resto (media ciascuno): `RemotesDialog` senza il tab **"Default pull
+      behavior"** né **push URL separata**; `FormVerify` ("Recover lost objects") ridotto a un dump
+      di `git fsck`; `FormCleanupRepository` ridotto a un confirm inline (la modalità
+      **solo-ignorati `clean -X` è irraggiungibile**); **dialogo bisect** + gating su
+      `InTheMiddleOfBisect` (oggi il port auto-avvia in silenzio alla prima marcatura);
+      **macchina a stati `git am`** (Resolved/Skip/Abort, `PatchGrid`); `FormInit` inesistente
+      (solo folder picker, nessun `--bare`/`--shared`); `CloneDialog` senza submodule-init,
+      depth, branch picker, preview della destinazione; `ArchiveDialog` senza filtro path/revisione;
+      `SparseDialog` su cone mode (**niente negazione `!`**, upstream pilota il legacy);
+      `AboutDialog` senza versione git/build sha né attribuzione icone.
+
+**Rinviati con motivo** (registrati per non riaprirli a ogni round)
+
+- **Script utente** (`ScriptsManager`/`ScriptInfo`, toolstrip Scripts, voci "Run script" nel menu
+  contestuale della griglia e dell'albero, hook Before/After Commit/Push/Checkout, pagina
+  Scripts): **nessun equivalente in `App/Services/`**, è un sottosistema a sé. *alta*
+- **External links / bug tracker** ("Related links:" nel commit info): servono storage, parser e
+  pagina di impostazioni; zero hit in `src/crossplatform`. *alta*
+- **Superproject refs** (3 toggle View + label nel grid): manca un equivalente di
+  `SuperProjectInfo`. *alta*
+- **Avatar remoti** (provider/cache/template): il port disegna identicon offline **per scelta**;
+  l'intero blocco di impostazioni sarebbe pulsante finto. Restano sensati i soli due toggle
+  `Show…`.
+- **`FormResolveConflicts` dedicato**: il path per-file nel `CommitDialog` (ours/theirs/mergetool/
+  mark resolved) copre i casi comuni; `AvaloniaGitUICommands.cs:137` lancia ancora `NotSupported`.
+- **Lato scrittura del tab Diff** (righe artificiali + stage/unstage/reset dal Diff, e i comandi
+  distruttivi reset-to/move/delete/stop-tracking): serve la modalità index/worktree in
+  `DiffService` e nessuna API git a livello di file esiste in `App/Services/`. Nota: il patching
+  **per righe** esiste già (`PatchStagingService`), usato solo dal `CommitDialog`. *alta*
+- **Gutter dei numeri di riga** nel diff: il diff è reso come un unico `TextBlock`, serve un
+  modello per-riga con numero left/right. *media/alta*
+- **Colori, font e temi configurabili**: i font sono hard-coded in ≥8 file, il tema è 2 palette
+  fisse; prima centralizzare, poi la UI.
+- **Opzioni di stile del grafo** (diagonali, straighten, merge lanes a parent comune),
+  **ref label a forme** point/notch con coppia locale+remoto annidata, **tooltip del grafo con
+  LaneInfo** (i `RevisionGraphSegment` del port non portano l'origine del segmento).
+- **Ahead/behind per ref** nel grid e nell'albero: manca un provider (`RemoteService` non lo espone).
+- **Stato submodule dettagliato** (11 icone upstream): `SubmoduleService` dà solo
+  Initialized/NotInitialized/OutOfDate.
+- **Enable/disable dei remoti** e gruppo "Inactive": serve l'equivalente di
+  `IConfigFileRemoteSettingsManager` (`remote.<name>.gitextensions-disabled`).
+- **Personalizzazione della toolbar** (i 6 pulsanti-scorciatoia fetch/pull nascosti + menu
+  contestuale checkable + persistenza per pulsante). *alta, valore basso*
+- **SKIP Windows-only**: ConEmu/console style, shell extension/registry, Plink/Pageant/Puttygen,
+  `LinuxToolsDir`, path di git configurabile, updater/telemetria/Visual Studio, `FormFixHome`
+  (già coperto non-UI da `HomeDirectoryFix`).
+- **Fuori scope per direzione dell'utente**: lingue oltre inglese/italiano, repository-host
+  GitHub (fork/PR/upstream), colonna e integrazione build status.
+
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 
 > **Iterazione 2.** Nata da un'osservazione dell'utente ("mancano i tasti delle sezioni inferiori,
