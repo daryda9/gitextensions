@@ -146,7 +146,9 @@ public sealed class MainWindow : Window
         // Commit-info position is session-local (the original FormBrowse default:
         // below the graph). Split view IS persisted, so the bottom panel comes
         // back in the same shape the user left it in.
-        _commitInfoPosition = CommitInfoPosition.BelowGraph;
+        _commitInfoPosition = Enum.TryParse(_uiState.CommitInfoPosition, out CommitInfoPosition restoredPosition)
+            ? restoredPosition
+            : CommitInfoPosition.BelowGraph;
         _splitHorizontal = _uiState.SplitView;
 
         // Detail/diff definitions are (re)created by RebuildRightRegion; seed them
@@ -198,6 +200,12 @@ public sealed class MainWindow : Window
 
         // ---- main area: left tree | right side
         _treeCol = new ColumnDefinition(new GridLength(_uiState.TreeWidth, GridUnitType.Pixel));
+        _treeWidthBeforeCollapse = _uiState.TreeWidth;
+        if (_uiState.LeftPanelCollapsed)
+        {
+            _tree.IsVisible = false;
+            _treeCol.Width = new GridLength(0, GridUnitType.Pixel);
+        }
         Grid main = new()
         {
             ColumnDefinitions = new ColumnDefinitions
@@ -247,7 +255,9 @@ public sealed class MainWindow : Window
             // and only re-parses if the pre-load did not run or was overtaken.
             _ = InitializeTranslationsAsync();
 
-            string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory());
+            // CLI argument > cwd if it is a repo > last repo opened > dashboard.
+            string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory())
+                ?? (_uiState.LastRepoPath is string last ? FindRepositoryRoot(last) : null);
             if (initial is not null)
             {
                 OpenRepository(initial);
@@ -662,7 +672,12 @@ public sealed class MainWindow : Window
             _uiState.WindowY = _normalPosition?.Y;
             _uiState.WindowMaximized = WindowState == WindowState.Maximized;
             _uiState.BottomTab = CurrentBottomTabKey();
-            _uiState.TreeWidth = _treeCol.Width.Value;
+            // Save the pre-collapse width, not the collapsed 0: Sanitize() would clamp
+            // that back to the default and the user's width would be lost.
+            _uiState.LeftPanelCollapsed = !_tree.IsVisible;
+            _uiState.TreeWidth = _tree.IsVisible ? _treeCol.Width.Value : _treeWidthBeforeCollapse;
+            _uiState.CommitInfoPosition = _commitInfoPosition.ToString();
+            _uiState.LastRepoPath = _repoPath;
             _uiState.RevisionsStar = _revRow.Height.Value;
             _uiState.BottomStar = _bottomRow.Height.Value;
             _uiState.DetailStar = _detailRow.Height.Value;
@@ -3185,7 +3200,14 @@ public sealed class MainWindow : Window
     // the user made in the dialog.
     private async Task OpenSettingsAsync()
     {
-        await SettingsWindow.ShowAsync(this, _repoPath);
+        await SettingsWindow.ShowAsync(this, _repoPath, _toolbar.DefaultPullAction.ToString(), action =>
+        {
+            _uiState.DefaultPullAction = action;
+            if (Enum.TryParse(action, out GitPullAction chosen))
+            {
+                _toolbar.DefaultPullAction = chosen;
+            }
+        });
         _uiState.Theme = _uiStateService.Load().Theme;
     }
 
@@ -3439,6 +3461,7 @@ public sealed class MainWindow : Window
     private void OpenRepository(string repoPath)
     {
         _repoPath = repoPath;
+        _console.RepoPath = repoPath;
         ShowRepositoryView();
         WarmUpCore(repoPath);
 
