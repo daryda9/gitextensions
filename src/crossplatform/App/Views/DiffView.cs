@@ -111,6 +111,7 @@ public sealed class DiffView : UserControl
     private readonly MenuItem _openWorkingFileItem;
     private readonly MenuItem _openRevisionFileItem;
     private readonly MenuItem _showInFolderItem;
+    private readonly MenuItem _filterFileInGridItem;
     private readonly MenuItem _saveAsItem;
     private readonly MenuItem _copyPatchItem;
     private readonly MenuItem _copyNewVersionItem;
@@ -203,6 +204,8 @@ public sealed class DiffView : UserControl
         _openRevisionFileItem.Click += (_, _) => OpenSelectedRevisionFile();
         _showInFolderItem = new MenuItem();
         _showInFolderItem.Click += (_, _) => ShowSelectedInFolder();
+        _filterFileInGridItem = new MenuItem();
+        _filterFileInGridItem.Click += (_, _) => FilterSelectedFileInGrid();
         _saveAsItem = new MenuItem();
         _saveAsItem.Click += (_, _) => SaveSelectedAs();
         _copyPatchItem = new MenuItem();
@@ -222,6 +225,7 @@ public sealed class DiffView : UserControl
                 _copyPatchItem,
                 _saveAsItem,
                 new Separator(),
+                _filterFileInGridItem,
                 _blameItem,
                 _historyItem,
                 new Separator(),
@@ -567,6 +571,7 @@ public sealed class DiffView : UserControl
         _openRevisionFileItem.Header = T(
             "FileStatusList/tsmiOpenRevisionFile.Text", "Open this revision (temp file)");
         _showInFolderItem.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
+        _filterFileInGridItem.Header = T("Filter file in grid");
         _saveAsItem.Header = T("FileStatusList/tsmiSaveAs.Text", "Save selected as...");
         _copyPatchItem.Header = T("FileViewer/copyPatchToolStripMenuItem.Text", "Copy patch");
         _copyNewVersionItem.Header = T("FileViewer/copyNewVersionToolStripMenuItem.Text", "Copy new version");
@@ -704,6 +709,39 @@ public sealed class DiffView : UserControl
 
     /// <summary>Raised (with the repo-relative file path) to show the selected file's history.</summary>
     public event Action<string>? FileHistoryRequested;
+
+    /// <summary>
+    ///  Raised with a ready-to-use path filter when the user picks "Filter file in
+    ///  grid": the host is expected to feed it to
+    ///  <c>RevisionFilter.PathFilter</c> and reload the revision grid, the way
+    ///  upstream's <c>RevisionDiffControl.FilterFileInGrid</c> calls
+    ///  <c>FormBrowse.SetPathFilter</c>. The value is already quoted when needed,
+    ///  so it can be assigned verbatim.
+    /// </summary>
+    public event Action<string>? FilterFileInGridRequested;
+
+    /// <summary>
+    ///  Emits the selected file's repo-relative path as a revision-grid path
+    ///  filter. Paths are posix-separated and quoted only when they contain
+    ///  whitespace, because <c>RevisionFilter.BuildPathArgument</c> splits an
+    ///  unquoted value on spaces into several paths.
+    /// </summary>
+    private void FilterSelectedFileInGrid()
+    {
+        if (_files.SelectedFile is not DiffFileRow row)
+        {
+            return;
+        }
+
+        string path = row.Name.Replace('\\', '/');
+        if (path.Length == 0)
+        {
+            return;
+        }
+
+        FilterFileInGridRequested?.Invoke(
+            path.Any(char.IsWhiteSpace) && !path.Contains('"') ? $"\"{path}\"" : path);
+    }
 
     private void RaiseFileAction(Action<string>? handler)
     {
@@ -1487,6 +1525,12 @@ public sealed class DiffView : UserControl
         _copyPathItem.IsEnabled = hasFile;
         _blameItem.IsEnabled = hasFile;
         _historyItem.IsEnabled = hasFile;
+
+        // Upstream gates the entry on the same condition as "File history"
+        // (FileStatusList.ContextMenu.cs:1262) and hides it where no grid is
+        // listening; here the host decides by subscribing or not.
+        _filterFileInGridItem.IsVisible = FilterFileInGridRequested is not null;
+        _filterFileInGridItem.IsEnabled = hasFile;
         _difftoolItem.IsEnabled = hasFile && _commitHash is not null;
         _compareWorkingDirItem.IsEnabled = hasFile && _commitHash is not null;
     }
