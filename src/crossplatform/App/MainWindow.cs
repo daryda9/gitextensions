@@ -246,6 +246,9 @@ public sealed class MainWindow : Window
         {
             RestoreWindowPlacement();
             RestoreBottomTab();
+            // The toolbar's toggles must reflect the state we restored above.
+            _toolbar.SetLeftPanelVisible(_tree.IsVisible);
+            _toolbar.SetCommitInfoPosition(_commitInfoPosition);
             InstallNativeDropTarget();
 
             // Populate View → Language. The catalogue itself was already parsed
@@ -1032,6 +1035,28 @@ public sealed class MainWindow : Window
         _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
 
+        // The toolbar shows the real gestures, not the defaults, so an override in
+        // hotkeys.json is reflected in its tooltips.
+        _toolbar.Hotkeys = _hotkeys;
+        _toolbar.ManageStashesRequested +=
+            () => ShowInBottom(_stashTab, () => _stash.LoadRepository(_repoPath!));
+        _toolbar.CreateStashRequested += () =>
+        {
+            ShowInBottom(_stashTab, () => _stash.LoadRepository(_repoPath!));
+            _stash.BeginCreateStash();
+        };
+        _toolbar.StashStagedRequested +=
+            () => RunOp("Stash staged", () => _stashOps.StashStaged(_repoPath!, "WIP").Success);
+        _toolbar.StashPopRequested +=
+            () => RunOp("Stash pop", () => _stashOps.StashPop(_repoPath!, "stash@{0}").Success);
+        _toolbar.SettingsRequested += () => _ = OpenSettingsAsync();
+        _toolbar.ToggleLeftPanelRequested += ToggleLeftPanel;
+        _toolbar.CheckoutBranchRequested += () => _ = CheckoutBranchPickerAsync();
+        _toolbar.ManageWorktreesRequested += () => _ = ShowWorktreesAsync();
+        _toolbar.CreateWorktreeRequested += () => _ = ShowWorktreesAsync();
+        _toolbar.PruneWorktreesRequested += () => RunOp(
+            "Prune worktrees", () => new WorktreeService().PruneWorktrees(_repoPath!).Success);
+
         // View / layout + external-tool toolbar actions.
         _toolbar.SplitViewToggleRequested += ToggleSplitView;
         _toolbar.CommitInfoPositionChanged += SetCommitInfoPosition;
@@ -1078,7 +1103,13 @@ public sealed class MainWindow : Window
             List<RepoLink> links = [];
             foreach (WorktreeRow row in new WorktreeService().ListWorktrees(repo))
             {
-                links.Add(new RepoLink(row.Display, row.Path, "WorkTree"));
+                // The current worktree is ticked and inert; a prunable one is dimmed.
+                bool current = row.IsSamePath(repo);
+                links.Add(new RepoLink(
+                    row.Display, row.Path, "WorkTree",
+                    IsChecked: current,
+                    IsEnabled: !current && !row.IsPrunable,
+                    IsDim: row.IsPrunable));
             }
 
             return links;
@@ -2083,11 +2114,32 @@ public sealed class MainWindow : Window
             _treeCol.Width = new GridLength(
                 _treeWidthBeforeCollapse > 0 ? _treeWidthBeforeCollapse : 260, GridUnitType.Pixel);
         }
+
+        // Here rather than in the toolbar's own handler, so the hotkey path updates
+        // the button's checked state too.
+        _toolbar.SetLeftPanelVisible(_tree.IsVisible);
     }
 
     // Ctrl+. — pick a local branch and check it out through the ordinary checkout
     // path (which asks what to do with local changes). Loading the refs is git work,
     // so it happens off the UI thread.
+    // The worktree manager used to be reachable only from the left panel's tree;
+    // the toolbar's split button needs it too.
+    private async Task ShowWorktreesAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        Views.WorktreesDialog dialog = new(repo);
+        await dialog.ShowDialog(this);
+        if (dialog.Changed)
+        {
+            RefreshAll();
+        }
+    }
+
     private async Task CheckoutBranchPickerAsync()
     {
         if (_repoPath is null)
@@ -2455,10 +2507,14 @@ public sealed class MainWindow : Window
                 // Never throw out of a refresh.
             }
 
+            // Stash count, repo state and tracking: the toolbar cannot compute them.
+            // Without this the displays degrade to "unknown" rather than lying.
+            ToolbarRepoState probed = new ToolbarStateService().Probe(repoPath);
+
             int fStaged = staged, fUnstaged = unstaged;
             Dispatcher.UIThread.Post(() =>
             {
-                _toolbar.UpdateState(ahead, behind, fStaged, fUnstaged, repoPath, branch);
+                _toolbar.UpdateState(ahead, behind, fStaged, fUnstaged, repoPath, branch, probed);
                 // Feed the artificial "Working directory" / "Commit index" rows
                 // atop the revision grid the same pending-work counts.
                 _revisions.SetWorkingState(fUnstaged, fStaged);
