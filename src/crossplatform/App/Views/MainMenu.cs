@@ -42,6 +42,16 @@ public sealed class MainMenu : UserControl
     private IReadOnlyList<string> _languages = [TranslationService.EnglishLanguage];
     private string _currentLanguage = TranslationService.EnglishLanguage;
 
+    // State of the revision grid's checkable "View" options, pushed in by the host
+    // from RevisionGridView.ViewOptionsChanged. The menu NEVER owns this state — it
+    // only renders the check marks — which is what keeps it in step with the grid's
+    // own header flyouts and with the keyboard shortcuts.
+    private IReadOnlyDictionary<string, bool> _viewOptions = new Dictionary<string, bool>();
+
+    // The checkable items built for those options, by id, so SetViewOptions can
+    // re-tick them without rebuilding the menu. Refilled by every Build().
+    private readonly Dictionary<string, MenuItem> _checkables = new(StringComparer.Ordinal);
+
     // ---- File
     public event Action? OpenRepoRequested;
     public event Action? CloneRequested;
@@ -55,6 +65,16 @@ public sealed class MainMenu : UserControl
     // ---- Edit
     public event Action? CopyHashRequested;
     public event Action? SettingsRequested;
+
+    // ---- Navigate + View: the revision grid's own commands
+    //
+    // Both menus are generated from the grid's command ids (the upstream
+    // MenuCommand.Name values) instead of one event per entry, mirroring how
+    // RevisionGridMenuCommands drives the original menus: the id travels to
+    // RevisionGridView.ExecuteMenuCommand, and the check marks come back through
+    // SetViewOptions. That is also why there is a single event here — an item added
+    // to either menu needs no new plumbing in the host window.
+    public event Action<string>? GridCommandRequested;
 
     // ---- View
     public event Action? LightThemeRequested;
@@ -147,30 +167,199 @@ public sealed class MainMenu : UserControl
         start.Items.Add(new Separator());
         start.Items.Add(Item("FormBrowse/exitToolStripMenuItem.Text", "Exit", null, () => ExitRequested?.Invoke()));
 
-        // Navigate: navigation-ish items moved here (Copy commit hash from Edit,
-        // Show reflog from View), plus a Refresh entry.
-        MenuItem navigate = new() { Header = T("FormBrowse/navigateToolStripMenuItem.Text", "_Navigate") };
-        navigate.Items.Add(Item(null, "Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke()));
-        navigate.Items.Add(new Separator());
-        navigate.Items.Add(Item("FormBrowse/toolStripMenuItemReflog.Text", "Show reflog…", null, () => ShowReflogRequested?.Invoke()));
-        navigate.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
+        // Navigate: the revision grid's navigation commands, in the exact order of
+        // the original (RevisionGridMenuCommands.cs:91-198). "Show reflog…" used to
+        // sit here; upstream it belongs to the Commands menu, where it now is.
+        //
+        // Two upstream entries are deliberately absent rather than dead:
+        //  * "Go to last parent commit" — the port has no last-parent navigation
+        //    (its parent jump always takes ParentHashes[0]).
+        //  * "Go to first parent commit" — that IS the port's parent jump, so a
+        //    second entry would run the same action under a different name.
+        _checkables.Clear();
 
-        // View holds the port's Appearance preferences. Upstream keeps both the
-        // theme and Settings.Language in FormSettings → Appearance; this port
-        // already surfaces the theme here, so the language chooser sits next to it.
-        // Upstream's label is "Language (restart required)"; here it is not, so the
-        // group-box caption ("&Language") is the honest key to reuse.
+        MenuItem navigate = new() { Header = T("FormBrowse/navigateToolStripMenuItem.Text", "_Navigate") };
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdToggleArtificialAndHead,
+            "RevisionGridMenuCommands/ToggleBetweenArtificialAndHeadCommits.Text",
+            "Toggle between artificial and HEAD commits",
+            "WorkingDirChanges"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdGoToCurrentRevision,
+            "RevisionGrid/GotoCurrentRevision.Text",
+            "Go to current revision"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdGoToCommit,
+            "FormGoToCommit/$this.Text",
+            "Go to commit…"));
+        navigate.Items.Add(new Separator());
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdGoToChildCommit,
+            "RevisionGrid/GotoChildCommit.Text",
+            "Go to child commit"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdGoToParentCommit,
+            "RevisionGrid/GotoParentCommit.Text",
+            "Go to parent commit"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdGoToMergeBase,
+            "RevisionGrid/GotoMergeBaseCommit.Text",
+            "Go to common ancestor (merge base)"));
+        navigate.Items.Add(new Separator());
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdNavigateBackward,
+            "RevisionGrid/NavigateBackward.Text",
+            "Navigate backward"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdNavigateForward,
+            "RevisionGrid/NavigateForward.Text",
+            "Navigate forward"));
+        navigate.Items.Add(new Separator());
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdQuickSearchHelp,
+            "RevisionGrid/QuickSearch.Text",
+            "Quick search"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdQuickSearchPrevious,
+            "RevisionGrid/PrevQuickSearch.Text",
+            "Quick search previous"));
+        navigate.Items.Add(GridItem(
+            RevisionGridView.CmdQuickSearchNext,
+            "RevisionGrid/NextQuickSearch.Text",
+            "Quick search next"));
+
+        // Port extra: the shell's "copy the selected commit's hash" action, which
+        // upstream only offers from the grid's context menu.
+        navigate.Items.Add(new Separator());
+        navigate.Items.Add(Item(null, "Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke()));
+
         _language = new MenuItem { Header = T("AppearanceSettingsPage/gbLanguages.Text", "Language") };
         BuildLanguages();
 
+        // View: the revision grid's display options, in the original's order and with
+        // its group headers (RevisionGridMenuCommands.cs:235-494). Every entry marked
+        // checkable there is checkable here, and its tick comes from the grid itself
+        // (SetViewOptions), so the menu, the grid's header flyouts and the keyboard
+        // shortcuts can never disagree.
+        //
+        // Deferred, and therefore ABSENT rather than inert (see the report):
+        //  * "Show reflog references" — the walk has no --reflog mode;
+        //  * "Show session checkpoints" — the port has no session refs;
+        //  * the three superproject label entries — no SuperProjectInfo equivalent;
+        //  * "Show build status icon/text" — no CI integration in the port;
+        //  * "Show commit message body" and "Show Git notes column" — RevisionRow
+        //    carries neither the body nor the note text;
+        //  * "Save current view settings as default" — depends on toggle persistence,
+        //    which is a separate unit (its whole group header is omitted with it).
         MenuItem view = new() { Header = T("FormBrowse/viewToolStripMenuItem.Text", "_View") };
+
+        view.Items.Add(GroupHeader(T("TranslatedStrings/_branchesText.Text", "Branches")));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowAllBranches,
+            "RevisionGrid/ShowAllBranches.Text",
+            "Show all branches"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowCurrentBranchOnly,
+            "RevisionGrid/ShowCurrentBranchOnly.Text",
+            "Show current branch only"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowFilteredBranches,
+            "RevisionGrid/ShowFilteredBranches.Text",
+            "Show filtered branches"));
+        view.Items.Add(new Separator());
+        view.Items.Add(Item("FormBrowse/tsbtnAdvancedFilter.ToolTipText", "Advanced filter…", null, () => RevisionFilterRequested?.Invoke()));
+        view.Items.Add(Item("FormBrowse/tsmiResetAllFilters.Text", "Reset revision filters", null, () => ResetRevisionFiltersRequested?.Invoke()));
+        view.Items.Add(new Separator());
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptDrawNonRelativesGray,
+            "RevisionGrid/drawNonrelativesGrayToolStripMenuItem.Text",
+            "Draw non relatives gray"));
+        view.Items.Add(GridItem(
+            RevisionGridView.CmdHighlightSelectedBranch,
+            "RevisionGrid/HighlightSelectedBranch.Text",
+            "Highlight selected branch (until refresh)"));
+        view.Items.Add(new Separator());
+
+        view.Items.Add(GroupHeader(T("CommitInfo/_plusCommits.Text", "Commits")));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowArtificialCommits,
+            "RevisionGrid/ShowArtificialCommits.Text",
+            "Show artificial commits"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowStashes,
+            "RevisionGrid/ShowStashes.Text",
+            "Show stashes"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowGitNotes,
+            "RevisionGridControl/showGitNotesToolStripMenuItem.Text",
+            "Show git notes"));
+        view.Items.Add(new Separator());
+
+        view.Items.Add(GroupHeader(T(null, "Grid labels")));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowRemoteBranches,
+            "RevisionGrid/ShowRemoteBranches.Text",
+            "Show remote branches"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptShowTags,
+            "RevisionGridControl/showTagsToolStripMenuItem.Text",
+            "Show tags"));
+        view.Items.Add(new Separator());
+
+        view.Items.Add(GroupHeader(T(null, "Grid info")));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptAuthorDate,
+            "RevisionGridControl/showAuthorDateToolStripMenuItem.Text",
+            "Show author date"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptRelativeDate,
+            "RevisionGridControl/showRelativeDateToolStripMenuItem.Text",
+            "Show relative date"));
+        view.Items.Add(new Separator());
+
+        view.Items.Add(GroupHeader(T("RevisionGrid/ColumnsToolStripMenuItem.Text", "Columns")));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptGraphColumn,
+            "RevisionGridControl/showRevisionGraphColumnToolStripMenuItem.Text",
+            "Show revision graph column"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptAvatarColumn,
+            "RevisionGridControl/showAuthorAvatarColumnToolStripMenuItem.Text",
+            "Show author avatar column"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptAuthorColumn,
+            "RevisionGridControl/showAuthorNameColumnToolStripMenuItem.Text",
+            "Show author name column"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptDateColumn,
+            "RevisionGridControl/showDateColumnToolStripMenuItem.Text",
+            "Show date column"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptIdColumn,
+            "RevisionGridControl/showIdColumnToolStripMenuItem.Text",
+            "Show SHA-1 column"));
+        view.Items.Add(new Separator());
+
+        view.Items.Add(GroupHeader(T("RevisionGrid/SortingToolStripMenuItem.Text", "Sorting")));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptOrderAuthorDate,
+            "RevisionGrid/AuthorDateSort.Text",
+            "Sort commits by author date"));
+        view.Items.Add(GridCheck(
+            RevisionGridView.OptOrderTopo,
+            "RevisionGrid/TopoOrder.Text",
+            "Arrange commits by topo order (ancestor order)"));
+        view.Items.Add(new Separator());
+
+        // Port-specific appearance block. Upstream keeps the theme and
+        // Settings.Language in FormSettings → Appearance; this port has always
+        // surfaced the theme here, so the language chooser sits next to it.
+        // Upstream's label is "Language (restart required)"; here it is not, so the
+        // group-box caption ("&Language") is the honest key to reuse.
+        view.Items.Add(GroupHeader(T("AppearanceSettingsPage/$this.Text", "Appearance")));
         view.Items.Add(Item(null, "Light theme", null, () => LightThemeRequested?.Invoke()));
         view.Items.Add(Item(null, "Dark theme", null, () => DarkThemeRequested?.Invoke()));
-        view.Items.Add(new Separator());
         view.Items.Add(_language);
-        view.Items.Add(new Separator());
-        view.Items.Add(Item("FormBrowse/tsbtnAdvancedFilter.ToolTipText", "Filter revisions…", null, () => RevisionFilterRequested?.Invoke()));
-        view.Items.Add(Item("FormBrowse/tsmiResetAllFilters.Text", "Reset revision filters", null, () => ResetRevisionFiltersRequested?.Invoke()));
         view.Items.Add(new Separator());
         view.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
 
@@ -209,6 +398,10 @@ public sealed class MainMenu : UserControl
         commands.Items.Add(Item("FormBrowse/formatPatchToolStripMenuItem.Text", "Format patch…", null, () => FormatPatchRequested?.Invoke()));
         commands.Items.Add(Item("FormBrowse/applyPatchToolStripMenuItem.Text", "Apply patch…", null, () => ApplyPatchRequested?.Invoke()));
         commands.Items.Add(Item("FormBrowse/patchToolStripMenuItem.Text", "View patch file…", null, () => ViewPatchRequested?.Invoke()));
+        commands.Items.Add(new Separator());
+        // toolStripMenuItemReflog belongs to the Commands menu upstream, not to
+        // Navigate, where this port used to keep it.
+        commands.Items.Add(Item("FormBrowse/toolStripMenuItemReflog.Text", "Show reflog…", null, () => ShowReflogRequested?.Invoke()));
 
         MenuItem tools = new() { Header = T("FormBrowse/toolsToolStripMenuItem.Text", "_Tools") };
         tools.Items.Add(Item("FormBrowse/gitBashToolStripMenuItem.Text", "Git bash", "GitForWindows", () => GitBashRequested?.Invoke()));
@@ -401,6 +594,59 @@ public sealed class MainMenu : UserControl
             });
         }
     }
+
+    /// <summary>
+    ///  Applies the revision grid's current "View" option state to the checkable
+    ///  entries of the View menu. Called by the host once at start-up and then on
+    ///  every <c>RevisionGridView.ViewOptionsChanged</c>, so an option flipped from
+    ///  the grid's own header flyouts — or from a keyboard shortcut — shows up here
+    ///  as well. The snapshot is kept so a language switch (which rebuilds the whole
+    ///  menu) restores the ticks without the host re-supplying them.
+    /// </summary>
+    public void SetViewOptions(IReadOnlyDictionary<string, bool> options)
+    {
+        _viewOptions = options ?? new Dictionary<string, bool>();
+        ApplyViewOptions();
+    }
+
+    private void ApplyViewOptions()
+    {
+        foreach ((string id, MenuItem item) in _checkables)
+        {
+            item.IsChecked = _viewOptions.TryGetValue(id, out bool value) && value;
+        }
+    }
+
+    // One non-checkable entry that runs a revision-grid command.
+    private MenuItem GridItem(string id, string? key, string english, string? iconName = null)
+        => Item(key, english, iconName, () => GridCommandRequested?.Invoke(id));
+
+    // One CHECKABLE entry that runs a revision-grid option toggle. The tick is not
+    // owned here: the click only sends the id, and the grid answers with a fresh
+    // snapshot through SetViewOptions.
+    private MenuItem GridCheck(string id, string? key, string english)
+    {
+        MenuItem item = new()
+        {
+            Header = T(key, english),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _viewOptions.TryGetValue(id, out bool value) && value,
+        };
+        item.Click += (_, _) => GridCommandRequested?.Invoke(id);
+        _checkables[id] = item;
+        return item;
+    }
+
+    // A disabled, bold caption introducing a block of related entries — the
+    // Avalonia counterpart of MenuCommand.CreateGroupHeader (which produces a
+    // disabled ToolStripMenuItem carrying the group's name).
+    private static MenuItem GroupHeader(string text)
+        => new()
+        {
+            Header = text,
+            IsEnabled = false,
+            FontWeight = FontWeight.Bold,
+        };
 
     private static MenuItem None() => new() { Header = "(none)", IsEnabled = false };
 
