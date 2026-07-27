@@ -142,15 +142,7 @@ public sealed class BranchTagService
         string prefix = string.Empty;
         if (changesAction == LocalChangesAction.Stash)
         {
-            GitArgumentBuilder stashArgs = new("stash")
-            {
-                "push",
-                { includeUntrackedInStash, "--include-untracked" },
-                "-m",
-                $"Checkout {name} (auto stash)".Quote()
-            };
-
-            BranchTagResult stashed = Run(module, stashArgs);
+            BranchTagResult stashed = StashLocalChanges(module, name, includeUntrackedInStash);
             if (!stashed.Success)
             {
                 return stashed;
@@ -164,6 +156,78 @@ public sealed class BranchTagService
             : changesAction;
 
         BranchTagResult result = Run(module, Commands.Checkout(name, checkoutAction));
+        return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
+    }
+
+    /// <summary>
+    ///  Checks out the remote branch <paramref name="remote"/>/<paramref name="branch"/>
+    ///  the way upstream's <c>StartCheckoutRemoteBranch</c> does — as a <b>local
+    ///  branch</b>, not as a detached HEAD.
+    ///  <para>A plain <c>git checkout origin/x</c> always detaches, because the
+    ///  remote-tracking ref is an unambiguous revision; that is almost never what
+    ///  "checkout this remote branch" is meant to do. So:</para>
+    ///  <list type="bullet">
+    ///   <item>a local branch already named <paramref name="branch"/> is simply
+    ///    checked out (git keeps whatever upstream it already tracks);</item>
+    ///   <item>otherwise a new local branch of that name is created tracking the
+    ///    remote one (<c>checkout -b &lt;branch&gt; --track &lt;remote&gt;/&lt;branch&gt;</c>).</item>
+    ///  </list>
+    ///  <paramref name="changesAction"/> has the same meaning as in
+    ///  <see cref="Checkout"/>, including the <see cref="LocalChangesAction.Stash"/>
+    ///  pre-step.
+    /// </summary>
+    public BranchTagResult CheckoutRemoteBranch(
+        string repoPath,
+        string remote,
+        string branch,
+        LocalChangesAction changesAction = LocalChangesAction.DontChange,
+        bool includeUntrackedInStash = true)
+    {
+        string remoteName = remote?.Trim() ?? string.Empty;
+        string branchName = branch?.Trim() ?? string.Empty;
+        if (remoteName.Length == 0 || branchName.Length == 0)
+        {
+            return new BranchTagResult(false, "Remote and branch name cannot be empty.");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        bool localExists = module
+            .GetRefs(RefsFilter.Heads)
+            .Any(r => string.Equals(r.Name, branchName, StringComparison.Ordinal));
+
+        // A local branch of that name already exists: this is an ordinary checkout,
+        // so go through Checkout and inherit its whole local-changes handling.
+        if (localExists)
+        {
+            return Checkout(repoPath, branchName, changesAction, includeUntrackedInStash);
+        }
+
+        string prefix = string.Empty;
+        if (changesAction == LocalChangesAction.Stash)
+        {
+            BranchTagResult stashed = StashLocalChanges(module, branchName, includeUntrackedInStash);
+            if (!stashed.Success)
+            {
+                return stashed;
+            }
+
+            prefix = stashed.Output.TrimEnd() + Environment.NewLine;
+        }
+
+        bool merge = changesAction == LocalChangesAction.Merge;
+        bool force = changesAction == LocalChangesAction.Reset;
+        GitArgumentBuilder args = new("checkout")
+        {
+            { merge, "--merge" },
+            { force, "--force" },
+            "-b",
+            branchName,
+            "--track",
+            $"{remoteName}/{branchName}",
+        };
+
+        BranchTagResult result = Run(module, args);
         return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
     }
 
@@ -451,6 +515,22 @@ public sealed class BranchTagService
         GitModule module = GitContext.CreateModule(repoPath);
         Commands.RebaseOptions options = new() { BranchName = branch };
         ArgumentString args = Commands.Rebase(options);
+        return Run(module, args);
+    }
+
+    // The "stash the local changes first" pre-step shared by Checkout and
+    // CheckoutRemoteBranch (upstream's FormCheckoutBranch does the same, because the
+    // checkout argument builder has no flag for it). The stash is left on the stack.
+    private static BranchTagResult StashLocalChanges(GitModule module, string target, bool includeUntracked)
+    {
+        GitArgumentBuilder args = new("stash")
+        {
+            "push",
+            { includeUntracked, "--include-untracked" },
+            "-m",
+            $"Checkout {target} (auto stash)".Quote()
+        };
+
         return Run(module, args);
     }
 

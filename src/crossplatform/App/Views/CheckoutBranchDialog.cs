@@ -297,7 +297,7 @@ public sealed class CreateBranchDialog : Window
     /// <summary>The user's choice, or <c>null</c> when cancelled.</summary>
     public CreateBranchRequest? Result { get; private set; }
 
-    public CreateBranchDialog(string startPointDisplay, IReadOnlyCollection<string> existingBranches, bool checkoutAfterCreate = true)
+    public CreateBranchDialog(string startPointDisplay, IReadOnlyCollection<string> existingBranches, bool checkoutAfterCreate = true, string namePrefix = "")
     {
         IBrush text = CheckoutBranchDialog.Brush("App.Text", "#DCDCDC");
         IBrush dim = CheckoutBranchDialog.Brush("App.TextDim", "#9A9A9A");
@@ -308,7 +308,7 @@ public sealed class CreateBranchDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = CheckoutBranchDialog.Brush("App.Window", "#1F1F1F");
 
-        _name = new TextBox();
+        _name = new TextBox { Text = namePrefix ?? string.Empty };
         _checkout = new CheckBox
         {
             Content = T("FormCreateBranch/chkCheckoutAfterCreate.Text", "Checkout after create"),
@@ -385,14 +385,27 @@ public sealed class CreateBranchDialog : Window
             },
         };
 
-        Opened += (_, _) => _name.Focus();
+        Opened += (_, _) =>
+        {
+            _name.Focus();
+
+            // Caret after the prefix, so typing continues the name instead of replacing
+            // the "feature/" a folder node filled in.
+            _name.CaretIndex = _name.Text?.Length ?? 0;
+        };
     }
 
     /// <summary>
     ///  Loads the existing branch names off the UI thread, shows the dialog and
     ///  returns the request (or <c>null</c> when cancelled / headless).
     /// </summary>
-    public static async Task<CreateBranchRequest?> AskAsync(Window? owner, string repoPath, string startPointDisplay)
+    /// <param name="namePrefix">
+    ///  Prefilled name prefix, with the caret placed after it. Used by the left panel's
+    ///  branch FOLDER nodes, whose "Create Branch…" offers the folder as prefix —
+    ///  upstream passes the same thing as <c>newBranchNamePrefix</c>
+    ///  (<c>LeftPanel/BranchPathNode.cs:24-28</c>).
+    /// </param>
+    public static async Task<CreateBranchRequest?> AskAsync(Window? owner, string repoPath, string startPointDisplay, string namePrefix = "")
     {
         if (owner is null)
         {
@@ -413,7 +426,7 @@ public sealed class CreateBranchDialog : Window
             branches = [];
         }
 
-        CreateBranchDialog dialog = new(startPointDisplay, branches);
+        CreateBranchDialog dialog = new(startPointDisplay, branches, namePrefix: namePrefix);
         await dialog.ShowDialog(owner);
         return dialog.Result;
     }
