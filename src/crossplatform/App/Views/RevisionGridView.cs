@@ -3728,16 +3728,29 @@ public sealed class RevisionGridView : UserControl
 
         // Subject cell: an optional git-notes indicator, then ref badges, then the
         // subject text.
-        StackPanel subject = new()
+        //
+        // A DockPanel, NOT a horizontal StackPanel: now that Subject is the Fill
+        // column and the Author/Date/SHA-1 columns sit to its RIGHT, a stack would
+        // measure its children against infinite width — the subject would never
+        // ellipsize and would simply be painted over the author name. Here the badges
+        // are docked left and the subject text is the last child, so it gets exactly
+        // the space that is left and trims inside it.
+        DockPanel subject = new()
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
+            ClipToBounds = true,
         };
+
+        void Badge(Control control)
+        {
+            control.Margin = new Thickness(0, 0, 4, 0);
+            DockPanel.SetDock(control, Dock.Left);
+            subject.Children.Add(control);
+        }
 
         if (row.HasNotes && _showGitNotes)
         {
-            subject.Children.Add(BuildNotesBadge());
+            Badge(BuildNotesBadge());
         }
 
         foreach (string refName in row.RefNames)
@@ -3755,7 +3768,7 @@ public sealed class RevisionGridView : UserControl
             // ref (not remote, not tag) is the checked-out branch — render it bold
             // with a small green ▶ marker, echoing the original GitExtensions look.
             bool isCurrent = row.IsHead && !IsRemoteRef(refName) && !IsTagRef(refName);
-            subject.Children.Add(BuildRefBadge(refName, isCurrent, view));
+            Badge(BuildRefBadge(refName, isCurrent, view));
         }
 
         TextBlock subjectText = new()
@@ -3799,12 +3812,21 @@ public sealed class RevisionGridView : UserControl
             view.TrackGraph(graph);
         }
 
-        StackPanel subject = new()
+        // Same DockPanel layout as a commit row (see BuildRow): the label, the
+        // marker and the count are docked left so nothing spills into the Author
+        // column now that Subject is no longer the last column.
+        DockPanel subject = new()
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
+            ClipToBounds = true,
         };
+
+        void Cell(Control control)
+        {
+            control.Margin = new Thickness(0, 0, 6, 0);
+            DockPanel.SetDock(control, Dock.Left);
+            subject.Children.Add(control);
+        }
 
         // The boxed label, matching the original's outlined "Working directory" /
         // "Commit index" cell. Unlike a ref pill the label uses the themed text
@@ -3829,7 +3851,7 @@ public sealed class RevisionGridView : UserControl
             Child = labelText,
         };
         view.TrackText(labelText);
-        subject.Children.Add(box);
+        Cell(box);
 
         bool isWorkTree = row.Hash == WorkTreeHash;
         int count = isWorkTree ? _unstaged : _staged;
@@ -3842,7 +3864,7 @@ public sealed class RevisionGridView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
         view.TrackMarker(check);
-        subject.Children.Add(check);
+        Cell(check);
 
         TextBlock countText = new()
         {
@@ -3854,7 +3876,7 @@ public sealed class RevisionGridView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
         view.TrackText(countText, dim: true);
-        subject.Children.Add(countText);
+        Cell(countText);
 
         Grid.SetColumn(subject, 1);
         grid.Children.Add(subject);
