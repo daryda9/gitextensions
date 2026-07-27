@@ -23,6 +23,7 @@ public sealed class ConsoleView : UserControl
     private readonly Button _restart;
     private bool _started;
     private Window? _hostWindow;
+    private string? _repoPath;
 
     /// <summary>Raised when the user asks to open an external terminal in the repo.</summary>
     public event Action? OpenTerminalRequested;
@@ -94,9 +95,66 @@ public sealed class ConsoleView : UserControl
         AttachedToVisualTree += OnAttached;
     }
 
-    /// <summary>Directory the shell starts in. Defaults to the repository the app was
-    /// opened on; changing it takes effect on the next shell start.</summary>
-    public string? RepoPath { get; set; }
+    /// <summary>
+    ///  Directory the shell works in. Defaults to the repository the app was opened
+    ///  on.
+    ///
+    ///  <para>Setting it while a shell is running does what upstream's
+    ///  <c>FormBrowse.ChangeTerminalActiveFolder</c> does
+    ///  (<c>FormBrowse.cs:2777-2785</c>, called from <c>SetGitModule</c>): it types a
+    ///  <c>cd</c> into the <i>live</i> shell instead of waiting for a restart, so
+    ///  opening another repository (or a submodule) moves the terminal with the app.
+    ///  With no shell running the value is simply remembered for the next start.</para>
+    /// </summary>
+    public string? RepoPath
+    {
+        get => _repoPath;
+        set
+        {
+            string? path = string.IsNullOrWhiteSpace(value) ? null : value;
+            if (string.Equals(path, _repoPath, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _repoPath = path;
+
+            // Not started yet (or the shell died): ResolveWorkingDirectory will pick
+            // the new value up at the next StartShell.
+            if (!_started || !_terminal.IsRunning || path is null || !Directory.Exists(path))
+            {
+                return;
+            }
+
+            ChangeWorkingDirectory(path);
+        }
+    }
+
+    /// <summary>
+    ///  Types a <c>cd</c> into the running shell. Upstream prefixes the command with
+    ///  Ctrl+A / Ctrl+K (<c>MinttyShellRunner.cs:29-33</c>) so a half-typed line is
+    ///  cleared first rather than being fused with the injected command; the same two
+    ///  control characters are readline/zle standard on Linux.
+    /// </summary>
+    private void ChangeWorkingDirectory(string path)
+    {
+        try
+        {
+            _terminal.Send("\u0001\u000B" + $"cd {Quote(path)}\n");
+            _status.Text = path;
+            _status.Foreground = Brush("App.TextDim", Brushes.Gray);
+        }
+        catch (Exception)
+        {
+            // A dead PTY is not an error worth surfacing: the next Restart shell
+            // starts in the new directory anyway.
+        }
+    }
+
+    // POSIX single-quoting: everything is literal inside '…', and an embedded quote
+    // is written by closing, escaping and reopening. Repository paths can contain
+    // spaces, '$' and quotes.
+    private static string Quote(string path) => "'" + path.Replace("'", "'\\''") + "'";
 
     private void OnAttached(object? sender, VisualTreeAttachmentEventArgs e)
     {
@@ -144,7 +202,7 @@ public sealed class ConsoleView : UserControl
 
     private string ResolveWorkingDirectory()
     {
-        foreach (string? candidate in new[] { RepoPath, App.InitialRepoPath, Directory.GetCurrentDirectory() })
+        foreach (string? candidate in new[] { _repoPath, App.InitialRepoPath, Directory.GetCurrentDirectory() })
         {
             if (!string.IsNullOrWhiteSpace(candidate) && Directory.Exists(candidate))
             {

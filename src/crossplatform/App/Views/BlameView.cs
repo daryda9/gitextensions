@@ -46,6 +46,7 @@ public sealed class BlameView : UserControl
     // Shared column widths so the header and every row line up.
     private const double HashWidth = 90;
     private const double AuthorWidth = 160;
+    private const double DateWidth = 90;
     private const double LineWidth = 60;
 
     // Upstream keeps the commit-info panel a fixed-size splitter panel
@@ -98,6 +99,22 @@ public sealed class BlameView : UserControl
     // previous revision" without doing git work while the popup opens.
     private string? _selectedParent;
     private string? _selectedParentOf;
+
+    // One source per blame request, cancelling the one before it: two quick file
+    // changes must not leave file A's lines under file B's status line. Upstream
+    // gets the same serialisation from AsyncLoader + CancellationTokenSequence
+    // (BlameControl.cs:34,132,151).
+    //
+    // Deliberately never disposed: the token it owns can still be observed by the
+    // git call it just cancelled, and disposing a source while its token is in
+    // flight is the very race this guards against. A source with no registered
+    // callback and no timer holds no unmanaged resource, so the cost is one small
+    // collectable object per blame.
+    private CancellationTokenSource? _blameCts;
+
+    // Final line numbers that begin a run of consecutive lines from the same commit,
+    // i.e. the only rows whose gutter is printed (see BuildRow).
+    private HashSet<int> _bandStarts = [];
 
     /// <summary>
     ///  Raised with a full commit hash when the user picks "Show changes" for a
@@ -264,6 +281,7 @@ public sealed class BlameView : UserControl
     public void ShowBlame(string repoPath, string filePath, string? commit = null)
     {
         _list.ItemsSource = null;
+        _bandStarts = [];
         _shownFile = null;
         _repoPath = repoPath;
         _detailHash = null;
@@ -271,13 +289,40 @@ public sealed class BlameView : UserControl
         _selectedParentOf = null;
         _status.Text = string.Format(T("Blaming {0}…"), filePath);
 
+        // Supersede whatever was in flight. ShowBlame only ever runs on the UI
+        // thread, so swapping the field needs no locking.
+        CancellationTokenSource? previous = _blameCts;
+        CancellationTokenSource cts = new();
+        _blameCts = cts;
+        try
+        {
+            previous?.Cancel();
+        }
+        catch (Exception)
+        {
+            // An already-cancelled/faulted source is not a reason to refuse the new
+            // request.
+        }
+
+        CancellationToken token = cts.Token;
+
         _ = Task.Run(() =>
         {
             try
             {
-                BlameResult result = _service.GetBlameResult(repoPath, filePath, commit);
+                BlameResult result = _service.GetBlameResult(repoPath, filePath, commit, token);
                 Dispatcher.UIThread.Post(() =>
                 {
+                    // Staleness guard: a newer request may have started (and even
+                    // finished) between the git call returning and this post being
+                    // pumped. The current source is the single source of truth for
+                    // "am I still the request the view is waiting for".
+                    if (!ReferenceEquals(_blameCts, cts) || token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    _bandStarts = ComputeBandStarts(result.Lines);
                     _list.ItemsSource = result.Lines;
                     _resolvedCommit = result.ResolvedCommit;
                     _shownFile = filePath;
@@ -294,11 +339,40 @@ public sealed class BlameView : UserControl
                     }
                 });
             }
+            catch (OperationCanceledException)
+            {
+                // Superseded by a newer ShowBlame: it owns the status line now.
+            }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = string.Format(T("Error: {0}"), ex.Message));
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (ReferenceEquals(_blameCts, cts) && !token.IsCancellationRequested)
+                    {
+                        _status.Text = string.Format(T("Error: {0}"), ex.Message);
+                    }
+                });
             }
         });
+    }
+
+    // First line of every run of consecutive lines from the same commit. The core
+    // hands the lines over in file order, so a single pass comparing each line's
+    // commit with the previous one is enough.
+    private static HashSet<int> ComputeBandStarts(IReadOnlyList<BlameLineRow> lines)
+    {
+        HashSet<int> starts = new(lines.Count);
+        string? previous = null;
+        foreach (BlameLineRow line in lines)
+        {
+            if (line.CommitHash != previous)
+            {
+                starts.Add(line.LineNumber);
+                previous = line.CommitHash;
+            }
+        }
+
+        return starts;
     }
 
     // ---- selection ---------------------------------------------------------
@@ -482,7 +556,7 @@ public sealed class BlameView : UserControl
     private static Grid MakeColumns()
         => new()
         {
-            ColumnDefinitions = new ColumnDefinitions($"{HashWidth},{AuthorWidth},{LineWidth},*"),
+            ColumnDefinitions = new ColumnDefinitions($"{HashWidth},{AuthorWidth},{DateWidth},{LineWidth},*"),
         };
 
     private static Control BuildHeader()
@@ -492,13 +566,14 @@ public sealed class BlameView : UserControl
 
         AddCell(grid, 0, T("FormVerify/columnHash.HeaderText", "Hash"), bold: true);
         AddCell(grid, 1, T("TranslatedStrings/_author.Text", "Author"), bold: true);
-        AddCell(grid, 2, T("Line"), bold: true);
-        AddCell(grid, 3, T("Text"), bold: true);
+        AddCell(grid, 2, T("TranslatedStrings/_authorDateText.Text", "Author date"), bold: true);
+        AddCell(grid, 3, T("Line"), bold: true);
+        AddCell(grid, 4, T("Text"), bold: true);
 
         return grid;
     }
 
-    private static Control BuildRow(BlameLineRow? row)
+    private Control BuildRow(BlameLineRow? row)
     {
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(8, 0, 8, 0);
@@ -509,10 +584,21 @@ public sealed class BlameView : UserControl
             return grid;
         }
 
-        AddCell(grid, 0, row.ShortHash, foreground: MetaBrush);
-        AddCell(grid, 1, row.Author, foreground: MetaBrush);
-        AddCell(grid, 2, row.LineNumber.ToString(), foreground: MetaBrush);
-        AddCell(grid, 3, row.Text, trim: false);
+        // Upstream's gutter is banded: hash, author and date are printed only on the
+        // first line of a run of consecutive lines from the same commit, and the rest
+        // of the band is left blank (BlameControl.cs:402-405). Repeating the hash on
+        // every line — which is what this port used to do — destroys exactly the
+        // "where does this commit's block start and end" reading the original gives.
+        bool bandStart = _bandStarts.Contains(row.LineNumber);
+
+        AddCell(grid, 0, bandStart ? row.ShortHash : string.Empty, foreground: MetaBrush);
+        AddCell(grid, 1, bandStart ? row.Author : string.Empty, foreground: MetaBrush);
+
+        // The author date comes from the same --porcelain pass (BlameService fills
+        // Date), so showing it costs nothing.
+        AddCell(grid, 2, bandStart ? row.Date : string.Empty, foreground: MetaBrush);
+        AddCell(grid, 3, row.LineNumber.ToString(), foreground: MetaBrush);
+        AddCell(grid, 4, row.Text, trim: false);
 
         // Upstream's blameTooltip shows the commit of the line under the pointer,
         // formatted by GitBlameCommit.ToString() — the same text BlameService

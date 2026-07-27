@@ -27,6 +27,14 @@ public sealed class CommandLogWindow : Window
     private readonly ScrollViewer _scroll;
     private readonly TextBlock _status;
 
+    // Live updates, as in OutputView: CommandLog.CommandsChanged fires from the
+    // thread that ran the process and fires several times per command, so the
+    // handler only arms a throttle timer. Upstream subscribes on Load and
+    // unsubscribes on close (FormGitCommandLog.cs:38-58).
+    private const int ThrottleMs = 300;
+    private readonly DispatcherTimer _throttle;
+    private bool _subscribed;
+
     public CommandLogWindow()
     {
         Title = "Git command log";
@@ -83,8 +91,49 @@ public sealed class CommandLogWindow : Window
         body.Children.Add(_scroll);
         Content = body;
 
-        Opened += (_, _) => Reload();
+        _throttle = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(ThrottleMs),
+            DispatcherPriority.Background,
+            (_, _) =>
+            {
+                _throttle!.Stop();
+                Reload();
+            });
+        _throttle.Stop();
+
+        Opened += (_, _) =>
+        {
+            if (!_subscribed)
+            {
+                CommandLog.CommandsChanged += OnCommandsChanged;
+                _subscribed = true;
+            }
+
+            Reload();
+        };
+
+        Closed += (_, _) =>
+        {
+            if (_subscribed)
+            {
+                CommandLog.CommandsChanged -= OnCommandsChanged;
+                _subscribed = false;
+            }
+
+            _throttle.Stop();
+        };
     }
+
+    private void OnCommandsChanged()
+        => Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (_subscribed && !_throttle.IsEnabled)
+                {
+                    _throttle.Start();
+                }
+            },
+            DispatcherPriority.Background);
 
     // Snapshots the live core command log and renders it newest-last. The queue
     // is enumerated oldest-first by the core, so no reordering is needed.
@@ -102,13 +151,33 @@ public sealed class CommandLogWindow : Window
             return;
         }
 
+        // A live refresh must not yank the view away from what the user is reading:
+        // follow the tail only while the tail is what is on screen (the state right
+        // after opening, and after every refresh that was already at the bottom).
+        bool wasAtEnd = _scroll.Offset.Y >= _scroll.Extent.Height - _scroll.Viewport.Height - 1;
+        Vector offset = _scroll.Offset;
+        int caret = _log.CaretIndex;
+
         _log.Text = lines.Count > 0
             ? string.Join(Environment.NewLine, lines)
             : "(no git commands have been executed yet in this session)";
         _status.Text = $"{lines.Count} command(s) logged.";
 
-        // Scroll to the newest entry (bottom) after the layout settles.
-        Dispatcher.UIThread.Post(() => _scroll.ScrollToEnd(), DispatcherPriority.Background);
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (wasAtEnd)
+                {
+                    // Scroll to the newest entry (bottom) after the layout settles.
+                    _scroll.ScrollToEnd();
+                }
+                else
+                {
+                    _log.CaretIndex = Math.Min(caret, _log.Text?.Length ?? 0);
+                    _scroll.Offset = offset;
+                }
+            },
+            DispatcherPriority.Background);
     }
 
     private Button MakeButton(string text) => new()

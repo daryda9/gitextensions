@@ -6,8 +6,11 @@ using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using GitCommands;
+using GitCommands.Settings;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
+using GitExtensions.Extensibility.Configurations;
+using GitExtensions.Extensibility.Git;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -20,10 +23,13 @@ namespace GitExtensions.Avalonia.Views;
 ///
 ///  <list type="number">
 ///   <item>Git identity (<c>user.name</c> / <c>user.email</c>) read/written via
-///    the reused core <see cref="GitModule"/> config surface (repo-local,
-///    falling back to the effective/global value).</item>
-///   <item>Default pull action (merge / rebase / fetch-only), persisted via
-///    <see cref="SettingsService"/>.</item>
+///    the reused core config surface (<see cref="GitConfigSettings"/>) at the level
+///    the user picks — <i>Local for current repository</i> or <i>Global for all
+///    repositories</i>, a cut-down port of upstream's
+///    <c>SettingsPageHeader</c> level selector.</item>
+///   <item>Default pull action (the five actions the toolbar's Pull split button
+///    offers), persisted in <see cref="UiState.DefaultPullAction"/> — the value the
+///    split button itself reads.</item>
 ///   <item>Default theme (Light / Dark), persisted via <see cref="UiStateService"/>
 ///    and applied live through <see cref="ThemeManager"/>.</item>
 ///  </list>
@@ -55,13 +61,18 @@ namespace GitExtensions.Avalonia.Views;
 public sealed class SettingsWindow : Window
 {
     private readonly string? _repoPath;
-    private readonly SettingsService _settingsService = new();
     private readonly UiStateService _uiStateService = new();
 
     private readonly TextBox _userName;
     private readonly TextBox _userEmail;
+    private readonly ComboBox _settingsLevel;
     private readonly ComboBox _pullAction;
     private readonly ComboBox _theme;
+
+    // The level the identity fields currently show, so a level change can be told
+    // from the initial load and the fields reloaded for the new level.
+    private GitSettingLevel _loadedLevel = GitSettingLevel.Local;
+    private bool _loadingIdentity;
 
     // Category panels, shown one at a time in the right pane.
     private readonly Panel _identityPanel;
@@ -77,13 +88,46 @@ public sealed class SettingsWindow : Window
 
     private bool _applied;
 
-    // The three default-pull-action choices, keyed to the upstream combo entries
-    // of GeneralSettingsPage.
+    // The default pull action the host is using right now (its in-memory UiState may
+    // be ahead of the file, because the toolbar's "set as default" writes the shared
+    // instance and only the host saves it). Null means "read it from the file".
+    private readonly string? _currentPullAction;
+
+    // Raised with the chosen GitPullAction name when the user applies. MainWindow
+    // keeps ONE UiState instance and re-serialises it in full on close, so a write to
+    // the file from here would be undone at exit: the host has to update its own
+    // instance, which is what this callback is for.
+    private readonly Action<string>? _pullActionChanged;
+
+    // The default-pull-action choices.
+    //
+    // The tokens are the names of GitExtensions.Extensibility.Git.GitPullAction,
+    // because the value written here is UiState.DefaultPullAction — the one the
+    // toolbar's Pull split button actually reads and writes (UiStateService.cs:98,
+    // MainToolbar.cs:627). This combo used to write AppPreferences.DefaultPullAction
+    // ("merge"/"rebase"/"fetch"), which nothing consumed: choosing here had no effect
+    // on the toolbar at all.
+    //
+    // All five actions the split button offers are listed, with the split button's
+    // own captions (MainToolbar.cs:822-829), so the two places cannot disagree.
     private static readonly (string Token, string Key, string Label)[] PullChoices =
     [
-        ("merge", "GeneralSettingsPage/_pullMerge.Text", "Pull - merge"),
-        ("rebase", "GeneralSettingsPage/_pullRebase.Text", "Pull - rebase"),
-        ("fetch", "GeneralSettingsPage/_fetch.Text", "Fetch"),
+        ("Merge", "FormBrowse/_pullMerge.Text", "Pull - merge"),
+        ("Rebase", "FormBrowse/_pullRebase.Text", "Pull - rebase"),
+        ("Fetch", "FormBrowse/_pullFetch.Text", "Fetch"),
+        ("FetchAll", "FormBrowse/_pullFetchAll.Text", "Fetch all"),
+        ("FetchPruneAll", "FormBrowse/_pullFetchPruneAll.Text", "Fetch and prune all"),
+    ];
+
+    // Git config levels this dialog can read and write. Upstream's page header offers
+    // Effective / Local / Global / Distributed / System (SettingsPageHeader.cs); the
+    // port carries the two that are actionable for an identity — the repository's own
+    // config and the user's global one. Without Global, the identity of a fresh repo
+    // could not be configured at all.
+    private static readonly (GitSettingLevel Level, string Key, string Label)[] LevelChoices =
+    [
+        (GitSettingLevel.Local, "SettingsPageHeader/LocalRB.Text", "Local for current repository"),
+        (GitSettingLevel.Global, "SettingsPageHeader/GlobalRB.Text", "Global for all repositories"),
     ];
 
     // Category names, shared by the left list and the panel heading so the two can
@@ -96,9 +140,11 @@ public sealed class SettingsWindow : Window
     private const string AppearanceKey = "AppearanceSettingsPage/$this.Text";
     private const string AppearanceText = "Appearance";
 
-    public SettingsWindow(string? repoPath)
+    public SettingsWindow(string? repoPath, string? currentPullAction = null, Action<string>? pullActionChanged = null)
     {
         _repoPath = repoPath;
+        _currentPullAction = currentPullAction;
+        _pullActionChanged = pullActionChanged;
 
         IBrush window = Resource("App.Window", "#1E1E1E");
         IBrush panel = Resource("App.Panel", "#252526");
@@ -121,13 +167,27 @@ public sealed class SettingsWindow : Window
         _userEmail = new TextBox { Watermark = "you@example.com" };
         LocalizeWatermark(_userName, null, "Your name");
 
+        _settingsLevel = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        foreach ((GitSettingLevel _, string key, string label) in LevelChoices)
+        {
+            ComboBoxItem item = new();
+            Localize(item, key, label);
+            _settingsLevel.Items.Add(item);
+        }
+
+        // With no repository open only the global config is reachable.
+        _settingsLevel.SelectedIndex = 0;
+        _settingsLevel.SelectionChanged += (_, _) => OnLevelChanged();
+
         _identityPanel = CategoryPanel(
             IdentityKey, IdentityText,
-            null, "Stored with git config (repository-local). If a value is empty the "
-                + "effective/global setting is shown.",
+            null, "Stored with git config. \"Local\" writes the current repository's "
+                + "config, \"Global\" your user-wide config (~/.gitconfig) — the one a "
+                + "brand-new repository inherits. Clearing a field removes the entry "
+                + "from the chosen level.",
             text,
             dim,
-            SettingsSourceNote(dim),
+            Field("SettingsPageHeader/label1.Text", "Settings source:", _settingsLevel, dim),
             Field("GitConfigSettingsPage/label3.Text", "User name", _userName, dim),
             Field("GitConfigSettingsPage/label4.Text", "User email", _userEmail, dim));
 
@@ -269,9 +329,20 @@ public sealed class SettingsWindow : Window
         };
     }
 
-    /// <summary>Shows the Settings dialog modally over <paramref name="owner"/>.</summary>
-    public static Task ShowAsync(Window owner, string? repoPath)
-        => new SettingsWindow(repoPath).ShowDialog(owner);
+    /// <summary>
+    ///  Shows the Settings dialog modally over <paramref name="owner"/>.
+    ///
+    ///  <para><paramref name="currentPullAction"/> is the default pull action the host
+    ///  is using right now (the name of a <c>GitPullAction</c>); pass it so the combo
+    ///  shows the live value rather than the last one written to disk.
+    ///  <paramref name="pullActionChanged"/> is invoked on the UI thread with the newly
+    ///  chosen action whenever the user applies — the host must use it to update its
+    ///  own <see cref="UiState"/> instance (and the toolbar), because that instance is
+    ///  re-serialised in full when the window closes.</para>
+    /// </summary>
+    public static Task ShowAsync(
+        Window owner, string? repoPath, string? currentPullAction = null, Action<string>? pullActionChanged = null)
+        => new SettingsWindow(repoPath, currentPullAction, pullActionChanged).ShowDialog(owner);
 
     // ---- translation -------------------------------------------------------
 
@@ -318,30 +389,90 @@ public sealed class SettingsWindow : Window
     // theme that was active on open (for the Cancel revert).
     private string LoadValues()
     {
-        // Git identity (repo-local, falling back to the effective/global value).
-        if (_repoPath is not null)
+        // With no repository open, "Local" has nothing to point at: preselect Global
+        // and take Local off the table rather than showing a level that cannot work.
+        if (_repoPath is null)
         {
-            try
-            {
-                GitModule module = GitContext.CreateModule(_repoPath);
-                _userName.Text = module.GetEffectiveSetting("user.name");
-                _userEmail.Text = module.GetEffectiveSetting("user.email");
-            }
-            catch
-            {
-                // Leave the fields empty if the repo can't be read.
-            }
+            _settingsLevel.SelectedIndex = 1;
+            ((ComboBoxItem)_settingsLevel.Items[0]!).IsEnabled = false;
         }
 
-        // Default pull action.
-        AppPreferences settings = _settingsService.Load();
-        int pullIndex = Array.FindIndex(PullChoices, c => c.Token == settings.DefaultPullAction);
+        LoadIdentity(SelectedLevel);
+
+        // Default pull action: read from the value the host is actually using, or
+        // from UiState if the host did not pass one.
+        string action = _currentPullAction ?? _uiStateService.Load().DefaultPullAction;
+        int pullIndex = Array.FindIndex(PullChoices, c => c.Token == action);
         _pullAction.SelectedIndex = pullIndex >= 0 ? pullIndex : 0;
 
         // Theme.
         UiState ui = _uiStateService.Load();
         _theme.SelectedIndex = ui.Theme == "Light" ? 1 : 0;
         return ui.Theme;
+    }
+
+    private GitSettingLevel SelectedLevel
+        => LevelChoices[Math.Clamp(_settingsLevel.SelectedIndex, 0, LevelChoices.Length - 1)].Level;
+
+    private void OnLevelChanged()
+    {
+        GitSettingLevel level = SelectedLevel;
+        if (level != _loadedLevel)
+        {
+            LoadIdentity(level);
+        }
+    }
+
+    // Reads user.name / user.email at the given level. Running git config is blocking,
+    // so it happens off the UI thread; the fields are blanked meanwhile so the
+    // previous level's values are never mistaken for this one's.
+    private void LoadIdentity(GitSettingLevel level)
+    {
+        _loadedLevel = level;
+        _loadingIdentity = true;
+        _userName.Text = string.Empty;
+        _userEmail.Text = string.Empty;
+
+        _ = Task.Run(() =>
+        {
+            string name = string.Empty;
+            string email = string.Empty;
+            try
+            {
+                IConfigValueStore store = ConfigStore(level);
+                name = store.GetValue("user.name") ?? string.Empty;
+                email = store.GetValue("user.email") ?? string.Empty;
+            }
+            catch (Exception)
+            {
+                // An unreadable config leaves the fields empty; applying then writes
+                // the level from scratch, which is the right outcome anyway.
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                // A third level change may have started while this one was reading.
+                if (_loadedLevel != level)
+                {
+                    return;
+                }
+
+                _userName.Text = name;
+                _userEmail.Text = email;
+                _loadingIdentity = false;
+            });
+        });
+    }
+
+    // A read/write view of one git config level. GitConfigSettings runs
+    // "git config --local|--global", i.e. exactly what upstream's settings pages use
+    // under their level radio buttons. Blocking: never call on the UI thread.
+    private GitConfigSettings ConfigStore(GitSettingLevel level)
+    {
+        // The global config is reachable without a repository; any existing directory
+        // is a valid place to run git from.
+        string repo = _repoPath ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return new GitConfigSettings(GitContext.CreateModule(repo).GitExecutable, level);
     }
 
     // Applies the theme preview live as the combo changes.
@@ -353,48 +484,54 @@ public sealed class SettingsWindow : Window
 
     private void ApplyAndSave()
     {
-        // ---- Git identity: write repo-local user.name / user.email.
-        if (_repoPath is not null)
+        // ---- Git identity: write user.name / user.email at the chosen level.
+        // Skipped while a level change is still loading: the fields are blank then and
+        // applying would delete the entries the user never saw.
+        GitSettingLevel level = SelectedLevel;
+        if (!_loadingIdentity && (level == GitSettingLevel.Global || _repoPath is not null))
         {
-            try
+            string? name = _userName.Text?.Trim();
+            string? email = _userEmail.Text?.Trim();
+
+            // git config is blocking; the dialog must not freeze on a slow repository.
+            _ = Task.Run(() =>
             {
-                GitModule module = GitContext.CreateModule(_repoPath);
-                SetOrUnset(module, "user.name", _userName.Text);
-                SetOrUnset(module, "user.email", _userEmail.Text);
-            }
-            catch
-            {
-                // Best-effort; a git failure must not lose the other settings.
-            }
+                try
+                {
+                    IPersistentConfigValueStore store = ConfigStore(level);
+
+                    // SetValue(null) removes the entry, so an emptied field unsets it
+                    // at this level exactly as before — only now at the level the user
+                    // picked instead of always --local.
+                    store.SetValue("user.name", string.IsNullOrEmpty(name) ? null : name);
+                    store.SetValue("user.email", string.IsNullOrEmpty(email) ? null : email);
+                    store.Save();
+                }
+                catch (Exception)
+                {
+                    // Best-effort; a git failure must not lose the other settings.
+                }
+            });
         }
 
-        // ---- Default pull action.
-        AppPreferences settings = _settingsService.Load();
-        settings.DefaultPullAction = PullChoices[Math.Max(0, _pullAction.SelectedIndex)].Token;
-        _settingsService.Save(settings);
+        // ---- Default pull action: UiState is what the toolbar reads.
+        string pullAction = PullChoices[Math.Max(0, _pullAction.SelectedIndex)].Token;
 
         // ---- Theme: persist + apply (already previewed live).
         UiState ui = _uiStateService.Load();
         ui.Theme = _theme.SelectedIndex == 1 ? "Light" : "Dark";
+        ui.DefaultPullAction = pullAction;
         _uiStateService.Save(ui);
         ThemeManager.Apply(ui.Theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
+
+        // The host owns the live UiState instance and re-serialises it on close, which
+        // would otherwise overwrite the value just written to the file. Telling it
+        // makes the change effective immediately AND survive the exit save.
+        _pullActionChanged?.Invoke(pullAction);
 
         // An applied theme is the new baseline: a later Cancel must not undo it.
         _applied = true;
         _revertTheme = ui.Theme;
-    }
-
-    private static void SetOrUnset(GitModule module, string key, string? value)
-    {
-        value = value?.Trim();
-        if (string.IsNullOrEmpty(value))
-        {
-            module.UnsetSetting(key);
-        }
-        else
-        {
-            module.SetSetting(key, value);
-        }
     }
 
     // ---- layout building blocks -------------------------------------------
@@ -445,24 +582,6 @@ public sealed class SettingsWindow : Window
         field.Children.Add(label);
         field.Children.Add(editor);
         return field;
-    }
-
-    // "Settings source: Local for current repository" — the upstream page header,
-    // stating where the identity values are written. Both halves are real
-    // trans-units, so the note translates in full.
-    private Control SettingsSourceNote(IBrush dim)
-    {
-        WrapPanel note = new() { Orientation = Orientation.Horizontal, ItemSpacing = 6 };
-
-        TextBlock caption = new() { Foreground = dim, FontSize = 12, TextWrapping = TextWrapping.Wrap };
-        Localize(caption, "SettingsPageHeader/label1.Text", "Settings source:");
-
-        TextBlock value = new() { Foreground = dim, FontSize = 12, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap };
-        Localize(value, "SettingsPageHeader/LocalRB.Text", "Local for current repository");
-
-        note.Children.Add(caption);
-        note.Children.Add(value);
-        return note;
     }
 
     private static IBrush Resource(string key, string fallback)

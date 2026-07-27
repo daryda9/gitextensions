@@ -56,15 +56,25 @@ public sealed class BlameService
     ///  (defaults to <c>HEAD</c> when null/empty), returning one row per source
     ///  line with the commit that last touched it.
     /// </summary>
-    public IReadOnlyList<BlameLineRow> GetBlame(string repoPath, string filePath, string? commitOrHead = null)
-        => GetBlameResult(repoPath, filePath, commitOrHead).Lines;
+    public IReadOnlyList<BlameLineRow> GetBlame(
+        string repoPath, string filePath, string? commitOrHead = null, CancellationToken cancellationToken = default)
+        => GetBlameResult(repoPath, filePath, commitOrHead, cancellationToken).Lines;
 
     /// <summary>
     ///  As <see cref="GetBlame"/>, but also reports the full hash
     ///  <paramref name="commitOrHead"/> resolved to. Blocking; call off the UI thread.
+    ///
+    ///  <para><paramref name="cancellationToken"/> is handed straight to the core
+    ///  blame call, which is what makes a superseded request stop instead of racing
+    ///  the new one to the UI (upstream serialises the same way, with
+    ///  <c>AsyncLoader</c> + <c>CancellationTokenSequence</c>,
+    ///  <c>BlameControl.cs:34,132,151</c>).</para>
     /// </summary>
-    public BlameResult GetBlameResult(string repoPath, string filePath, string? commitOrHead = null)
+    public BlameResult GetBlameResult(
+        string repoPath, string filePath, string? commitOrHead = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         GitModule module = GitContext.CreateModule(repoPath);
         string from = string.IsNullOrWhiteSpace(commitOrHead) ? "HEAD" : commitOrHead!;
 
@@ -73,11 +83,12 @@ public sealed class BlameService
             from: from,
             encoding: GitModule.SystemEncoding,
             lines: null,
-            cancellationToken: CancellationToken.None);
+            cancellationToken: cancellationToken);
 
         List<BlameLineRow> rows = new(blame.Lines.Count);
         foreach (GitBlameLine line in blame.Lines)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             GitBlameCommit commit = line.Commit;
             rows.Add(new BlameLineRow(
                 LineNumber: line.FinalLineNumber,
@@ -95,6 +106,9 @@ public sealed class BlameService
                 OriginFileName: commit.FileName ?? string.Empty));
         }
 
+        // One more git call follows (rev-parse); skip it outright if the request has
+        // already been superseded.
+        cancellationToken.ThrowIfCancellationRequested();
         return new BlameResult(ResolveFullHash(module, from) ?? from, rows);
     }
 

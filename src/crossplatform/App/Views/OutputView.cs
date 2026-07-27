@@ -52,6 +52,15 @@ public sealed class OutputView : UserControl
     private readonly MenuItem _copyCommandLineItem = new();
     private readonly MenuItem _clearItem = new();
 
+    // Live updates: CommandLog.CommandsChanged fires from whichever thread ran the
+    // process — twice per command at least (start, end) plus once for the PID — so
+    // the handler only ever asks for a reload and a throttle timer coalesces the
+    // burst into one refresh. Upstream subscribes on Load and unsubscribes on close
+    // (FormGitCommandLog.cs:38-58); attach/detach is this port's equivalent.
+    private const int ThrottleMs = 300;
+    private readonly DispatcherTimer _throttle;
+    private bool _subscribed;
+
     public OutputView()
     {
         // One row per logged command. A ListBox (not a text blob) so a row can be
@@ -164,9 +173,63 @@ public sealed class OutputView : UserControl
         Content = root;
         ClipToBounds = true;
 
-        AttachedToVisualTree += (_, _) => Reload();
+        _throttle = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(ThrottleMs),
+            DispatcherPriority.Background,
+            (_, _) =>
+            {
+                _throttle!.Stop();
+                Reload();
+            });
+        _throttle.Stop();
+
+        AttachedToVisualTree += (_, _) =>
+        {
+            Subscribe();
+            Reload();
+        };
+        DetachedFromVisualTree += (_, _) => Unsubscribe();
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // ------------------------------------------------------------- live updates
+
+    private void Subscribe()
+    {
+        if (_subscribed)
+        {
+            return;
+        }
+
+        CommandLog.CommandsChanged += OnCommandsChanged;
+        _subscribed = true;
+    }
+
+    private void Unsubscribe()
+    {
+        if (!_subscribed)
+        {
+            return;
+        }
+
+        CommandLog.CommandsChanged -= OnCommandsChanged;
+        _subscribed = false;
+        _throttle.Stop();
+    }
+
+    // Raised on the thread that ran the process: marshal, then coalesce. Trailing
+    // edge only, so a command that starts and ends inside the window costs one
+    // refresh, not two.
+    private void OnCommandsChanged()
+        => Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (_subscribed && !_throttle.IsEnabled)
+                {
+                    _throttle.Start();
+                }
+            },
+            DispatcherPriority.Background);
 
     // ------------------------------------------------------------ context menu
 

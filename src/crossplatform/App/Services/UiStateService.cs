@@ -56,7 +56,21 @@ public sealed class UiState
     public bool AutoRefresh { get; set; } = true;
 
     /// <summary>Left repository-tree column width (pixels).</summary>
+    ///  <para>This is the width the panel has when it is <i>shown</i>, and it is kept
+    ///  even while the panel is collapsed — see <see cref="LeftPanelCollapsed"/>.</para>
     public double TreeWidth { get; set; } = 260;
+
+    /// <summary>
+    ///  Whether the left repository-objects panel is collapsed (Ctrl+Alt+C).
+    ///
+    ///  <para>Deliberately a flag of its own rather than "width == 0": a saved zero
+    ///  width is indistinguishable from a corrupt entry and <see cref="UiStateService"/>
+    ///  clamps it back to 260, which used to both re-open the panel at the next start
+    ///  <i>and</i> lose the width the user had chosen. Upstream persists the collapse
+    ///  separately for the same reason (<c>SplitterManager.cs:57-62</c>, registered at
+    ///  <c>FormBrowse.cs:2285</c>).</para>
+    /// </summary>
+    public bool LeftPanelCollapsed { get; set; }
 
     /// <summary>Right area: revision-grid row star weight.</summary>
     public double RevisionsStar { get; set; } = 3;
@@ -96,6 +110,27 @@ public sealed class UiState
     ///  enum; an unknown or non-actionable value falls back to "Merge".</para>
     /// </summary>
     public string DefaultPullAction { get; set; } = "Merge";
+
+    /// <summary>
+    ///  Where the commit-info panel sits, as the name of a
+    ///  <c>Views.CommitInfoPosition</c> member ("BelowGraph", "LeftOfGraph",
+    ///  "RightOfGraph"). Upstream persists the same choice
+    ///  (<c>AppSettings.CommitInfoPosition</c>); the port had the three positions but
+    ///  always restarted at <c>BelowGraph</c>.
+    ///
+    ///  <para>Stored as a string, not the enum: this service must not depend on the
+    ///  view layer, and the JSON stays readable. An unknown value falls back to
+    ///  "BelowGraph".</para>
+    /// </summary>
+    public string CommitInfoPosition { get; set; } = "BelowGraph";
+
+    /// <summary>
+    ///  Full path of the repository that was open when the app was last closed, or
+    ///  null if none was. Upstream reopens the last repository at start-up
+    ///  (<c>AppSettings.RecentWorkingDir</c>); the path is only a hint and is
+    ///  validated (it may have been moved or deleted meanwhile).
+    /// </summary>
+    public string? LastRepoPath { get; set; }
 }
 
 /// <summary>Reads/writes <see cref="UiState"/> to a JSON file, tolerating a
@@ -173,8 +208,21 @@ public sealed class UiStateService
         s.WindowY = SanePosition(s.WindowY);
         s.Language = string.IsNullOrWhiteSpace(s.Language) ? "English" : s.Language.Trim();
         s.DefaultPullAction = SanePullAction(s.DefaultPullAction);
+        s.CommitInfoPosition = SaneCommitInfoPosition(s.CommitInfoPosition);
+        s.LastRepoPath = string.IsNullOrWhiteSpace(s.LastRepoPath) ? null : s.LastRepoPath.Trim();
         return s;
     }
+
+    // Only the three positions the layout can actually build are accepted; anything
+    // else collapses to the default. The names mirror Views.CommitInfoPosition, which
+    // this service deliberately does not reference.
+    private static string SaneCommitInfoPosition(string? value)
+        => value?.Trim() switch
+        {
+            "LeftOfGraph" => "LeftOfGraph",
+            "RightOfGraph" => "RightOfGraph",
+            _ => "BelowGraph",
+        };
 
     // Only the five actions the Pull split button can actually perform are accepted;
     // None/Default (which upstream treats as "not a valid action") and anything

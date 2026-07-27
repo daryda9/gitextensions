@@ -15,7 +15,16 @@ namespace GitExtensions.Avalonia.Services;
 /// </summary>
 public sealed class AppPreferences
 {
-    /// <summary>Default pull action: "merge", "rebase" or "fetch".</summary>
+    /// <summary>
+    ///  Default pull action: "merge", "rebase" or "fetch".
+    ///
+    ///  <para><b>Superseded and no longer read by any view.</b> The toolbar's Pull
+    ///  split button reads <see cref="UiState.DefaultPullAction"/> (which also covers
+    ///  FetchAll / FetchPruneAll), and the Settings dialog now writes that one, so
+    ///  choosing an action finally affects the toolbar. This property is kept only so
+    ///  an existing <c>app-settings.json</c> still deserialises; do not wire it to
+    ///  anything.</para>
+    /// </summary>
     public string DefaultPullAction { get; set; } = "merge";
 
     /// <summary>
