@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M50,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M51,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,10 +11,10 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `cea46f2d9` + questo commit di documentazione (… + M45–M49 + **priorità P1–P3 / M50**) |
+| HEAD al momento dell'handoff | `84310c5cc` + questo commit di documentazione (… + M45–M49 + **priorità P1–P3 / M50** + **pannello inferiore / M51**) |
 | Build | `Errori: 0` (20–21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** |
+| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
 | Push su remote | **origin NON allineato: 11 commit locali non pushati** al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M51**), tiene il contatore iterazione.
+  libera: **M52**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -153,6 +153,13 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
   `Task.Run` e passare i dati al costruttore.
 - **Split-button / MenuFlyout**: popolare gli `Items` **prima** di `ShowAt`, mai mutarli
   dentro l'evento `Opening` (il popup non ri-misura → si vede solo una riga sottile).
+- **Riciclo dei container**: un container riciclato riceve solo un nuovo `DataContext`, quindi
+  testo e tooltip costruiti a mano diventano stantii allo scroll. Disabilitando il riciclo,
+  attenzione: Avalonia re-invoca il template con un item **null** quando svuota un container →
+  il costruttore di riga deve tollerare `null` o l'app crasha (M51, `BlameView`).
+- **Tasto destro su una `ListBox`**: muove la selezione, quindi fa scattare gli eventi di
+  selezione della view (in M51 questo spostava il pannello inferiore sul tab Commit mentre il
+  menu si apriva). Se serve, sopprimere la notifica all'host per quel solo dispatch.
 - **Virtualizzazione**: ri-assegnare la *stessa* istanza di lista a `ItemsSource` non
   ricrea i container già realizzati → le righe visibili restano con i visual vecchi e il
   cambio si vede solo su quelle che entrano dopo. Assegnare una **nuova** lista (scoperto
@@ -282,10 +289,15 @@ prima di iniziare un punto.
    portati (confronto con ~/Documents/process dialog with terminal command/GUI.png e
    FormBrowse.Designer.cs). Lo scheletro split-button ora esiste in MainToolbar.cs (Pull):
    riusarlo.
-2. [P2 residuo, 2d] TOOLBAR RICCA DELLA LISTA FILE (raggruppamento per path/estensione/stato,
-   casella di ricerca, toggle ignorati/skip-worktree/untracked -- FileStatusList.Toolbar.cs) e
-   OPZIONI DEL VIEWER diff (evidenziazione sintattica, copia versione nuova/vecchia --
-   FileViewer.Designer.cs:27-48).
+2. [PANNELLO INFERIORE, residui di M51] STASH: checkbox "Keep index" (banale) e lista file dello
+   stash, che e' il prerequisito di "Stash selected changes". FILE TREE: albero vero + anteprima
+   del contenuto del file. Entrambi devono CONSUMARE il componente gia' scritto
+   App/Views/FileStatusListView.cs (SetFiles, SelectedFile/SelectedFileChanged, RefreshRequested,
+   List.ContextMenu, AddToolbarItem) -- upstream e' lo stesso FileStatusList di Diff/FormStash,
+   non riscriverlo. GPG: icone di stato firma + sezione per la firma del tag annotato (upstream
+   NON ha pulsanti qui). Rinviati perche' serve infrastruttura assente: git grep nei file del
+   commit, le 11 "Blame options", tab "Command cache", FilterToolBar completa, i 4 tab interni
+   della file history.
 3. [P1 residuo minore] La relativita' dei segmenti del grafo e' dedotta dal bookkeeping delle
    lane: una lane riusata da un parent di merge puo' restare colorata dove l'upstream
    disegnerebbe due segmenti distinti. Serve un hash sui RevisionGraphSegment del port.
@@ -318,5 +330,5 @@ Verifica GUI headless: xvfb-run -n <display privato> --server-args="-screen 0 14
 eccede lo schermo; per forzare stati scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/
 ui-state.json), mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero
 l'immagine. Niente xdotool: python-Xlib fake_input (XTEST).
-Aggiornare PORTING.md (prossima milestone libera: M51) e HANDOFF.md a ogni iterazione.
+Aggiornare PORTING.md (prossima milestone libera: M52) e HANDOFF.md a ogni iterazione.
 ```

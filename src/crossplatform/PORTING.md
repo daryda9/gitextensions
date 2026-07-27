@@ -1065,6 +1065,94 @@ Menu + toolbar:
 minori (opzioni merge/cherry-pick, continue/skip/abort per rebase, filtro dei cataloghi
 `.xlf` a inglese + italiano per togliere ~19 MB dal `.deb`).
 
+### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
+
+> **Iterazione 2.** Nata da un'osservazione dell'utente ("mancano i tasti delle sezioni inferiori,
+> per esempio dentro Diff") e da un **audit di parità tab per tab** contro i controlli upstream.
+> Scoperta metodologica: `RevisionFileTreeControl` **non esiste** in questo repo — il tab "File tree"
+> di `FormBrowse` usa la *stessa* classe del tab Diff (`RevisionDiffControl`, `FormBrowse.Designer.cs:76`,
+> bindata in modalità albero a `FormBrowse.cs:331`) e anche `FormStash` usa un `FileStatusList`
+> (`FormStash.Designer.cs:38`): la toolbar della lista file è **un solo componente per tre posti**.
+
+**M51** (2026-07-27) — sei commit.
+
+- **Diff** (`84310c5cc`) — nuovo `App/Views/FileStatusListView.cs` **riusabile** (più
+  `Services/DiffFileListBuilder.cs`, `DiffSyntaxHighlighter.cs`, `DiffViewerOptions.cs`): toolbar della
+  lista file con filtro **regex** (watermark, clear, contatore `n/m`, debounce 220 ms; pattern non
+  valido → match literal, contatore rosso `⚠ n/m` e messaggio del parser nel tooltip), raggruppamento
+  **per path / estensione / stato** (i primi come albero di cartelle vero), split-button flat/tree,
+  collapse/expand all, refresh reale. Nel viewer: **evidenziazione della sintassi** (scanner per riga,
+  ~15 famiglie di linguaggi, stesso tetto di 20 000 righe della ricerca; con l'evidenziazione attiva le
+  righe +/- prendono una tinta di fondo per non perdere l'identità), **copia versione nuova/vecchia**
+  (lato vecchio = `<sha>^`/`BASE`/commit per i confronti col working tree, quindi corretta anche sotto
+  `-w`/`--word-diff`) e i tre toggle `--ignore-space-at-eol` / `-b` / `--text`.
+  Due difetti reali trovati durante la verifica GUI e corretti: la barra del viewer sbordava a destra
+  (ora `WrapPanel`) e il bordo rosso del regex non valido era mascherato dal focus border di Fluent
+  (spostato sul contatore). **Omessi con motivo**: toggle ignorati/skip-worktree/assume-unchanged/
+  untracked (il `DiffService` cabla `untrackedFilesMode: No` e `excludeSkipWorktreeFiles: true`,
+  nessun dato dietro → nessun pulsante finto), filtri `!`/`A`/`B`/`=` (il port non ha i dati del diff
+  combinato A/B), blocco `git grep`, dropdown MRU del filtro (la ComboBox di Avalonia non è editabile),
+  `tsmiDenseTree`/`ShowGroupNodesInFlatList`, scroll continuo e difftastic.
+  *Non verificato*: il click-through di "Copy new version" (il path di lettura è lo stesso di "Save as").
+- **Commit** (`1d63c9fc0`) — menu contestuale che mancava del tutto: **Copy commit info**, **Copy link**
+  (visibile solo col puntatore su un hash parent/child, header dinamico con lo short hash), i **sei
+  toggle** di visibilità con gli id e i default upstream (local branches / tags / messaggi dei tag
+  annotati / derives-from attivi, i due remote no), applicati live e persistiti, e **Add notes** che
+  funziona davvero senza editor esterno (dialogo multiriga in-app + `git notes add -f -F -` da stdin;
+  testo vuoto rimuove la nota). L'originale **non ha una toolbar** in questo tab: non è stata inventata.
+  *Deviazione consapevole*: i toggle vivono in un **`commit-info.json` separato**, non in `UiState`,
+  perché `MainWindow` tiene una sola istanza di `UiState` e la riserializza interamente alla chiusura →
+  una scrittura da una view che non condivide quell'istanza verrebbe annullata all'uscita. Sostituibile
+  passando l'istanza condivisa alla view. `CommitDetailView.EditNotes()` è pubblico per la hotkey
+  `AddNotes`, non ancora cablata.
+- **Blame** (`a0b88da0d`, cablaggio `d79c26344`) — menu contestuale completo (Blame this revision,
+  Blame previous revision con **header dinamico**, Show changes, Copy to clipboard ▸ hash/message/all
+  info), **pannello dettagli** del commit sopra la griglia che riusa `CommitDetailView` senza
+  modificarla (splitter, come lo `splitContainer1` upstream), e **tooltip per riga** col testo di
+  `GitBlameCommit.ToString()`. Il tasto destro seleziona anche la riga sotto il puntatore (`PointerPressed`
+  in tunneling con `handledEventsToo`), altrimenti la `ListBox` agiva sulla selezione precedente.
+  `BlameService` guadagna `CommitHash`/`Summary`/`Details`/`OriginFileName` **dalla stessa passata** di
+  `git blame --porcelain` (gli unici comandi in più sono un `rev-parse` per load e uno per il parent).
+  `ShowChangesRequested` e `CommitNavigated` cablati in `MainWindow`. *Bug corretto strada facendo*: il
+  template di riga riciclava i container (un container riciclato riceve solo un nuovo DataContext →
+  testo e tooltip stantii allo scroll); disabilitando il riciclo è emerso un **crash** perché Avalonia
+  re-invoca il template con item **null** quando svuota un container. Limite: l'header "previous
+  **visible** revision" è un'approssimazione, la view non ha una grid da interrogare.
+- **File history** (`89fe2d8e3`, cablaggio `9d0664090`) — menu contestuale (Copy to clipboard ▸ con
+  anteprima del valore negli header come il `CopyContextMenuItem` upstream, Save as, Manipulate commit ▸
+  Revert / Cherry pick) e i quattro switch: **Detect and follow renames**, la variante **exact renames
+  and copies only**, e il dropdown **Show Full History** con **Simplify merges** (disabilitato mentre
+  full history è spento, come upstream). Il nuovo record `FileHistoryOptions` li traduce nei **soli
+  flag di `git log`** (`--follow`, `--find-renames --find-copies` o la variante `"100%"`,
+  `--full-history`, `--simplify-merges`) e un toggle ricarica; verificate tutte e sei le combinazioni
+  contro `git log` reale. Revert e cherry-pick riusano `RevertArchiveService.Revert` e
+  `StashOpsService.CherryPick` e ora passano da `RunOp`, quindi prendono la sospensione del watcher e il
+  refresh. Upstream li persiste in `AppSettings.*InFileHistory`, qui restano session-local come gli
+  altri toggle di view. *Bug corretto*: il tasto destro su una riga muoveva la selezione → `RevisionSelected`
+  → `MainWindow` spostava il pannello sul tab Commit, e il menu si apriva su una vista che gli sfuggiva
+  da sotto; ora la notifica all'host è soppressa per quel solo dispatch.
+- **Output** (`ca1725e4a`) — da blob di testo a **lista di comandi selezionabile** con pannello
+  dell'output completo sotto (splitter, come il `LogOutput` di `FormGitCommandLog`), menu contestuale
+  **Save to file / Copy full command line / Clear** e toggle **Word wrap**; un refresh mantiene
+  selezionata l'ultima riga se l'utente non ne ha scelta un'altra. Omessi: tab "Command cache" (serve la
+  cache del core, non esposta), `chkAlwaysOnTop` (è un tab, non una finestra), `chkCaptureCallStacks`.
+
+**Dove l'audit ha stabilito che NON c'è lavoro** (per non inventarlo): **Console** — upstream non ha
+toolbar né menu propri, il contenuto è il controllo di ConEmu, e il port è già più ricco (restart shell,
+apri terminale); **GPG** — `RevisionGpgInfoControl.Designer.cs:31-35` non ha **nessun** pulsante, solo
+due textbox; differiscono soltanto layout (sezione separata per la firma del tag) e icone di stato;
+**Commit** e **Blame** — nessuna toolbar nell'originale, solo menu contestuali (le "Blame options"
+appartengono a `FormFileHistory`, non al tab Blame).
+
+**Restano aperti dal pannello inferiore**: **Stash** (checkbox "Keep index" banale; lista file dello
+stash → prerequisito di "Stash selected changes"), **File tree** (albero vero + anteprima del contenuto:
+deve consumare `FileStatusListView`), le icone di stato firma e la firma del tag nel GPG, e i rinviati
+che richiedono infrastruttura assente (`git grep` nei file del commit, le 11 "Blame options", tab
+"Command cache", `FilterToolBar` completa, i 4 tab interni della file history).
+`FileStatusListView` è la superficie che `FileTreeView`/`StashPanel` devono consumare (`SetFiles`,
+`SelectedFile`/`SelectedFileChanged`, `RefreshRequested`, `List.ContextMenu`, `AddToolbarItem`); le sue
+opzioni di raggruppamento stanno in `FileStatusListOptions.Session`, non persistite.
+
 ### Blocco PRIORITÀ P1–P3 (round 8) — grafo, chrome, Pull
 
 > **Iterazione 1.** Le tre priorità indicate dall'utente il 27/07/2026 sono **CHIUSE** nella
