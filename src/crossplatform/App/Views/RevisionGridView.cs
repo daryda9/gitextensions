@@ -231,14 +231,36 @@ public sealed class RevisionGridView : UserControl
     private bool _showTags = true;      // include refs/tags in the walk
     private bool _showStashes;          // include stash commits in the walk
     private bool _topoOrder;            // --topo-order vs default date order
-    private bool _drawNonRelativesGray; // dim rows not reachable from/to HEAD
+    // Gray out everything that is not a relative of the highlight anchor. ON by
+    // default, matching AppSettings.RevisionGraphDrawNonRelativesGray upstream, so
+    // the graph already shows the anchor's history in colour on first open.
+    private bool _drawNonRelativesGray = true;
     private bool _highlightCurrentBranch; // emphasise the current branch's first-parent line
 
+    // The commit the highlighting is anchored on, as a full hash. Null (or a hash
+    // no longer loaded) means HEAD, which is the state the original starts from:
+    // RevisionGraph marks the checked-out revision relative and AddParent
+    // propagates the flag to its ancestors. ALT+CLICK re-anchors it on the clicked
+    // commit, exactly like RevisionGridControl.OnGridViewMouseClick ->
+    // HighlightSelectedBranch -> RevisionGraph.HighlightBranch. A plain click
+    // never re-anchors, and every refresh falls back to HEAD.
+    private string? _highlightAnchor;
+
     // Reachability sets computed from the loaded rows whenever _allRows changes,
-    // keyed by full hash. Ancestors ∪ descendants ∪ HEAD are the "relatives" of
-    // the current branch; _currentBranchLine is HEAD's first-parent chain.
+    // keyed by full hash. _headRelatives = the highlight anchor ∪ its ancestors,
+    // which is upstream's RevisionGraphRevision.MakeRelative() semantics (it walks
+    // PARENTS only — descendants of the anchor are NOT relative, and the port used
+    // to include them, showing too much colour). _currentBranchLine is HEAD's
+    // first-parent chain (used by the separate "highlight current branch" style).
     private HashSet<string> _headRelatives = [];
     private HashSet<string> _currentBranchLine = [];
+
+    // Per display row (index into _rows), the "is relative" flags the graph cell
+    // needs: the node's own flag plus one flag per segment, in the exact order the
+    // segment list is built by WithHeadConnector / ArtificialSegments. Recomputed
+    // by ComputeGraphRelatives() on every rebind, since the flag of a segment
+    // depends on the row that opened its lane (see that method).
+    private List<(bool Node, bool[] Segments)> _graphRelatives = [];
 
     // Palette pulled from the shared app resources (see App.cs).
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
@@ -558,6 +580,18 @@ public sealed class RevisionGridView : UserControl
         // character with keyboard layout / shift applied, and only fires for real
         // text input — never for Enter/Backspace/F3, which KeyDown handles below.
         _list.AddHandler(InputElement.TextInputEvent, OnListTextInput, RoutingStrategies.Bubble);
+
+        // ALT+CLICK re-anchors the graph highlighting on the clicked commit, the way
+        // the original does it (OnGridViewMouseClick checks ModifierKeys for Alt and
+        // calls HighlightSelectedBranch). Registered TUNNELLING so the ListBoxItem's
+        // own pointer handling cannot swallow it first, and NOT marked handled: the
+        // click keeps doing everything it normally does (selection, focus), only the
+        // highlight anchor moves. A plain click never touches the anchor.
+        _list.AddHandler(
+            InputElement.PointerPressedEvent,
+            OnListPointerPressed,
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
 
         // Double click ACTIVATES the row under the pointer (commit details / commit
         // dialog for the artificial rows), as in the original grid.
@@ -1040,6 +1074,12 @@ public sealed class RevisionGridView : UserControl
         if (restart)
         {
             _loadGeneration++;
+
+            // A real (re)start rebuilds the history, so the highlighting goes back to
+            // HEAD — the state the original's freshly built RevisionGraph is in. An
+            // APPEND keeps the anchor, so scrolling further back does not undo an
+            // Alt+click (upstream loads incrementally into the same graph, too).
+            _highlightAnchor = null;
         }
 
         int generation = _loadGeneration;
@@ -1318,14 +1358,26 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     private void RebindRows(bool preserveViewport)
     {
+        // The graph's relative/non-relative flags are per DISPLAY ROW, so they are
+        // refreshed here — the single place every rebind goes through, whether the
+        // rows, the filter, the anchor or a highlight toggle changed.
+        ComputeGraphRelatives();
+
         List<string> selected = _list.SelectedItems is { Count: > 0 } items
             ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
             : [];
         Vector offset = _scroll?.Offset ?? default;
         bool hadFocus = _list.IsKeyboardFocusWithin;
 
+        // A FRESH collection instance, not _rows itself: re-assigning the very same
+        // instance lets the virtualizing panel keep its realized containers (their
+        // DataContext did not change), so rows already on screen would keep their old
+        // visuals — a re-anchored highlight, say, would only show up on rows scrolled
+        // into view afterwards. A copy guarantees every visible row goes through
+        // BuildRow again. The items are the same RevisionRow objects, so selection
+        // and the index lookups against _rows are unaffected.
         _list.ItemsSource = null;
-        _list.ItemsSource = _rows;
+        _list.ItemsSource = new List<RevisionRow>(_rows);
 
         bool autoScroll = _list.AutoScrollToSelectedItem;
         _list.AutoScrollToSelectedItem = false;
@@ -1338,13 +1390,26 @@ public sealed class RevisionGridView : UserControl
         }
 
         // The offset can only be restored once the rebound rows have been laid out,
-        // hence the deferral to DispatcherPriority.Loaded.
+        // hence the deferral to DispatcherPriority.Loaded — and once more at
+        // Background priority: with the list virtualized, the first attempt can land
+        // while the new panel still has a short extent, so the offset gets clamped
+        // (deep in the history that threw the view back to the newest commit) and has
+        // to be re-applied after the layout pass that follows.
         Dispatcher.UIThread.Post(
             () =>
             {
                 if (preserveViewport && _scroll is not null && offset.Y > 0)
                 {
                     _scroll.Offset = offset;
+                    Dispatcher.UIThread.Post(
+                        () =>
+                        {
+                            if (_scroll is not null && _scroll.Offset.Y < offset.Y)
+                            {
+                                _scroll.Offset = offset;
+                            }
+                        },
+                        DispatcherPriority.Background);
                 }
 
                 if (hadFocus)
@@ -1475,59 +1540,55 @@ public sealed class RevisionGridView : UserControl
         RebindRows(preserveViewport: true);
     }
 
-    // Recomputes, from the loaded rows, HEAD's reachability sets used by the two
+    // Recomputes, from the loaded rows, the reachability sets used by the two
     // render-time "View" highlight styles. Best-effort and bounded to the loaded
-    // window: if HEAD is not among the loaded rows the sets stay empty and both
-    // styles become no-ops. Ancestors (all parents) ∪ descendants (all children)
-    // ∪ HEAD are the "relatives"; the current-branch line is HEAD's first-parent
-    // chain. Uses only ParentHashes already carried on each row — no git.
+    // window: if neither the anchor nor HEAD is among the loaded rows the sets stay
+    // empty and both styles become no-ops. Uses only ParentHashes already carried
+    // on each row — no git.
+    //
+    // The "relatives" are the highlight anchor plus its ANCESTORS, and nothing
+    // else. That is what the original does: RevisionGraph.HighlightBranch() clears
+    // every IsRelative flag and calls MakeRelative() on the anchor, which walks the
+    // start segments (i.e. the parents) transitively. Descendants of the anchor stay
+    // non-relative, so only the path leading UP TO the anchor keeps its colours —
+    // the port previously also walked the children, which coloured whole branches
+    // that the Windows grid draws gray.
     private void ComputeReachability()
     {
         _headRelatives = [];
         _currentBranchLine = [];
 
+        // Index by hash for O(1) parent lookups while walking.
+        Dictionary<string, RevisionRow> byHash = new(_allRows.Count);
         RevisionRow? head = null;
         foreach (RevisionRow row in _allRows)
         {
-            if (row.IsHead)
+            byHash[row.Hash] = row;
+            if (head is null && row.IsHead)
             {
                 head = row;
-                break;
             }
         }
+
+        // The anchor is the ALT+CLICKed commit while it is still loaded, HEAD
+        // otherwise (also the state right after every refresh).
+        string? anchor = _highlightAnchor is not null && byHash.ContainsKey(_highlightAnchor)
+            ? _highlightAnchor
+            : head?.Hash;
+
+        if (anchor is null)
+        {
+            return;
+        }
+
+        HashSet<string> relatives = [anchor];
+        Walk(anchor, relatives, h => byHash.TryGetValue(h, out RevisionRow? r) ? r.ParentHashes : []);
+        _headRelatives = relatives;
 
         if (head is null)
         {
             return;
         }
-
-        // Index by hash for O(1) parent/child lookups, and a parent -> children map.
-        Dictionary<string, RevisionRow> byHash = new(_allRows.Count);
-        Dictionary<string, List<string>> children = [];
-        foreach (RevisionRow row in _allRows)
-        {
-            byHash[row.Hash] = row;
-        }
-
-        foreach (RevisionRow row in _allRows)
-        {
-            foreach (string parent in row.ParentHashes)
-            {
-                if (!children.TryGetValue(parent, out List<string>? kids))
-                {
-                    kids = [];
-                    children[parent] = kids;
-                }
-
-                kids.Add(row.Hash);
-            }
-        }
-
-        // Ancestors: walk parents from HEAD. Descendants: walk children from HEAD.
-        HashSet<string> relatives = [head.Hash];
-        Walk(head.Hash, relatives, h => byHash.TryGetValue(h, out RevisionRow? r) ? r.ParentHashes : []);
-        Walk(head.Hash, relatives, h => children.TryGetValue(h, out List<string>? c) ? c : []);
-        _headRelatives = relatives;
 
         // Current-branch line: HEAD's first-parent chain (approximates the branch).
         HashSet<string> line = [];
@@ -1556,6 +1617,99 @@ public sealed class RevisionGridView : UserControl
                 }
             }
         }
+    }
+
+    // Decides, for every display row, which graph segments and which node dot belong
+    // to a RELATIVE revision, so the graph cell can draw the rest gray — the
+    // per-segment decision the original makes in
+    // GraphRenderer.GetBrushForLaneInfo(laneInfo, segment.Child.IsRelative, …).
+    //
+    // Upstream a segment knows its child (the newer end) and asks that child for its
+    // flag. Here the geometry produced by RevisionService only carries lanes, so the
+    // flag is carried DOWN the lanes instead, which is equivalent: a lane's segments
+    // belong to the commit that opened the lane, i.e. the node of the row above.
+    //  - a bottom half starting on the node lane is an edge from THIS commit to one
+    //    of its parents => it takes this row's node flag;
+    //  - every other half continues a lane opened further up => it takes the flag the
+    //    lane arrived with;
+    //  - the flags a row hands to the next row are those of its bottom halves.
+    // The artificial rows (working directory / commit index) are the checked-out
+    // working state, hence always relative, which also colours the connector lane
+    // that runs from them down to HEAD.
+    private void ComputeGraphRelatives()
+    {
+        _graphRelatives = new List<(bool, bool[])>(_rows.Count);
+
+        // Flags of the lanes crossing the top edge of the current row.
+        bool[] incoming = [];
+
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            RevisionRow row = _rows[i];
+            bool artificial = IsArtificial(row);
+            bool nodeRelative = artificial
+                || _headRelatives.Count == 0
+                || _headRelatives.Contains(row.Hash);
+            int nodeLane = artificial ? _artificialLane : row.NodeLane;
+            IReadOnlyList<RevisionGraphSegment> segments = artificial
+                ? ArtificialSegments(i)
+                : WithHeadConnector(row, i);
+
+            bool[] flags = new bool[segments.Count];
+            int maxLane = nodeLane;
+            foreach (RevisionGraphSegment s in segments)
+            {
+                maxLane = Math.Max(maxLane, (int)Math.Round(Math.Max(s.FromLane, s.ToLane)));
+            }
+
+            bool[] outgoing = new bool[maxLane + 1];
+
+            for (int s = 0; s < segments.Count; s++)
+            {
+                RevisionGraphSegment seg = segments[s];
+                int fromLane = (int)Math.Round(seg.FromLane);
+                int toLane = (int)Math.Round(seg.ToLane);
+                bool bottomHalf = seg.FromY >= 0.5;
+                bool relative = bottomHalf && fromLane == nodeLane
+                    ? nodeRelative || Flag(incoming, toLane)
+                    : Flag(incoming, fromLane);
+
+                flags[s] = relative;
+                if (bottomHalf && toLane < outgoing.Length)
+                {
+                    outgoing[toLane] |= relative;
+                }
+            }
+
+            _graphRelatives.Add((nodeRelative, flags));
+            incoming = outgoing;
+        }
+
+        static bool Flag(bool[] flags, int lane)
+            => lane >= 0 && lane < flags.Length && flags[lane];
+    }
+
+    // The graph flags of one display row, or null when they are unavailable (row
+    // index out of the computed range, e.g. a rebind still in flight): the caller
+    // then draws everything in colour, never throwing from a render path.
+    private (bool Node, bool[] Segments)? GraphRelatives(int displayIndex)
+        => displayIndex >= 0 && displayIndex < _graphRelatives.Count
+            ? _graphRelatives[displayIndex]
+            : null;
+
+    // Re-anchors the highlighting on the given commit (ALT+CLICK) and redraws. A
+    // hash equal to the current anchor is a no-op, so repeated Alt+clicks on the
+    // same row cost nothing.
+    private void HighlightBranchOf(string? hash)
+    {
+        if (_highlightAnchor == hash)
+        {
+            return;
+        }
+
+        _highlightAnchor = hash;
+        ComputeReachability();
+        RefreshView();
     }
 
     // "View" menu: which refs the log walks (remotes / tags / stashes), the walk
@@ -1642,9 +1796,15 @@ public sealed class RevisionGridView : UserControl
         CheckBox nonRelatives = MakeCheck(
             T("RevisionGrid/drawNonrelativesGrayToolStripMenuItem.Text", "Draw non-relatives gray"),
             _drawNonRelativesGray);
+        ToolTip.SetTip(
+            nonRelatives,
+            T("Alt+click a commit to highlight the history leading to it"));
         nonRelatives.IsCheckedChanged += (_, _) =>
         {
             _drawNonRelativesGray = nonRelatives.IsChecked == true;
+
+            // RefreshView() re-templates every visible row, so the graph cells are
+            // rebuilt with (or without) the gray brush right away.
             RefreshView();
         };
 
@@ -1655,8 +1815,17 @@ public sealed class RevisionGridView : UserControl
             RefreshView();
         };
 
+        // Upstream's ToggleHighlightSelectedBranch has no "back to HEAD" counterpart
+        // other than a refresh; this puts the anchor back on the checked-out commit
+        // without re-walking the history.
+        Button anchorToHead = MakeBarButton(T("Highlight current branch's history"));
+        anchorToHead.Margin = new Thickness(0, 3, 0, 0);
+        anchorToHead.HorizontalAlignment = HorizontalAlignment.Stretch;
+        anchorToHead.Click += (_, _) => HighlightBranchOf(null);
+
         panel.Children.Add(nonRelatives);
         panel.Children.Add(highlight);
+        panel.Children.Add(anchorToHead);
 
         return new Flyout
         {
@@ -2213,6 +2382,29 @@ public sealed class RevisionGridView : UserControl
     // identity in the status line — and raises RevisionActivated /
     // ArtificialRowActivated so the host can bring its details tab forward.
 
+    // ALT+CLICK on a row: re-anchor the highlighting on that commit. Everything else
+    // about the click is left alone (the event is not marked handled), and an Alt+click
+    // on an artificial row re-anchors on HEAD, since those rows are not commits.
+    private void OnListPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Alt)
+            || !e.GetCurrentPoint(_list).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        RevisionRow? row = (e.Source as Visual)?
+            .FindAncestorOfType<ListBoxItem>(includeSelf: true)?
+            .DataContext as RevisionRow;
+
+        if (row is null)
+        {
+            return;
+        }
+
+        HighlightBranchOf(IsArtificial(row) ? null : row.Hash);
+    }
+
     private void OnListDoubleTapped(object? sender, TappedEventArgs e)
     {
         RevisionRow? row = (e.Source as Visual)?
@@ -2690,7 +2882,17 @@ public sealed class RevisionGridView : UserControl
         // to avoid rendering a garbled DAG. It returns in full once the filter clears.
         if (!_quickFilterActive)
         {
-            RevisionGraphControl graph = new(WithHeadConnector(row, index), row.NodeLane, LaneWidth);
+            (bool Node, bool[] Segments)? flags = _drawNonRelativesGray
+                ? GraphRelatives(index)
+                : null;
+
+            RevisionGraphControl graph = new(
+                WithHeadConnector(row, index),
+                row.NodeLane,
+                LaneWidth,
+                relativeSegments: flags?.Segments,
+                relativeNode: flags?.Node ?? true,
+                nonRelativeBrush: flags is null ? null : B("App.TextDim"));
             Grid.SetColumn(graph, 0);
             grid.Children.Add(graph);
             view.TrackGraph(graph);
@@ -2699,9 +2901,10 @@ public sealed class RevisionGridView : UserControl
         // Render-time "View" highlight styles (no reload):
         //  - highlight current branch: HEAD's first-parent line is emphasised
         //    (accent + bold), taking precedence over graying.
-        //  - draw non-relatives gray: rows not reachable from/to HEAD are dimmed.
-        //    Guarded on a non-empty relatives set so it is a no-op when HEAD is
-        //    outside the loaded window.
+        //  - draw non-relatives gray: rows that are not the highlight anchor nor one
+        //    of its ancestors are dimmed (the graph cell above grays their lanes the
+        //    same way). Guarded on a non-empty relatives set so it is a no-op when
+        //    neither the anchor nor HEAD is inside the loaded window.
         bool onBranch = _highlightCurrentBranch && _currentBranchLine.Contains(row.Hash);
         bool nonRelative = !onBranch && _drawNonRelativesGray
             && _headRelatives.Count > 0 && !_headRelatives.Contains(row.Hash);
@@ -4419,18 +4622,32 @@ public sealed class RevisionGridView : UserControl
         private readonly int _nodeLane;
         private readonly double _laneWidth;
         private readonly bool _artificialNode;
+
+        // Non-null only while "draw non-relatives gray" is on: the flag of each
+        // segment (parallel to _segments), the node's own flag, and the gray brush
+        // to use for the ones that are false — the port's counterpart of upstream
+        // GraphRenderer.GetBrushForLaneInfo(…, isRelative, DrawNonRelativesGray).
+        private readonly IReadOnlyList<bool>? _relativeSegments;
+        private readonly bool _relativeNode;
+        private readonly IBrush? _nonRelativeBrush;
         private bool _rowSelected;
 
         public RevisionGraphControl(
             IReadOnlyList<RevisionGraphSegment> segments,
             int nodeLane,
             double laneWidth,
-            bool artificialNode = false)
+            bool artificialNode = false,
+            IReadOnlyList<bool>? relativeSegments = null,
+            bool relativeNode = true,
+            IBrush? nonRelativeBrush = null)
         {
             _segments = segments;
             _nodeLane = nodeLane;
             _laneWidth = laneWidth;
             _artificialNode = artificialNode;
+            _relativeSegments = relativeSegments;
+            _relativeNode = relativeNode;
+            _nonRelativeBrush = nonRelativeBrush;
 
             // Custom-drawn Controls do NOT clip by default: lane lines/edges can
             // paint outside the row's bounds and smear into neighbours / the
@@ -4459,8 +4676,17 @@ public sealed class RevisionGridView : UserControl
         private static Color LaneColor(int lane)
             => LaneColors[((lane % LaneColors.Length) + LaneColors.Length) % LaneColors.Length];
 
-        private IBrush Brush(int lane)
+        private IBrush Brush(int lane, bool relative = true)
         {
+            // A non-relative lane loses its colour entirely and is drawn in the
+            // themed dim brush, like the original's NonRelativeBrush.
+            if (!relative && _nonRelativeBrush is not null)
+            {
+                return _rowSelected && _nonRelativeBrush is ISolidColorBrush solid
+                    ? new SolidColorBrush(Lighten(solid.Color, 0.55))
+                    : _nonRelativeBrush;
+            }
+
             int i = ((lane % LaneBrushes.Length) + LaneBrushes.Length) % LaneBrushes.Length;
             return _rowSelected
                 ? new SolidColorBrush(Lighten(LaneColor(lane), 0.55))
@@ -4484,16 +4710,31 @@ public sealed class RevisionGridView : UserControl
 
             double X(double lane) => (lane * _laneWidth) + (_laneWidth / 2);
 
-            foreach (RevisionGraphSegment s in _segments)
+            // Two passes, gray first: where a gray lane and a coloured one overlap the
+            // coloured one has to win, which is why the original orders the segments
+            // by IsRelative before drawing them (GraphRenderer.DrawItem).
+            for (int pass = 0; pass < 2; pass++)
             {
-                Pen pen = new(Brush(s.ColorLane), 2);
-                context.DrawLine(
-                    pen,
-                    new Point(X(s.FromLane), s.FromY * h),
-                    new Point(X(s.ToLane), s.ToY * h));
+                for (int i = 0; i < _segments.Count; i++)
+                {
+                    RevisionGraphSegment s = _segments[i];
+                    bool relative = _relativeSegments is null
+                        || i >= _relativeSegments.Count
+                        || _relativeSegments[i];
+                    if (relative != (pass == 1))
+                    {
+                        continue;
+                    }
+
+                    Pen pen = new(Brush(s.ColorLane, relative), 2);
+                    context.DrawLine(
+                        pen,
+                        new Point(X(s.FromLane), s.FromY * h),
+                        new Point(X(s.ToLane), s.ToY * h));
+                }
             }
 
-            IBrush nodeBrush = Brush(_nodeLane);
+            IBrush nodeBrush = Brush(_nodeLane, _relativeNode);
             double cx = X(_nodeLane);
             double cy = h / 2;
 
