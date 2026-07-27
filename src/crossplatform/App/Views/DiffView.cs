@@ -8,6 +8,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
@@ -44,6 +45,23 @@ public sealed class DiffView : UserControl
     private static readonly IBrush AddedGlyph = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
     private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
 
+    // Search highlight: amber for every occurrence, a stronger amber for the one
+    // the ▲/▼ navigation currently sits on. Literal colours (like the diff
+    // colours above) because the palette has no "highlight" resource.
+    private static readonly IBrush MatchBrush = new SolidColorBrush(Color.FromArgb(0x70, 0xC8, 0x9B, 0x2C));
+    private static readonly IBrush CurrentMatchBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x2E));
+
+    // Guard rails for the inline-run highlighter (see RenderDiff): splitting a
+    // line into several Runs costs a text-layout box per Run, so on a very large
+    // diff we keep the match list (counter + navigation still work) but render
+    // the diff as one Run per line, as before.
+    private const int MaxHighlightLines = 20_000;
+    private const int MaxHighlightMatches = 2_000;
+
+    // Hard cap on the match list itself, so an incremental search for "e" on a
+    // huge patch cannot allocate without bound.
+    private const int MaxSearchMatches = 20_000;
+
     // Which comparison the currently loaded file list represents, so file
     // selection loads the matching per-file diff.
     private enum CompareMode
@@ -73,11 +91,42 @@ public sealed class DiffView : UserControl
     private readonly MenuItem _compareWorkingDirItem;
     private readonly MenuItem _copyDiffItem;
     private readonly MenuItem _selectAllCopyItem;
+    private readonly MenuItem _openWorkingFileItem;
+    private readonly MenuItem _openRevisionFileItem;
+    private readonly MenuItem _showInFolderItem;
+    private readonly MenuItem _saveAsItem;
+    private readonly MenuItem _copyPatchItem;
     private readonly Button _prevChangeButton;
     private readonly Button _nextChangeButton;
     private readonly Button _zoomInButton;
     private readonly Button _zoomOutButton;
+    private readonly Button _findButton;
+    private readonly Button _moreContextButton;
+    private readonly Button _lessContextButton;
+    private readonly ToggleButton _entireFileButton;
     private readonly Button _settingsButton;
+
+    // ---- incremental search ("find bar") ----
+    private readonly Border _findBar;
+    private readonly TextBox _findBox;
+    private readonly TextBox _gotoBox;
+    private readonly TextBlock _matchCounter;
+    private readonly Button _findPrevButton;
+    private readonly Button _findNextButton;
+    private readonly Button _findCloseButton;
+    private readonly DispatcherTimer _findDebounce;
+
+    // The term currently highlighted, the (line, column, length) of every
+    // occurrence in the rendered text, and the Run each occurrence was rendered
+    // into (empty when highlighting was suppressed — see MaxHighlightLines).
+    private string _searchTerm = string.Empty;
+    private readonly List<(int Line, int Start, int Length)> _searchMatches = [];
+    private readonly List<Run> _matchRuns = [];
+    private int _matchIndex = -1;
+    private bool _highlightSuppressed;
+
+    // Launches the external editor / file manager for the file context menu.
+    private readonly ExternalToolService _tools = new();
 
     // False while the view shows its "nothing loaded yet" placeholder, so a
     // language switch can re-translate that placeholder without clobbering a
@@ -149,11 +198,30 @@ public sealed class DiffView : UserControl
         _difftoolItem.Click += (_, _) => OpenSelectedInExternalDiffTool();
         _compareWorkingDirItem = new MenuItem();
         _compareWorkingDirItem.Click += (_, _) => CompareSelectedToWorkingDirectory();
-        _files.ContextMenu = new ContextMenu
+        _openWorkingFileItem = new MenuItem();
+        _openWorkingFileItem.Click += (_, _) => OpenSelectedWorkingFile();
+        _openRevisionFileItem = new MenuItem();
+        _openRevisionFileItem.Click += (_, _) => OpenSelectedRevisionFile();
+        _showInFolderItem = new MenuItem();
+        _showInFolderItem.Click += (_, _) => ShowSelectedInFolder();
+        _saveAsItem = new MenuItem();
+        _saveAsItem.Click += (_, _) => SaveSelectedAs();
+        _copyPatchItem = new MenuItem();
+        _copyPatchItem.Click += (_, _) => CopyDiffText();
+
+        // Items are built in full here; the Opening handler below only flips
+        // IsEnabled (mutating Items from Opening leaves the popup mis-measured).
+        ContextMenu fileMenu = new()
         {
             ItemsSource = new Control[]
             {
+                _openWorkingFileItem,
+                _openRevisionFileItem,
+                _showInFolderItem,
+                new Separator(),
                 _copyPathItem,
+                _copyPatchItem,
+                _saveAsItem,
                 new Separator(),
                 _blameItem,
                 _historyItem,
@@ -162,6 +230,8 @@ public sealed class DiffView : UserControl
                 _compareWorkingDirItem,
             },
         };
+        fileMenu.Opening += (_, _) => UpdateFileMenuState();
+        _files.ContextMenu = fileMenu;
 
         _diff = new SelectableTextBlock
         {
@@ -197,6 +267,17 @@ public sealed class DiffView : UserControl
         _nextChangeButton = ToolButton("▼", GoToNextChange);
         _zoomInButton = ToolButton("A+", () => Zoom(+1));
         _zoomOutButton = ToolButton("A−", () => Zoom(-1));
+        _findButton = ToolButton("⌕", () => OpenFindBar(focusGoto: false));
+        _moreContextButton = ToolButton("U+", () => ChangeContext(+1));
+        _lessContextButton = ToolButton("U−", () => ChangeContext(-1));
+
+        _entireFileButton = ToggleTool(
+            "≡", _options.ShowEntireFile,
+            v =>
+            {
+                _options.ShowEntireFile = v;
+                ReloadDiff();
+            });
 
         _ignoreWhitespaceButton = ToggleTool(
             "-w", _options.IgnoreWhitespace,
@@ -261,8 +342,14 @@ public sealed class DiffView : UserControl
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(4, 2, 6, 2),
         };
+        toolbar.Children.Add(_findButton);
+        toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(_nextChangeButton);
         toolbar.Children.Add(_prevChangeButton);
+        toolbar.Children.Add(ToolSeparator());
+        toolbar.Children.Add(_lessContextButton);
+        toolbar.Children.Add(_moreContextButton);
+        toolbar.Children.Add(_entireFileButton);
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(_zoomInButton);
         toolbar.Children.Add(_zoomOutButton);
@@ -282,9 +369,64 @@ public sealed class DiffView : UserControl
             Child = toolbar,
         };
 
+        // ---- find bar (Ctrl+F), hidden until asked for ----
+        _findBox = FindTextBox(240);
+        _findBox.TextChanged += (_, _) => RestartFindDebounce();
+
+        _gotoBox = FindTextBox(110);
+        _gotoBox.Margin = new Thickness(12, 0, 0, 0);
+
+        _matchCounter = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = B("App.TextDim"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+            MinWidth = 70,
+        };
+
+        _findPrevButton = ToolButton("▲", () => StepMatch(-1));
+        _findNextButton = ToolButton("▼", () => StepMatch(+1));
+        _findCloseButton = ToolButton("✕", CloseFindBar);
+
+        // A WrapPanel, not a StackPanel: the go-to-line watermark and the
+        // "n of m" counter are translated and grow noticeably in Italian, and a
+        // horizontal strip would push the close button off the right edge.
+        WrapPanel findPanel = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(6, 3, 6, 3),
+        };
+        findPanel.Children.Add(_findBox);
+        findPanel.Children.Add(_findPrevButton);
+        findPanel.Children.Add(_findNextButton);
+        findPanel.Children.Add(_matchCounter);
+        findPanel.Children.Add(_gotoBox);
+        findPanel.Children.Add(_findCloseButton);
+
+        _findBar = new Border
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = findPanel,
+            IsVisible = false,
+        };
+
+        // Re-highlighting re-renders the whole diff, so an incremental search
+        // must not do it on every keystroke.
+        _findDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        _findDebounce.Tick += (_, _) =>
+        {
+            _findDebounce.Stop();
+            ApplySearchTerm(_findBox.Text ?? string.Empty);
+        };
+
         DockPanel diffPane = new();
         DockPanel.SetDock(toolbarBar, Dock.Top);
+        DockPanel.SetDock(_findBar, Dock.Top);
         diffPane.Children.Add(toolbarBar);
+        diffPane.Children.Add(_findBar);
         diffPane.Children.Add(_diffScroll);
 
         _status = new TextBlock
@@ -363,10 +505,36 @@ public sealed class DiffView : UserControl
         _copyDiffItem.Header = T("Copy diff");
         _selectAllCopyItem.Header = T("Select all + copy");
 
+        _openWorkingFileItem.Header = T(
+            "FileStatusList/tsmiOpenWorkingDirectoryFile.Text", "Open working directory file");
+        _openRevisionFileItem.Header = T(
+            "FileStatusList/tsmiOpenRevisionFile.Text", "Open this revision (temp file)");
+        _showInFolderItem.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
+        _saveAsItem.Header = T("FileStatusList/tsmiSaveAs.Text", "Save selected as...");
+        _copyPatchItem.Header = T("FileViewer/copyPatchToolStripMenuItem.Text", "Copy patch");
+
         ToolTip.SetTip(_prevChangeButton, T("FileViewer/previousChangeButton.ToolTipText", "Previous change"));
         ToolTip.SetTip(_nextChangeButton, T("FileViewer/nextChangeButton.ToolTipText", "Next change"));
         ToolTip.SetTip(_zoomInButton, T("Increase text size"));
         ToolTip.SetTip(_zoomOutButton, T("Decrease text size"));
+
+        // The shortcut is appended outside the translated sentence: key names are
+        // written the same way in every catalogue we ship.
+        ToolTip.SetTip(_findButton,
+            F("{0}  ({1})", T("FileViewer/findToolStripMenuItem.Text", "Find..."), "Ctrl+F"));
+        ToolTip.SetTip(_moreContextButton, F("{0}  ({1})",
+            T("FileViewer/increaseNumberOfLines.ToolTipText", "Increase the number of lines of context"), "-U"));
+        ToolTip.SetTip(_lessContextButton, F("{0}  ({1})",
+            T("FileViewer/decreaseNumberOfLines.ToolTipText", "Decrease the number of lines of context"), "-U"));
+        ToolTip.SetTip(_entireFileButton,
+            T("FileViewer/showEntireFileButton.ToolTipText", "Show entire file"));
+
+        _findBox.Watermark = T("FileViewer/findToolStripMenuItem.Text", "Find...");
+        _gotoBox.Watermark = T("FileViewer/goToLineToolStripMenuItem.Text", "Go to line");
+        ToolTip.SetTip(_findPrevButton, F("{0}  ({1})", T("Previous match"), "Shift+F3"));
+        ToolTip.SetTip(_findNextButton, F("{0}  ({1})", T("Next match"), "F3"));
+        ToolTip.SetTip(_findCloseButton, F("{0}  ({1})", T("Close the search bar"), "Esc"));
+        UpdateMatchCounter();
 
         // The git flag is appended outside the translated sentence: it is a
         // command-line token, identical in every language.
@@ -432,6 +600,65 @@ public sealed class DiffView : UserControl
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
+        bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+        // Ctrl+F / Ctrl+G open (and focus) the find bar; F3 walks the matches
+        // from anywhere in the view; Esc and Enter only act while the bar is up.
+        if (e.Key == Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            OpenFindBar(focusGoto: false);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            OpenFindBar(focusGoto: true);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.F3)
+        {
+            StepMatch(shift ? -1 : +1);
+            e.Handled = true;
+            return;
+        }
+
+        if (_findBar.IsVisible && e.Key == Key.Escape)
+        {
+            CloseFindBar();
+            e.Handled = true;
+            return;
+        }
+
+        if (_findBar.IsVisible && e.Key is Key.Enter or Key.Return)
+        {
+            if (_gotoBox.IsKeyboardFocusWithin)
+            {
+                GoToLineFromBox();
+                e.Handled = true;
+                return;
+            }
+
+            if (_findBox.IsKeyboardFocusWithin)
+            {
+                // The debounce may still be pending on the very first Enter.
+                if (_findDebounce.IsEnabled)
+                {
+                    _findDebounce.Stop();
+                    ApplySearchTerm(_findBox.Text ?? string.Empty);
+                }
+                else
+                {
+                    StepMatch(shift ? -1 : +1);
+                }
+
+                e.Handled = true;
+                return;
+            }
+        }
+
         if (e.Key == Key.C && e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             if (_files.IsKeyboardFocusWithin)
@@ -779,6 +1006,40 @@ public sealed class DiffView : UserControl
         };
         word.Click += (_, _) => _wordDiffButton.IsChecked = !_options.WordDiff;
 
+        MenuItem entireFile = new()
+        {
+            Header = T("FileViewer/showEntireFileToolStripMenuItem.Text", "Show entire file"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _options.ShowEntireFile,
+        };
+        entireFile.Click += (_, _) => _entireFileButton.IsChecked = !_options.ShowEntireFile;
+
+        MenuItem moreContext = new()
+        {
+            Header = T("FileViewer/increaseNumberOfLinesToolStripMenuItem.Text",
+                "Increase the number of lines of context"),
+        };
+        moreContext.Click += (_, _) => ChangeContext(+1);
+
+        MenuItem lessContext = new()
+        {
+            Header = T("FileViewer/decreaseNumberOfLinesToolStripMenuItem.Text",
+                "Decrease the number of lines of context"),
+        };
+        lessContext.Click += (_, _) => ChangeContext(-1);
+
+        MenuItem find = new()
+        {
+            Header = F("{0}  ({1})", T("FileViewer/findToolStripMenuItem.Text", "Find..."), "Ctrl+F"),
+        };
+        find.Click += (_, _) => OpenFindBar(focusGoto: false);
+
+        MenuItem goToLine = new()
+        {
+            Header = F("{0}  ({1})", T("FileViewer/goToLineToolStripMenuItem.Text", "Go to line"), "Ctrl+G"),
+        };
+        goToLine.Click += (_, _) => OpenFindBar(focusGoto: true);
+
         MenuItem zoomIn = new() { Header = T("Increase text size") };
         zoomIn.Click += (_, _) => Zoom(+1);
         MenuItem zoomOut = new() { Header = T("Decrease text size") };
@@ -798,9 +1059,16 @@ public sealed class DiffView : UserControl
         {
             ItemsSource = new Control[]
             {
+                find,
+                goToLine,
+                new Separator(),
                 ignore,
                 nonPrinting,
                 word,
+                new Separator(),
+                moreContext,
+                lessContext,
+                entireFile,
                 new Separator(),
                 zoomIn,
                 zoomOut,
@@ -861,6 +1129,357 @@ public sealed class DiffView : UserControl
         _diffScroll.Offset = new Vector(_diffScroll.Offset.X, y);
     }
 
+    // ------------------------------------------------------- search / go to line
+
+    private TextBox FindTextBox(double width) => new()
+    {
+        Width = width,
+        FontSize = 12,
+        MinHeight = 0,
+        Padding = new Thickness(6, 2, 6, 2),
+        Background = B("App.Panel"),
+        Foreground = B("App.Text"),
+        BorderBrush = B("App.Border"),
+        BorderThickness = new Thickness(1),
+        VerticalAlignment = VerticalAlignment.Center,
+        VerticalContentAlignment = VerticalAlignment.Center,
+    };
+
+    private void RestartFindDebounce()
+    {
+        _findDebounce.Stop();
+        _findDebounce.Start();
+    }
+
+    private void OpenFindBar(bool focusGoto)
+    {
+        _findBar.IsVisible = true;
+
+        // Closing the bar drops the highlighting but keeps the term in the box
+        // (so Ctrl+F Enter repeats the last search); re-opening must put the
+        // highlighting back rather than show a term that matches nothing.
+        string pending = _findBox.Text ?? string.Empty;
+        if (pending.Length > 0 && !string.Equals(pending, _searchTerm, StringComparison.Ordinal))
+        {
+            ApplySearchTerm(pending);
+        }
+
+        TextBox target = focusGoto ? _gotoBox : _findBox;
+        target.Focus();
+        target.SelectAll();
+    }
+
+    private void CloseFindBar()
+    {
+        _findBar.IsVisible = false;
+        _findDebounce.Stop();
+
+        if (_searchTerm.Length > 0)
+        {
+            // Drop the highlighting with the bar, so a closed search leaves no
+            // amber behind; the diff text itself is untouched.
+            ApplySearchTerm(string.Empty);
+        }
+
+        _diff.Focus();
+    }
+
+    // Re-renders with a new highlight term and jumps to the first occurrence.
+    private void ApplySearchTerm(string term)
+    {
+        if (string.Equals(term, _searchTerm, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _searchTerm = term;
+        RenderDiff(_currentDiffText);
+
+        if (_searchMatches.Count > 0)
+        {
+            SelectMatch(0, scroll: true);
+        }
+        else
+        {
+            UpdateMatchCounter();
+        }
+    }
+
+    private void StepMatch(int step)
+    {
+        if (_searchMatches.Count == 0)
+        {
+            UpdateMatchCounter();
+            return;
+        }
+
+        SelectMatch(_matchIndex < 0 ? (step > 0 ? 0 : _searchMatches.Count - 1) : _matchIndex + step, scroll: true);
+    }
+
+    // Moves the "current match" marker. Only two Run backgrounds change, so
+    // walking a large result set never re-renders the diff.
+    private void SelectMatch(int index, bool scroll)
+    {
+        int count = _searchMatches.Count;
+        if (count == 0)
+        {
+            _matchIndex = -1;
+            UpdateMatchCounter();
+            return;
+        }
+
+        index = ((index % count) + count) % count;   // wrap around both ends
+
+        if (_matchIndex >= 0 && _matchIndex < _matchRuns.Count)
+        {
+            _matchRuns[_matchIndex].Background = MatchBrush;
+        }
+
+        _matchIndex = index;
+
+        if (index < _matchRuns.Count)
+        {
+            _matchRuns[index].Background = CurrentMatchBrush;
+        }
+
+        if (scroll)
+        {
+            ScrollToLine(_searchMatches[index].Line);
+        }
+
+        UpdateMatchCounter();
+    }
+
+    private void UpdateMatchCounter()
+    {
+        if (_searchTerm.Length == 0)
+        {
+            _matchCounter.Text = string.Empty;
+            ToolTip.SetTip(_matchCounter, null);
+            return;
+        }
+
+        if (_searchMatches.Count == 0)
+        {
+            _matchCounter.Text = T("No matches");
+            ToolTip.SetTip(_matchCounter, null);
+            return;
+        }
+
+        _matchCounter.Text = F(T("{0} of {1}"), _matchIndex + 1, _searchMatches.Count);
+
+        // Say so rather than silently showing an unhighlighted diff.
+        ToolTip.SetTip(_matchCounter, _highlightSuppressed
+            ? F(T("Too many matches to highlight ({0}); use ▲/▼ to walk them."), _searchMatches.Count)
+            : null);
+    }
+
+    private void GoToLineFromBox()
+    {
+        string text = (_gotoBox.Text ?? string.Empty).Trim();
+        if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.CurrentCulture, out int line) &&
+            !int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out line))
+        {
+            _status.Text = F(T("Not a line number: {0}"), text);
+            return;
+        }
+
+        int lineCount = Math.Max(1, _currentDiffText.Split('\n').Length);
+        line = Math.Clamp(line, 1, lineCount);
+
+        ScrollToLine(line - 1);
+        _status.Text = F(T("Line {0} of {1}"), line, lineCount);
+    }
+
+    // ------------------------------------------------------- context lines
+
+    // step: +1 one more line of context, -1 one less. Also cancels "entire file",
+    // which would otherwise swallow the change.
+    private void ChangeContext(int step)
+    {
+        if (_options.ShowEntireFile)
+        {
+            // Setting IsChecked runs the toggle handler, which reloads the diff.
+            _entireFileButton.IsChecked = false;
+        }
+
+        int context = Math.Clamp(_options.ContextLines + step, 0, DiffDisplayOptions.MaxContextLines);
+        if (context == _options.ContextLines)
+        {
+            return;
+        }
+
+        _options.ContextLines = context;
+        _status.Text = F(T("Lines of context: {0}"), context);
+        ReloadDiff();
+    }
+
+    // ------------------------------------------------------- file commands
+
+    // Only IsEnabled/IsVisible here: the items themselves were built in the
+    // constructor (a ContextMenu re-populated from Opening mis-measures).
+    private void UpdateFileMenuState()
+    {
+        bool hasFile = _files.SelectedItem is DiffFileRow && _repoPath is not null;
+        bool onDisk = hasFile && File.Exists(SelectedWorkingPath());
+
+        _openWorkingFileItem.IsEnabled = onDisk;
+        _openRevisionFileItem.IsEnabled = hasFile && _commitHash is not null;
+        _showInFolderItem.IsEnabled = onDisk;
+        _saveAsItem.IsEnabled = hasFile && _commitHash is not null;
+        _copyPatchItem.IsEnabled = _currentDiffText.Length > 0;
+        _copyPathItem.IsEnabled = hasFile;
+        _blameItem.IsEnabled = hasFile;
+        _historyItem.IsEnabled = hasFile;
+        _difftoolItem.IsEnabled = hasFile && _commitHash is not null;
+        _compareWorkingDirItem.IsEnabled = hasFile && _commitHash is not null;
+    }
+
+    // Absolute path of the selected file in the working tree (it may not exist:
+    // the file can have been deleted, or belong to an old revision).
+    private string? SelectedWorkingPath() =>
+        _files.SelectedItem is DiffFileRow row && _repoPath is not null
+            ? Path.GetFullPath(Path.Combine(_repoPath, row.Name))
+            : null;
+
+    // Opens the working-tree copy in the external editor. Both the git config
+    // read and the launch happen off the UI thread (the launch is detached).
+    private void OpenSelectedWorkingFile()
+    {
+        if (SelectedWorkingPath() is not string path || _repoPath is null)
+        {
+            return;
+        }
+
+        string repoPath = _repoPath;
+        RunFileCommand(() => _tools.OpenInEditor(path, repoPath));
+    }
+
+    private void ShowSelectedInFolder()
+    {
+        if (SelectedWorkingPath() is not string path)
+        {
+            return;
+        }
+
+        RunFileCommand(() => _tools.ShowInFolder(path));
+    }
+
+    // Materialises the file as of the displayed commit into a temp directory and
+    // opens that copy — the equivalent of the original's "Open this revision".
+    private void OpenSelectedRevisionFile()
+    {
+        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        string repoPath = _repoPath;
+        string commit = _commitHash;
+        string name = row.Name;
+
+        RunFileLaunch(async () =>
+        {
+            byte[] bytes = await DiffTextService.GetFileBytesAsync(repoPath, commit, name)
+                .ConfigureAwait(false);
+
+            string shortHash = commit.Length > 8 ? commit[..8] : commit;
+            string dir = Path.Combine(Path.GetTempPath(), "GitExtensions.Avalonia", shortHash);
+            Directory.CreateDirectory(dir);
+
+            string temp = Path.Combine(dir, Path.GetFileName(name));
+            await File.WriteAllBytesAsync(temp, bytes).ConfigureAwait(false);
+
+            return _tools.OpenInEditor(temp, repoPath);
+        });
+    }
+
+    // "Save selected as…": the file's content at the displayed commit, written
+    // wherever the picker says. The picker must run on the UI thread; the git
+    // read and the write do not.
+    private void SaveSelectedAs()
+    {
+        if (_files.SelectedItem is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        string repoPath = _repoPath;
+        string commit = _commitHash;
+        string name = row.Name;
+
+        _ = SaveSelectedAsCoreAsync(repoPath, commit, name);
+    }
+
+    private async Task SaveSelectedAsCoreAsync(string repoPath, string commit, string name)
+    {
+        try
+        {
+            IStorageProvider? storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+            if (storage is null)
+            {
+                _status.Text = T("No file picker is available on this display.");
+                return;
+            }
+
+            IStorageFile? target = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = T("FileStatusList/tsmiSaveAs.Text", "Save selected as..."),
+                SuggestedFileName = Path.GetFileName(name),
+                ShowOverwritePrompt = true,
+            });
+
+            if (target is null)
+            {
+                return;   // cancelled
+            }
+
+            string? destination = target.TryGetLocalPath();
+            if (destination is null)
+            {
+                _status.Text = T("The chosen location is not a local file.");
+                return;
+            }
+
+            _status.Text = F(T("Saving {0}…"), destination);
+
+            await Task.Run(async () =>
+            {
+                byte[] bytes = await DiffTextService.GetFileBytesAsync(repoPath, commit, name)
+                    .ConfigureAwait(false);
+                await File.WriteAllBytesAsync(destination, bytes).ConfigureAwait(false);
+            });
+
+            _status.Text = F(T("Saved {0}"), destination);
+        }
+        catch (Exception ex)
+        {
+            _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+        }
+    }
+
+    // Runs a blocking external-tool launch off the UI thread and reports the
+    // outcome in the status bar. Never throws into the caller.
+    private void RunFileCommand(Func<ExternalToolResult> command) =>
+        RunFileLaunch(() => Task.FromResult(command()));
+
+    private void RunFileLaunch(Func<Task<ExternalToolResult>> command) =>
+        _ = Task.Run(async () =>
+        {
+            string message;
+            try
+            {
+                ExternalToolResult result = await command().ConfigureAwait(false);
+                message = result.Message;
+            }
+            catch (Exception ex)
+            {
+                message = F("{0}: {1}", ErrorWord(), ex.Message);
+            }
+
+            Dispatcher.UIThread.Post(() => _status.Text = message);
+        });
+
     // ---------------------------------------------------------- diff loading
 
     // Re-runs the diff of the currently selected file with the current options
@@ -897,6 +1516,8 @@ public sealed class DiffView : UserControl
             WordDiff = _options.WordDiff,
             EncodingName = _options.EncodingName,
             FontSize = _options.FontSize,
+            ContextLines = _options.ContextLines,
+            ShowEntireFile = _options.ShowEntireFile,
         };
 
         _diff.Inlines?.Clear();
@@ -949,7 +1570,9 @@ public sealed class DiffView : UserControl
         .Replace(" ", "·", StringComparison.Ordinal);
 
     // Colour each diff line: added green, removed red, hunk headers blue,
-    // file/meta headers gray.
+    // file/meta headers gray. When a search term is active the occurrences are
+    // highlighted by splitting the affected lines into several Runs — see
+    // CollectMatches for the size limits that turn that off.
     private void RenderDiff(string diffText)
     {
         _currentDiffText = diffText;
@@ -958,9 +1581,23 @@ public sealed class DiffView : UserControl
         inlines.Clear();
         _hunkLines.Clear();
         _hunkIndex = -1;
+        _matchRuns.Clear();
+        _matchIndex = -1;
+
+        string[] rawLines = diffText.Split('\n');
+
+        // What the user actually sees, which is also what the search must match.
+        string[] display = new string[rawLines.Length];
+        for (int i = 0; i < rawLines.Length; i++)
+        {
+            display[i] = _options.ShowNonPrinting ? ApplyNonPrinting(rawLines[i]) : rawLines[i];
+        }
+
+        bool inlineHighlight = CollectMatches(display);
+        int matchCursor = 0;
 
         int lineNumber = -1;
-        foreach (string rawLine in diffText.Split('\n'))
+        foreach (string rawLine in rawLines)
         {
             lineNumber++;
             string line = rawLine;
@@ -992,18 +1629,125 @@ public sealed class DiffView : UserControl
                 brush = RemovedBrush;
             }
 
-            if (_options.ShowNonPrinting)
+            line = display[lineNumber];
+
+            // Skip past matches belonging to earlier lines (only possible when
+            // highlighting is suppressed, but keeps the cursor honest).
+            while (matchCursor < _searchMatches.Count && _searchMatches[matchCursor].Line < lineNumber)
             {
-                line = ApplyNonPrinting(line);
+                matchCursor++;
             }
 
-            Run run = new(line + "\n");
-            if (brush is not null)
+            bool lineHasMatch = inlineHighlight
+                && matchCursor < _searchMatches.Count
+                && _searchMatches[matchCursor].Line == lineNumber;
+
+            if (!lineHasMatch)
             {
-                run.Foreground = brush;
+                inlines.Add(Segment(line + "\n", brush, background: null));
+                continue;
             }
 
-            inlines.Add(run);
+            int pos = 0;
+            while (matchCursor < _searchMatches.Count && _searchMatches[matchCursor].Line == lineNumber)
+            {
+                (_, int start, int length) = _searchMatches[matchCursor];
+
+                if (start > pos)
+                {
+                    inlines.Add(Segment(line[pos..start], brush, background: null));
+                }
+
+                Run hit = Segment(line.Substring(start, length), brush, MatchBrush);
+                inlines.Add(hit);
+                _matchRuns.Add(hit);
+
+                pos = start + length;
+                matchCursor++;
+            }
+
+            inlines.Add(Segment(line[pos..] + "\n", brush, background: null));
         }
+
+        // A reload (new file, new toggle) rebuilds the match list: put the
+        // marker back on the first hit and refresh the counter.
+        if (_searchMatches.Count > 0)
+        {
+            SelectMatch(0, scroll: false);
+        }
+        else
+        {
+            UpdateMatchCounter();
+        }
+    }
+
+    private static Run Segment(string text, IBrush? foreground, IBrush? background)
+    {
+        Run run = new(text);
+        if (foreground is not null)
+        {
+            run.Foreground = foreground;
+        }
+
+        if (background is not null)
+        {
+            run.Background = background;
+        }
+
+        return run;
+    }
+
+    /// <summary>
+    ///  Fills <see cref="_searchMatches"/> with every occurrence of the current
+    ///  search term (case-insensitive) in the rendered lines, and decides whether
+    ///  the renderer should highlight them inline.
+    ///
+    ///  <para>Two explicit limits, because a highlight costs Run objects and each
+    ///  Run is a separate text-layout box: no inline highlighting past
+    ///  <see cref="MaxHighlightLines"/> rendered lines or
+    ///  <see cref="MaxHighlightMatches"/> hits, and the match list itself stops at
+    ///  <see cref="MaxSearchMatches"/>. Beyond those the counter and the ▲/▼
+    ///  navigation keep working (they only need line numbers) and the counter's
+    ///  tooltip says the highlighting was dropped.</para>
+    /// </summary>
+    private bool CollectMatches(string[] display)
+    {
+        _searchMatches.Clear();
+        _highlightSuppressed = false;
+
+        string term = _searchTerm;
+        if (term.Length == 0)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < display.Length; i++)
+        {
+            string line = display[i];
+            int from = 0;
+
+            while (from <= line.Length - term.Length)
+            {
+                int at = line.IndexOf(term, from, StringComparison.OrdinalIgnoreCase);
+                if (at < 0)
+                {
+                    break;
+                }
+
+                _searchMatches.Add((i, at, term.Length));
+                from = at + term.Length;
+
+                if (_searchMatches.Count >= MaxSearchMatches)
+                {
+                    _highlightSuppressed = true;
+                    return false;
+                }
+            }
+        }
+
+        bool inline = display.Length <= MaxHighlightLines && _searchMatches.Count <= MaxHighlightMatches;
+        _highlightSuppressed = !inline && _searchMatches.Count > 0;
+
+        return inline;
     }
 }

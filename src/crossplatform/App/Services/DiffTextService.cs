@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace GitExtensions.Avalonia.Services;
@@ -54,8 +55,29 @@ public sealed class DiffDisplayOptions
     /// <summary>Font size of the diff pane (zoom + / −).</summary>
     public double FontSize { get; set; } = DefaultFontSize;
 
+    /// <summary>
+    ///  Lines of context around each hunk (<c>-U&lt;n&gt;</c>). Ignored while
+    ///  <see cref="ShowEntireFile"/> is on.
+    /// </summary>
+    public int ContextLines { get; set; } = DefaultContextLines;
+
+    /// <summary>
+    ///  Renders the whole file rather than just the changed hunks, by asking git
+    ///  for an absurd amount of context (the same trick the Windows viewer uses).
+    /// </summary>
+    public bool ShowEntireFile { get; set; }
+
     /// <summary>The font size the zoom-reset command restores.</summary>
     public const double DefaultFontSize = 12;
+
+    /// <summary>git's own default number of context lines.</summary>
+    public const int DefaultContextLines = 3;
+
+    /// <summary>Upper bound of the "increase context" command.</summary>
+    public const int MaxContextLines = 100;
+
+    /// <summary>The <c>-U</c> value that stands for "the entire file".</summary>
+    public const int EntireFileContextLines = 1_000_000;
 }
 
 /// <summary>
@@ -134,6 +156,18 @@ public static class DiffTextService
         if (options.WordDiff)
         {
             args.Add("--word-diff=plain");
+        }
+
+        // -U is only spelled out when it differs from git's default, so the
+        // command shown in the status bar stays readable in the common case.
+        if (options.ShowEntireFile)
+        {
+            args.Add("-U" + DiffDisplayOptions.EntireFileContextLines.ToString(CultureInfo.InvariantCulture));
+        }
+        else if (options.ContextLines != DiffDisplayOptions.DefaultContextLines)
+        {
+            int context = Math.Clamp(options.ContextLines, 0, DiffDisplayOptions.MaxContextLines);
+            args.Add("-U" + context.ToString(CultureInfo.InvariantCulture));
         }
 
         switch (request.Kind)
@@ -231,6 +265,74 @@ public static class DiffTextService
         }
 
         return text;
+    }
+
+    /// <summary>
+    ///  Returns the raw bytes of <paramref name="path"/> as of
+    ///  <paramref name="rev"/> (<c>git show &lt;rev&gt;:&lt;path&gt;</c>), or the
+    ///  working-tree bytes when <paramref name="rev"/> is <c>null</c>/empty.
+    ///  Bytes, not text: the file may be binary, and "save as" must round-trip it
+    ///  unchanged. Throws <see cref="InvalidOperationException"/> with git's own
+    ///  message when the object does not exist — the callers turn that into a
+    ///  status line. Must not be called from the UI thread.
+    /// </summary>
+    public static async Task<byte[]> GetFileBytesAsync(
+        string repoPath,
+        string? rev,
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(rev))
+        {
+            return await File.ReadAllBytesAsync(Path.Combine(repoPath, path), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        ProcessStartInfo psi = new()
+        {
+            FileName = "git",
+            WorkingDirectory = repoPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        psi.ArgumentList.Add("--no-pager");
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add("core.quotepath=false");
+        psi.ArgumentList.Add("show");
+        psi.ArgumentList.Add(rev + ":" + path);
+
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
+
+        using Process process = new() { StartInfo = psi };
+        process.Start();
+
+        using MemoryStream stdout = new();
+        Task copy = process.StandardOutput.BaseStream.CopyToAsync(stdout, cancellationToken);
+        Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+
+        try
+        {
+            await copy.ConfigureAwait(false);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKill(process);
+            throw;
+        }
+
+        string error = await stderr.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(error) ? "git show failed." : error.Trim());
+        }
+
+        return stdout.ToArray();
     }
 
     private static void TryKill(Process process)

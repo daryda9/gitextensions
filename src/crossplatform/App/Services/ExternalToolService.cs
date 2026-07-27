@@ -97,6 +97,253 @@ public sealed class ExternalToolService
     }
 
     /// <summary>
+    ///  Reveals <paramref name="path"/> in the desktop's file manager.
+    ///
+    ///  <para>Tries the freedesktop <c>org.freedesktop.FileManager1.ShowItems</c>
+    ///  D-Bus call first, which opens the containing folder <em>with the file
+    ///  selected</em> (Nautilus, Dolphin, Thunar, Nemo all implement it). Falls
+    ///  back to <c>xdg-open</c> on the containing directory when there is no
+    ///  session bus or no implementor — headless sessions, for instance.</para>
+    /// </summary>
+    public ExternalToolResult ShowInFolder(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return new ExternalToolResult(false, "No path to show.");
+        }
+
+        string? dir = Directory.Exists(path) ? path : Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(dir))
+        {
+            return new ExternalToolResult(false, $"No containing folder for {path}.");
+        }
+
+        if (File.Exists(path) && OnPath("dbus-send") &&
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS")))
+        {
+            ExternalToolResult shown = LaunchDetached(
+                "dbus-send",
+                new[]
+                {
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    "array:string:" + new Uri(path).AbsoluteUri,
+                    "string:",
+                },
+                workingDir: null,
+                friendly: $"Showing {path} in the file manager");
+
+            if (shown.Success)
+            {
+                return shown;
+            }
+        }
+
+        return LaunchDetached("xdg-open", new[] { dir }, workingDir: null,
+            friendly: $"Opened folder {dir}");
+    }
+
+    // Editors that only make sense inside a terminal: launching them detached
+    // from a GUI would start a process with no visible window.
+    private static readonly string[] TerminalEditors =
+    {
+        "vi", "vim", "nvim", "nano", "pico", "ed", "joe", "micro", "hx", "helix", "emacsclient -nw", "emacs -nw",
+    };
+
+    /// <summary>
+    ///  Opens <paramref name="path"/> in an external editor.
+    ///
+    ///  <para>Resolution order, and why: git's own <c>GIT_EDITOR</c> /
+    ///  <c>core.editor</c> / <c>$VISUAL</c> / <c>$EDITOR</c> comes first, because
+    ///  that is the editor the user already told <em>git</em> to use and the
+    ///  Windows original likewise honours the configured editor. But most Linux
+    ///  users configure a console editor there, which cannot be launched
+    ///  detached from a GUI — so a configured console editor is wrapped in a
+    ///  terminal emulator. When nothing is configured we hand the file to
+    ///  <c>xdg-open</c>, i.e. the desktop's registered handler for that file
+    ///  type, which is the closest equivalent of Windows' ShellExecute.</para>
+    ///
+    ///  <para>Runs <c>git config</c>: call it off the UI thread.</para>
+    /// </summary>
+    public ExternalToolResult OpenInEditor(string path, string? repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return new ExternalToolResult(false, "No file to open.");
+        }
+
+        string? editor = ResolveEditor(repoPath);
+        if (string.IsNullOrWhiteSpace(editor))
+        {
+            return OpenPath(path);
+        }
+
+        string command = editor!.Trim();
+        string exe = SplitCommand(command)[0];
+        string baseName = Path.GetFileName(exe);
+
+        if (TerminalEditors.Any(e => string.Equals(e, baseName, StringComparison.Ordinal)) ||
+            TerminalEditors.Any(e => command.StartsWith(e + " ", StringComparison.Ordinal)))
+        {
+            return OpenInTerminalEditor(command, path);
+        }
+
+        List<string> args = SplitCommand(command).Skip(1).ToList();
+        args.Add(path);
+
+        ExternalToolResult result = LaunchDetached(exe, args, workingDir: repoPath,
+            friendly: $"Opened {path} in {baseName}");
+
+        // A configured-but-unusable editor must not be a dead end.
+        return result.Success ? result : OpenPath(path);
+    }
+
+    // Runs a console editor inside the first terminal emulator we find.
+    private ExternalToolResult OpenInTerminalEditor(string command, string path)
+    {
+        foreach ((string exe, string? _) in Terminals)
+        {
+            if (!OnPath(exe))
+            {
+                continue;
+            }
+
+            // "-e" is understood by every terminal in the probe list; the command
+            // is passed through a shell so a multi-word core.editor keeps working.
+            ExternalToolResult result = LaunchDetached(
+                exe,
+                new[] { "-e", "sh", "-c", command + " \"$1\"", "sh", path },
+                workingDir: Path.GetDirectoryName(path),
+                friendly: $"Opened {path} in {command}");
+
+            if (result.Success)
+            {
+                return result;
+            }
+        }
+
+        return OpenPath(path);
+    }
+
+    /// <summary>
+    ///  The editor git itself would use: <c>GIT_EDITOR</c>, then
+    ///  <c>core.editor</c>, then <c>$VISUAL</c>, then <c>$EDITOR</c>. Returns
+    ///  <c>null</c> when none is set. Blocking (runs <c>git config</c>).
+    /// </summary>
+    public static string? ResolveEditor(string? repoPath)
+    {
+        string? fromEnv = Environment.GetEnvironmentVariable("GIT_EDITOR");
+        if (!string.IsNullOrWhiteSpace(fromEnv))
+        {
+            return fromEnv;
+        }
+
+        string? configured = ReadGitConfig(repoPath, "core.editor");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        foreach (string name in new[] { "VISUAL", "EDITOR" })
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadGitConfig(string? repoPath, string key)
+    {
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "git",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            psi.ArgumentList.Add("config");
+            psi.ArgumentList.Add("--get");
+            psi.ArgumentList.Add(key);
+
+            if (!string.IsNullOrEmpty(repoPath) && Directory.Exists(repoPath))
+            {
+                psi.WorkingDirectory = repoPath;
+            }
+
+            using Process process = new() { StartInfo = psi };
+            process.Start();
+            string value = process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            return process.ExitCode == 0 ? value.Trim() : null;
+        }
+        catch (Exception)
+        {
+            // No git on PATH, no repository: treat as "not configured".
+            return null;
+        }
+    }
+
+    // Minimal shell-ish tokenizer: enough for the "code --wait", "gedit" and
+    // "'/opt/My Editor/bin/ed' -n" shapes people put in core.editor.
+    private static string[] SplitCommand(string command)
+    {
+        List<string> parts = [];
+        System.Text.StringBuilder current = new();
+        char quote = '\0';
+
+        foreach (char c in command)
+        {
+            if (quote != '\0')
+            {
+                if (c == quote)
+                {
+                    quote = '\0';
+                }
+                else
+                {
+                    current.Append(c);
+                }
+            }
+            else if (c is '"' or '\'')
+            {
+                quote = c;
+            }
+            else if (char.IsWhiteSpace(c))
+            {
+                if (current.Length > 0)
+                {
+                    parts.Add(current.ToString());
+                    current.Clear();
+                }
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+
+        if (current.Length > 0)
+        {
+            parts.Add(current.ToString());
+        }
+
+        return parts.Count == 0 ? [command] : parts.ToArray();
+    }
+
+    /// <summary>
     ///  Opens a terminal emulator in <paramref name="dir"/>, probing common
     ///  terminals in order. If none is found the result reports that so the host
     ///  can surface a message rather than crash.
