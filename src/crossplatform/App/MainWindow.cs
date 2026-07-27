@@ -213,6 +213,11 @@ public sealed class MainWindow : Window
 
         Opened += (_, _) =>
         {
+            // Discover the .xlf catalogues and apply the remembered language. Both
+            // steps hit the disk (and XmlSerializer), so they run off the UI thread;
+            // the menu re-labels itself when the catalogue is in.
+            _ = InitializeTranslationsAsync();
+
             string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory());
             if (initial is not null)
             {
@@ -226,6 +231,58 @@ public sealed class MainWindow : Window
 
         // Persist window size + splitter positions when the window closes.
         Closing += (_, _) => PersistLayout();
+    }
+
+    /// <summary>
+    ///  Populates View → Language with the catalogues shipped next to the
+    ///  executable and applies the persisted choice. Falls back to English when the
+    ///  remembered language no longer has an <c>.xlf</c> (e.g. after a partial
+    ///  install). Never throws: a translation problem must not stop the shell.
+    /// </summary>
+    private async Task InitializeTranslationsAsync()
+    {
+        try
+        {
+            IReadOnlyList<string> languages = await Task.Run(TranslationService.AvailableLanguages);
+
+            string wanted = _uiState.Language;
+            if (!languages.Any(l => string.Equals(l, wanted, StringComparison.OrdinalIgnoreCase)))
+            {
+                wanted = TranslationService.EnglishLanguage;
+            }
+
+            _menu.SetLanguages(languages, wanted);
+
+            if (!string.Equals(wanted, TranslationService.EnglishLanguage, StringComparison.OrdinalIgnoreCase))
+            {
+                // Raises LanguageChanged → the menu rebuilds itself translated.
+                await TranslationService.LoadAsync(wanted);
+            }
+        }
+        catch
+        {
+            // English stays; nothing else to do.
+        }
+    }
+
+    /// <summary>
+    ///  Applies and persists a language chosen from View → Language. The catalogue
+    ///  is parsed in the background and every wired view re-labels itself when
+    ///  <see cref="TranslationService.LanguageChanged"/> fires, so no restart is
+    ///  needed (unlike upstream, whose Appearance page says "restart required").
+    /// </summary>
+    private async Task ChangeLanguageAsync(string language)
+    {
+        try
+        {
+            _uiState.Language = language;
+            _uiStateService.Save(_uiState);
+            await TranslationService.LoadAsync(language);
+        }
+        catch
+        {
+            // A failed load leaves the previous catalogue in place.
+        }
     }
 
     // Captures the current window size and splitter panel sizes and saves them.
@@ -654,6 +711,7 @@ public sealed class MainWindow : Window
             _uiState.Theme = "Dark";
             _uiStateService.Save(_uiState);
         };
+        _menu.LanguageRequested += language => _ = ChangeLanguageAsync(language);
         _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
         _menu.PullRequested += () => RunRemoteOp("Pull", (s, r, emit, creds) => s.PullStreaming(_repoPath!, r, rebase: false, emit, creds));
         _menu.PushRequested += OpenPushDialog;

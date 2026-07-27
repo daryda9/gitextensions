@@ -71,6 +71,16 @@ if [[ ! -f "$PUBLISH_DIR/$APP_BINARY" ]]; then
     exit 1
 fi
 
+# The XLIFF catalogues are pulled in by the csproj (<None … Link="Translation\…">)
+# and land next to the assemblies, which is exactly where the core Translator
+# looks for them. "cp -a $PUBLISH_DIR/." below then carries them into the package.
+# Fail loudly if they went missing: the app would silently be English-only.
+if [[ ! -d "$PUBLISH_DIR/Translation" ]] || ! compgen -G "$PUBLISH_DIR/Translation/*.xlf" >/dev/null; then
+    echo "error: no Translation/*.xlf in the publish output — the UI would be English-only" >&2
+    exit 1
+fi
+echo "==> Translations: $(find "$PUBLISH_DIR/Translation" -name '*.xlf' | wc -l) .xlf files"
+
 # --- 2. Stage the Debian tree ------------------------------------------------
 echo "==> Staging Debian tree"
 INSTALL_ROOT="/opt/gitextensions"

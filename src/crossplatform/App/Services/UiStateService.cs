@@ -41,6 +41,14 @@ public sealed class UiState
 
     /// <summary>"Light" or "Dark".</summary>
     public string Theme { get; set; } = "Dark";
+
+    /// <summary>
+    ///  UI language: the base name of a <c>Translation/*.xlf</c> catalogue
+    ///  ("Italian", "German", …), or "English" for the untranslated literals.
+    ///  Sits next to <see cref="Theme"/> because upstream treats both as
+    ///  Appearance settings (<c>FormSettings</c> → Appearance → <c>Settings.Language</c>).
+    /// </summary>
+    public string Language { get; set; } = "English";
 }
 
 /// <summary>Reads/writes <see cref="UiState"/> to a JSON file, tolerating a
@@ -109,6 +117,7 @@ public sealed class UiStateService
         s.DetailStar = Clamp(s.DetailStar, 0.1, 1000, 2);
         s.DiffStar = Clamp(s.DiffStar, 0.1, 1000, 3);
         s.Theme = s.Theme == "Light" ? "Light" : "Dark";
+        s.Language = string.IsNullOrWhiteSpace(s.Language) ? "English" : s.Language.Trim();
         return s;
     }
 

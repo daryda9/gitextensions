@@ -17,6 +17,22 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- XLIFF translation catalogues. The core engine
+         (GitExtensions.Extensibility.Translations.Translator.GetTranslationDir)
+         looks for them in "<directory of the Extensibility assembly>/Translation",
+         which for this app is "$(OutDir)Translation" — and, after `dotnet publish`,
+         "$(PublishDir)Translation", which build-deb.sh copies wholesale into the
+         package. Without this item group no .xlf ever reaches the output and the
+         port is English by construction.
+         The *.Plugins.xlf files are included on purpose: Translator enumerates
+         "<language>*.xlf", so they are part of a language's catalogue. -->
+    <None Include="..\..\app\GitUI\Translation\*.xlf"
+          Link="Translation\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
