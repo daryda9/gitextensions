@@ -11,8 +11,10 @@ using Avalonia.Threading;
 using GitExtensions.Avalonia.Plugins;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
+using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
 using GitExtensions.Extensibility.Plugins;
+using GitExtUtils;
 
 namespace GitExtensions.Avalonia;
 
@@ -670,6 +672,7 @@ public sealed class MainWindow : Window
         _menu.PushRequested += OpenPushDialog;
         _menu.CommitRequested += OpenCommitDialog;
         _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
+        _menu.UndoLastCommitRequested += () => _ = UndoLastCommitAsync();
         _menu.ResetChangesRequested += () => _ = ResetChangesAsync();
         _menu.CleanWorkingDirectoryRequested += () => _ = CleanWorkingDirectoryAsync();
         _menu.NewBranchRequested += () => _ = NewBranchAsync();
@@ -1519,6 +1522,156 @@ public sealed class MainWindow : Window
 
             RefreshAll();
         }
+    }
+
+    // Commands → "Undo last commit…" (FormBrowse undoLastCommitToolStripMenuItem).
+    // WorkingDirectoryService.UndoLastCommit runs `git reset --soft HEAD~1`: the commit
+    // disappears from history but every change it carried stays staged in the working
+    // tree. Still destructive for history, so it is confirmed first. The parent check
+    // and the HEAD summary are read in Task.Run — the service blocks on async work and
+    // would deadlock the UI thread (M43) — and the reset itself runs in the process
+    // dialog, i.e. on a background thread.
+    private async Task UndoLastCommitAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        _statusBar.SetText("Checking the last commit…");
+
+        (bool Ok, bool HasParent, string Summary, string Error) head;
+        try
+        {
+            head = await Task.Run(() =>
+            {
+                GitCommands.GitModule module = GitContext.CreateModule(repo);
+
+                // %x20 rather than a literal space: GitArgumentBuilder tokenizes each
+                // string it is given on whitespace, which would split the format.
+                GitArgumentBuilder logArgs = new("log") { "-1", "--pretty=format:%h%x20%s" };
+                ExecutionResult log = GitCommands.ExecutableExtensions.Execute(module.GitExecutable, logArgs, throwOnErrorExit: false);
+                if (!log.ExitedSuccessfully)
+                {
+                    return (false, false, string.Empty, log.AllOutput.Trim());
+                }
+
+                GitArgumentBuilder parentArgs = new("rev-parse") { "--verify", "--quiet", "HEAD~1" };
+                ExecutionResult parent = GitCommands.ExecutableExtensions.Execute(module.GitExecutable, parentArgs, throwOnErrorExit: false);
+                return (true, parent.ExitedSuccessfully, log.StandardOutput.Trim(), string.Empty);
+            });
+        }
+        catch (Exception ex)
+        {
+            _statusBar.SetText("Undo last commit failed: " + ex.Message);
+            return;
+        }
+
+        if (!head.Ok)
+        {
+            _statusBar.SetText(head.Error.Length > 0
+                ? "Undo last commit failed: " + head.Error
+                : "Undo last commit failed: no commit to undo.");
+            return;
+        }
+
+        if (!head.HasParent)
+        {
+            await InfoAsync(
+                "Undo last commit",
+                "The current commit has no parent (this is the very first commit on this branch), "
+                + "so it cannot be undone with a soft reset.\n\nNothing was changed.");
+            _statusBar.SetText("Undo last commit: no previous commit.");
+            return;
+        }
+
+        bool confirmed = await ConfirmUndoLastCommitAsync(head.Summary);
+        if (!confirmed)
+        {
+            _statusBar.SetText("Undo last commit cancelled.");
+            return;
+        }
+
+        WorkingDirectoryService service = new();
+        _statusBar.SetText("Undoing last commit…");
+
+        WorkingDirCommitResult? result = null;
+        await Views.GitProcessDialog.RunAsync(
+            this,
+            "Undo last commit (git reset --soft HEAD~1)",
+            () =>
+            {
+                result = service.UndoLastCommit(repo);
+                return new Views.GitProcessOutcome(result.Success, result.Output);
+            });
+
+        _statusBar.SetText(result is { Success: true }
+            ? "Last commit undone — its changes are staged in the working tree."
+            : "Undo last commit failed — see the process output.");
+        RefreshAll();
+    }
+
+    // Confirmation for the destructive part of "Undo last commit": the commit is
+    // removed from the branch. Spells out what actually happens (soft reset, changes
+    // kept) so the wording matches the service behaviour.
+    private async Task<bool> ConfirmUndoLastCommitAsync(string headSummary)
+    {
+        Button undo = new() { Content = "Undo commit", MinWidth = 90 };
+        Button cancel = new() { Content = "Cancel", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+
+        StackPanel panel = new()
+        {
+            Margin = new Thickness(16),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Undo the last commit?\n\n"
+                        + "This runs \"git reset --soft HEAD~1\": the commit is removed from the "
+                        + "branch, but all of its changes are kept and left staged in the working "
+                        + "tree, so nothing is lost. Anything already pushed would need a force "
+                        + "push to match.",
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            },
+        };
+
+        if (headSummary.Length > 0)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = headSummary,
+                FontFamily = new FontFamily("monospace"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 12, 0, 0),
+                Background = (IBrush)Application.Current!.Resources["App.Panel"]!,
+                Padding = new Thickness(8),
+            });
+        }
+
+        panel.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 16, 0, 0),
+            Children = { undo, cancel },
+        });
+
+        Window dlg = new()
+        {
+            Title = "Undo last commit",
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = panel,
+        };
+
+        bool result = false;
+        undo.Click += (_, _) => { result = true; dlg.Close(); };
+        cancel.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+        return result;
     }
 
     // Commands → "Reset changes…" (FormBrowse resetToolStripMenuItem). Destructive:
@@ -2443,6 +2596,37 @@ public sealed class MainWindow : Window
 
     // Confirmation dialog (Yes/No).
     private Task<bool> ConfirmAsync(string message) => YesNoAsync(message);
+
+    // Informational dialog with a single OK button (no choice to make).
+    private async Task InfoAsync(string title, string message)
+    {
+        Button ok = new() { Content = "OK", MinWidth = 80 };
+        Window dlg = new()
+        {
+            Title = title,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Children =
+                {
+                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Margin = new Thickness(0, 16, 0, 0),
+                        Children = { ok },
+                    },
+                },
+            },
+        };
+        ok.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+    }
 
     private async Task<bool> YesNoAsync(string message)
     {

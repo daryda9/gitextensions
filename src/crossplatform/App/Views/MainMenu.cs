@@ -58,6 +58,7 @@ public sealed class MainMenu : UserControl
 
     // ---- Commands
     public event Action? CommitRequested;
+    public event Action? UndoLastCommitRequested;
     public event Action? StashRequested;
     public event Action? ResetChangesRequested;
     public event Action? CleanWorkingDirectoryRequested;
@@ -141,6 +142,10 @@ public sealed class MainMenu : UserControl
 
         MenuItem commands = new() { Header = "_Commands" };
         commands.Items.Add(Item("Commit…", "CommitSummary", () => CommitRequested?.Invoke()));
+        // Same slot as the original FormBrowse Commands menu (undoLastCommitToolStripMenuItem,
+        // "&Undo last commit...", image ResetFileTo): directly after Commit. Pull/Push, which
+        // follow it there, live in the toolbar/Repository menu in this port.
+        commands.Items.Add(Item("Undo last commit…", "ResetFileTo", () => UndoLastCommitRequested?.Invoke()));
         commands.Items.Add(Item("Stash", "stash", () => StashRequested?.Invoke()));
         // Same slot as the original FormBrowse Commands menu: the two destructive
         // working-directory actions sit right after Stash and before the separator
