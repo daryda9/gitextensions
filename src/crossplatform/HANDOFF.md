@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `66a5ae1c8` (… + M45 + M46 + **feature e integrazione GUI / M47–M48**) |
+| HEAD al momento dell'handoff | `e23f859f7` = questo commit di documentazione (… + M45 + M46 + **feature e integrazione GUI / M47–M48**) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | eseguito dall'utente (origin allineato). Portachiavi **vuoto**: il prossimo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: 29 commit locali non pushati** (M45–M48). Il push lo esegue l'utente, mai il loop. Portachiavi **vuoto**: il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -226,8 +226,10 @@ infine A/B con e senza fix.
 
 ## 5. Prompt pronto per riprendere
 
-Il blocco rifiniture è chiuso: non c'è una coda di residui da smaltire. Il prossimo lavoro
-sensato sono i **follow-up** della sezione 4. Prompt riutilizzabile (incollabile in `/loop`):
+I blocchi M45–M48 sono chiusi. Il prossimo lavoro sensato è la lista qui sotto, che nasce da
+un **audit di parità funzionale** fra `src/app/GitUI` e il port (la checklist di `PORTING.md`
+conta le *voci di menu*, non la profondità: era al 98% mentre mancavano interazioni
+quotidiane). Prompt riutilizzabile (incollabile in `/loop`):
 
 ```
 Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/. Branch:
