@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
@@ -34,6 +35,21 @@ public sealed class MainMenu : UserControl
     private MenuItem _pluginSettings = new();
     private MenuItem _language = new();
 
+    // The three top-level menus upstream hides outright when there is no valid
+    // repository (FormBrowse.HideVariableMainMenuItems / RefreshSplitViewLayout,
+    // FormBrowse.cs:926-929 and 987-990), plus the Dashboard menu, which exists only
+    // while the dashboard is up. Kept as fields so SetRepositoryState can flip
+    // IsVisible without rebuilding.
+    private MenuItem _dashboard = new();
+    private MenuItem _repository = new();
+    private MenuItem _commands = new();
+
+    // Every entry that can be greyed out, keyed by the *upstream designer name* of
+    // the WinForms item it mirrors ("manageSubmodulesToolStripMenuItem"). Using
+    // upstream's own names keeps the gating tables below diffable by eye against
+    // FormBrowse.cs. Refilled by every Build().
+    private readonly Dictionary<string, MenuItem> _gated = new(StringComparer.Ordinal);
+
     // Last values pushed in by the host window: kept so a language switch can
     // rebuild the menu without the host having to re-supply them.
     private IReadOnlyList<string> _recentRepositories = [];
@@ -47,6 +63,15 @@ public sealed class MainMenu : UserControl
     // only renders the check marks — which is what keeps it in step with the grid's
     // own header flyouts and with the keyboard shortcuts.
     private IReadOnlyDictionary<string, bool> _viewOptions = new Dictionary<string, bool>();
+
+    // Repository state pushed in by the host (SetRepositoryState) and grid selection
+    // state (SetSelectionState). Kept so a language switch — which rebuilds the whole
+    // menu — restores the visibility and the greying without the host re-supplying it.
+    private bool _hasRepository = true;
+    private bool _isBare;
+    private bool _isDashboard;
+    private int _selectedCount = 1;
+    private bool _selectionIsNormal = true;
 
     // The checkable items built for those options, by id, so SetViewOptions can
     // re-tick them without rebuilding the menu. Refilled by every Build().
@@ -85,20 +110,40 @@ public sealed class MainMenu : UserControl
     public event Action? ResetRevisionFiltersRequested;
     public event Action? ShowReflogRequested;
 
+    // ---- Dashboard (top-level, shown only while the dashboard is up)
+    public event Action? DashboardRefreshRequested;
+
     // ---- Repository
-    public event Action? FetchRequested;
-    public event Action? PullRequested;
-    public event Action? PushRequested;
     public event Action? FileExplorerRequested;
+    public event Action? RemotesRequested;
+    public event Action? SubmodulesRequested;
+    public event Action? UpdateAllSubmodulesRequested;
+    public event Action? SynchronizeAllSubmodulesRequested;
+    public event Action? WorktreesRequested;
     public event Action? EditGitignoreRequested;
     public event Action? EditGitattributesRequested;
     public event Action? EditMailmapRequested;
     public event Action? EditInfoExcludeRequested;
     public event Action? RepoSettingsRequested;
-    public event Action? GitMaintenanceRequested;
     public event Action? SparseCheckoutRequested;
 
+    // ---- Repository → Git maintenance (the four upstream entries)
+    public event Action? CompressDatabaseRequested;
+    public event Action? DeleteIndexLockRequested;
+    public event Action? EditGitConfigRequested;
+
+    /// <summary>
+    ///  "Recover lost objects…". Upstream opens <c>FormVerify</c>, a dedicated
+    ///  dangling-object browser this port does not have; the entry therefore opens
+    ///  the port's existing <c>MaintenanceDialog</c>, whose "Verify database" button
+    ///  runs the same <c>git fsck</c> and shows its output. See the class remarks.
+    /// </summary>
+    public event Action? GitMaintenanceRequested;
+
     // ---- Commands
+    public event Action? FetchRequested;
+    public event Action? PullRequested;
+    public event Action? PushRequested;
     public event Action? CommitRequested;
     public event Action? UndoLastCommitRequested;
     public event Action? StashRequested;
@@ -120,12 +165,46 @@ public sealed class MainMenu : UserControl
     public event Action<IGitPlugin>? PluginRunRequested;
     public event Action<IGitPlugin>? PluginSettingsRequested;
 
+    /// <summary>
+    ///  Raised just before the Commands menu drops down, so the host can refresh the
+    ///  grid selection it last pushed through <see cref="SetSelectionState"/>. Wiring
+    ///  it is optional: a host that already calls <see cref="SetSelectionState"/> on
+    ///  every selection change needs nothing here.
+    /// </summary>
+    public event Action? CommandsMenuOpening;
+
     // ---- Help
     public event Action? AboutRequested;
     public event Action? UserManualRequested;
     public event Action? ReportIssueRequested;
     public event Action? ChangelogRequested;
     public event Action? DonateRequested;
+
+    /// <summary>
+    ///  The window's live hotkey map, used ONLY to label the entries with the
+    ///  gesture actually in force. Same contract as <see cref="MainToolbar.Hotkeys"/>:
+    ///  while it is null the labels fall back to <see cref="HotkeyService.Defaults"/>
+    ///  — upstream's FormBrowse map, which ignores the user's <c>hotkeys.json</c>
+    ///  overrides and would therefore make the menu lie — so a host that owns a
+    ///  hotkey service must assign this. Assigning it rebuilds the menu, because
+    ///  <see cref="Build"/> runs from the constructor, before a host can set it.
+    /// </summary>
+    public HotkeyService? Hotkeys
+    {
+        get => _hotkeys;
+        set
+        {
+            if (ReferenceEquals(_hotkeys, value))
+            {
+                return;
+            }
+
+            _hotkeys = value;
+            Build();
+        }
+    }
+
+    private HotkeyService? _hotkeys;
 
     public MainMenu()
     {
@@ -155,7 +234,7 @@ public sealed class MainMenu : UserControl
         BuildFavoriteRepositories();
 
         MenuItem start = new() { Header = T("FormBrowse/fileToolStripMenuItem.Text", "_Start") };
-        start.Items.Add(Item("FormBrowse/openToolStripMenuItem.Text", "Open repository…", "RepoOpen", () => OpenRepoRequested?.Invoke()));
+        start.Items.Add(Item("FormBrowse/openToolStripMenuItem.Text", "Open repository…", "RepoOpen", () => OpenRepoRequested?.Invoke(), gesture: BrowseCommand.OpenRepo));
         start.Items.Add(Item("FormBrowse/cloneToolStripMenuItem.Text", "Clone repository…", "CloneRepoGit", () => CloneRequested?.Invoke()));
         start.Items.Add(Item("FormBrowse/initNewRepositoryToolStripMenuItem.Text", "Create new repository…", "RepoCreate", () => InitRequested?.Invoke()));
         start.Items.Add(_openRecent);
@@ -163,8 +242,9 @@ public sealed class MainMenu : UserControl
         start.Items.Add(_favorites);
         start.Items.Add(Item(null, "Add current to favorites", null, () => AddFavoriteRequested?.Invoke()));
         start.Items.Add(new Separator());
-        start.Items.Add(Item("FormBrowse/closeToolStripMenuItem.Text", "Close (go to Dashboard)", null, () => DashboardRequested?.Invoke()));
-        start.Items.Add(new Separator());
+        // "Close (go to Dashboard)" used to sit here; upstream it is the LAST entry of
+        // the Repository menu (FormBrowse.Designer.cs:790-792 declares it, :843 places
+        // it), where it now is.
         start.Items.Add(Item("FormBrowse/exitToolStripMenuItem.Text", "Exit", null, () => ExitRequested?.Invoke()));
 
         // Navigate: the revision grid's navigation commands, in the exact order of
@@ -231,7 +311,9 @@ public sealed class MainMenu : UserControl
         // Port extra: the shell's "copy the selected commit's hash" action, which
         // upstream only offers from the grid's context menu.
         navigate.Items.Add(new Separator());
-        navigate.Items.Add(Item(null, "Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke()));
+        MenuItem copyHash = Item(null, "Copy commit hash", "CommitSummary", () => CopyHashRequested?.Invoke());
+        copyHash.InputGesture = Literal("Ctrl+C");
+        navigate.Items.Add(copyHash);
 
         _language = new MenuItem { Header = T("AppearanceSettingsPage/gbLanguages.Text", "Language") };
         BuildLanguages();
@@ -267,8 +349,12 @@ public sealed class MainMenu : UserControl
             "RevisionGrid/ShowFilteredBranches.Text",
             "Show filtered branches"));
         view.Items.Add(new Separator());
-        view.Items.Add(Item("FormBrowse/tsbtnAdvancedFilter.ToolTipText", "Advanced filter…", null, () => RevisionFilterRequested?.Invoke()));
-        view.Items.Add(Item("FormBrowse/tsmiResetAllFilters.Text", "Reset revision filters", null, () => ResetRevisionFiltersRequested?.Invoke()));
+        MenuItem advancedFilter = Item("FormBrowse/tsbtnAdvancedFilter.ToolTipText", "Advanced filter…", null, () => RevisionFilterRequested?.Invoke());
+        advancedFilter.InputGesture = Literal("Ctrl+I");
+        view.Items.Add(advancedFilter);
+        MenuItem resetFilters = Item("FormBrowse/tsmiResetAllFilters.Text", "Reset revision filters", null, () => ResetRevisionFiltersRequested?.Invoke());
+        resetFilters.InputGesture = Literal("Ctrl+Shift+I");
+        view.Items.Add(resetFilters);
         view.Items.Add(new Separator());
         view.Items.Add(GridCheck(
             RevisionGridView.OptDrawNonRelativesGray,
@@ -361,57 +447,88 @@ public sealed class MainMenu : UserControl
         view.Items.Add(Item(null, "Dark theme", null, () => DarkThemeRequested?.Invoke()));
         view.Items.Add(_language);
         view.Items.Add(new Separator());
-        view.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
+        view.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke(), gesture: BrowseCommand.Refresh));
 
-        MenuItem repository = new() { Header = T("FormBrowse/repositoryToolStripMenuItem.Text", "_Repository") };
-        repository.Items.Add(Item("FormBrowse/fetchToolStripMenuItem.Text", "Fetch", "PullFetch", () => FetchRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/toolStripButtonPull.Text", "Pull", "Pull", () => PullRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/toolStripButtonPush.Text", "Push", "Push", () => PushRequested?.Invoke()));
-        repository.Items.Add(new Separator());
-        repository.Items.Add(Item("FormBrowse/fileExplorerToolStripMenuItem.Text", "File Explorer", "BrowseFileExplorer", () => FileExplorerRequested?.Invoke()));
-        repository.Items.Add(new Separator());
-        repository.Items.Add(Item("FormBrowse/editgitignoreToolStripMenuItem1.Text", "Edit .gitignore", "EditGitIgnore", () => EditGitignoreRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/editGitAttributesToolStripMenuItem.Text", "Edit .gitattributes", null, () => EditGitattributesRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/editmailmapToolStripMenuItem.Text", "Edit .mailmap", null, () => EditMailmapRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/editgitinfoexcludeToolStripMenuItem.Text", "Edit .git/info/exclude", null, () => EditInfoExcludeRequested?.Invoke()));
-        repository.Items.Add(new Separator());
-        repository.Items.Add(Item("FormBrowse/menuitemSparse.Text", "Sparse working copy…", null, () => SparseCheckoutRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/gitMaintenanceToolStripMenuItem.Text", "Git maintenance…", null, () => GitMaintenanceRequested?.Invoke()));
-        repository.Items.Add(Item("FormBrowse/repoSettingsToolStripMenuItem.Text", "Repository settings…", "Settings", () => RepoSettingsRequested?.Invoke()));
+        // Repository, in the exact order of FormBrowse.Designer.cs:823-843. Three
+        // corrections to what this port had: Fetch/Pull/Push are NOT here upstream
+        // (they belong to Commands, :1061-1071); "Edit .git/info/exclude" is the
+        // second of the edit block, not the last; "Sparse Working Copy" closes the
+        // edit block instead of sitting with the maintenance entries; and
+        // "Close (go to Dashboard)" is the last entry of this menu, not of Start.
+        _repository = new MenuItem { Header = T("FormBrowse/repositoryToolStripMenuItem.Text", "_Repository") };
+        _repository.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke(), gesture: BrowseCommand.Refresh));
+        _repository.Items.Add(Item("FormBrowse/fileExplorerToolStripMenuItem.Text", "File Explorer", "BrowseFileExplorer", () => FileExplorerRequested?.Invoke()));
+        _repository.Items.Add(new Separator());
+        _repository.Items.Add(Item("FormBrowse/manageRemoteRepositoriesToolStripMenuItem1.Text", "Remote repositories…", "Remotes", () => RemotesRequested?.Invoke()));
+        _repository.Items.Add(new Separator());
+        _repository.Items.Add(Gated("manageSubmodules", Item("FormBrowse/manageSubmodulesToolStripMenuItem.Text", "Manage submodules…", "SubmodulesManage", () => SubmodulesRequested?.Invoke())));
+        _repository.Items.Add(Gated("updateAllSubmodules", Item("FormBrowse/updateAllSubmodulesToolStripMenuItem.Text", "Update all submodules", "SubmodulesUpdate", () => UpdateAllSubmodulesRequested?.Invoke())));
+        _repository.Items.Add(Gated("synchronizeAllSubmodules", Item("FormBrowse/synchronizeAllSubmodulesToolStripMenuItem.Text", "Synchronize all submodules", "SubmodulesSync", () => SynchronizeAllSubmodulesRequested?.Invoke())));
+        _repository.Items.Add(new Separator());
+        _repository.Items.Add(Item("FormBrowse/manageWorktreeToolStripMenuItem.Text", "Manage worktrees…", "WorkTree", () => WorktreesRequested?.Invoke(), gesture: BrowseCommand.ManageWorkTrees));
+        _repository.Items.Add(new Separator());
+        _repository.Items.Add(Gated("editgitignore", Item("FormBrowse/editgitignoreToolStripMenuItem1.Text", "Edit .gitignore", "EditGitIgnore", () => EditGitignoreRequested?.Invoke())));
+        _repository.Items.Add(Item("FormBrowse/editgitinfoexcludeToolStripMenuItem.Text", "Edit .git/info/exclude", null, () => EditInfoExcludeRequested?.Invoke()));
+        _repository.Items.Add(Gated("editGitAttributes", Item("FormBrowse/editGitAttributesToolStripMenuItem.Text", "Edit .gitattributes", null, () => EditGitattributesRequested?.Invoke())));
+        _repository.Items.Add(Gated("editmailmap", Item("FormBrowse/editmailmapToolStripMenuItem.Text", "Edit .mailmap", null, () => EditMailmapRequested?.Invoke())));
+        _repository.Items.Add(Item("FormBrowse/menuitemSparse.Text", "Sparse Working Copy", null, () => SparseCheckoutRequested?.Invoke()));
+        _repository.Items.Add(new Separator());
+        _repository.Items.Add(BuildGitMaintenance());
+        _repository.Items.Add(Item("FormBrowse/repoSettingsToolStripMenuItem.Text", "Repository settings…", "Settings", () => RepoSettingsRequested?.Invoke()));
+        _repository.Items.Add(new Separator());
+        _repository.Items.Add(Item("FormBrowse/closeToolStripMenuItem.Text", "Close (go to Dashboard)", "DashboardFolderGit", () => DashboardRequested?.Invoke(), gesture: BrowseCommand.CloseRepository));
 
-        MenuItem commands = new() { Header = T("FormBrowse/commandsToolStripMenuItem.Text", "_Commands") };
-        commands.Items.Add(Item("FormBrowse/commitToolStripMenuItem.Text", "Commit…", "CommitSummary", () => CommitRequested?.Invoke()));
+        _commands = new MenuItem { Header = T("FormBrowse/commandsToolStripMenuItem.Text", "_Commands") };
+        _commands.Items.Add(Gated("commit", Item("FormBrowse/commitToolStripMenuItem.Text", "Commit…", "CommitSummary", () => CommitRequested?.Invoke(), gesture: BrowseCommand.Commit)));
         // Same slot as the original FormBrowse Commands menu (undoLastCommitToolStripMenuItem,
-        // "&Undo last commit...", image ResetFileTo): directly after Commit. Pull/Push, which
-        // follow it there, live in the toolbar/Repository menu in this port.
-        commands.Items.Add(Item("FormBrowse/undoLastCommitToolStripMenuItem.Text", "Undo last commit…", "ResetFileTo", () => UndoLastCommitRequested?.Invoke()));
-        commands.Items.Add(Item("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash", "stash", () => StashRequested?.Invoke()));
+        // "&Undo last commit...", image ResetFileTo): directly after Commit, followed by
+        // Pull/Fetch and Push (FormBrowse.Designer.cs:1061-1071) — which this port used
+        // to keep in the Repository menu.
+        _commands.Items.Add(Gated("undoLastCommit", Item("FormBrowse/undoLastCommitToolStripMenuItem.Text", "Undo last commit…", "ResetFileTo", () => UndoLastCommitRequested?.Invoke())));
+        // Port extra: upstream has a single "Pull/Fetch..." entry (its dialog offers
+        // both), while this port also has a dialog-less fetch, bound to QuickFetch. It
+        // is placed immediately before Pull rather than invented a slot of its own.
+        _commands.Items.Add(Item("FormBrowse/fetchToolStripMenuItem.Text", "Fetch", "PullFetch", () => FetchRequested?.Invoke(), gesture: BrowseCommand.QuickFetch));
+        _commands.Items.Add(Gated("pull", Item("FormBrowse/pullToolStripMenuItem.Text", "Pull/Fetch…", "Pull", () => PullRequested?.Invoke(), gesture: BrowseCommand.PullOrFetch)));
+        _commands.Items.Add(Item("FormBrowse/pushToolStripMenuItem.Text", "Push…", "Push", () => PushRequested?.Invoke(), gesture: BrowseCommand.Push));
+        _commands.Items.Add(new Separator());
+        _commands.Items.Add(Gated("stash", Item("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash", "stash", () => StashRequested?.Invoke(), gesture: BrowseCommand.Stash)));
         // Same slot as the original FormBrowse Commands menu: the two destructive
         // working-directory actions sit right after Stash and before the separator
         // that starts the branch block.
-        commands.Items.Add(Item("FormBrowse/resetToolStripMenuItem.Text", "Reset changes…", "ResetWorkingDirChanges", () => ResetChangesRequested?.Invoke()));
-        commands.Items.Add(Item("FormBrowse/cleanupToolStripMenuItem.Text", "Clean working directory…", "CleanupRepo", () => CleanWorkingDirectoryRequested?.Invoke()));
-        commands.Items.Add(new Separator());
-        commands.Items.Add(Item("FormBrowse/branchToolStripMenuItem.Text", "New branch…", "BranchCreate", () => NewBranchRequested?.Invoke()));
-        commands.Items.Add(Item("FormBrowse/tagToolStripMenuItem.Text", "New tag…", "TagCreate", () => NewTagRequested?.Invoke()));
-        commands.Items.Add(new Separator());
-        commands.Items.Add(Item("FormBrowse/formatPatchToolStripMenuItem.Text", "Format patch…", null, () => FormatPatchRequested?.Invoke()));
-        commands.Items.Add(Item("FormBrowse/applyPatchToolStripMenuItem.Text", "Apply patch…", null, () => ApplyPatchRequested?.Invoke()));
-        commands.Items.Add(Item("FormBrowse/patchToolStripMenuItem.Text", "View patch file…", null, () => ViewPatchRequested?.Invoke()));
-        commands.Items.Add(new Separator());
+        _commands.Items.Add(Gated("reset", Item("FormBrowse/resetToolStripMenuItem.Text", "Reset changes…", "ResetWorkingDirChanges", () => ResetChangesRequested?.Invoke())));
+        _commands.Items.Add(Gated("cleanup", Item("FormBrowse/cleanupToolStripMenuItem.Text", "Clean working directory…", "CleanupRepo", () => CleanWorkingDirectoryRequested?.Invoke())));
+        _commands.Items.Add(new Separator());
+        _commands.Items.Add(Gated("branch", Item("FormBrowse/branchToolStripMenuItem.Text", "New branch…", "BranchCreate", () => NewBranchRequested?.Invoke(), gesture: BrowseCommand.CreateBranch)));
+        _commands.Items.Add(Gated("tag", Item("FormBrowse/tagToolStripMenuItem.Text", "New tag…", "TagCreate", () => NewTagRequested?.Invoke(), gesture: BrowseCommand.CreateTag)));
+        _commands.Items.Add(new Separator());
+        _commands.Items.Add(Item("FormBrowse/formatPatchToolStripMenuItem.Text", "Format patch…", null, () => FormatPatchRequested?.Invoke()));
+        _commands.Items.Add(Gated("applyPatch", Item("FormBrowse/applyPatchToolStripMenuItem.Text", "Apply patch…", null, () => ApplyPatchRequested?.Invoke())));
+        _commands.Items.Add(Item("FormBrowse/patchToolStripMenuItem.Text", "View patch file…", null, () => ViewPatchRequested?.Invoke()));
+        _commands.Items.Add(new Separator());
         // toolStripMenuItemReflog belongs to the Commands menu upstream, not to
         // Navigate, where this port used to keep it.
-        commands.Items.Add(Item("FormBrowse/toolStripMenuItemReflog.Text", "Show reflog…", null, () => ShowReflogRequested?.Invoke()));
+        _commands.Items.Add(Gated("reflog", Item("FormBrowse/toolStripMenuItemReflog.Text", "Show reflog…", null, () => ShowReflogRequested?.Invoke())));
+
+        // Upstream re-evaluates the selection-dependent entries every time the menu
+        // drops down (CommandsToolStripMenuItem_DropDownOpening, FormBrowse.cs:2330).
+        // Only IsEnabled is touched here — no item is added — so the popup still
+        // measures the same content it was given before ShowAt.
+        _commands.SubmenuOpened += (_, _) =>
+        {
+            CommandsMenuOpening?.Invoke();
+            ApplyRepositoryState();
+        };
 
         MenuItem tools = new() { Header = T("FormBrowse/toolsToolStripMenuItem.Text", "_Tools") };
-        tools.Items.Add(Item("FormBrowse/gitBashToolStripMenuItem.Text", "Git bash", "GitForWindows", () => GitBashRequested?.Invoke()));
+        tools.Items.Add(Item("FormBrowse/gitBashToolStripMenuItem.Text", "Git bash", "GitForWindows", () => GitBashRequested?.Invoke(), gesture: BrowseCommand.GitBash));
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/kGitToolStripMenuItem.Text", "GitK", null, () => GitKRequested?.Invoke()));
         tools.Items.Add(Item("FormBrowse/gitGUIToolStripMenuItem.Text", "Git GUI", null, () => GitGuiRequested?.Invoke()));
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/gitcommandLogToolStripMenuItem.Text", "Git command log", null, () => GitCommandLogRequested?.Invoke()));
         tools.Items.Add(new Separator());
-        tools.Items.Add(Item("FormBrowse/settingsToolStripMenuItem.Text", "Settings…", "Settings", () => SettingsRequested?.Invoke()));
+        tools.Items.Add(Item("FormBrowse/settingsToolStripMenuItem.Text", "Settings…", "Settings", () => SettingsRequested?.Invoke(), gesture: BrowseCommand.OpenSettings));
 
         // GitHub: repository-host integration is out of scope for the Linux port,
         // so this is a disabled placeholder kept for visual parity only.
@@ -434,14 +551,56 @@ public sealed class MainMenu : UserControl
         help.Items.Add(new Separator());
         help.Items.Add(Item("FormBrowse/aboutToolStripMenuItem.Text", "About", null, () => AboutRequested?.Invoke()));
 
+        // Dashboard: a single "&Refresh" entry, exactly as upstream
+        // (FormBrowse.Designer.cs:1295-1301 with :806-809). Upstream shows it only
+        // while the dashboard is up and hides it as soon as a repository is browsed
+        // (FormBrowse.cs:987), which is what SetRepositoryState does here.
+        _dashboard = new MenuItem { Header = T("FormBrowse/dashboardToolStripMenuItem.Text", "_Dashboard") };
+        _dashboard.Items.Add(Item(
+            "FormBrowse/refreshDashboardToolStripMenuItem.Text",
+            "Refresh",
+            "ReloadRevisions",
+            () => DashboardRefreshRequested?.Invoke(),
+            gesture: BrowseCommand.Refresh));
+
         Menu menu = new()
         {
             Background = toolbar,
             Foreground = text,
-            Items = { start, repository, navigate, view, commands, github, _plugins, tools, help },
+            Items = { start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help },
         };
 
         Content = menu;
+
+        // Visibility and greying always follow the last state the host pushed in, so
+        // a language rebuild cannot resurrect a menu that should be hidden.
+        ApplyRepositoryState();
+    }
+
+    // Repository → Git maintenance. Upstream is a submenu of four entries
+    // (FormBrowse.Designer.cs:952-999), not the single "Git maintenance…" entry this
+    // port had; the three that map onto MaintenanceService are direct actions here.
+    //
+    // "Recover lost objects…" is the exception: upstream opens FormVerify, a browser
+    // of dangling objects with per-object restore, which this port does not have. It
+    // is neither omitted nor left dead — it opens the port's MaintenanceDialog, whose
+    // "Verify database" button runs the very same `git fsck` and prints the list of
+    // dangling objects. That is a strict subset of FormVerify (no restore), but it is
+    // the honest closest thing and it is the only way this dialog stays reachable now
+    // that the flat entry is gone.
+    private MenuItem BuildGitMaintenance()
+    {
+        MenuItem maintenance = new() { Header = T("FormBrowse/gitMaintenanceToolStripMenuItem.Text", "Git maintenance") };
+        if (IconLoader.Image("Maintenance", 16) is { } icon)
+        {
+            maintenance.Icon = icon;
+        }
+
+        maintenance.Items.Add(Item("FormBrowse/compressGitDatabaseToolStripMenuItem.Text", "Compress git database", "CompressGitDatabase", () => CompressDatabaseRequested?.Invoke()));
+        maintenance.Items.Add(Item("FormBrowse/recoverLostObjectsToolStripMenuItem.Text", "Recover lost objects…", "RecoverLostObjects", () => GitMaintenanceRequested?.Invoke()));
+        maintenance.Items.Add(Item("FormBrowse/deleteIndexLockToolStripMenuItem.Text", "Delete index.lock", "DeleteIndexLock", () => DeleteIndexLockRequested?.Invoke()));
+        maintenance.Items.Add(Item("FormBrowse/editLocalGitConfigToolStripMenuItem.Text", "Edit .git/config", "EditGitConfig", () => EditGitConfigRequested?.Invoke()));
+        return maintenance;
     }
 
     /// <summary>
@@ -617,9 +776,159 @@ public sealed class MainMenu : UserControl
         }
     }
 
+    /// <summary>
+    ///  Pushes in what the shell currently has open. Mirrors upstream
+    ///  <c>FormBrowse.HideVariableMainMenuItems</c> / the visibility block at
+    ///  <c>FormBrowse.cs:987-990</c> and the bare-repository block at
+    ///  <c>:1014-1034</c>:
+    ///  <list type="bullet">
+    ///   <item><description>no valid repository → Repository, Commands and Plugins
+    ///     disappear entirely (they are not merely greyed);</description></item>
+    ///   <item><description>the Dashboard menu exists only while the dashboard is
+    ///     up;</description></item>
+    ///   <item><description>a bare repository greys out everything that needs a work
+    ///     tree.</description></item>
+    ///  </list>
+    ///  <paramref name="isBare"/> comes from
+    ///  <see cref="RepositoryStateService.IsBareRepository"/>, which the host must
+    ///  compute off the UI thread.
+    /// </summary>
+    public void SetRepositoryState(bool hasRepository, bool isBare, bool isDashboard)
+    {
+        _hasRepository = hasRepository;
+        _isBare = hasRepository && isBare;
+        _isDashboard = isDashboard;
+        ApplyRepositoryState();
+    }
+
+    /// <summary>
+    ///  Pushes in the revision grid's selection, for the entries upstream re-evaluates
+    ///  in <c>CommandsToolStripMenuItem_DropDownOpening</c> (FormBrowse.cs:2330-2366):
+    ///  creating a branch or a tag needs exactly one real commit to hang it on.
+    ///  <paramref name="allNonArtificial"/> is false as soon as the selection contains
+    ///  a work-tree / index row.
+    /// </summary>
+    public void SetSelectionState(int selectedCount, bool allNonArtificial)
+    {
+        _selectedCount = selectedCount;
+        _selectionIsNormal = allNonArtificial;
+        ApplyRepositoryState();
+    }
+
+    private void ApplyRepositoryState()
+    {
+        _dashboard.IsVisible = _isDashboard;
+        _repository.IsVisible = _hasRepository;
+        _commands.IsVisible = _hasRepository;
+        _plugins.IsVisible = _hasRepository;
+
+        // FormBrowse.cs:1014-1019 — needs a work tree.
+        bool live = !_isBare;
+        Enable("manageSubmodules", live);
+        Enable("updateAllSubmodules", live);
+        Enable("synchronizeAllSubmodules", live);
+        Enable("editgitignore", live);
+        Enable("editGitAttributes", live);
+        Enable("editmailmap", live);
+
+        // FormBrowse.cs:1025-1034 and the "not operating on selected revision" block
+        // of CommandsToolStripMenuItem_DropDownOpening (:2359-2366).
+        Enable("commit", live);
+        Enable("undoLastCommit", live);
+        Enable("pull", live);
+        Enable("stash", live);
+        Enable("reset", live);
+        Enable("cleanup", live);
+        Enable("applyPatch", live);
+        Enable("reflog", live);
+
+        // :2338-2352 — one real (non-artificial) commit to operate on. "New branch"
+        // additionally needs a work tree to check the branch out into; "New tag" does
+        // not, and upstream indeed leaves tagToolStripMenuItem out of the bare block.
+        bool singleNormalCommit = _selectedCount == 1 && _selectionIsNormal;
+        Enable("branch", singleNormalCommit && live);
+        Enable("tag", singleNormalCommit);
+    }
+
+    private void Enable(string name, bool enabled)
+    {
+        if (_gated.TryGetValue(name, out MenuItem? item))
+        {
+            item.IsEnabled = enabled;
+        }
+    }
+
+    // Registers an entry under the (shortened) name of the upstream WinForms item it
+    // mirrors, so ApplyRepositoryState can grey it out later.
+    private MenuItem Gated(string name, MenuItem item)
+    {
+        _gated[name] = item;
+        return item;
+    }
+
+    /// <summary>
+    ///  The gestures the revision grid handles itself, mirrored from
+    ///  <c>RevisionGridView.OnListKeyDown</c>. They are hard-coded there rather than
+    ///  registered with <see cref="HotkeyService"/> — the grid is not part of the
+    ///  FormBrowse hotkey scope in this port yet — so these labels are read from that
+    ///  same (fixed) table instead of from the service: a <c>hotkeys.json</c> override
+    ///  of, say, <c>GoToParent</c> does not change what the grid does, and quoting the
+    ///  service here would be the lie the toolbar was careful to avoid.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> GridGestures =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [RevisionGridView.CmdToggleArtificialAndHead] = "Ctrl+OemBackslash",
+            [RevisionGridView.CmdGoToCurrentRevision] = "Ctrl+Shift+C",
+            [RevisionGridView.CmdGoToCommit] = "Ctrl+Shift+G",
+            [RevisionGridView.CmdGoToChildCommit] = "Ctrl+N",
+            [RevisionGridView.CmdGoToParentCommit] = "Ctrl+P",
+            [RevisionGridView.CmdGoToMergeBase] = "Ctrl+Shift+K",
+            [RevisionGridView.CmdNavigateBackward] = "Alt+Left",
+            [RevisionGridView.CmdNavigateForward] = "Alt+Right",
+            [RevisionGridView.CmdQuickSearchPrevious] = "Alt+Up",
+            [RevisionGridView.CmdQuickSearchNext] = "Alt+Down",
+            [RevisionGridView.CmdHighlightSelectedBranch] = "Ctrl+Shift+B",
+            [RevisionGridView.OptShowAllBranches] = "Ctrl+Shift+A",
+            [RevisionGridView.OptShowCurrentBranchOnly] = "Ctrl+Shift+U",
+            [RevisionGridView.OptShowFilteredBranches] = "Ctrl+Shift+T",
+            [RevisionGridView.OptShowRemoteBranches] = "Ctrl+Shift+R",
+            [RevisionGridView.OptShowTags] = "Ctrl+Alt+T",
+
+            // "Quick search" has no gesture at all: it starts by simply typing.
+        };
+
+    /// <summary>
+    ///  The gesture actually in force for <paramref name="command"/>. Read from the
+    ///  host's live <see cref="Hotkeys"/> service when one was assigned, so a user
+    ///  override is shown rather than the shipped default; a command the user cleared
+    ///  yields null and the entry shows no gesture. Identical to
+    ///  <c>MainToolbar.GestureFor</c>.
+    /// </summary>
+    private KeyGesture? GestureFor(BrowseCommand command)
+    {
+        if (Hotkeys is { } service)
+        {
+            return service.GestureFor(command) is { } bound
+                ? new KeyGesture(bound.Key, bound.Modifiers)
+                : null;
+        }
+
+        return HotkeyService.Defaults.TryGetValue(command, out HotkeyGesture g)
+            ? new KeyGesture(g.Key, g.Modifiers)
+            : null;
+    }
+
+    private static KeyGesture? Literal(string? text)
+        => HotkeyGesture.TryParse(text, out HotkeyGesture g) ? new KeyGesture(g.Key, g.Modifiers) : null;
+
     // One non-checkable entry that runs a revision-grid command.
     private MenuItem GridItem(string id, string? key, string english, string? iconName = null)
-        => Item(key, english, iconName, () => GridCommandRequested?.Invoke(id));
+    {
+        MenuItem item = Item(key, english, iconName, () => GridCommandRequested?.Invoke(id));
+        item.InputGesture = Literal(GridGestures.GetValueOrDefault(id));
+        return item;
+    }
 
     // One CHECKABLE entry that runs a revision-grid option toggle. The tick is not
     // owned here: the click only sends the id, and the grid answers with a fresh
@@ -631,6 +940,7 @@ public sealed class MainMenu : UserControl
             Header = T(key, english),
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = _viewOptions.TryGetValue(id, out bool value) && value,
+            InputGesture = Literal(GridGestures.GetValueOrDefault(id)),
         };
         item.Click += (_, _) => GridCommandRequested?.Invoke(id);
         _checkables[id] = item;
@@ -656,12 +966,26 @@ public sealed class MainMenu : UserControl
     ///  menu has a matching item; pass null to fall back to matching by English
     ///  source text. <paramref name="translate"/> is false for data (repository
     ///  paths, plugin names), which must never be looked up.
+    ///  <paramref name="gesture"/> names the <see cref="BrowseCommand"/> whose
+    ///  shortcut the entry should display; the text comes from the live hotkey map
+    ///  (see <see cref="GestureFor"/>), never from a hard-coded string.
     /// </summary>
-    private static MenuItem Item(string? key, string header, string? iconName, Action onClick, bool translate = true)
+    private MenuItem Item(
+        string? key,
+        string header,
+        string? iconName,
+        Action onClick,
+        bool translate = true,
+        BrowseCommand? gesture = null)
     {
         // Data headers (paths, plugin names) are escaped so an underscore in
         // "git_ext_mod" is shown, not swallowed as an access key.
         MenuItem item = new() { Header = translate ? T(key, header) : header.Replace("_", "__") };
+        if (gesture is { } command)
+        {
+            item.InputGesture = GestureFor(command);
+        }
+
         if (iconName is not null)
         {
             Image? icon = IconLoader.Image(iconName, 16);
