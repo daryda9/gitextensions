@@ -2,6 +2,8 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -62,6 +64,19 @@ public sealed class CommitDialog : Window
     private readonly MenuItem _ignoreFolderItem = new() { Header = "Ignore in folder" };
 
     private bool _busy;
+
+    // Merge state, refreshed by every Reload off the UI thread. When a merge is in
+    // progress (MERGE_HEAD exists in the *resolved* git directory) a commit is legal
+    // even with an empty index diff — resolving every conflict as "ours" leaves the
+    // index identical to HEAD, and the original form still lets the merge be recorded.
+    private bool _mergeInProgress;
+
+    // The MERGE_MSG text last pushed into the message box, so a later Reload can
+    // refresh it without ever overwriting something the user typed.
+    private string _prefilledMergeMessage = string.Empty;
+
+    // Guards the programmatic cross-list selection reset against re-entrancy.
+    private bool _syncingSelection;
 
     // Options-menu state (mirrors the original commit form's Options dropdown).
     // Amend lives in _amendBox so the visible checkbox and the menu stay in sync.
@@ -141,13 +156,20 @@ public sealed class CommitDialog : Window
         unstagedMenu.Opening += (_, _) =>
         {
             bool conflict = SelectedConflicts().Count > 0;
-            WorkingDirFileRow? row = _unstagedList.SelectedItem as WorkingDirFileRow;
-            stageItem.IsEnabled = !conflict && row is not null;
-            unstagedCopyItem.IsEnabled = row is not null;
+            List<WorkingDirFileRow> rows = SelectedRows(_unstagedList);
+            int count = rows.Count;
+            stageItem.IsEnabled = !conflict && count > 0;
+            stageItem.Header = count > 1 ? $"Stage ({count} files)" : "Stage";
+            unstagedCopyItem.IsEnabled = count > 0;
+            unstagedCopyItem.Header = count > 1 ? $"Copy paths ({count} files)" : "Copy path";
 
-            // "Reset file changes" only makes sense for a tracked, non-conflicted file:
+            // "Reset file changes" only makes sense for tracked, non-conflicted files:
             // untracked ones are handled by .gitignore / clean, never discarded here.
-            _discardItem.IsEnabled = !conflict && row is not null && row.Status != "new";
+            int discardable = rows.Count(r => r.Status != "new" && !_conflictPaths.Contains(r.Path));
+            _discardItem.IsEnabled = !conflict && discardable > 0;
+            _discardItem.Header = discardable > 1
+                ? $"Discard changes ({discardable} files)"
+                : "Discard changes";
 
             // The .gitignore entries mirror the former working-directory panel: a single UNTRACKED
             // file only, plus an extension / a parent folder where applicable.
@@ -158,7 +180,9 @@ public sealed class CommitDialog : Window
                 && System.IO.Path.GetExtension(path).TrimStart('.').Length > 0;
             _ignoreFolderItem.IsEnabled = untracked is not null && path.LastIndexOf('/') > 0;
 
-            _mergetoolItem.IsEnabled = conflict;
+            // The merge tool opens one file at a time, so it stays single-selection
+            // only; taking a side / marking resolved already loops over the selection.
+            _mergetoolItem.IsEnabled = conflict && count == 1;
             _takeOursItem.IsEnabled = conflict;
             _takeTheirsItem.IsEnabled = conflict;
             _markResolvedItem.IsEnabled = conflict;
@@ -175,9 +199,11 @@ public sealed class CommitDialog : Window
         };
         stagedMenu.Opening += (_, _) =>
         {
-            bool has = _stagedList.SelectedItem is WorkingDirFileRow;
-            unstageItem.IsEnabled = has;
-            stagedCopyItem.IsEnabled = has;
+            int count = SelectedRows(_stagedList).Count;
+            unstageItem.IsEnabled = count > 0;
+            unstageItem.Header = count > 1 ? $"Unstage ({count} files)" : "Unstage";
+            stagedCopyItem.IsEnabled = count > 0;
+            stagedCopyItem.Header = count > 1 ? $"Copy paths ({count} files)" : "Copy path";
         };
         _stagedList.ContextMenu = stagedMenu;
 
@@ -303,8 +329,56 @@ public sealed class CommitDialog : Window
         root.Children.Add(split);
         Content = root;
 
+        InstallShortcuts();
+
         Reload();
         RefreshBranchCaption();
+    }
+
+    // Keyboard accelerators the former working-directory panel had:
+    //  • Enter / Space on a list = stage (unstaged list) or unstage (staged list);
+    //  • Ctrl+Enter = commit, from anywhere in the dialog including the message box.
+    // Ctrl+Enter is caught in the TUNNELLING phase so it also fires while the
+    // multi-line TextBox has focus; a bare Enter is left alone there, so typing a
+    // new line in the commit message keeps working.
+    private void InstallShortcuts()
+    {
+        AddHandler(
+            KeyDownEvent,
+            (object? _, KeyEventArgs e) =>
+            {
+                if (e.Key is Key.Enter or Key.Return
+                    && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                {
+                    e.Handled = true;
+                    DoCommit(push: false);
+                }
+            },
+            RoutingStrategies.Tunnel);
+
+        _unstagedList.KeyDown += (_, e) =>
+        {
+            if (IsPlainActivation(e))
+            {
+                e.Handled = true;
+                OnUnstagedDoubleTapped();
+            }
+        };
+
+        _stagedList.KeyDown += (_, e) =>
+        {
+            if (IsPlainActivation(e))
+            {
+                e.Handled = true;
+                UnstageSelected();
+            }
+        };
+
+        static bool IsPlainActivation(KeyEventArgs e)
+            => e.KeyModifiers == KeyModifiers.None
+                && e.Key is Key.Enter
+                    or Key.Return
+                    or Key.Space;
     }
 
     public static async Task ShowAsync(Window owner, string repoPath, Action onCommitted)
@@ -316,24 +390,48 @@ public sealed class CommitDialog : Window
 
     // ---------- list plumbing ----------
 
+    // The rows currently selected in <paramref name="list"/>, in selection order.
+    private static List<WorkingDirFileRow> SelectedRows(ListBox list)
+        => [.. list.SelectedItems?.OfType<WorkingDirFileRow>() ?? []];
+
     private void OnSelected(ListBox source, bool staged)
     {
-        if (source.SelectedItem is not WorkingDirFileRow row)
+        // Re-entrancy from the programmatic clear below.
+        if (_syncingSelection)
         {
             return;
         }
 
-        // Clear the other list's selection so only one file drives the diff.
-        if (staged)
+        List<WorkingDirFileRow> rows = SelectedRows(source);
+        ListBox other = staged ? _unstagedList : _stagedList;
+        if (rows.Count == 0)
         {
-            _unstagedList.SelectedItem = null;
-        }
-        else
-        {
-            _stagedList.SelectedItem = null;
+            // The selection was dropped — either by the user or by a Reload that
+            // removed the row. Blank the diff panel so it cannot keep showing a
+            // stale diff for a file that is no longer listed.
+            if (SelectedRows(other).Count == 0)
+            {
+                RenderDiff(string.Empty);
+            }
+
+            return;
         }
 
-        LoadDiff(row.Path, staged);
+        // Only one list at a time drives the diff, so clear the other one's
+        // selection without letting its SelectionChanged blank the diff again.
+        _syncingSelection = true;
+        try
+        {
+            other.SelectedItems?.Clear();
+        }
+        finally
+        {
+            _syncingSelection = false;
+        }
+
+        // With a multi-selection the panel always shows the LAST selected row —
+        // the one the user just clicked / extended the range to.
+        LoadDiff(rows[^1].Path, staged);
     }
 
     private void LoadDiff(string path, bool staged)
@@ -391,19 +489,24 @@ public sealed class CommitDialog : Window
 
     // ---------- stage / unstage ----------
 
+    // Stages every selected unstaged row. Conflicted files are skipped: `git add`
+    // on an unmerged path silently marks it resolved (use the conflict entries).
     private void StageSelected()
     {
-        if (_unstagedList.SelectedItem is WorkingDirFileRow row)
+        List<WorkingDirFileRow> rows =
+            [.. SelectedRows(_unstagedList).Where(r => !_conflictPaths.Contains(r.Path))];
+        if (rows.Count > 0)
         {
-            RunGit(() => _service.Stage(_repoPath, new[] { row }));
+            RunGit(() => _service.Stage(_repoPath, rows));
         }
     }
 
     private void UnstageSelected()
     {
-        if (_stagedList.SelectedItem is WorkingDirFileRow row)
+        List<WorkingDirFileRow> rows = SelectedRows(_stagedList);
+        if (rows.Count > 0)
         {
-            RunGit(() => _service.Unstage(_repoPath, new[] { row }));
+            RunGit(() => _service.Unstage(_repoPath, rows));
         }
     }
 
@@ -432,26 +535,42 @@ public sealed class CommitDialog : Window
     // first, exactly like Take ours / Take theirs.
     private void DiscardSelected()
     {
-        if (_unstagedList.SelectedItem is not WorkingDirFileRow row
-            || row.Status == "new"
-            || _conflictPaths.Contains(row.Path))
+        List<string> paths = [.. SelectedRows(_unstagedList)
+            .Where(r => r.Status != "new" && !_conflictPaths.Contains(r.Path))
+            .Select(r => r.Path)];
+        if (paths.Count == 0)
         {
             return;
         }
 
         string repo = _repoPath;
-        string path = row.Path;
+        string what = paths.Count == 1
+            ? $"changes to '{paths[0]}'"
+            : $"changes to {paths.Count} files";
         ConfirmThen(
-            $"Discard changes to '{path}'? The file is restored from the index and this cannot be undone.",
+            $"Discard {what}? The files are restored from the index and this cannot be undone.",
             () =>
             {
-                SetStatus($"Discarding changes to {path} …");
+                SetStatus($"Discarding {what} …");
                 RunGitResult(
-                    () => _service.ResetFile(repo, path),
+                    () =>
+                    {
+                        WorkingDirCommitResult last = new(true, string.Empty);
+                        foreach (string path in paths)
+                        {
+                            last = _service.ResetFile(repo, path);
+                            if (!last.Success)
+                            {
+                                break;
+                            }
+                        }
+
+                        return last;
+                    },
                     result =>
                     {
                         SetStatus(result.Success
-                            ? $"Discarded changes to {path}."
+                            ? $"Discarded {what}."
                             : "Discard failed: " + FirstLine(result.Output));
                         Reload();
                     });
@@ -462,15 +581,20 @@ public sealed class CommitDialog : Window
     // depends on it, so a missing clipboard (headless) is silently ignored.
     private void CopySelectedPath(ListBox list)
     {
-        if (list.SelectedItem is not WorkingDirFileRow row)
+        List<WorkingDirFileRow> rows = SelectedRows(list);
+        if (rows.Count == 0)
         {
             return;
         }
 
+        // One path per line, like the original's multi-file "Copy path".
+        string text = string.Join("\n", rows.Select(r => r.Path));
         try
         {
-            _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(row.Path);
-            SetStatus("Copied path: " + row.Path);
+            _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
+            SetStatus(rows.Count == 1
+                ? "Copied path: " + rows[0].Path
+                : $"Copied {rows.Count} paths.");
         }
         catch (Exception ex)
         {
@@ -489,9 +613,10 @@ public sealed class CommitDialog : Window
     // selection is anything else. Same semantics as the former panel: the ignore
     // actions never apply to files git already tracks.
     private WorkingDirFileRow? SingleUntracked()
-        => _unstagedList.SelectedItem is WorkingDirFileRow row && row.Status == "new"
-            ? row
-            : null;
+    {
+        List<WorkingDirFileRow> rows = SelectedRows(_unstagedList);
+        return rows.Count == 1 && rows[0].Status == "new" ? rows[0] : null;
+    }
 
     // Builds the .gitignore pattern for the selected untracked file and appends it,
     // then reloads so the now-ignored file drops out of the unstaged list.
@@ -684,7 +809,10 @@ public sealed class CommitDialog : Window
             return;
         }
 
-        if (staged == 0 && !options.Amend)
+        // A merge commit is legitimate even with an empty index diff: resolving every
+        // conflict in favour of "ours" leaves the index identical to HEAD, yet the
+        // merge still has to be recorded (git itself allows it while MERGE_HEAD exists).
+        if (staged == 0 && !options.Amend && !_mergeInProgress)
         {
             SetStatus("Nothing staged to commit.");
             return;
@@ -1122,22 +1250,99 @@ public sealed class CommitDialog : Window
         }), TaskScheduler.Default);
     }
 
+    // Everything one Reload needs, gathered in a single off-UI-thread pass.
+    private sealed record ReloadSnapshot(WorkingDirStatus Status, bool Merging, string MergeMessage);
+
+    // True when the repository has an in-progress merge, i.e. MERGE_HEAD exists in
+    // the REAL git directory. That is not always "<repo>/.git": in a linked worktree
+    // `.git` is a file pointing at <main>/.git/worktrees/<name>, and MERGE_HEAD lives
+    // there. GitModule.WorkingDirGitDir already resolves this; `git rev-parse
+    // --git-dir` is the fallback. Also returns MERGE_MSG so the commit message can be
+    // pre-populated the way the original form does.
+    private static (bool Merging, string MergeMessage) ReadMergeState(string repoPath)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            string gitDir = ResolveGitDir(module, repoPath);
+            if (gitDir.Length == 0
+                || !System.IO.File.Exists(System.IO.Path.Combine(gitDir, "MERGE_HEAD")))
+            {
+                return (false, string.Empty);
+            }
+
+            string msgPath = System.IO.Path.Combine(gitDir, "MERGE_MSG");
+            string message = System.IO.File.Exists(msgPath)
+                ? System.IO.File.ReadAllText(msgPath)
+                : string.Empty;
+            return (true, message);
+        }
+        catch
+        {
+            return (false, string.Empty);
+        }
+    }
+
+    private static string ResolveGitDir(GitModule module, string repoPath)
+    {
+        string gitDir = string.Empty;
+        try
+        {
+            gitDir = module.WorkingDirGitDir ?? string.Empty;
+        }
+        catch
+        {
+            // fall through to rev-parse
+        }
+
+        if (gitDir.Length == 0)
+        {
+            try
+            {
+                var res = module.GitExecutable.Execute("rev-parse --git-dir", throwOnErrorExit: false);
+                if (res.ExitedSuccessfully)
+                {
+                    gitDir = (res.StandardOutput ?? string.Empty).Trim();
+                }
+            }
+            catch
+            {
+                // fall through to the conventional location
+            }
+        }
+
+        if (gitDir.Length == 0)
+        {
+            gitDir = System.IO.Path.Combine(repoPath, ".git");
+        }
+
+        // rev-parse may answer with a path relative to the working directory.
+        return System.IO.Path.IsPathRooted(gitDir)
+            ? gitDir
+            : System.IO.Path.Combine(repoPath, gitDir);
+    }
+
     private void Reload()
     {
         string repo = _repoPath;
         _ = Task.Run(() =>
         {
+            WorkingDirStatus status;
             try
             {
-                return _service.LoadStatus(repo);
+                status = _service.LoadStatus(repo);
             }
             catch
             {
-                return new WorkingDirStatus([], [], []);
+                status = new WorkingDirStatus([], [], []);
             }
+
+            (bool merging, string mergeMessage) = ReadMergeState(repo);
+            return new ReloadSnapshot(status, merging, mergeMessage);
         }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
         {
-            WorkingDirStatus status = t.Result;
+            WorkingDirStatus status = t.Result.Status;
+            ApplyMergeState(t.Result);
 
             // Unmerged paths are shown inside the unstaged list with a "U" status,
             // like the original commit form, rather than in a separate panel.
@@ -1173,6 +1378,27 @@ public sealed class CommitDialog : Window
         }), TaskScheduler.Default);
     }
 
+    // Records the merge state and, while a merge is pending, seeds the message box
+    // with MERGE_MSG — but never on top of text the user typed or edited.
+    private void ApplyMergeState(ReloadSnapshot snapshot)
+    {
+        _mergeInProgress = snapshot.Merging;
+        if (!snapshot.Merging)
+        {
+            _prefilledMergeMessage = string.Empty;
+            return;
+        }
+
+        string suggested = snapshot.MergeMessage.TrimEnd();
+        string current = _messageBox.Text ?? string.Empty;
+        if (suggested.Length > 0
+            && (current.Trim().Length == 0 || current == _prefilledMergeMessage))
+        {
+            _prefilledMergeMessage = suggested;
+            _messageBox.Text = suggested;
+        }
+    }
+
     // The last action message. It is kept across refreshes so the outcome of
     // stash / create-branch / commit is not wiped out by Reload's "Staged x/y".
     private string _statusHint = string.Empty;
@@ -1189,6 +1415,11 @@ public sealed class CommitDialog : Window
         if (_conflictPaths.Count > 0)
         {
             counts += $"   —   {_conflictPaths.Count} conflict(s)";
+        }
+
+        if (_mergeInProgress)
+        {
+            counts += "   —   merge in progress";
         }
 
         _statusText.Text = _statusHint.Length > 0 ? $"{_statusHint}   —   {counts}" : counts;
@@ -1223,7 +1454,9 @@ public sealed class CommitDialog : Window
 
     private static ListBox MakeList() => new()
     {
-        SelectionMode = SelectionMode.Single,
+        // Multiple, so stage / unstage / discard / copy path can act on a set of
+        // files (the former working-directory panel offered "Discard changes (N files)").
+        SelectionMode = SelectionMode.Multiple,
         FontFamily = Monospace,
         ClipToBounds = true,
     };
