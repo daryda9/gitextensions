@@ -8,6 +8,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
+using GitExtensions.Extensibility.Git;
 
 // The toolbar has its own Separator(IBrush) factory for the inline group rules,
 // so the menu-level separator control is aliased to keep the two apart.
@@ -49,7 +50,36 @@ public sealed class MainToolbar : UserControl
 {
     public event Action? OpenRepoRequested;
     public event Action? FetchRequested;
+
+    /// <summary>
+    ///  Legacy single-action pull, kept so existing hosts keep working: it is raised
+    ///  by the split button's body ONLY while nothing is subscribed to
+    ///  <see cref="PullActionRequested"/>. Hosts should move to
+    ///  <see cref="PullActionRequested"/> / <see cref="OpenPullDialogRequested"/>,
+    ///  which carry the chosen action.
+    /// </summary>
     public event Action? PullRequested;
+
+    /// <summary>
+    ///  A pull/fetch was requested with an explicit action: either picked from the
+    ///  split button's drop-down, or the persisted default action when the button's
+    ///  body was pressed. Never raised with
+    ///  <see cref="GitPullAction.None"/>/<see cref="GitPullAction.Default"/>.
+    /// </summary>
+    public event Action<GitPullAction>? PullActionRequested;
+
+    /// <summary>The drop-down's "Open pull dialog…" entry was chosen.</summary>
+    public event Action? OpenPullDialogRequested;
+
+    /// <summary>
+    ///  The user changed which action the button's body performs (drop-down →
+    ///  "Set default Pull button action"). The toolbar has already applied it to
+    ///  itself; the host is responsible for persisting it in
+    ///  <see cref="UiState.DefaultPullAction"/> — the toolbar deliberately does not
+    ///  write the state file, because the host saves its own <see cref="UiState"/>
+    ///  instance wholesale on close and would clobber a value written here.
+    /// </summary>
+    public event Action<GitPullAction>? DefaultPullActionChanged;
     public event Action? PushRequested;
     public event Action? CommitRequested;
     public event Action? StashRequested;
@@ -98,9 +128,13 @@ public sealed class MainToolbar : UserControl
     private Button? _pushButton;
     private TextBlock? _pushCaption;
     private Image? _pushIcon;
+    // Pull is a SPLIT button (as upstream's toolStripButtonPull is): _pullButton is
+    // its body (runs the default action), next to a separate arrow button that opens
+    // the actions menu. The body's tooltip names the current default action.
     private Button? _pullButton;
     private TextBlock? _pullCaption;
     private Image? _pullIcon;
+    private GitPullAction _defaultPullAction = GitPullAction.Merge;
     private Button? _commitButton;
     private TextBlock? _commitCaption;
     private Image? _commitIcon;
@@ -255,10 +289,7 @@ public sealed class MainToolbar : UserControl
         bar.AddItem(Separator(border));
         bar.AddItem(MakeButton("PullFetch", T("FormBrowse/_pullFetch.Text", "Fetch"),
             T("FormBrowse/fetchToolStripMenuItem.ToolTipText", "Fetch from remote"), () => FetchRequested?.Invoke()));
-        _pullButton = MakeButton("Pull", T("FormBrowse/toolStripButtonPull.Text", "Pull"),
-            T("Pull from remote"), () => PullRequested?.Invoke(),
-            out _pullCaption, out _pullIcon);
-        bar.AddItem(_pullButton);
+        bar.AddItem(MakePullSplitButton(border));
         _pushButton = MakeButton("Push", T("FormBrowse/toolStripButtonPush.Text", "Push"),
             T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"), () => PushRequested?.Invoke(),
             out _pushCaption, out _pushIcon);
@@ -581,6 +612,281 @@ public sealed class MainToolbar : UserControl
             LiveCaption = caption,
         };
         return button;
+    }
+
+    // ---- Pull split button ---------------------------------------------------
+
+    /// <summary>
+    ///  Which action the Pull button's body performs. Setting it re-labels the body
+    ///  (icon + tooltip) but raises no event, so the host can push the value it
+    ///  restored from <see cref="UiState.DefaultPullAction"/> at start-up without
+    ///  echoing it back. <see cref="GitPullAction.None"/> and
+    ///  <see cref="GitPullAction.Default"/> are normalised to
+    ///  <see cref="GitPullAction.Merge"/>, exactly as <c>FormPull</c> does.
+    /// </summary>
+    public GitPullAction DefaultPullAction
+    {
+        get => _defaultPullAction;
+        set
+        {
+            _defaultPullAction = Normalize(value);
+            ApplyDefaultPullAction();
+        }
+    }
+
+    private static GitPullAction Normalize(GitPullAction action)
+        => action is GitPullAction.None or GitPullAction.Default ? GitPullAction.Merge : action;
+
+    // The Pull split button: a body that runs the default action and, separated by a
+    // hairline, an arrow that drops the actions menu — the port's stand-in for the
+    // original ToolStripSplitButton (FormBrowse.Designer.cs, toolStripButtonPull).
+    //
+    // The two halves are real Buttons inside one Border so each keeps its own hover
+    // feedback (like the Windows control, where body and arrow highlight
+    // separately) while the pair still reads as a single item — including for the
+    // overflow menu, which sees the Border as one entry.
+    private Control MakePullSplitButton(IBrush border)
+    {
+        StackPanel bodyContent = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        _pullIcon = IconLoader.Image(PullIcon(_defaultPullAction), 16);
+        if (_pullIcon is not null)
+        {
+            _pullIcon.VerticalAlignment = VerticalAlignment.Center;
+            bodyContent.Children.Add(_pullIcon);
+        }
+
+        _pullCaption = new TextBlock
+        {
+            Text = T("FormBrowse/toolStripButtonPull.Text", "Pull"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+        };
+        bodyContent.Children.Add(_pullCaption);
+
+        Button body = new()
+        {
+            Content = bodyContent,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        body.Classes.Add("toolbtn");
+        body.Click += (_, _) => RaisePull(_defaultPullAction);
+        _pullButton = body;
+
+        Border divider = new()
+        {
+            Width = 1,
+            Margin = new Thickness(0, 4),
+            Background = border,
+        };
+
+        Button arrow = new()
+        {
+            Content = new TextBlock
+            {
+                Text = "▾",
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 10,
+            },
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        arrow.Classes.Add("toolbtn");
+        ToolTip.SetTip(arrow, T("FormBrowse/pullToolStripMenuItem.Text", "Pull / Fetch"));
+
+        // Populated BEFORE ShowAt, never inside Opening: Avalonia 11.3.x measures a
+        // MenuFlyout's content when the popup opens and does not re-measure it
+        // afterwards, so items added later leave a thin, empty sliver on screen.
+        // Rebuilding on every click also keeps the radio marks of the
+        // "Set default Pull button action" submenu current.
+        MenuFlyout flyout = new();
+        arrow.Click += (_, _) =>
+        {
+            BuildPullMenu(flyout);
+            flyout.ShowAt(arrow);
+        };
+
+        Border host = new()
+        {
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { body, divider, arrow },
+            },
+        };
+
+        _overflow[host] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = T("FormBrowse/toolStripButtonPull.Text", "Pull"),
+            Icon = PullIcon(_defaultPullAction),
+            LiveCaption = _pullCaption,
+            ShowMenu = anchor =>
+            {
+                BuildPullMenu(flyout);
+                flyout.ShowAt(anchor);
+                return Task.CompletedTask;
+            },
+        };
+
+        ApplyDefaultPullAction();
+        return host;
+    }
+
+    // Fills the split button's drop-down, in upstream's order:
+    //   Open pull dialog…  (Ctrl+Down)
+    //   Pull - merge / Pull - rebase / Fetch / Fetch all / Fetch and prune all
+    //   ---
+    //   Set default Pull button action ▸ (the same five, as radio items)
+    // Called immediately before ShowAt — see the note in MakePullSplitButton.
+    private void BuildPullMenu(MenuFlyout flyout)
+    {
+        flyout.Items.Clear();
+
+        MenuItem openDialog = new()
+        {
+            Header = T("FormBrowse/_pullOpenDialog.Text", "Open pull dialog…"),
+            Icon = IconLoader.Image("Pull", 16),
+            // Display only (the window-level HotkeyService owns the real binding).
+            InputGesture = OpenPullDialogGesture,
+            // Nothing wired yet → shown, but inert rather than misleading.
+            IsEnabled = OpenPullDialogRequested is not null,
+        };
+        openDialog.Click += (_, _) => OpenPullDialogRequested?.Invoke();
+        flyout.Items.Add(openDialog);
+        flyout.Items.Add(new MenuSeparator());
+
+        foreach ((GitPullAction action, string label) in PullActions())
+        {
+            MenuItem item = new()
+            {
+                Header = label,
+                Icon = IconLoader.Image(PullIcon(action), 16),
+            };
+            GitPullAction captured = action;
+            item.Click += (_, _) => RaisePull(captured);
+            flyout.Items.Add(item);
+        }
+
+        flyout.Items.Add(new MenuSeparator());
+
+        MenuItem setDefault = new()
+        {
+            Header = T("FormBrowse/setDefaultPullButtonActionToolStripMenuItem.Text", "Set default Pull button action"),
+        };
+        foreach ((GitPullAction action, string label) in PullActions())
+        {
+            GitPullAction captured = action;
+            MenuItem item = new()
+            {
+                Header = label,
+                Icon = IconLoader.Image(PullIcon(action), 16),
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = action == _defaultPullAction,
+            };
+            item.Click += (_, _) =>
+            {
+                if (captured == _defaultPullAction)
+                {
+                    return;
+                }
+
+                _defaultPullAction = captured;
+                ApplyDefaultPullAction();
+                DefaultPullActionChanged?.Invoke(captured);
+            };
+            setDefault.Items.Add(item);
+        }
+
+        flyout.Items.Add(setDefault);
+    }
+
+    // The five actions the split button offers, with their upstream captions.
+    private static (GitPullAction Action, string Label)[] PullActions() =>
+    [
+        (GitPullAction.Merge, T("FormBrowse/_pullMerge.Text", "Pull - merge")),
+        (GitPullAction.Rebase, T("FormBrowse/_pullRebase.Text", "Pull - rebase")),
+        (GitPullAction.Fetch, T("FormBrowse/_pullFetch.Text", "Fetch")),
+        (GitPullAction.FetchAll, T("FormBrowse/_pullFetchAll.Text", "Fetch all")),
+        (GitPullAction.FetchPruneAll, T("FormBrowse/_pullFetchPruneAll.Text", "Fetch and prune all")),
+    ];
+
+    // Upstream has a distinct icon per pull action (the toolbar button swaps its
+    // image with the default action); the port reuses the very same PNGs.
+    private static string PullIcon(GitPullAction action) => action switch
+    {
+        GitPullAction.Rebase => "PullRebase",
+        GitPullAction.Fetch => "PullFetch",
+        GitPullAction.FetchAll => "PullFetchAll",
+        GitPullAction.FetchPruneAll => "PullFetchPruneAll",
+        _ => "PullMerge",
+    };
+
+    // Re-labels the body for the current default action: matching icon plus the
+    // "Pull - merge (F8)" style tooltip of the original split button. The caption
+    // itself stays "Pull" (+ the ↓n badge UpdateState maintains), because the strip
+    // has no room for the full action name.
+    private void ApplyDefaultPullAction()
+    {
+        if (_pullIcon is not null)
+        {
+            _pullIcon.Source = IconLoader.Load(PullIcon(_defaultPullAction));
+        }
+
+        if (_pullButton is not null)
+        {
+            string label = PullActions().First(a => a.Action == _defaultPullAction).Label;
+            string gesture = DefaultPullGesture?.ToString() ?? string.Empty;
+            ToolTip.SetTip(_pullButton, gesture.Length == 0
+                ? label
+                : string.Format(T("{0} ({1})"), label, gesture));
+        }
+    }
+
+    // Gestures shown next to the drop-down entry and in the body's tooltip. They
+    // are read from the hotkey DEFAULTS, which are upstream's own FormBrowse map:
+    // F8 = pull with the default action, Ctrl+Down = open the pull dialog. A user
+    // override of either binding is not reflected here (the toolbar has no
+    // HotkeyService instance) — a display-only limitation.
+    private static KeyGesture? DefaultPullGesture => GestureFor(BrowseCommand.QuickPullOrFetch);
+
+    private static KeyGesture? OpenPullDialogGesture => GestureFor(BrowseCommand.PullOrFetch);
+
+    private static KeyGesture? GestureFor(BrowseCommand command)
+        => HotkeyService.Defaults.TryGetValue(command, out HotkeyGesture g)
+            ? new KeyGesture(g.Key, g.Modifiers)
+            : null;
+
+    // Raises the explicit-action event, falling back to the legacy parameterless
+    // PullRequested while no host has wired the new one, so a not-yet-updated host
+    // keeps pulling instead of silently doing nothing.
+    private void RaisePull(GitPullAction action)
+    {
+        if (PullActionRequested is not null)
+        {
+            PullActionRequested(Normalize(action));
+            return;
+        }
+
+        PullRequested?.Invoke();
     }
 
     // A flat toolbar button that drops a menu (icon + caption + a small chevron),
