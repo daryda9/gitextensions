@@ -921,6 +921,10 @@ public sealed class MainWindow : Window
         {
             if (_repoPath is not null) _ = ShowCommitDialogAsync();
         };
+        // Double-click / Enter on a revision brings its details forward, the way
+        // the original opens the commit-diff window. The artificial rows already
+        // open the commit dialog on single click, so they are not re-raised here.
+        _revisions.RevisionActivated += _ => Dispatcher.UIThread.Post(() => _bottom.SelectedItem = _commitInfoTab);
         _fileHistory.RevisionSelected += OnRevisionSelected;
         // Parent/child hash links in the commit detail navigate the grid: select the
         // target row (best-effort) and refresh detail/diff/filetree/gpg for it.
@@ -1028,13 +1032,7 @@ public sealed class MainWindow : Window
             BranchTagListing refs = new BranchTagService().LoadRefs(repo);
             return refs.Branches.Where(b => !b.IsRemote).Select(b => b.Name).ToList();
         });
-        _toolbar.BranchCheckoutRequested += name =>
-        {
-            if (_repoPath is not null)
-            {
-                RunOp($"Checkout {name}", () => new BranchTagService().Checkout(_repoPath!, name).Success);
-            }
-        };
+        _toolbar.BranchCheckoutRequested += name => _ = CheckoutBranchAsync(name);
 
         // Inline repo-path dropdown: list recent repositories off the UI thread;
         // choosing one opens it as the active repository. The service already
@@ -1131,8 +1129,7 @@ public sealed class MainWindow : Window
         _menu.DonateRequested += () => Surface(_externalTools.OpenUrl("https://opencollective.com/gitextensions"));
 
         // Commit-targeted operations on the revision grid.
-        _revisions.AddCommitCommand("Checkout this commit",
-            hash => RunOp("Checkout", () => new BranchTagService().Checkout(_repoPath!, hash).Success));
+        _revisions.AddCommitCommand("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
         _revisions.AddCommitCommand("Cherry-pick",
             hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success));
         _revisions.AddCommitCommand("Reset (soft) to here",
@@ -1433,7 +1430,29 @@ public sealed class MainWindow : Window
         }
     }
 
-    // Prompts for a branch name and creates it at the selected commit.
+    // Checks out a branch (or a bare commit) through the F4 dialog: with a clean
+    // working tree it runs straight away, otherwise the dialog asks what to do
+    // with the pending changes (don't change / merge / reset / stash). A null
+    // answer means the user cancelled.
+    private async Task CheckoutBranchAsync(string name)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        GitCommands.LocalChangesAction? action = await CheckoutBranchDialog.AskAsync(this, _repoPath, name);
+        if (action is null)
+        {
+            return;
+        }
+
+        RunOp($"Checkout {name}",
+            () => new BranchTagService().Checkout(_repoPath!, name, action.Value).Success);
+    }
+
+    // Creates a branch at the selected commit through the F4 dialog (name +
+    // "checkout after create", which is the normal case upstream).
     private async Task CreateBranchHereAsync(string hash)
     {
         if (_repoPath is null)
@@ -1441,17 +1460,19 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? name = await PromptAsync("Create branch", "Branch name:");
-        if (string.IsNullOrWhiteSpace(name))
+        CreateBranchRequest? request = await CreateBranchDialog.AskAsync(this, _repoPath, hash);
+        if (request is null)
         {
             return;
         }
 
-        RunOp($"Create branch {name}",
-            () => new BranchTagService().CreateBranch(_repoPath!, name.Trim(), startPoint: hash, checkout: false).Success);
+        RunOp($"Create branch {request.Name}",
+            () => new BranchTagService()
+                .CreateBranch(_repoPath!, request.Name, startPoint: hash, checkout: request.Checkout).Success);
     }
 
-    // Prompts for a tag name (and optional message) and creates it at the commit.
+    // Creates a tag at the selected commit through the F4 dialog: lightweight or
+    // annotated/signed, force, and an optional push right after creating it.
     private async Task CreateTagHereAsync(string hash)
     {
         if (_repoPath is null)
@@ -1459,16 +1480,16 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? name = await PromptAsync("Create tag", "Tag name:");
-        if (string.IsNullOrWhiteSpace(name))
+        CreateTagRequest? request = await CreateTagDialog.AskAsync(this, _repoPath, hash);
+        if (request is null)
         {
             return;
         }
 
-        string? message = await PromptAsync("Create tag", "Message (leave blank for a lightweight tag):");
-
-        RunOp($"Create tag {name}",
-            () => new BranchTagService().CreateTag(_repoPath!, name.Trim(), commit: hash, message?.Trim() ?? string.Empty).Success);
+        RunOp($"Create tag {request.Name}",
+            () => new BranchTagService().CreateTag(
+                _repoPath!, request.Name, commit: hash, request.Message,
+                request.Operation, request.SignKeyId, request.Force, request.PushToRemote).Success);
     }
 
     // Runs an external-tool action that needs the current repo, surfacing its
@@ -2387,14 +2408,16 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? name = await PromptAsync("New tag", "Tag name:");
-        if (string.IsNullOrWhiteSpace(name))
+        CreateTagRequest? request = await CreateTagDialog.AskAsync(this, _repoPath, "HEAD");
+        if (request is null)
         {
             return;
         }
 
-        RunOp($"Create tag {name}",
-            () => new BranchTagService().CreateTag(_repoPath!, name.Trim(), "HEAD", string.Empty).Success);
+        RunOp($"Create tag {request.Name}",
+            () => new BranchTagService().CreateTag(
+                _repoPath!, request.Name, "HEAD", request.Message,
+                request.Operation, request.SignKeyId, request.Force, request.PushToRemote).Success);
     }
 
     private async Task NewBranchAsync()
@@ -2404,14 +2427,15 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? name = await PromptAsync("New branch", "Branch name:");
-        if (string.IsNullOrWhiteSpace(name))
+        CreateBranchRequest? request = await CreateBranchDialog.AskAsync(this, _repoPath, "HEAD");
+        if (request is null)
         {
             return;
         }
 
-        RunOp($"Create branch {name}",
-            () => new BranchTagService().CreateBranch(_repoPath!, name.Trim(), startPoint: "HEAD", checkout: true).Success);
+        RunOp($"Create branch {request.Name}",
+            () => new BranchTagService()
+                .CreateBranch(_repoPath!, request.Name, startPoint: "HEAD", checkout: request.Checkout).Success);
     }
 
     // ---- patch operations (format / apply / view) ----------------------------------

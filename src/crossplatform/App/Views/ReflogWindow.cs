@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using GitCommands;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -159,22 +160,33 @@ public sealed class ReflogWindow : Window
 
     // Detached checkout of the selected entry's commit; on success flags
     // CheckedOut so the owner refreshes, and reports git's outcome inline.
-    private void DoCheckout()
+    private void DoCheckout() => _ = DoCheckoutAsync();
+
+    private async Task DoCheckoutAsync()
     {
         if (_busy || Selected is not { } entry)
         {
             return;
         }
 
-        _busy = true;
-        _status.Text = $"Checking out {entry.ShortHash}…";
         string hash = entry.ShortHash;
+
+        // Same contract as the rest of the app: a clean tree checks out straight
+        // away, a dirty one asks what to do with the pending changes first.
+        LocalChangesAction? action = await CheckoutBranchDialog.AskAsync(this, _repoPath, hash);
+        if (action is null)
+        {
+            return;
+        }
+
+        _busy = true;
+        _status.Text = $"Checking out {hash}…";
         _ = Task.Run(() =>
         {
             BranchTagResult result;
             try
             {
-                result = new BranchTagService().Checkout(_repoPath, hash);
+                result = new BranchTagService().Checkout(_repoPath, hash, action.Value);
             }
             catch (Exception ex)
             {
