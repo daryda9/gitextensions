@@ -61,6 +61,8 @@ public sealed class MainMenu : UserControl
     public event Action? DarkThemeRequested;
     public event Action<string>? LanguageRequested;
     public event Action? RefreshRequested;
+    public event Action? RevisionFilterRequested;
+    public event Action? ResetRevisionFiltersRequested;
     public event Action? ShowReflogRequested;
 
     // ---- Repository
@@ -166,6 +168,9 @@ public sealed class MainMenu : UserControl
         view.Items.Add(Item(null, "Dark theme", null, () => DarkThemeRequested?.Invoke()));
         view.Items.Add(new Separator());
         view.Items.Add(_language);
+        view.Items.Add(new Separator());
+        view.Items.Add(Item("FormBrowse/tsbtnAdvancedFilter.ToolTipText", "Filter revisions…", null, () => RevisionFilterRequested?.Invoke()));
+        view.Items.Add(Item("FormBrowse/tsmiResetAllFilters.Text", "Reset revision filters", null, () => ResetRevisionFiltersRequested?.Invoke()));
         view.Items.Add(new Separator());
         view.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke()));
 

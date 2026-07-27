@@ -1125,6 +1125,8 @@ public sealed class MainWindow : Window
         // Help: external documentation / project links (no repo required).
         _menu.UserManualRequested += () => Surface(_externalTools.OpenUrl("https://git-extensions-documentation.readthedocs.io/"));
         _menu.ReportIssueRequested += () => Surface(_externalTools.OpenUrl("https://github.com/gitextensions/gitextensions/issues"));
+        _menu.RevisionFilterRequested += () => _ = _revisions.ShowFilterDialogAsync();
+        _menu.ResetRevisionFiltersRequested += () => _revisions.ResetAllFilters();
         _menu.ChangelogRequested += () => Surface(_externalTools.OpenUrl("https://github.com/gitextensions/gitextensions/releases"));
         _menu.DonateRequested += () => Surface(_externalTools.OpenUrl("https://opencollective.com/gitextensions"));
 
