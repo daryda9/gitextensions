@@ -172,6 +172,9 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
 > rispetto a HEAD invece che alla selezione).
 > **P2 — chrome mancante**: barra pulsanti + casella di ricerca nella colonna sinistra,
 > icone nei tab del pannello inferiore, pulsanti della toolbar in alto.
+> **P3 — Pull**: split-button con azione predefinita + menu (Open pull dialog / merge /
+> rebase / fetch / fetch all / fetch and prune all / Set default action) e il dialogo
+> `FormPull` dedicato; oggi il port ha un pulsante secco con `rebase: false` cablato.
 
 1. ✅ **RISOLTO M45** (round 5, una iterazione) — `WorkingDirectoryView` **non esiste più**.
    Conflitti di merge e menu contestuale per file (discard / copy path / tre voci
@@ -286,18 +289,44 @@ LAVORARE su questo, in quest'ordine. I punti 1 e 2 sono PRIORITARI: indicati dal
       - FileStatusList.Toolbar.cs) e opzioni del viewer (evidenziazione sintattica, copia
       versione nuova/vecchia - FileViewer.Designer.cs:27-48).
 
-3. Code da M48: push del branch dal menu grid, edit commit e rebase interattivo (serve un
+3. [PRIORITA' UTENTE, 27/07/2026] PULL: split-button + menu + dialogo dedicato.
+   Screenshot dell'originale in ~/Documents/pull/ (button.png, menu.png, pull dialog.png)
+   -- la cartella reale si chiama "pullù".
+   Nell'originale `toolStripButtonPull` e' un ToolStripSplitButton
+   (FormBrowse.Designer.cs:50): il corpo esegue l'AZIONE PREDEFINITA (tooltip
+   "Pull - merge (F8)"), la freccia apre un menu con:
+     Open pull dialog... (Ctrl+Down) | Pull - merge | Pull - rebase | Fetch | Fetch all |
+     Fetch and prune all | --- | Set default Pull button action > (sottomenu)
+   L'azione predefinita e' persistita in AppSettings.DefaultPullAction
+   (AppSettings.cs:1008, enum GitPullAction in
+   GitExtensions.Extensibility/Git/GitPullAction.cs: None/Merge/Rebase/Fetch/FetchAll/
+   FetchPruneAll/Default; default = Merge).
+   Il "pull dialog" (FormPull) contiene: Pull from (Remote con combo + Manage remotes /
+   URL con Browse), Branch (Local branch in sola lettura + Remote branch), Merge options
+   (merge / rebase / solo fetch), Tag options (follow tagopt / no tag / all tags),
+   Prune remote branches, Prune remote branches and tags, e in fondo
+   Solve conflicts | Stash changes | Auto stash | Pull, piu' un pannello di aiuto con lo
+   schema visuale (l'illustrazione si puo' omettere).
+   NEL PORT: il Pull e' un pulsante semplice senza freccia (MainToolbar.cs:258) e chiama
+   PullStreaming(..., rebase: false, ...) con il flag CABLATO A FALSE in due punti
+   (MainWindow.cs:964 dal toolbar e :1082 dal menu), quindi non esiste ne' il dialogo, ne'
+   la scelta merge/rebase/fetch, ne' un'azione predefinita configurabile. Nel MainToolbar
+   non esiste ancora nessuno split-button: la struttura va creata (attenzione alla trappola
+   nota: gli Items del MenuFlyout vanno popolati PRIMA di ShowAt).
+   Nota: il punto 5 elencava gia' "dialogo Pull con prune/autostash/tag policy" come minore;
+   e' assorbito qui e promosso.
+
+4. Code da M48: push del branch dal menu grid, edit commit e rebase interattivo (serve un
    harness GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested da cablare, e le gesture
    Ctrl+M merge / Ctrl+Shift+E rebase / Ctrl+Alt+W worktrees (i service esistono, manca
    l'entry point in MainWindow).
 
-4. Difetti noti aperti (la perdita di scroll/selezione al refresh e' RISOLTA in M49):
+5. Difetti noti aperti (la perdita di scroll/selezione al refresh e' RISOLTA in M49):
    CheckoutBranchDialog e' misto italiano/inglese; Avalonia non espone WM_DELETE_WINDOW
    (finestra non chiudibile dal WM); il "salva come" del diff non e' verificabile headless
    (serve portal XDG).
 
-5. Minori: dialogo Pull con prune/autostash/tag policy (oggi solo remote+rebase), opzioni di
-   merge/cherry-pick, continue/skip/abort per rebase, filtrare i cataloghi .xlf a inglese +
+6. Minori: opzioni di merge/cherry-pick, continue/skip/abort per rebase, filtrare i cataloghi .xlf a inglese +
    italiano per togliere ~19 MB dal .deb.
 NON lavorare su repository-host GitHub ne' colonna build status: SKIP fuori scope.
 
