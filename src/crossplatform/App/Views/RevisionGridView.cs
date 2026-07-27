@@ -107,6 +107,46 @@ public sealed class RevisionGridView : UserControl
     private int _artificialCount;
     private int _headDisplayIndex = -1;
 
+    // --- Incremental history loading ------------------------------------------
+    //
+    // The grid never asks git for the whole history at once: it walks the log one
+    // PAGE at a time (RevisionService.LoadRevisionPage), so opening a repository
+    // with tens of thousands of commits costs one bounded `git log` and the rest of
+    // the history is appended on demand — when the user scrolls to the end of the
+    // list, or presses the "load more" button in the footer. This replaces the old
+    // hard-wired 200-commit ceiling, which silently truncated the history AND the
+    // text filter (which only ever sees loaded rows).
+    //
+    // _pageSize is user-configurable from the "View" menu, mirroring the original's
+    // AppSettings.MaxRevisionGraphCommits.
+    private const int DefaultPageSize = 500;
+
+    private int _pageSize = DefaultPageSize;
+
+    // True while the last page came back full, i.e. the walk very likely continues.
+    private bool _hasMore;
+
+    // Set while a page request is in flight, so scrolling cannot pile up requests.
+    private bool _loadingPage;
+
+    // Bumped by every Reload(): a page that completes after a reload (scope change,
+    // language switch, another repository) belongs to a dead walk and is discarded.
+    private int _loadGeneration;
+
+    // The accumulated pages exactly as git returned them, WITHOUT graph geometry.
+    // The DAG is rebuilt from this whole list on every append (off the UI thread),
+    // which is what keeps lanes, edges and the artificial rows correct as the
+    // history grows.
+    private IReadOnlyList<RevisionRow> _loaded = [];
+
+    // Footer strip with the "load more" button, shown only while _hasMore.
+    private readonly Border _moreBar;
+    private readonly Button _moreButton;
+
+    // The list's own ScrollViewer, captured from the first scroll event, so an
+    // append can restore the exact scroll offset instead of jumping to the top.
+    private ScrollViewer? _scroll;
+
     // The full, graph-built revision set as loaded from git; filtering selects a
     // subset from this without re-running git or touching the underlying model.
     private IReadOnlyList<RevisionRow> _allRows = [];
@@ -189,6 +229,26 @@ public sealed class RevisionGridView : UserControl
 
     /// <summary>Raised when the artificial "Commit index" row is clicked.</summary>
     public event Action? CommitIndexSelected;
+
+    /// <summary>
+    ///  Raised when a commit row is ACTIVATED (double-clicked, or Enter on the row),
+    ///  as opposed to merely selected; the argument is the full commit hash. Mirrors
+    ///  the original grid, where a double click opens the commit's details. The view
+    ///  already selects the row and flashes its identity in the status line; a host
+    ///  can subscribe to bring the commit-details tab forward.
+    /// </summary>
+    public event Action<string>? RevisionActivated;
+
+    /// <summary>
+    ///  Raised when one of the artificial rows is ACTIVATED (double-clicked). The
+    ///  argument is <see langword="true"/> for the "Commit index" row and
+    ///  <see langword="false"/> for the "Working directory" row — in the original a
+    ///  double click there opens the commit dialog, which in this port a single click
+    ///  already does through <see cref="WorkingDirectorySelected"/> /
+    ///  <see cref="CommitIndexSelected"/>. Those two are deliberately NOT re-raised
+    ///  here, so a double click cannot open the dialog twice.
+    /// </summary>
+    public event Action<bool>? ArtificialRowActivated;
 
     // Host-registered commit-targeted actions (checkout, cherry-pick, reset, …),
     // appended to each row's context menu. Each handler receives the full hash.
@@ -385,75 +445,18 @@ public sealed class RevisionGridView : UserControl
             }
         };
 
-        // Keyboard: Ctrl+C copies the selected commit's hash; Alt+↑ jumps to the
-        // first parent, Alt+↓ to the nearest child, Ctrl+G opens the "Go to" box.
-        // (Plain Up/Down selection is handled by the ListBox and fires
-        // RevisionSelected via SelectionChanged above.)
-        _list.KeyDown += (_, e) =>
-        {
-            bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
-            bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
-            bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
-            bool quickActive = _quickSearch.Length > 0;
-
-            if (ctrl && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
-            {
-                Copy(row.Hash);
-                e.Handled = true;
-            }
-            else if (alt && e.Key == Key.Up)
-            {
-                GoToParent();
-                e.Handled = true;
-            }
-            else if (alt && e.Key == Key.Down)
-            {
-                GoToChild();
-                e.Handled = true;
-            }
-            else if (ctrl && e.Key == Key.G)
-            {
-                OpenGoTo();
-                e.Handled = true;
-            }
-            // --- quick-search navigation (only when the list itself is focused) ---
-            else if (e.Key == Key.F3)
-            {
-                // F3 / Shift+F3 step to the next / previous match, wrapping.
-                if (quickActive)
-                {
-                    QuickSearchStep(forward: !shift);
-                    e.Handled = true;
-                }
-            }
-            else if (e.Key == Key.Enter && quickActive && !ctrl && !alt)
-            {
-                // Enter also advances to the next match while quick-searching.
-                QuickSearchStep(forward: !shift);
-                e.Handled = true;
-            }
-            else if (e.Key == Key.Back && quickActive)
-            {
-                // Backspace edits the buffer; emptying it dismisses the adorner.
-                _quickSearch = _quickSearch[..^1];
-                if (_quickSearch.Length == 0)
-                {
-                    EndQuickSearch();
-                }
-                else
-                {
-                    QuickSearchApply(fromCurrentInclusive: true);
-                }
-
-                e.Handled = true;
-            }
-            else if (e.Key == Key.Escape && quickActive)
-            {
-                // Esc clears/dismisses the quick-search.
-                EndQuickSearch();
-                e.Handled = true;
-            }
-        };
+        // Keyboard shortcuts of the grid (see OnListKeyDown). Registered
+        // TUNNELLING, and with handledEventsToo: the ListBox's own class handler runs
+        // on the bubble stage and swallows the arrow keys for its selection movement —
+        // which is why an Alt+arrow shortcut registered on the bubble stage would never
+        // be seen (Alt+↑/↓ silently behaved as plain ↑/↓). Tunnelling gives this view
+        // first refusal; anything it does not claim falls through to the ListBox
+        // unchanged, so plain arrow navigation keeps working.
+        _list.AddHandler(
+            InputElement.KeyDownEvent,
+            OnListKeyDown,
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
 
         // Transient quick-search adorner: a small pill floating at the bottom-left
         // of the list, shown only while a quick-search is in progress.
@@ -489,6 +492,32 @@ public sealed class RevisionGridView : UserControl
         // text input — never for Enter/Backspace/F3, which KeyDown handles below.
         _list.AddHandler(InputElement.TextInputEvent, OnListTextInput, RoutingStrategies.Bubble);
 
+        // Double click ACTIVATES the row under the pointer (commit details / commit
+        // dialog for the artificial rows), as in the original grid.
+        _list.AddHandler(InputElement.DoubleTappedEvent, OnListDoubleTapped, RoutingStrategies.Bubble);
+
+        // Reaching the end of the list appends the next page of history. The event
+        // bubbles from the list's own ScrollViewer, which is also captured here so an
+        // append can restore the scroll offset afterwards.
+        _list.AddHandler(ScrollViewer.ScrollChangedEvent, OnListScrolled, RoutingStrategies.Bubble);
+
+        // Footer: an explicit "load more" affordance next to the implicit
+        // scroll-to-end one, shown only while the walk has more commits to give.
+        _moreButton = MakeBarButton(string.Empty);
+        _moreButton.Margin = new Thickness(0);
+        _moreButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _moreButton.Click += (_, _) => LoadMore(userRequested: true);
+        _moreBar = new Border
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(10, 4, 10, 4),
+            IsVisible = false,
+            Child = _moreButton,
+        };
+        UpdateMoreBar();
+
         Panel listHost = new();
         listHost.Children.Add(_list);
         listHost.Children.Add(_quickSearchOverlay);
@@ -497,9 +526,11 @@ public sealed class RevisionGridView : UserControl
         DockPanel.SetDock(searchBar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_headerHost, Dock.Top);
+        DockPanel.SetDock(_moreBar, Dock.Bottom);
         root.Children.Add(searchBar);
         root.Children.Add(_status);
         root.Children.Add(_headerHost);
+        root.Children.Add(_moreBar);
         root.Children.Add(listHost);
 
         Content = root;
@@ -507,6 +538,97 @@ public sealed class RevisionGridView : UserControl
         // A language switch re-labels this view in place — no restart, and no
         // loss of filter / scope / selection (see Relabel).
         TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    // Keyboard handling for the grid, on the TUNNEL stage (see the registration in
+    // the constructor): Ctrl+C copies the selected commit's hash, Alt+↑ / Alt+↓ jump
+    // to the first parent / nearest child, Alt+← / Alt+→ walk the navigation history,
+    // Ctrl+G opens the "Go to" box, Enter activates the row, and the remaining keys
+    // drive the quick-search. Plain ↑/↓ are deliberately left to the ListBox.
+    private void OnListKeyDown(object? sender, KeyEventArgs e)
+    {
+        bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
+        bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        bool quickActive = _quickSearch.Length > 0;
+
+        if (ctrl && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
+        {
+            Copy(row.Hash);
+            e.Handled = true;
+        }
+        else if (alt && e.Key == Key.Up)
+        {
+            GoToParent();
+            e.Handled = true;
+        }
+        else if (alt && e.Key == Key.Down)
+        {
+            GoToChild();
+            e.Handled = true;
+        }
+        else if (ctrl && e.Key == Key.G)
+        {
+            OpenGoTo();
+            e.Handled = true;
+        }
+        else if (alt && e.Key == Key.Left)
+        {
+            // Navigation history — Alt+← / Alt+→ as in the original grid. (Alt+↑ /
+            // Alt+↓ are taken by the parent/child jumps above, so the history uses
+            // the horizontal pair.)
+            NavigateBack();
+            e.Handled = true;
+        }
+        else if (alt && e.Key == Key.Right)
+        {
+            NavigateForward();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && !quickActive && !ctrl && !alt
+            && _list.SelectedItem is RevisionRow activated)
+        {
+            // Enter activates the focused row, like a double click.
+            Activate(activated);
+            e.Handled = true;
+        }
+        // --- quick-search navigation (only when the list itself is focused) ---
+        else if (e.Key == Key.F3)
+        {
+            // F3 / Shift+F3 step to the next / previous match, wrapping.
+            if (quickActive)
+            {
+                QuickSearchStep(forward: !shift);
+                e.Handled = true;
+            }
+        }
+        else if (e.Key == Key.Enter && quickActive && !ctrl && !alt)
+        {
+            // Enter also advances to the next match while quick-searching.
+            QuickSearchStep(forward: !shift);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Back && quickActive)
+        {
+            // Backspace edits the buffer; emptying it dismisses the adorner.
+            _quickSearch = _quickSearch[..^1];
+            if (_quickSearch.Length == 0)
+            {
+                EndQuickSearch();
+            }
+            else
+            {
+                QuickSearchApply(fromCurrentInclusive: true);
+            }
+
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape && quickActive)
+        {
+            // Esc clears/dismisses the quick-search.
+            EndQuickSearch();
+            e.Handled = true;
+        }
     }
 
     // ---- translation ---------------------------------------------------------
@@ -711,32 +833,112 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
+        // Drop everything loaded so far and restart the walk at its first page.
+        _loaded = [];
+        _hasMore = false;
+        _scroll = null;
+        _list.ItemsSource = null;
+        LoadPage(restart: true);
+    }
+
+    /// <summary>
+    ///  Appends the next page of history. Called by the footer button and, silently,
+    ///  when the list is scrolled to its end. A no-op while a page is already in
+    ///  flight or when the walk is exhausted.
+    /// </summary>
+    private void LoadMore(bool userRequested)
+    {
+        if (_loadingPage || !_hasMore || string.IsNullOrEmpty(_repoPath))
+        {
+            return;
+        }
+
+        _ = userRequested; // (kept for readability at the call sites)
+        LoadPage(restart: false);
+    }
+
+    /// <summary>
+    ///  Runs ONE page of the git walk off the UI thread and merges it into the view.
+    ///
+    ///  <para>All git work (the paged <c>git log</c>) AND the DAG rebuild happen inside
+    ///  <see cref="Task.Run(Action)"/>; only the final merge touches the UI, through
+    ///  <see cref="Dispatcher"/>. A generation token discards pages belonging to a walk
+    ///  that a <see cref="Reload"/> has since replaced.</para>
+    ///
+    ///  <para>Appending is transparent to the rest of the view: the graph is rebuilt
+    ///  over the whole accumulated list (so lanes/edges and the artificial
+    ///  "Working directory" / "Commit index" nodes stay correct), the selection is
+    ///  restored by hash, and the scroll offset is put back where the user left it.</para>
+    /// </summary>
+    private void LoadPage(bool restart)
+    {
         string repoPath = _repoPath;
         BranchScope scope = _branchScope;
         bool showRemotes = _showRemotes;
         bool showTags = _showTags;
         bool showStashes = _showStashes;
         bool topoOrder = _topoOrder;
+        int pageSize = _pageSize;
 
-        _list.ItemsSource = null;
-        _status.Text = T("RevisionGridControl/_strLoading.Text", "Loading…");
+        IReadOnlyList<RevisionRow> before = restart ? [] : _loaded;
+        int skip = before.Count;
+
+        if (restart)
+        {
+            _loadGeneration++;
+        }
+
+        int generation = _loadGeneration;
+        _loadingPage = true;
+        UpdateMoreBar();
+
+        if (restart)
+        {
+            _status.Text = T("RevisionGridControl/_strLoading.Text", "Loading…");
+        }
+
+        // What the user is looking at right now, so the append can put it back.
+        List<string> selected = _list.SelectedItems is { Count: > 0 } items
+            ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
+            : [];
+        Vector offset = _scroll?.Offset ?? default;
+        bool hadFocus = _list.IsKeyboardFocusWithin;
 
         _ = Task.Run(() =>
         {
             try
             {
-                IReadOnlyList<RevisionRow> rows = _service.LoadRevisions(
+                RevisionPage page = _service.LoadRevisionPage(
                     repoPath,
+                    skip: skip,
+                    maxCount: pageSize,
                     scope: scope,
                     showRemotes: showRemotes,
                     showTags: showTags,
                     showStashes: showStashes,
                     topoOrder: topoOrder);
+
+                // Merge and rebuild the DAG here, still off the UI thread.
+                List<RevisionRow> merged = new(before.Count + page.Rows.Count);
+                merged.AddRange(before);
+                merged.AddRange(page.Rows);
+                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(merged);
+
                 Dispatcher.UIThread.Post(() =>
                 {
-                    int laneCount = rows.Count > 0 ? rows[0].LaneCount : 1;
+                    if (generation != _loadGeneration)
+                    {
+                        // A reload happened while this page was loading: drop it.
+                        return;
+                    }
+
+                    _loadingPage = false;
+                    _loaded = merged;
+                    _hasMore = page.HasMore;
+
+                    int laneCount = graphed.Count > 0 ? graphed[0].LaneCount : 1;
                     _graphWidth = Math.Max(1, laneCount) * LaneWidth;
-                    _allRows = rows;
+                    _allRows = graphed;
                     // Display-only: _repoPath keeps the absolute path, the status
                     // line shows the same "~" form as the toolbar repo dropdown.
                     _repoLabel = CollapseHome(repoPath);
@@ -744,13 +946,101 @@ public sealed class RevisionGridView : UserControl
                     ComputeReachability();
                     // Re-apply any current filter text so a reload keeps the view consistent.
                     ApplyFilterCore(_search.Text);
+                    UpdateMoreBar();
+
+                    if (!restart)
+                    {
+                        // Re-selecting would drag the viewport to the selected row
+                        // (AutoScrollToSelectedItem); the user's own scroll position is
+                        // what must survive an append, so the auto-scroll is suppressed
+                        // for the duration of the restore.
+                        bool autoScroll = _list.AutoScrollToSelectedItem;
+                        _list.AutoScrollToSelectedItem = false;
+                        RestoreSelection(selected);
+                        _list.AutoScrollToSelectedItem = autoScroll;
+
+                        // Rebinding ItemsSource resets the viewport to the top and drops
+                        // keyboard focus; put both back after layout so the appended rows
+                        // simply continue below the ones the user was reading.
+                        Dispatcher.UIThread.Post(
+                            () =>
+                            {
+                                if (_scroll is not null && offset.Y > 0)
+                                {
+                                    _scroll.Offset = offset;
+                                }
+
+                                if (hadFocus)
+                                {
+                                    _list.Focus();
+                                }
+                            },
+                            DispatcherPriority.Loaded);
+                    }
                 });
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = string.Format(T("Error: {0}"), ex.Message));
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (generation != _loadGeneration)
+                    {
+                        return;
+                    }
+
+                    _loadingPage = false;
+                    _hasMore = false;
+                    UpdateMoreBar();
+                    _status.Text = string.Format(T("Error: {0}"), ex.Message);
+                });
             }
         });
+    }
+
+    // Shows/hides the footer and captions its button with the page size (or a
+    // "loading" caption while a page is in flight).
+    private void UpdateMoreBar()
+    {
+        _moreBar.IsVisible = _hasMore;
+        _moreButton.IsEnabled = !_loadingPage;
+        _moreButton.Content = _loadingPage
+            ? T("RevisionGridControl/_strLoading.Text", "Loading…")
+            : string.Format(T("Load {0} more commits"), _pageSize);
+    }
+
+    // The list was scrolled: capture its ScrollViewer and, once the end of the
+    // loaded history comes into view, append the next page automatically.
+    private void OnListScrolled(object? sender, ScrollChangedEventArgs e)
+    {
+        if (e.Source is not ScrollViewer viewer)
+        {
+            return;
+        }
+
+        _scroll = viewer;
+
+        double remaining = viewer.Extent.Height - viewer.Viewport.Height - viewer.Offset.Y;
+        if (remaining <= 2 && viewer.Extent.Height > viewer.Viewport.Height)
+        {
+            LoadMore(userRequested: false);
+        }
+    }
+
+    /// <summary>
+    ///  Sets how many commits one page of the walk loads (the port's equivalent of
+    ///  the original's <c>MaxRevisionGraphCommits</c>) and restarts the walk.
+    /// </summary>
+    public void SetPageSize(int pageSize)
+    {
+        int value = Math.Max(50, pageSize);
+        if (_pageSize == value)
+        {
+            return;
+        }
+
+        _pageSize = value;
+        UpdateMoreBar();
+        Reload();
     }
 
     // Path display (home collapsed to "~") is shared with the toolbar's repository
@@ -836,14 +1126,14 @@ public sealed class RevisionGridView : UserControl
             // up separately so it agrees with the catalogue.
             _status.Text = string.Format(
                 T("{0}  —  {1} of {2} {3}  ({4}; filter: \"{5}\")"),
-                _repoLabel, filtered.Count, _allRows.Count, CommitsNoun, ScopeLabel, query);
+                _repoLabel, filtered.Count, LoadedCountText, CommitsNoun, ScopeLabel, query);
         }
         else
         {
             _status.Text = _allRows.Count == 0
                 ? T("No repository loaded.")
                 : string.Format(T("{0}  —  {1} {2}  ({3})"),
-                    _repoLabel, _allRows.Count, CommitsNoun, ScopeLabel);
+                    _repoLabel, LoadedCountText, CommitsNoun, ScopeLabel);
         }
 
         // The line is ellipsized when the pane is narrow; keep it fully readable.
@@ -854,6 +1144,18 @@ public sealed class RevisionGridView : UserControl
 
     // The plural noun used by the status line's commit count.
     private static string CommitsNoun => T("CommitInfo/_plusCommits.Text", "commits");
+
+    // How many commits are loaded right now. A trailing "+" says the history goes
+    // further and only has not been walked yet — so the number can never be read as
+    // "this repository has N commits" the way the old fixed 200-commit cap was.
+    private string LoadedCountText
+    {
+        get
+        {
+            string count = _allRows.Count.ToString(System.Globalization.CultureInfo.CurrentCulture);
+            return _hasMore ? string.Format("{0}+", count) : count;
+        }
+    }
 
     private static bool Matches(RevisionRow row, string query)
         => row.Author.Contains(query, StringComparison.OrdinalIgnoreCase)
@@ -1011,6 +1313,28 @@ public sealed class RevisionGridView : UserControl
         };
         panel.Children.Add(dateOrder);
         panel.Children.Add(topoOrder);
+
+        // How much history one page of the incremental walk loads — the port's
+        // counterpart of the original's MaxRevisionGraphCommits setting. Changing it
+        // restarts the walk at the new page size; the rest of the history stays one
+        // scroll (or one footer click) away either way.
+        panel.Children.Add(SectionLabel(T("Commits per page")));
+        foreach (int size in new[] { 200, 500, 1000, 2000 })
+        {
+            int value = size;
+            RadioButton option = MakeRadio(
+                value.ToString(System.Globalization.CultureInfo.CurrentCulture),
+                "revPageSize",
+                _pageSize == value);
+            option.IsCheckedChanged += (_, _) =>
+            {
+                if (option.IsChecked == true)
+                {
+                    SetPageSize(value);
+                }
+            };
+            panel.Children.Add(option);
+        }
 
         panel.Children.Add(SectionLabel(T("Highlighting")));
 
@@ -1361,6 +1685,26 @@ public sealed class RevisionGridView : UserControl
         panel.Children.Add(parent);
         panel.Children.Add(child);
 
+        // Navigation history: the two directions of the jump stack (Alt+← / Alt+→).
+        Button back = MakeMenuButton(string.Format(T("←  {0}   (Alt+←)"),
+            T("RevisionGrid/NavigateBackward.Text", "Backward")));
+        back.Click += (_, _) =>
+        {
+            flyout.Hide();
+            NavigateBack();
+        };
+
+        Button forward = MakeMenuButton(string.Format(T("→  {0}   (Alt+→)"),
+            T("RevisionGrid/NavigateForward.Text", "Forward")));
+        forward.Click += (_, _) =>
+        {
+            flyout.Hide();
+            NavigateForward();
+        };
+
+        panel.Children.Add(back);
+        panel.Children.Add(forward);
+
         panel.Children.Add(SectionLabel(T("FormGoToCommit/$this.Text", "Go to commit")));
         panel.Children.Add(_goToBox);
 
@@ -1560,6 +1904,153 @@ public sealed class RevisionGridView : UserControl
         _quickSearchOverlay.IsVisible = false;
     }
 
+    // --- Row activation (double click / Enter) --------------------------------
+    //
+    // The original grid opens the commit's details on a double click, and the commit
+    // dialog when the double click lands on an artificial row. Here the view does
+    // what it owns — select the row, re-announce the selection and flash the commit's
+    // identity in the status line — and raises RevisionActivated /
+    // ArtificialRowActivated so the host can bring its details tab forward.
+
+    private void OnListDoubleTapped(object? sender, TappedEventArgs e)
+    {
+        RevisionRow? row = (e.Source as Visual)?
+            .FindAncestorOfType<ListBoxItem>(includeSelf: true)?
+            .DataContext as RevisionRow;
+
+        row ??= _list.SelectedItem as RevisionRow;
+        if (row is null)
+        {
+            return;
+        }
+
+        Activate(row);
+        e.Handled = true;
+    }
+
+    // Activates a row: artificial rows notify the host (the single click already
+    // opened the commit dialog, so it is NOT opened a second time here), commit rows
+    // re-announce their selection and get their identity flashed in the status line.
+    private void Activate(RevisionRow row)
+    {
+        if (IsArtificial(row))
+        {
+            bool isIndex = row.Hash == IndexHash;
+            FlashStatus(isIndex
+                ? T("Show staged changes")
+                : T("Show working directory changes"));
+            ArtificialRowActivated?.Invoke(isIndex);
+            return;
+        }
+
+        SelectByHash(row.Hash);
+        RevisionSelected?.Invoke(row.Hash);
+        RevisionActivated?.Invoke(row.Hash);
+        FlashStatus(string.Format(T("Commit {0}: {1}"), row.ShortHash, row.Subject));
+    }
+
+    // Shows a transient message in the status line, restoring the regular
+    // repository/count line after a few seconds (the status line is rebuilt from
+    // scratch by ApplyFilterCore, so nothing has to be remembered).
+    private void FlashStatus(string message)
+    {
+        _status.Text = message;
+        ToolTip.SetTip(_status, message);
+
+        _statusFlashTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _statusFlashTimer.Stop();
+        _statusFlashTimer.Tick -= OnStatusFlashElapsed;
+        _statusFlashTimer.Tick += OnStatusFlashElapsed;
+        _statusFlashTimer.Start();
+    }
+
+    private void OnStatusFlashElapsed(object? sender, EventArgs e)
+    {
+        _statusFlashTimer?.Stop();
+        ApplyFilterCore(_search.Text);
+    }
+
+    private DispatcherTimer? _statusFlashTimer;
+
+    // --- Navigation history ---------------------------------------------------
+    //
+    // The original grid keeps a NavigationHistory driven by Alt+←/Alt+→. Only
+    // EXPLICIT jumps are recorded — "go to commit", first-parent / nearest-child
+    // jumps and the parent/child links of the commit details (which come through
+    // SelectCommit) — never plain arrow-key or click selection, which would turn the
+    // history into a log of every row the user walked past.
+
+    private readonly List<string> _navBack = [];
+    private readonly List<string> _navForward = [];
+
+    // Records the position a jump is leaving, and invalidates the forward stack (a
+    // new jump from the middle of the history starts a new branch of it).
+    private void PushHistory(string? from)
+    {
+        if (string.IsNullOrEmpty(from))
+        {
+            return;
+        }
+
+        if (_navBack.Count > 0 && _navBack[^1] == from)
+        {
+            return;
+        }
+
+        _navBack.Add(from);
+        if (_navBack.Count > 200)
+        {
+            _navBack.RemoveAt(0);
+        }
+
+        _navForward.Clear();
+    }
+
+    // The hash of the row the history should record as "where we are now".
+    private string? CurrentHash => (_list.SelectedItem as RevisionRow)?.Hash;
+
+    /// <summary>
+    ///  Goes back to the previous position in the navigation history (Alt+←).
+    ///  Entries that are no longer displayed (a reload / a scope change dropped
+    ///  them) are skipped. Returns false when the history is exhausted.
+    /// </summary>
+    public bool NavigateBack() => Step(_navBack, _navForward, T("No earlier position in the history."));
+
+    /// <summary>
+    ///  Goes forward again after one or more <see cref="NavigateBack"/> (Alt+→).
+    ///  Returns false when there is nothing to go forward to.
+    /// </summary>
+    public bool NavigateForward() => Step(_navForward, _navBack, T("No later position in the history."));
+
+    // Pops entries off one stack until one of them can actually be selected, pushing
+    // the position being left onto the other stack.
+    private bool Step(List<string> from, List<string> to, string emptyMessage)
+    {
+        string? current = CurrentHash;
+        while (from.Count > 0)
+        {
+            string target = from[^1];
+            from.RemoveAt(from.Count - 1);
+            if (target == current)
+            {
+                continue;
+            }
+
+            if (SelectByHash(target))
+            {
+                if (!string.IsNullOrEmpty(current))
+                {
+                    to.Add(current);
+                }
+
+                return true;
+            }
+        }
+
+        FlashStatus(emptyMessage);
+        return false;
+    }
+
     // --- Commit navigation ---------------------------------------------------
     //
     // Parent/child use the real DAG relationship carried on each row
@@ -1582,7 +2073,11 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
-        if (!SelectByHash(row.ParentHashes[0]))
+        if (SelectByHash(row.ParentHashes[0]))
+        {
+            PushHistory(row.Hash);
+        }
+        else
         {
             _status.Text = T("Parent commit is not in the loaded history.");
         }
@@ -1625,6 +2120,7 @@ public sealed class RevisionGridView : UserControl
         }
 
         SelectRow(best);
+        PushHistory(row.Hash);
     }
 
     // Selects the commit matching an entered hash (full or abbreviated). Searches
@@ -1646,6 +2142,9 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
+        // Where the jump starts from, recorded in the navigation history below.
+        string? from = CurrentHash;
+
         int index = FindIndex(_rows, query);
         if (index < 0 && _filterActive)
         {
@@ -1661,6 +2160,7 @@ public sealed class RevisionGridView : UserControl
         }
 
         SelectIndex(index);
+        PushHistory(from);
     }
 
     // Locates a commit by hash: exact full/short match first, then a hash prefix.

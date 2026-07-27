@@ -104,12 +104,35 @@ public sealed record RevisionGraphSegment(
     int ColorLane);
 
 /// <summary>
+///  One page of the revision walk, as returned by
+///  <see cref="RevisionService.LoadRevisionPage"/>.
+///
+///  <para><see cref="Rows"/> carries the commits of the requested window in walk
+///  order (newest first), <b>without</b> DAG geometry: lanes and segments are only
+///  meaningful for a contiguous run of rows, so the caller accumulates the pages it
+///  has and rebuilds the graph over the whole accumulated list with
+///  <see cref="RevisionService.BuildRevisionGraph"/>.</para>
+///
+///  <para><see cref="HasMore"/> is true when the page came back full, i.e. the walk
+///  very likely continues past it — the cheap equivalent of the original's
+///  incremental loading, without paying for a full <c>git rev-list --count</c>.</para>
+/// </summary>
+public sealed record RevisionPage(IReadOnlyList<RevisionRow> Rows, bool HasMore);
+
+/// <summary>
 ///  Loads revisions for a repository by reusing the Git Extensions core
 ///  (<see cref="GitContext.CreateModule"/> + <see cref="RevisionReader"/>),
 ///  the same code path the Windows app uses.
 /// </summary>
 public sealed class RevisionService
 {
+    // Per-repository metadata (HEAD, ref names, commits carrying notes) shared by
+    // every page of the same walk. Refreshed when a walk restarts (skip == 0) and
+    // reused by the follow-up pages, so scrolling further back does not re-run
+    // `git for-each-ref` / `git notes list` on every append.
+    private readonly object _metadataLock = new();
+    private string _metadataRepo = string.Empty;
+    private RepoMetadata? _metadata;
     /// <summary>
     ///  Loads the most recent <paramref name="maxCount"/> commits, newest first,
     ///  with author, date, subject, parent hashes and ref names (branches/tags)
@@ -140,53 +163,51 @@ public sealed class RevisionService
         bool showStashes = false,
         bool topoOrder = false,
         CancellationToken cancellationToken = default)
+        => BuildRevisionGraph(LoadRevisionPage(
+            repoPath,
+            skip: 0,
+            maxCount: maxCount,
+            scope: scope,
+            filteredRefs: filteredRefs,
+            showRemotes: showRemotes,
+            showTags: showTags,
+            showStashes: showStashes,
+            topoOrder: topoOrder,
+            cancellationToken: cancellationToken).Rows);
+
+    /// <summary>
+    ///  Loads ONE PAGE of the revision walk: the <paramref name="maxCount"/> commits
+    ///  that follow the first <paramref name="skip"/> ones, newest first. This is the
+    ///  primitive behind the grid's incremental history loading — the first page is
+    ///  fetched when the repository opens and further pages are appended on demand,
+    ///  so a repository with tens of thousands of commits opens as fast as a small
+    ///  one while its whole history stays reachable.
+    ///
+    ///  <para>The returned rows carry NO graph geometry (see <see cref="RevisionPage"/>);
+    ///  the caller rebuilds it over the accumulated list via
+    ///  <see cref="BuildRevisionGraph"/>. Every other parameter has exactly the meaning
+    ///  documented on <see cref="LoadRevisions"/>.</para>
+    /// </summary>
+    public RevisionPage LoadRevisionPage(
+        string repoPath,
+        int skip,
+        int maxCount,
+        BranchScope scope = BranchScope.AllBranches,
+        IReadOnlyList<string>? filteredRefs = null,
+        bool showRemotes = true,
+        bool showTags = true,
+        bool showStashes = false,
+        bool topoOrder = false,
+        CancellationToken cancellationToken = default)
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
-        // The currently checked-out commit, so the view can mark the HEAD row and
-        // compute reachability for the relatives/highlight render styles.
-        string headHash = string.Empty;
-        try
-        {
-            ObjectId head = module.GetCurrentCheckout();
-            if (head is { IsZero: false, IsArtificial: false })
-            {
-                headHash = head.ToString();
-            }
-        }
-        catch
-        {
-            // HEAD is a nicety for styling only; never block the log on it.
-        }
-
-        // Build an ObjectId -> ref-names lookup so we can show branches/tags inline.
-        Dictionary<ObjectId, List<string>> refsByCommit = [];
-        try
-        {
-            foreach (IGitRef gitRef in module.GetRefs(RefsFilter.NoFilter))
-            {
-                if (gitRef.ObjectId.IsZero || gitRef.ObjectId.IsArtificial)
-                {
-                    continue;
-                }
-
-                if (!refsByCommit.TryGetValue(gitRef.ObjectId, out List<string>? names))
-                {
-                    names = [];
-                    refsByCommit[gitRef.ObjectId] = names;
-                }
-
-                names.Add(gitRef.Name);
-            }
-        }
-        catch
-        {
-            // Refs are a nicety; a failure here must not prevent the log from loading.
-        }
-
-        // Commits carrying a git note. Loaded with a SINGLE `git notes list` for the
-        // whole repository (not one call per row) so the indicator column is cheap.
-        HashSet<string> commitsWithNotes = LoadNotes(module);
+        // HEAD, ref names and note-carrying commits. Re-read when the walk restarts
+        // (first page), reused as-is by the follow-up pages of the same walk.
+        RepoMetadata metadata = GetMetadata(module, repoPath, refresh: skip <= 0);
+        string headHash = metadata.HeadHash;
+        Dictionary<ObjectId, List<string>> refsByCommit = metadata.RefsByCommit;
+        HashSet<string> commitsWithNotes = metadata.CommitsWithNotes;
 
         RevisionCollector collector = new();
         RevisionReader reader = new(module);
@@ -236,9 +257,15 @@ public sealed class RevisionService
         // Topological vs. the default (commit-date) ordering.
         string orderArg = topoOrder ? " --topo-order" : string.Empty;
 
+        // --skip selects the page. git applies it BEFORE --max-count, and the walk is
+        // deterministic for a fixed ref set + order, so consecutive pages line up into
+        // exactly the list a single big --max-count would have produced.
+        string skipArg = skip > 0 ? $" --skip={skip}" : string.Empty;
+
+        string countArgs = $"--max-count={maxCount}{skipArg}{orderArg}";
         string revisionFilter = scopeArgs.Length == 0
-            ? $"--max-count={maxCount}{orderArg}"
-            : $"--max-count={maxCount}{orderArg} {scopeArgs}";
+            ? countArgs
+            : $"{countArgs} {scopeArgs}";
 
         reader.GetLog(
             subject: collector,
@@ -276,7 +303,99 @@ public sealed class RevisionService
             });
         }
 
-        return BuildGraph(rows);
+        // A full page means the walk very likely continues; a short one is the end.
+        return new RevisionPage(rows, HasMore: maxCount > 0 && rows.Count >= maxCount);
+    }
+
+    /// <summary>
+    ///  Assigns DAG lanes and computes the graph segments for an ordered
+    ///  (newest-first) run of revisions — the accumulated pages of one walk. Pure and
+    ///  in-memory: no git is run, so it is cheap enough to redo on every appended page
+    ///  (which is also what keeps the artificial "working directory" / "index" rows and
+    ///  the lane lines correct as the history grows).
+    /// </summary>
+    public static IReadOnlyList<RevisionRow> BuildRevisionGraph(IReadOnlyList<RevisionRow> rows)
+        => BuildGraph(rows as List<RevisionRow> ?? [.. rows]);
+
+    /// <summary>
+    ///  HEAD, the ref-name lookup and the note-carrying commits of one repository —
+    ///  the per-walk metadata shared by every page.
+    /// </summary>
+    private sealed record RepoMetadata(
+        string HeadHash,
+        Dictionary<ObjectId, List<string>> RefsByCommit,
+        HashSet<string> CommitsWithNotes);
+
+    // Returns the cached metadata for the repository, re-reading it when the walk
+    // restarts, when the repository changed, or when nothing is cached yet.
+    private RepoMetadata GetMetadata(GitModule module, string repoPath, bool refresh)
+    {
+        lock (_metadataLock)
+        {
+            if (!refresh
+                && _metadata is not null
+                && string.Equals(_metadataRepo, repoPath, StringComparison.Ordinal))
+            {
+                return _metadata;
+            }
+        }
+
+        RepoMetadata fresh = LoadMetadata(module);
+        lock (_metadataLock)
+        {
+            _metadata = fresh;
+            _metadataRepo = repoPath;
+        }
+
+        return fresh;
+    }
+
+    private static RepoMetadata LoadMetadata(GitModule module)
+    {
+        // The currently checked-out commit, so the view can mark the HEAD row and
+        // compute reachability for the relatives/highlight render styles.
+        string headHash = string.Empty;
+        try
+        {
+            ObjectId head = module.GetCurrentCheckout();
+            if (head is { IsZero: false, IsArtificial: false })
+            {
+                headHash = head.ToString();
+            }
+        }
+        catch
+        {
+            // HEAD is a nicety for styling only; never block the log on it.
+        }
+
+        // Build an ObjectId -> ref-names lookup so we can show branches/tags inline.
+        Dictionary<ObjectId, List<string>> refsByCommit = [];
+        try
+        {
+            foreach (IGitRef gitRef in module.GetRefs(RefsFilter.NoFilter))
+            {
+                if (gitRef.ObjectId.IsZero || gitRef.ObjectId.IsArtificial)
+                {
+                    continue;
+                }
+
+                if (!refsByCommit.TryGetValue(gitRef.ObjectId, out List<string>? names))
+                {
+                    names = [];
+                    refsByCommit[gitRef.ObjectId] = names;
+                }
+
+                names.Add(gitRef.Name);
+            }
+        }
+        catch
+        {
+            // Refs are a nicety; a failure here must not prevent the log from loading.
+        }
+
+        // Commits carrying a git note. Loaded with a SINGLE `git notes list` for the
+        // whole repository (not one call per row) so the indicator column is cheap.
+        return new RepoMetadata(headHash, refsByCommit, LoadNotes(module));
     }
 
     /// <summary>
