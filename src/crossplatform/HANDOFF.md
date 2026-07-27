@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `84310c5cc` + questo commit di documentazione (… + M45–M49 + **priorità P1–P3 / M50** + **pannello inferiore / M51**) |
-| Build | `Errori: 0` (20–21 warning pre-esistenti VSTHRD/CS0067) |
-| Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
+| HEAD al momento dell'handoff | `b77234d3f` (… + M50–M51 + **round 9: M52 correttezza, M53 menu/griglia/toolbar, M54 albero+File tree+GPG**) |
+| Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
+| Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **origin NON allineato: 11 commit locali non pushati** al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: 37 commit locali non pushati** al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -91,6 +91,10 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
   `MainWindow`, `MainMenu`, `MainToolbar`, `RepoObjectsTree`, `RevisionGridView`,
   `DiffView`, `StashPanel`, `CommitDialog`, `PushDialog`,
   `GitProcessDialog`, `ConsoleView`.
+- **Istruire ogni subagent a COMMITTARE PRESTO E SPESSO**, un commit per tema, senza aspettare la
+  fine dell'unità: un limite di sessione ha ucciso tre agent con ~1100 righe non committate
+  ciascuno. Se un agent viene interrotto, **riprenderlo con `SendMessage`** (riparte dal suo
+  transcript, worktree intatto) invece di rilanciarlo da zero.
 - Ogni subagent, come **primo step**: `git reset --hard <SHA_HEAD_corrente>` e verifica
   che `src/crossplatform/App/GitContext.cs` **esista** (se manca, il worktree è partito
   da una base sbagliata → fermarsi).
@@ -133,7 +137,16 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
   usare `python3 -c "import time;time.sleep(N)"`. Controllare l'**mtime** dello screenshot
   prima di leggerlo, per non guardare l'immagine di un run precedente.
 - Script riusabili in `/tmp/loop-verify/` (`miniwm.py`, `click.py`, `ctrlclick.py`,
-  `g2_type.py`, `esc.py`, e in `r8/`: `altclick.py`, `ctrlkey.py`).
+  `g2_type.py`, `esc.py`, e in `r8/`: `altclick.py`, `ctrlkey.py`; modello di sessione completa
+  in `r9/sess2.sh`).
+- **`pkill -f "<pattern>"` uccide la shell che lo lancia** se il pattern compare anche nella
+  propria riga di comando (successo garantito con `pkill -f "Xvfb :151"` invocato da un comando
+  che contiene quella stringa). Usare un pattern auto-escluso (`Xvf[b] :151`) o `kill <PID>`.
+- Per chiudere l'app passando dal salvataggio dello stato usare **`Start → Exit`**, non `kill`:
+  la finestra non risponde a `WM_DELETE_WINDOW` e `kill` salta `PersistLayout()`.
+- Repo di prova già pronti: `/tmp/r9repo` (4 commit, remote locale `/tmp/r9remote`, worktree
+  `/tmp/r9wt`), `/tmp/r10repo` (branch `side`, per il merge base), `/tmp/g1repo` (rename),
+  `/tmp/v4repo` (blame a bande).
 - Per verificare il **grafo** serve una topologia nota: costruire un repo minuscolo in
   `/tmp` (es. `A-B-C-D` più un branch che stacca da `B`) invece di ragionare su
   `git_ext_mod`, dove le lane lunghe rendono ambiguo cosa dovrebbe essere grigio. Attenzione:
@@ -181,6 +194,24 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 ---
 
 ## 4. Cosa resta da fare
+
+> ### ► ROUND 9 (2026-07-27/28) — la lista buona è in `PORTING.md` → **"Coda round 9"**
+> Otto subagent READ-ONLY hanno auditato tutta la GUI area per area contro l'upstream. La coda che
+> ne è uscita (blocchi 0–4 + **rinviati con motivo**) è la fonte di verità di cosa manca: usarla,
+> non gli elenchi storici qui sotto. Milestone chiuse finora: **M52** (correttezza), **M53** (menu
+> Navigate/View, griglia, file history, commit dialog, toolbar), **M54** (albero sinistro, File
+> tree, GPG). Prossima libera: **M55**.
+>
+> Tre cose che l'audit ha stabilito e che conviene NON riscoprire:
+> - **`FormBrowse` upstream non ha una status bar**: la `StatusBarView` del port è un extra da
+>   tenere. Idem il tab inferiore persistito; upstream non persiste larghezza/ordine colonne.
+> - Lo scope hotkey `FormBrowse` è in parità **verbatim 43/43**; mancano gli altri sei scope.
+> - **~35 impostazioni upstream sarebbero pulsanti finti** nel port (nessun consumatore): avatar
+>   provider/cache, `UseGitColoring`, ruler, `OutputHistoryDepth`, font, rendering del grafo.
+>
+> Difetto aperto di rilievo: la finestra **ignora `WM_DELETE_WINDOW`** (limite Avalonia/X11 già
+> noto) → chiudere dalla X non passa da `PersistLayout()` e **si perde tutto lo stato UI**; solo
+> `Start → Exit` salva. Via percorribile: ricevitore nativo come `Services/X11DropTarget.cs`.
 
 **Il blocco RIFINITURE (round 4, M39–M42) è CHIUSO**: tutti i residui A1–C10 e D11–D12
 elencati nelle versioni precedenti di questa sezione sono stati risolti e verificati in
