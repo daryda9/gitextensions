@@ -199,7 +199,7 @@ public sealed class RepoObjectsTree : UserControl
 
         // Branches (local).
         TreeViewItem branchesNode = Category(T("RepoObjectsTree/tsbShowBranches.ToolTipText", "Branches"), "Branch", local.Count);
-        branchesNode.ContextMenu = RefSortMenu();
+        branchesNode.ContextMenu = RefSortMenu(BranchesRootItems());
         foreach (BranchTagRow row in OrderLocalBranches(local))
         {
             string label = row.IsCurrent ? $"✓ {row.Name}" : row.Name;
@@ -234,7 +234,7 @@ public sealed class RepoObjectsTree : UserControl
 
         // Tags.
         TreeViewItem tagsNode = Category(T("RepoObjectsTree/tsbShowTags.ToolTipText", "Tags"), "Tag", tags.Count);
-        tagsNode.ContextMenu = RefSortMenu();
+        tagsNode.ContextMenu = RefSortMenu(TagsRootItems());
         foreach (BranchTagRow row in SortRefs(tags))
         {
             TreeViewItem leaf = Leaf(row.Name, "Tag", row, isCurrent: false);
@@ -488,9 +488,19 @@ public sealed class RepoObjectsTree : UserControl
 
     // Sort submenu attached to the Branches and Tags root nodes. Rebuilt on
     // every BuildTree so the ✓ markers reflect the current session settings.
-    private ContextMenu RefSortMenu()
+    private ContextMenu RefSortMenu(IReadOnlyList<Control>? leadingItems = null)
     {
         ContextMenu menu = new();
+        if (leadingItems is { Count: > 0 })
+        {
+            foreach (Control item in leadingItems)
+            {
+                menu.Items.Add(item);
+            }
+
+            menu.Items.Add(new Separator());
+        }
+
         menu.Items.Add(SortKeyItem(T("Sort by name"), RefSortKey.Name));
         menu.Items.Add(SortKeyItem(T("Sort by commit date"), RefSortKey.CommitDate));
         menu.Items.Add(new Separator());
@@ -498,6 +508,15 @@ public sealed class RepoObjectsTree : UserControl
         menu.Items.Add(SortOrderItem(T("Descending"), RefSortOrder.Descending));
         return menu;
     }
+
+    // "Create branch…" / "Create tag…" on the Branches / Tags root nodes: the
+    // proper modals (name + checkout-after-create, name + kind/force/push),
+    // not the bare text prompts.
+    private IReadOnlyList<Control> BranchesRootItems()
+        => [MenuItem(T("FormCreateBranch/$this.Text", "Create branch") + "…", "BranchCreate", () => _ = DoCreateBranchAsync())];
+
+    private IReadOnlyList<Control> TagsRootItems()
+        => [MenuItem(T("FormCreateTag/$this.Text", "Create tag") + "…", "TagCreate", () => _ = DoCreateTagAsync())];
 
     private MenuItem SortKeyItem(string text, RefSortKey key)
         => MenuItem(_sortKey == key ? "✓ " + text : "    " + text, null, () => SetSort(key, _sortOrder));
@@ -688,8 +707,89 @@ public sealed class RepoObjectsTree : UserControl
         }
     }
 
-    private void DoCheckout(BranchTagRow row)
-        => RunMutation(() => _branchTagService.Checkout(_repoPath!, row.Name));
+    private void DoCheckout(BranchTagRow row) => _ = DoCheckoutAsync(row);
+
+    // Checkout with the upstream "local changes" semantics: a clean working tree
+    // checks out straight away (no dialog), a dirty one first asks what to do with
+    // the pending changes (don't change / merge / reset / stash). The probe and the
+    // git work both run off the UI thread — the services block on async work.
+    private async Task DoCheckoutAsync(BranchTagRow row)
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || _busy)
+            {
+                return;
+            }
+
+            LocalChangesAction? action = await CheckoutBranchDialog.AskAsync(
+                TopLevel.GetTopLevel(this) as Window, repo, row.Name);
+
+            if (action is not { } changesAction)
+            {
+                return;
+            }
+
+            RunMutation(() => _branchTagService.Checkout(repo, row.Name, changesAction));
+        }
+        catch
+        {
+            // Never throw from an interaction handler.
+        }
+    }
+
+    // --- Create branch / tag ----------------------------------------------
+
+    private async Task DoCreateBranchAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || _busy)
+            {
+                return;
+            }
+
+            CreateBranchRequest? request = await CreateBranchDialog.AskAsync(
+                TopLevel.GetTopLevel(this) as Window, repo, T("HEAD (current revision)"));
+
+            if (request is not { } r)
+            {
+                return;
+            }
+
+            RunMutation(() => _branchTagService.CreateBranch(repo, r.Name, startPoint: "HEAD", r.Checkout));
+        }
+        catch
+        {
+            // Never throw from an interaction handler.
+        }
+    }
+
+    private async Task DoCreateTagAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || _busy)
+            {
+                return;
+            }
+
+            CreateTagRequest? request = await CreateTagDialog.AskAsync(
+                TopLevel.GetTopLevel(this) as Window, repo, T("HEAD (current revision)"));
+
+            if (request is not { } r)
+            {
+                return;
+            }
+
+            RunMutation(() => _branchTagService.CreateTag(
+                repo, r.Name, commit: "HEAD", r.Message, r.Operation, r.SignKeyId, r.Force, r.PushToRemote));
+        }
+        catch
+        {
+            // Never throw from an interaction handler.
+        }
+    }
 
     private async Task DoRenameBranchAsync(BranchTagRow row)
     {

@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using GitCommands;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -21,10 +22,7 @@ public sealed class BranchTagPanel : UserControl
 
     private readonly ListBox _branchList;
     private readonly ListBox _tagList;
-    private readonly TextBox _nameBox;
     private readonly TextBox _refBox;
-    private readonly TextBox _messageBox;
-    private readonly CheckBox _checkoutNew;
     private readonly CheckBox _forceDelete;
     private readonly Button _checkoutButton;
     private readonly Button _newBranchButton;
@@ -65,24 +63,20 @@ public sealed class BranchTagPanel : UserControl
         lists.Children.Add(branchPanel);
         lists.Children.Add(tagPanel);
 
-        _nameBox = new TextBox { Watermark = "New branch / tag name" };
+        // Name / message / checkout-after-create now live in the create dialogs
+        // (CreateBranchDialog / CreateTagDialog); only the start point stays here.
         _refBox = new TextBox { Watermark = "Start point / commit (default HEAD)" };
-        _messageBox = new TextBox { Watermark = "Tag message (annotated when set)" };
-        _checkoutNew = new CheckBox { Content = "Checkout new branch", Margin = new Thickness(0, 2, 0, 0) };
         _forceDelete = new CheckBox { Content = "Force delete branch", Margin = new Thickness(0, 2, 0, 0) };
 
         StackPanel inputs = new() { Spacing = 4, Margin = new Thickness(8, 4, 8, 4) };
-        inputs.Children.Add(_nameBox);
         inputs.Children.Add(_refBox);
-        inputs.Children.Add(_messageBox);
         StackPanel checks = new() { Orientation = Orientation.Horizontal, Spacing = 16 };
-        checks.Children.Add(_checkoutNew);
         checks.Children.Add(_forceDelete);
         inputs.Children.Add(checks);
 
         _checkoutButton = MakeButton("Checkout", () => DoCheckout());
-        _newBranchButton = MakeButton("New branch", () => DoCreateBranch());
-        _newTagButton = MakeButton("New tag", () => DoCreateTag());
+        _newBranchButton = MakeButton("New branch…", () => DoCreateBranch());
+        _newTagButton = MakeButton("New tag…", () => DoCreateTag());
         _mergeButton = MakeButton("Merge", () => DoMerge());
         _rebaseButton = MakeButton("Rebase", () => DoRebase());
         _deleteButton = MakeButton("Delete", () => _ = DoDeleteAsync());
@@ -173,61 +167,103 @@ public sealed class BranchTagPanel : UserControl
             });
     }
 
-    private void DoCheckout()
+    private void DoCheckout() => _ = DoCheckoutAsync();
+
+    // A clean working tree checks out straight away; a dirty one goes through
+    // CheckoutBranchDialog first (don't change / merge / reset / stash).
+    private async Task DoCheckoutAsync()
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return;
+            }
 
-        if (SelectedRow() is not { } row)
+            if (SelectedRow() is not { } row)
+            {
+                _status.Text = "Select a branch or tag to checkout.";
+                return;
+            }
+
+            LocalChangesAction? action = await CheckoutBranchDialog.AskAsync(
+                TopLevel.GetTopLevel(this) as Window, repo, row.Name);
+
+            if (action is not { } changesAction)
+            {
+                return;
+            }
+
+            _status.Text = $"Checking out {row.Name}…";
+            RunMutation(() => _service.Checkout(repo, row.Name, changesAction));
+        }
+        catch (Exception ex)
         {
-            _status.Text = "Select a branch or tag to checkout.";
-            return;
+            _status.Text = "Failed: " + ex.Message;
         }
-
-        _status.Text = $"Checking out {row.Name}…";
-        RunMutation(() => _service.Checkout(repo, row.Name));
     }
 
-    private void DoCreateBranch()
+    private void DoCreateBranch() => _ = DoCreateBranchAsync();
+
+    // Routed through CreateBranchDialog (name + checkout-after-create) instead
+    // of the inline name box, so the panel offers the same options as the tree's
+    // "Create branch…". The start point still comes from the ref box.
+    private async Task DoCreateBranchAsync()
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return;
+            }
 
-        string name = (_nameBox.Text ?? string.Empty).Trim();
-        if (name.Length == 0)
+            string start = (_refBox.Text ?? string.Empty).Trim();
+            CreateBranchRequest? request = await CreateBranchDialog.AskAsync(
+                TopLevel.GetTopLevel(this) as Window, repo, start.Length > 0 ? start : "HEAD");
+
+            if (request is not { } r)
+            {
+                return;
+            }
+
+            _status.Text = $"Creating branch {r.Name}…";
+            RunMutation(() => _service.CreateBranch(repo, r.Name, start, r.Checkout));
+        }
+        catch (Exception ex)
         {
-            _status.Text = "Enter a branch name.";
-            return;
+            _status.Text = "Failed: " + ex.Message;
         }
-
-        string start = _refBox.Text ?? string.Empty;
-        bool checkout = _checkoutNew.IsChecked == true;
-        _status.Text = $"Creating branch {name}…";
-        RunMutation(() => _service.CreateBranch(repo, name, start, checkout));
     }
 
-    private void DoCreateTag()
+    private void DoCreateTag() => _ = DoCreateTagAsync();
+
+    // Routed through CreateTagDialog: kind (lightweight / annotated / signed),
+    // force, and optional push to a remote.
+    private async Task DoCreateTagAsync()
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return;
+            }
 
-        string name = (_nameBox.Text ?? string.Empty).Trim();
-        if (name.Length == 0)
+            string commit = (_refBox.Text ?? string.Empty).Trim();
+            CreateTagRequest? request = await CreateTagDialog.AskAsync(
+                TopLevel.GetTopLevel(this) as Window, repo, commit.Length > 0 ? commit : "HEAD");
+
+            if (request is not { } r)
+            {
+                return;
+            }
+
+            _status.Text = $"Creating tag {r.Name}…";
+            RunMutation(() => _service.CreateTag(repo, r.Name, commit, r.Message, r.Operation, r.SignKeyId, r.Force, r.PushToRemote));
+        }
+        catch (Exception ex)
         {
-            _status.Text = "Enter a tag name.";
-            return;
+            _status.Text = "Failed: " + ex.Message;
         }
-
-        string commit = _refBox.Text ?? string.Empty;
-        string message = _messageBox.Text ?? string.Empty;
-        _status.Text = $"Creating tag {name}…";
-        RunMutation(() => _service.CreateTag(repo, name, commit, message));
     }
 
     private void DoMerge()

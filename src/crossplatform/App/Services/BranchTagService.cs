@@ -44,6 +44,17 @@ public sealed record BranchTagListing(
 public sealed record BranchTagResult(bool Success, string Output);
 
 /// <summary>
+///  Snapshot of the working tree taken before a checkout: whether it is dirty
+///  and how many entries <c>git status --porcelain</c> reports (tracked
+///  modifications + untracked files). Loaded off the UI thread and handed to
+///  the checkout dialog, which must never call git itself.
+/// </summary>
+public sealed record WorkingTreeState(bool IsDirty, int ChangedCount)
+{
+    public static readonly WorkingTreeState Clean = new(false, 0);
+}
+
+/// <summary>
 ///  Branch/tag operations (list, checkout, create/delete branch, create/delete
 ///  tag, merge, rebase) implemented by reusing the Git Extensions core
 ///  (<see cref="GitModule"/>) via <see cref="GitContext.CreateModule"/>. All
@@ -83,13 +94,77 @@ public sealed class BranchTagService
     }
 
     /// <summary>
-    ///  Checks out the given branch or revision (leaving local changes untouched).
+    ///  Reads the working-tree state (dirty / number of changed entries) with a
+    ///  single <c>git status --porcelain -uall --ignore-submodules=all</c>, the
+    ///  same set <see cref="GitModule.IsDirtyDir"/> counts. Synchronous: call it
+    ///  off the UI thread.
     /// </summary>
-    public BranchTagResult Checkout(string repoPath, string name)
+    public WorkingTreeState LoadWorkingTreeState(string repoPath)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        ArgumentString args = Commands.Checkout(name, LocalChangesAction.DontChange);
-        return Run(module, args);
+        GitArgumentBuilder args = new("status") { "--porcelain", "-uall", "--ignore-submodules=all" };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        if (!result.ExitedSuccessfully)
+        {
+            return WorkingTreeState.Clean;
+        }
+
+        int count = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Count(line => line.Trim().Length > 0);
+
+        return new WorkingTreeState(count > 0, count);
+    }
+
+    /// <summary>
+    ///  Checks out the given branch or revision, deciding what to do with local
+    ///  changes:
+    ///  <list type="bullet">
+    ///   <item><see cref="LocalChangesAction.DontChange"/>: plain checkout — git
+    ///    refuses when a modified file would be overwritten.</item>
+    ///   <item><see cref="LocalChangesAction.Merge"/>: <c>checkout --merge</c>.</item>
+    ///   <item><see cref="LocalChangesAction.Reset"/>: <c>checkout --force</c>,
+    ///    which <b>discards</b> the local changes.</item>
+    ///   <item><see cref="LocalChangesAction.Stash"/>: <c>git stash push</c>
+    ///    first (as upstream's FormCheckoutBranch does — the argument builder has
+    ///    no flag for it), then a plain checkout. The stash is left on the stack
+    ///    for the user to pop.</item>
+    ///  </list>
+    /// </summary>
+    public BranchTagResult Checkout(
+        string repoPath,
+        string name,
+        LocalChangesAction changesAction = LocalChangesAction.DontChange,
+        bool includeUntrackedInStash = true)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string prefix = string.Empty;
+        if (changesAction == LocalChangesAction.Stash)
+        {
+            GitArgumentBuilder stashArgs = new("stash")
+            {
+                "push",
+                { includeUntrackedInStash, "--include-untracked" },
+                "-m",
+                $"Checkout {name} (auto stash)".Quote()
+            };
+
+            BranchTagResult stashed = Run(module, stashArgs);
+            if (!stashed.Success)
+            {
+                return stashed;
+            }
+
+            prefix = stashed.Output.TrimEnd() + Environment.NewLine;
+        }
+
+        LocalChangesAction checkoutAction = changesAction == LocalChangesAction.Stash
+            ? LocalChangesAction.DontChange
+            : changesAction;
+
+        BranchTagResult result = Run(module, Commands.Checkout(name, checkoutAction));
+        return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
     }
 
     /// <summary>
@@ -113,10 +188,23 @@ public sealed class BranchTagService
 
     /// <summary>
     ///  Creates a tag <paramref name="name"/> on <paramref name="commit"/>
-    ///  (defaults to HEAD when empty). A non-empty <paramref name="message"/>
-    ///  produces an annotated tag; otherwise a lightweight one.
+    ///  (defaults to HEAD when empty).
+    ///  <para><paramref name="operation"/> selects lightweight / annotated /
+    ///  signed (default or specific GPG key); when it is <c>null</c> the legacy
+    ///  behaviour applies — annotated if <paramref name="message"/> is non-empty,
+    ///  lightweight otherwise. <paramref name="force"/> maps to <c>-f</c>
+    ///  (overwrites an existing tag of the same name) and a non-empty
+    ///  <paramref name="pushToRemote"/> pushes the tag right after creating it.</para>
     /// </summary>
-    public BranchTagResult CreateTag(string repoPath, string name, string commit, string message)
+    public BranchTagResult CreateTag(
+        string repoPath,
+        string name,
+        string commit,
+        string message,
+        TagOperation? operation = null,
+        string signKeyId = "",
+        bool force = false,
+        string pushToRemote = "")
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
@@ -127,21 +215,43 @@ public sealed class BranchTagService
             return new BranchTagResult(false, $"Cannot resolve commit '{target}'.");
         }
 
-        bool annotated = !string.IsNullOrWhiteSpace(message);
-        TagOperation operation = annotated ? TagOperation.Annotate : TagOperation.Lightweight;
-        GitCreateTagArgs args = new(name, objectId, operation, tagMessage: message ?? string.Empty);
+        message ??= string.Empty;
+        TagOperation op = operation
+            ?? (message.Trim().Length > 0 ? TagOperation.Annotate : TagOperation.Lightweight);
+
+        // Every operation but "lightweight" carries a message, so git needs the
+        // -F file even when the user left the box empty for a signed tag.
+        bool needsMessageFile = op != TagOperation.Lightweight;
+        GitCreateTagArgs args = new(name, objectId, op, tagMessage: message, signKeyId: signKeyId ?? string.Empty, force: force);
 
         string? messageFile = null;
         try
         {
-            if (annotated)
+            if (needsMessageFile)
             {
                 messageFile = System.IO.Path.GetTempFileName();
-                File.WriteAllText(messageFile, message ?? string.Empty);
+                File.WriteAllText(messageFile, message);
             }
 
             IGitCommand command = Commands.CreateTag(args, messageFile, module.GetPathForGitExecution);
-            return Run(module, command.Arguments);
+            BranchTagResult result = Run(module, command.Arguments);
+
+            if (!result.Success || string.IsNullOrWhiteSpace(pushToRemote))
+            {
+                return result;
+            }
+
+            GitArgumentBuilder pushArgs = new("push")
+            {
+                pushToRemote.Trim(),
+                { force, "--force" },
+                "refs/tags/" + name
+            };
+
+            BranchTagResult pushed = Run(module, pushArgs);
+            return new BranchTagResult(
+                pushed.Success,
+                (result.Output.TrimEnd() + Environment.NewLine + pushed.Output).TrimStart());
         }
         finally
         {
@@ -156,6 +266,23 @@ public sealed class BranchTagService
                     // best-effort cleanup
                 }
             }
+        }
+    }
+
+    /// <summary>
+    ///  Names of the configured remotes, for the "push tag to" picker. Synchronous:
+    ///  call it off the UI thread.
+    /// </summary>
+    public IReadOnlyList<string> LoadRemotes(string repoPath)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            return [.. module.GetRemoteNames()];
+        }
+        catch
+        {
+            return [];
         }
     }
 
