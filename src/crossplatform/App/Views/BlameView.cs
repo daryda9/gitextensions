@@ -519,6 +519,12 @@ public sealed class BlameView : UserControl
         _copyMenuItem.IsEnabled = hasCommit;
         _blamePreviousItem.IsEnabled = hasCommit && _selectedParent is not null;
 
+        // Re-read the blame switches every time the menu opens. They are shared state:
+        // the Settings dialog writes the same three, and a tick left over from
+        // construction would claim the opposite of what the next blame will do (seen on
+        // screen: "Ignore whitespace" still ticked right after Settings had cleared it).
+        ReloadBlameOptions(reblame: false);
+
         // Upstream words this item after where the parent it will blame comes
         // from: "previous revision" when the actual parent is present in the
         // revision grid, "previous *visible* revision" otherwise
