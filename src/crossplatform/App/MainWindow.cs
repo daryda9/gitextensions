@@ -103,6 +103,7 @@ public sealed class MainWindow : Window
     // Keyboard map (command → gesture) + the window-level dispatcher. Defaults are
     // upstream's FormBrowse hotkeys; see InstallHotkeys for what each one runs.
     private readonly HotkeyService _hotkeys = new();
+    private readonly RepositoryStateService _repositoryState = new();
 
     // Left-panel width remembered across a Ctrl+Alt+C collapse/expand.
     private double _treeWidthBeforeCollapse;
@@ -1067,6 +1068,7 @@ public sealed class MainWindow : Window
         // The toolbar shows the real gestures, not the defaults, so an override in
         // hotkeys.json is reflected in its tooltips.
         _toolbar.Hotkeys = _hotkeys;
+        _menu.Hotkeys = _hotkeys;
         _toolbar.ManageStashesRequested +=
             () => ShowInBottom(_stashTab, () => _stash.LoadRepository(_repoPath!));
         _toolbar.CreateStashRequested += () =>
@@ -1261,6 +1263,34 @@ public sealed class MainWindow : Window
         _menu.ResetRevisionFiltersRequested += () => _revisions.ResetAllFilters();
         _menu.ChangelogRequested += () => Surface(_externalTools.OpenUrl("https://github.com/gitextensions/gitextensions/releases"));
         _menu.DonateRequested += () => Surface(_externalTools.OpenUrl("https://opencollective.com/gitextensions"));
+
+        // ---- menu bar: the Repository dialogs, Git maintenance and the state gating
+        _menu.RemotesRequested += () => _ = ShowRemotesAsync();
+        _menu.SubmodulesRequested += () => _ = ShowSubmodulesAsync();
+        _menu.WorktreesRequested += () => _ = ShowWorktreesAsync();
+        _menu.UpdateAllSubmodulesRequested += () => RunOp(
+            T("FormBrowse/updateAllSubmodulesToolStripMenuItem.Text", "Update all submodules"),
+            () => new SubmoduleService().UpdateAll(_repoPath!).Success);
+        _menu.SynchronizeAllSubmodulesRequested += () => RunOp(
+            T("FormBrowse/synchronizeAllSubmodulesToolStripMenuItem.Text", "Synchronize all submodules"),
+            () => new SubmoduleService().SynchronizeAll(_repoPath!).Success);
+        _menu.CompressDatabaseRequested += () => RunOp(
+            T("FormBrowse/compressGitDatabaseToolStripMenuItem.Text", "Compress git database"),
+            () => new MaintenanceService().CompressDatabase(_repoPath!).Success);
+        _menu.DeleteIndexLockRequested += () => RunOp(
+            T("FormBrowse/deleteIndexLockToolStripMenuItem.Text", "Delete index.lock"),
+            () => new MaintenanceService().DeleteIndexLock(_repoPath!).Success);
+        _menu.EditGitConfigRequested +=
+            () => WithRepo(p => _externalTools.OpenOrCreateFile(new MaintenanceService().ResolveConfigPath(p)));
+        _menu.DashboardRefreshRequested += () => _ = LoadDashboardAsync();
+
+        // Upstream recomputes the selection-dependent Commands entries as the menu
+        // drops down (CommandsToolStripMenuItem_DropDownOpening); same moment here.
+        _menu.CommandsMenuOpening += () =>
+        {
+            (int count, bool allNonArtificial) = _revisions.SelectionSummary;
+            _menu.SetSelectionState(count, allNonArtificial);
+        };
 
         // Commit-targeted operations on the revision grid.
         _revisions.AddCommitCommand("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
@@ -1917,6 +1947,8 @@ public sealed class MainWindow : Window
 
         // --- refs
         Bind(BrowseCommand.CheckoutBranch, () => _ = CheckoutBranchPickerAsync());
+        // The menu now advertises Ctrl+Alt+W, so something has to answer it.
+        Bind(BrowseCommand.ManageWorkTrees, () => _ = ShowWorktreesAsync());
         Bind(BrowseCommand.CreateBranch, () => _ = NewBranchAsync());
         Bind(BrowseCommand.CreateTag, () => _ = NewTagAsync());
         Bind(BrowseCommand.GoToParent, () => _ = GoToParentAsync());
@@ -2205,6 +2237,68 @@ public sealed class MainWindow : Window
         Title = string.IsNullOrEmpty(branch)
             ? $"{name} - {DefaultTitle}"
             : $"{name} ({branch}) - {DefaultTitle}";
+    }
+
+    // "Remote repositories..." (Repository menu). The dialog existed but could only be
+    // reached from PullDialog/PushDialog and the left panel.
+    private async Task ShowRemotesAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        Views.RemotesDialog dialog = new(repo);
+        await dialog.ShowDialog(this);
+        if (dialog.Changed)
+        {
+            RefreshAll();
+        }
+    }
+
+    // "Manage submodules..." (Repository menu); same story as ShowRemotesAsync.
+    private async Task ShowSubmodulesAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        Views.SubmodulesDialog dialog = new(repo);
+        await dialog.ShowDialog(this);
+        if (dialog.Changed)
+        {
+            RefreshAll();
+        }
+    }
+
+    // Pushes into the menu bar the facts it needs to hide or grey entries the way
+    // FormBrowse does (FormBrowse.cs:987-990, 1014-1034): whether a repository is on
+    // screen, whether the dashboard is up, and whether the repository is bare. The
+    // bare test runs git, so it goes through Task.Run; the immediate call keeps the
+    // menu correct in the meantime.
+    private void UpdateMenuRepositoryState()
+    {
+        string? repo = _repoPath;
+        bool hasRepo = !_dashboardShowing && repo is { Length: > 0 };
+        _menu.SetRepositoryState(hasRepo, isBare: false, isDashboard: _dashboardShowing);
+        if (!hasRepo)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            bool bare = _repositoryState.IsBareRepository(repo!);
+            Dispatcher.UIThread.Post(() =>
+            {
+                // Ignore the answer if the user moved on to another repository.
+                if (_repoPath == repo && !_dashboardShowing)
+                {
+                    _menu.SetRepositoryState(true, bare, isDashboard: false);
+                }
+            });
+        });
     }
 
     // The worktree manager used to be reachable only from the left panel's tree;
@@ -3638,6 +3732,7 @@ public sealed class MainWindow : Window
         _watcher.NotifyRefreshed();
         _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
+        UpdateMenuRepositoryState();
     }
 
     // Records the opened repository in the core MRU so it appears in "Open recent"
@@ -3689,6 +3784,7 @@ public sealed class MainWindow : Window
         _watcher.Stop();
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _ = LoadDashboardAsync();
+        UpdateMenuRepositoryState();
         _statusBar.SetText(T("FormBrowse/dashboardToolStripMenuItem.Text", "Dashboard"));
     }
 
