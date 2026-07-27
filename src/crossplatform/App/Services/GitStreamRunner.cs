@@ -19,6 +19,20 @@ namespace GitExtensions.Avalonia.Services;
 /// </summary>
 public static class GitStreamRunner
 {
+    // The scope the current logical call-flow belongs to. AsyncLocal makes it flow
+    // into everything the process dialog's background operation calls (including
+    // nested Task.Run), so the runner can register the git process it starts
+    // without every caller having to thread a handle through.
+    private static readonly AsyncLocal<GitProcessScope?> _currentScope = new();
+
+    /// <summary>
+    ///  Binds <paramref name="scope"/> to the current logical call-flow: every
+    ///  <see cref="Run"/> executed from here on (on this flow) registers its git
+    ///  process with it, so it can be killed. Call it INSIDE the background task
+    ///  that runs the operation — the value does not escape that task.
+    /// </summary>
+    public static void EnterScope(GitProcessScope scope) => _currentScope.Value = scope;
+
     /// <summary>
     ///  Runs <c>git <paramref name="arguments"/></c> in <paramref name="repoPath"/>,
     ///  emitting each stdout/stderr line through <paramref name="onLine"/> as it is
@@ -106,13 +120,154 @@ public static class GitStreamRunner
 
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
-            proc.WaitForExit();
-            return proc.ExitCode;
+
+            // Publish the live process so an Abort can actually kill it (and knows
+            // which repository's index.lock to clear afterwards). If an abort was
+            // already requested before we got here, kill it right away instead of
+            // letting a doomed command run to completion.
+            GitProcessScope? scope = _currentScope.Value;
+            scope?.Register(proc, repoPath);
+            try
+            {
+                proc.WaitForExit();
+                return proc.ExitCode;
+            }
+            finally
+            {
+                scope?.Unregister(proc);
+            }
         }
         catch (Exception ex)
         {
             onLine("<error: " + ex.Message + ">");
             return -1;
+        }
+    }
+}
+
+/// <summary>
+///  Tracks the git processes started by <see cref="GitStreamRunner.Run"/> inside one
+///  logical operation so a UI "Abort" can really terminate them (mirroring
+///  <c>FormStatus.KillCommandProcess</c>), instead of only closing the window and
+///  leaving git — and its <c>index.lock</c> — behind.
+/// </summary>
+public sealed class GitProcessScope
+{
+    private readonly object _sync = new();
+    private readonly List<Process> _live = [];
+    private string? _repoPath;
+    private bool _abortRequested;
+
+    /// <summary>Whether <see cref="KillAll"/> has been called on this scope.</summary>
+    public bool AbortRequested
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _abortRequested;
+            }
+        }
+    }
+
+    /// <summary>
+    ///  Working directory of the last git process started in this scope — the
+    ///  repository whose index must be unlocked after an abort. <see langword="null"/>
+    ///  when no process was ever started.
+    /// </summary>
+    public string? RepoPath
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _repoPath;
+            }
+        }
+    }
+
+    /// <summary>Whether at least one git process is currently running in this scope.</summary>
+    public bool HasLiveProcess
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _live.Count > 0;
+            }
+        }
+    }
+
+    internal void Register(Process process, string repoPath)
+    {
+        bool killNow;
+        lock (_sync)
+        {
+            _repoPath = repoPath;
+            _live.Add(process);
+            killNow = _abortRequested;
+        }
+
+        if (killNow)
+        {
+            Kill(process);
+        }
+    }
+
+    internal void Unregister(Process process)
+    {
+        lock (_sync)
+        {
+            _live.Remove(process);
+        }
+    }
+
+    /// <summary>
+    ///  Kills every git process running in this scope, whole process tree included
+    ///  (git delegates to helpers such as <c>git-remote-https</c> / <c>ssh</c>, which
+    ///  would otherwise survive the parent). Later <see cref="Register"/> calls on
+    ///  this scope are killed on arrival too, so an abort cannot be outrun by the
+    ///  next command of a multi-step operation.
+    /// </summary>
+    /// <returns>
+    ///  <see langword="true"/> when at least one live process was signalled — i.e.
+    ///  the abort had something to terminate.
+    /// </returns>
+    public bool KillAll()
+    {
+        Process[] snapshot;
+        lock (_sync)
+        {
+            _abortRequested = true;
+            snapshot = _live.ToArray();
+        }
+
+        bool killed = false;
+        foreach (Process process in snapshot)
+        {
+            killed |= Kill(process);
+        }
+
+        return killed;
+    }
+
+    private static bool Kill(Process process)
+    {
+        try
+        {
+            if (process.HasExited)
+            {
+                return false;
+            }
+
+            process.Kill(entireProcessTree: true);
+            return true;
+        }
+        catch (Exception)
+        {
+            // Race with normal exit, or no permission to signal the tree: nothing
+            // more we can do, and an abort must never throw at the UI.
+            return false;
         }
     }
 }

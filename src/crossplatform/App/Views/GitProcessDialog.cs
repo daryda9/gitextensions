@@ -10,9 +10,11 @@ namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
 ///  Outcome of a git operation surfaced through <see cref="GitProcessDialog"/>:
-///  whether it succeeded and the full textual output git produced.
+///  whether it succeeded, the full textual output git produced, and whether the
+///  user aborted it (<see cref="Aborted"/> — the git process was killed, so the
+///  operation is neither a success nor a git failure).
 /// </summary>
-public sealed record GitProcessOutcome(bool Success, string Output);
+public sealed record GitProcessOutcome(bool Success, string Output, bool Aborted = false);
 
 /// <summary>
 ///  Shared modal runner for a single git operation, modelled on the original
@@ -26,6 +28,11 @@ public sealed record GitProcessOutcome(bool Success, string Output);
 ///  a <c>Command to be executed:</c> section, and a footer with a
 ///  <c>Keep dialog open</c> checkbox plus <c>OK</c> / <c>Abort</c> buttons. Only
 ///  the surrounding chrome resolves from the shared App.* brushes.
+///
+///  <c>OK</c> is enabled only once the operation finished. <c>Abort</c> is shown
+///  only for the streaming path — the one where a real <see cref="System.Diagnostics.Process"/>
+///  exists to kill — and it kills the git process tree, clears the <c>index.lock</c>
+///  it may have left, and reports <see cref="GitProcessOutcome.Aborted"/>.
 ///
 ///  When the op succeeds it auto-closes unless <c>Keep dialog open</c> is checked;
 ///  on failure it always stays open.
@@ -54,6 +61,14 @@ public sealed class GitProcessDialog : Window
     private DispatcherTimer? _pollTimer;
     private DispatcherTimer? _closeTimer;
     private int _consumed;
+
+    // Set for the streaming path: the scope holding the live git process, so Abort
+    // can really kill it. null on the non-streaming path (the core Executable gives
+    // us no handle) — there Abort is hidden rather than pretending to work.
+    private Services.GitProcessScope? _scope;
+    private GitProcessOutcome? _outcome;
+    private bool _aborted;
+    private bool _finished;
 
     public GitProcessDialog(string label)
     {
@@ -126,12 +141,18 @@ public sealed class GitProcessDialog : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
 
+        // OK stays disabled until the operation really finished: closing mid-run
+        // must not look like an acknowledged success (mirrors FormStatus, where Ok
+        // is only enabled by Done()).
         _ok = MakeButton("OK");
+        _ok.IsEnabled = false;
         _ok.Click += (_, _) => Close();
 
+        // Abort is only shown when there is something we can genuinely kill (the
+        // streaming path); RunStreamingInternalAsync makes it visible.
         _abort = MakeButton("Abort");
-        // Ops are short/synchronous; best-effort cancel is simply to close.
-        _abort.Click += (_, _) => Close();
+        _abort.IsVisible = false;
+        _abort.Click += (_, _) => AbortOperation();
 
         StackPanel footRight = new()
         {
@@ -163,7 +184,7 @@ public sealed class GitProcessDialog : Window
     ///  the dialog closes (auto-close on success unless <c>Keep dialog open</c> is
     ///  checked, or the user pressing OK/Abort).
     /// </summary>
-    public static Task RunAsync(Window owner, string label, Func<GitProcessOutcome> operation)
+    public static Task<GitProcessOutcome> RunAsync(Window owner, string label, Func<GitProcessOutcome> operation)
     {
         GitProcessDialog dialog = new(label);
         return dialog.RunInternalAsync(owner, operation);
@@ -177,7 +198,7 @@ public sealed class GitProcessDialog : Window
     ///  <see cref="RunAsync"/>, no CommandLog poll timer runs — the operation (via
     ///  <see cref="Services.GitStreamRunner"/>) emits the command header itself.
     /// </summary>
-    public static Task RunStreamingAsync(Window owner, string label, Func<Action<string>, GitProcessOutcome> operation, bool closeOnAuthFailure = false)
+    public static Task<GitProcessOutcome> RunStreamingAsync(Window owner, string label, Func<Action<string>, GitProcessOutcome> operation, bool closeOnAuthFailure = false)
     {
         GitProcessDialog dialog = new(label) { _closeOnAuthFailure = closeOnAuthFailure };
         return dialog.RunStreamingInternalAsync(owner, operation);
@@ -215,12 +236,22 @@ public sealed class GitProcessDialog : Window
         return false;
     }
 
-    private Task RunStreamingInternalAsync(Window owner, Func<Action<string>, GitProcessOutcome> operation)
+    private async Task<GitProcessOutcome> RunStreamingInternalAsync(Window owner, Func<Action<string>, GitProcessOutcome> operation)
     {
+        // Streaming ops go through GitStreamRunner, which owns a real Process: Abort
+        // can kill it, so the button is offered here (and only here).
+        Services.GitProcessScope scope = new();
+        _scope = scope;
+        _abort.IsVisible = true;
+
         Opened += (_, _) =>
         {
             _ = Task.Run(() =>
             {
+                // Bind the scope to this logical flow so every git process the
+                // operation starts registers itself and becomes killable.
+                Services.GitStreamRunner.EnterScope(scope);
+
                 GitProcessOutcome outcome;
                 try
                 {
@@ -237,14 +268,83 @@ public sealed class GitProcessDialog : Window
             });
         };
 
-        return ShowDialog(owner);
+        await ShowDialog(owner);
+        return FinalOutcome();
+    }
+
+    // The outcome handed back to the caller. When the dialog was closed before the
+    // operation reported anything, that is NOT a success — say so explicitly.
+    private GitProcessOutcome FinalOutcome()
+        => _outcome
+           ?? new GitProcessOutcome(
+               false,
+               _aborted ? "Aborted" : "The process dialog was closed before the operation finished.",
+               _aborted);
+
+    /// <summary>
+    ///  Abort: kills the running git process tree, clears the <c>index.lock</c> it may
+    ///  have left behind (as <c>FormStatus.Abort_Click</c> does via
+    ///  <c>module.UnlockIndex(includeSubmodules: true)</c>), writes "Aborted" to the
+    ///  console and reports an aborted outcome to the caller. Killing and unlocking
+    ///  happen off the UI thread; the dialog closes once the process is really gone.
+    /// </summary>
+    private void AbortOperation()
+    {
+        if (_aborted || _finished || _scope is null)
+        {
+            return;
+        }
+
+        _aborted = true;
+        _abort.IsEnabled = false;
+        _status.Text = "Aborting…";
+        _status.Foreground = Brushes.OrangeRed;
+        Append(string.Empty);
+        Append("Aborted");
+
+        Services.GitProcessScope scope = _scope;
+        _ = Task.Run(() =>
+        {
+            bool killed = scope.KillAll();
+            string? repo = scope.RepoPath;
+            string? unlockError = null;
+
+            // Only touch index.lock when we actually killed the git process that
+            // could have owned it: deleting a live git's lock file would corrupt a
+            // still-running command.
+            if (killed && !string.IsNullOrEmpty(repo))
+            {
+                try
+                {
+                    GitContext.CreateModule(repo).UnlockIndex(includeSubmodules: true);
+                }
+                catch (Exception ex)
+                {
+                    unlockError = ex.Message;
+                }
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (!killed)
+                {
+                    Append("(no git process was live at that moment; any command this "
+                        + "operation starts from now on is killed immediately)");
+                }
+
+                if (unlockError is not null)
+                {
+                    Append("Could not remove index.lock: " + unlockError);
+                }
+            });
+        });
     }
 
     // Appends a single already-produced line to the beige console and scrolls to
     // the end. Used by the streaming path (called on the UI thread).
     private void AppendLine(string line) => Append(line ?? string.Empty);
 
-    private Task RunInternalAsync(Window owner, Func<GitProcessOutcome> operation)
+    private async Task<GitProcessOutcome> RunInternalAsync(Window owner, Func<GitProcessOutcome> operation)
     {
         // Snapshot the log length so we only stream entries produced by this op.
         _consumed = SafeCommandCount();
@@ -264,7 +364,8 @@ public sealed class GitProcessDialog : Window
             }, TaskScheduler.Default);
         };
 
-        return ShowDialog(owner);
+        await ShowDialog(owner);
+        return FinalOutcome();
     }
 
     // Appends the clean command line of any command-log entries that appeared
@@ -297,6 +398,35 @@ public sealed class GitProcessDialog : Window
     {
         _pollTimer?.Stop();
         _pollTimer = null;
+        _finished = true;
+        _ok.IsEnabled = true;
+        _abort.IsEnabled = false;
+
+        if (_aborted)
+        {
+            // The user killed the process: whatever exit code git ended up with, the
+            // operation is an abort, never a success.
+            if (!streaming && !string.IsNullOrEmpty(outcome.Output))
+            {
+                Append(outcome.Output);
+            }
+
+            _outcome = new GitProcessOutcome(false, outcome.Output ?? string.Empty, Aborted: true);
+            _header.Text = $"Process — {_label} (Aborted)";
+            _status.Text = "Aborted";
+            _status.Foreground = Brushes.OrangeRed;
+            _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+            _closeTimer.Tick += (_, _) =>
+            {
+                _closeTimer?.Stop();
+                _closeTimer = null;
+                Close();
+            };
+            _closeTimer.Start();
+            return;
+        }
+
+        _outcome = outcome;
 
         if (!streaming)
         {
