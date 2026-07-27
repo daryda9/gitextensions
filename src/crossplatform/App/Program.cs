@@ -40,6 +40,12 @@ internal static class Program
             var changed = module.GetAllChangedFiles();
             Log($"[10] Working-dir changed files: {changed.Count}");
 
+            // HOME as git children see it, after the core has had every chance to
+            // rewrite it. When this points somewhere without the user's .gitconfig,
+            // git finds no credential.helper and re-asks for credentials on every push.
+            Log($"[11] HOME for git children: {GitCommands.EnvironmentConfiguration.GetHomeDir()}");
+            Log($"[12] credential.helper: {ReadCredentialHelper(repo)}");
+
             return;
         }
 
@@ -54,6 +60,39 @@ internal static class Program
         }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    /// <summary>
+    ///  Asks git itself which credential helper it resolves for <paramref name="repo"/>,
+    ///  inheriting this process's environment — i.e. exactly what a push would see.
+    /// </summary>
+    private static string ReadCredentialHelper(string repo)
+    {
+        try
+        {
+            using System.Diagnostics.Process? p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                ArgumentList = { "config", "--get", "credential.helper" },
+                WorkingDirectory = repo,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            });
+
+            if (p is null)
+            {
+                return "<git not started>";
+            }
+
+            string helper = p.StandardOutput.ReadToEnd().Trim();
+            p.WaitForExit(5000);
+            return helper.Length > 0 ? helper : "<none — push will re-prompt every time>";
+        }
+        catch (Exception ex)
+        {
+            return $"<error: {ex.Message}>";
+        }
     }
 
     public static AppBuilder BuildAvaloniaApp()
