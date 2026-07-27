@@ -16,8 +16,28 @@ namespace GitExtensions.Avalonia.Services;
 /// </param>
 /// <param name="IsBare">True for the bare main worktree.</param>
 /// <param name="IsDetached">True when the worktree is on a detached HEAD.</param>
-public sealed record WorktreeRow(string Path, string Head, string Branch, bool IsBare, bool IsDetached)
+/// <param name="IsMain">
+///  True for the MAIN worktree — the first record git reports. It owns the
+///  repository and can never be removed with <c>git worktree remove</c>.
+/// </param>
+/// <param name="PrunableReason">
+///  Non-empty when git reported the <c>prunable</c> attribute for this entry: the
+///  working directory is gone (deleted by hand) and only its administrative files
+///  survive, so the entry is stale and <c>git worktree prune</c> would drop it.
+///  Holds git's own reason text when it supplied one.
+/// </param>
+public sealed record WorktreeRow(
+    string Path,
+    string Head,
+    string Branch,
+    bool IsBare,
+    bool IsDetached,
+    bool IsMain = false,
+    string PrunableReason = "")
 {
+    /// <summary>True when this entry is stale — see <see cref="PrunableReason"/>.</summary>
+    public bool IsPrunable => PrunableReason.Length > 0;
+
     public string Display
     {
         get
@@ -38,6 +58,33 @@ public sealed record WorktreeRow(string Path, string Head, string Branch, bool I
     }
 
     public override string ToString() => Display;
+
+    /// <summary>
+    ///  True when <paramref name="candidate"/> is this same working directory
+    ///  (used to spot the worktree the app currently has open). Compares fully
+    ///  resolved paths, ignoring a trailing separator — the same normalisation
+    ///  the Windows dialog does in <c>IsCurrentlyOpenedWorktree</c>.
+    /// </summary>
+    public bool IsSamePath(string? candidate)
+    {
+        if (string.IsNullOrEmpty(candidate) || Path.Length == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(Normalize(Path), Normalize(candidate), StringComparison.Ordinal);
+        }
+        catch (Exception)
+        {
+            // Unresolvable path (deleted worktree, permission) → fall back to text.
+            return string.Equals(Path, candidate, StringComparison.Ordinal);
+        }
+
+        static string Normalize(string p)
+            => System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(p));
+    }
 }
 
 /// <summary>
@@ -79,12 +126,15 @@ public sealed class WorktreeService
         string branch = string.Empty;
         bool bare = false;
         bool detached = false;
+        string prunable = string.Empty;
 
         void Flush()
         {
             if (path.Length > 0)
             {
-                rows.Add(new WorktreeRow(path, head, branch, bare, detached));
+                // git always reports the main worktree first, so the very first
+                // record we emit is the main one.
+                rows.Add(new WorktreeRow(path, head, branch, bare, detached, IsMain: rows.Count == 0, prunable));
             }
 
             path = string.Empty;
@@ -92,6 +142,7 @@ public sealed class WorktreeService
             branch = string.Empty;
             bare = false;
             detached = false;
+            prunable = string.Empty;
         }
 
         // Records are separated by a blank line; each attribute is on its own
@@ -127,6 +178,12 @@ public sealed class WorktreeService
                     break;
                 case "detached":
                     detached = true;
+                    break;
+                case "prunable":
+                    // Bare "prunable", or "prunable <reason>" (e.g. "gitdir file
+                    // points to non-existent location"). Either way the entry is
+                    // stale; keep the reason when git gave one so the UI can show it.
+                    prunable = value.Length > 0 ? value : "stale";
                     break;
             }
         }

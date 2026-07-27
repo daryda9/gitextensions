@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -25,10 +26,14 @@ public sealed class WorktreesDialog : Window
     private readonly string _repoPath;
     private readonly ListBox _list;
     private readonly Button _remove;
+    private readonly Button _prune;
     private readonly TextBox _output;
     private readonly TextBlock _status;
 
     private bool _busy;
+
+    /// <summary>True when at least one listed worktree is stale (prunable).</summary>
+    private bool _anyPrunable;
 
     /// <summary>
     ///  True when at least one add/remove/prune succeeded, so the owner can
@@ -53,14 +58,34 @@ public sealed class WorktreesDialog : Window
         };
         _list.SelectionChanged += (_, _) => UpdateButtons();
 
+        // Stale (prunable) worktrees are struck through and dimmed, so it is visible
+        // at a glance why they cannot be removed and what Prune would clear out.
+        _list.ItemTemplate = new FuncDataTemplate<WorktreeItem>((item, _) =>
+        {
+            TextBlock text = new()
+            {
+                Text = item?.ToString() ?? string.Empty,
+                Foreground = item?.Row.IsPrunable == true
+                    ? Brush("App.TextDim", Brushes.Gray)
+                    : Brush("App.Text", Brushes.Gainsboro),
+            };
+
+            if (item?.Row.IsPrunable == true)
+            {
+                text.TextDecorations = TextDecorations.Strikethrough;
+            }
+
+            return text;
+        });
+
         Button add = MakeButton("Add…");
         _remove = MakeButton("Remove");
-        Button prune = MakeButton("Prune");
+        _prune = MakeButton("Prune");
         Button close = MakeButton("Close");
 
         add.Click += (_, _) => _ = DoAddAsync();
         _remove.Click += (_, _) => _ = DoRemoveAsync();
-        prune.Click += (_, _) => Run("Prune", () => _service.PruneWorktrees(_repoPath));
+        _prune.Click += (_, _) => Run("Prune", () => _service.PruneWorktrees(_repoPath));
         close.Click += (_, _) => Close();
 
         StackPanel buttons = new()
@@ -72,7 +97,7 @@ public sealed class WorktreesDialog : Window
         };
         buttons.Children.Add(add);
         buttons.Children.Add(_remove);
-        buttons.Children.Add(prune);
+        buttons.Children.Add(_prune);
         buttons.Children.Add(new Border { Height = 8 });
         buttons.Children.Add(close);
 
@@ -121,10 +146,34 @@ public sealed class WorktreesDialog : Window
 
     private WorktreeItem? Selected => _list.SelectedItem as WorktreeItem;
 
-    // The main/bare worktree cannot be removed via `git worktree remove`; only
-    // linked, non-bare entries are removable.
+    /// <summary>
+    ///  `git worktree remove` refuses several of the entries it lists, so Remove is
+    ///  only offered where it can actually work. Mirrors the gating of the Windows
+    ///  dialog (<c>FormManageWorktree.CanDeleteSelectedWorkspace</c>):
+    ///  <list type="bullet">
+    ///   <item>the MAIN worktree owns the repository — it can never be removed;</item>
+    ///   <item>a bare worktree has no working tree to remove;</item>
+    ///   <item>a stale (prunable) entry has no working directory left; it is cleared
+    ///    with Prune, not Remove;</item>
+    ///   <item>the worktree the app currently has OPEN cannot remove itself.</item>
+    ///  </list>
+    ///  Previously only bare entries were excluded, so Remove was offered on the
+    ///  main and on the open worktree and git simply failed.
+    /// </summary>
+    private bool CanRemove(WorktreeItem? item)
+        => item is not null
+            && !item.Row.IsMain
+            && !item.Row.IsBare
+            && !item.Row.IsPrunable
+            && !item.Row.IsSamePath(_repoPath);
+
     private void UpdateButtons()
-        => _remove.IsEnabled = Selected is { Row.IsBare: false } && !_busy;
+    {
+        _remove.IsEnabled = !_busy && CanRemove(Selected);
+
+        // Nothing to prune → nothing for the button to do.
+        _prune.IsEnabled = !_busy && _anyPrunable;
+    }
 
     private void ReloadList()
     {
@@ -152,6 +201,7 @@ public sealed class WorktreesDialog : Window
                 _busy = false;
                 string? keep = Selected?.Row.Path;
                 List<WorktreeItem> items = rows.Select(r => new WorktreeItem(r)).ToList();
+                _anyPrunable = items.Exists(i => i.Row.IsPrunable);
                 _list.ItemsSource = items;
                 if (keep is not null)
                 {
@@ -180,7 +230,7 @@ public sealed class WorktreesDialog : Window
 
     private async Task DoRemoveAsync()
     {
-        if (Selected is not { Row.IsBare: false } item)
+        if (Selected is not { } item || !CanRemove(item))
         {
             return;
         }
@@ -318,7 +368,20 @@ public sealed class WorktreesDialog : Window
                 : Row.IsDetached ? $"detached @ {Row.Head}"
                 : Row.Head;
 
-            return state.Length > 0 ? $"{Row.Path}  [{state}]" : Row.Path;
+            string label = state.Length > 0 ? $"{Row.Path}  [{state}]" : Row.Path;
+
+            // Say why an entry is not actionable rather than leaving a silently
+            // disabled Remove button.
+            if (Row.IsPrunable)
+            {
+                label += "  (deleted — use Prune)";
+            }
+            else if (Row.IsMain)
+            {
+                label += "  (main)";
+            }
+
+            return label;
         }
     }
 }
