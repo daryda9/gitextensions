@@ -164,6 +164,15 @@ elencati nelle versioni precedenti di questa sezione sono stati risolti e verifi
 GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
 
 ### Follow-up aperti (nessuno bloccante)
+
+> **PRIORITÀ indicate dall'utente il 27/07/2026** (dettaglio operativo con i riferimenti
+> `file:riga` nel prompt della sezione 5, punti 1 e 2):
+> **P1 — grafo**: evidenziando un commit devono restare colorate solo le lane del percorso
+> che porta a quel commit, il resto grigio (oggi il port ingrigisce solo il *testo*, e
+> rispetto a HEAD invece che alla selezione).
+> **P2 — chrome mancante**: barra pulsanti + casella di ricerca nella colonna sinistra,
+> icone nei tab del pannello inferiore, pulsanti della toolbar in alto.
+
 1. ✅ **RISOLTO M45** (round 5, una iterazione) — `WorkingDirectoryView` **non esiste più**.
    Conflitti di merge e menu contestuale per file (discard / copy path / tre voci
    .gitignore) sono nel `CommitDialog`; "Reset changes…", "Clean working directory…" e
@@ -242,39 +251,46 @@ ricetta di verifica GUI headless, follow-up aperti.
 DIREZIONE DATA DALL'UTENTE (27/07/2026): le LINGUE non interessano oltre inglese e italiano
 -> blocco traduzioni CHIUSO, non aprirne altre unita'. Contano FEATURE e INTEGRAZIONE GUI.
 
-LAVORARE su questo, in ordine di impatto/costo (dall'audit di parita' funzionale):
-1. FATTI in M48: HotkeyService (~30 gesture, tabella da HotkeySettingsManager, override da
-   hotkeys.json) e menu contestuale della grid con sotto-menu e predicati. Restano da cablare:
-   push del branch dal menu grid, edit commit e rebase interattivo (serve un harness
-   GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested, e le gesture Ctrl+M merge /
-   Ctrl+Shift+E rebase / Ctrl+Alt+W worktrees (i service esistono, manca l'entry point).
-2. Difetti noti aperti (la perdita di scroll/selezione al refresh e' RISOLTA in M49):
-   CheckoutBranchDialog e' misto
-   italiano/inglese; Avalonia non espone WM_DELETE_WINDOW (finestra non chiudibile dal WM);
-   il "salva come" del diff non e' verificabile headless (serve portal XDG).
-4. FEDELTA' VISIVA/INTERAZIONE segnalata dall'utente il 27/07/2026 confrontando con
-   ~/Documents/process dialog with terminal command/GUI.png (screenshot dell'originale):
-   a) GRAFO: nell'originale, evidenziando un commit restano colorate solo le lane del
-      percorso che porta a quel commit, il resto diventa GRIGIO. Due meccanismi separati:
-      - HighlightSelectedBranch() (RevisionGridControl.cs:3062) si attiva su ALT+CLIC
-        (OnGridViewMouseClick:1900) o dal comando ToggleHighlightSelectedBranch, NON sulla
-        selezione semplice; chiama MakeRelative() che risale i PARENT marcando IsRelative.
-      - il disegno usa GetBrushForLaneInfo(laneInfo, isRelative, drawStyle)
-        (Graph/Rendering/GraphRenderer.cs:64): lane non-relative in grigio; a parte,
-        RevisionDataGridView.cs:352 ingrigisce il TESTO se AppSettings
-        .RevisionGraphDrawNonRelativesGray e' attiva.
-      Nel port: _drawNonRelativesGray esiste (RevisionGridView.cs:2705) ma calcola i parenti
-      rispetto a HEAD invece che al commit selezionato, e ingrigisce SOLO il testo: le lane
-      restano sempre colorate. Da fare: relatives dalla selezione + lane grigie + Alt+clic.
-   b) COLONNA SINISTRA: l'originale ha una barra di 5 pulsanti icona sopra l'albero e una
+LAVORARE su questo, in quest'ordine. I punti 1 e 2 sono PRIORITARI: indicati dall'utente il
+27/07/2026 confrontando la GUI con lo screenshot dell'originale in
+~/Documents/process dialog with terminal command/GUI.png.
+
+1. [PRIORITA' UTENTE] GRAFO: nell'originale, evidenziando un commit restano colorate solo le
+   lane del percorso che porta a quel commit, il resto diventa GRIGIO. Due meccanismi separati:
+   - HighlightSelectedBranch() (RevisionGridControl.cs:3062) si attiva su ALT+CLIC
+     (OnGridViewMouseClick:1900) o dal comando ToggleHighlightSelectedBranch, NON sulla
+     selezione semplice; chiama MakeRelative() che risale i PARENT marcando IsRelative.
+   - il disegno usa GetBrushForLaneInfo(laneInfo, isRelative, drawStyle)
+     (Graph/Rendering/GraphRenderer.cs:64): lane non-relative in grigio; a parte,
+     RevisionDataGridView.cs:352 ingrigisce il TESTO se AppSettings
+     .RevisionGraphDrawNonRelativesGray e' attiva.
+   Nel port: _drawNonRelativesGray esiste (RevisionGridView.cs:2705) ma calcola i parenti
+   rispetto a HEAD invece che al commit selezionato, e ingrigisce SOLO il testo: le lane
+   restano sempre colorate. Da fare: relatives dalla selezione + lane grigie + Alt+clic.
+   DA CHIEDERE ALL'UTENTE se non gia' deciso: se l'ingrigimento debba scattare anche sulla
+   selezione semplice (piu' comodo, diverso dall'originale) o solo su Alt+clic (fedele).
+
+2. [PRIORITA' UTENTE] CHROME MANCANTE rispetto all'originale:
+   a) COLONNA SINISTRA: l'originale ha una barra di 5 pulsanti icona sopra l'albero e una
       CASELLA DI RICERCA con lente; RepoObjectsTree.cs non ha ne' l'una ne' l'altra.
-   c) TAB del pannello inferiore: nell'originale hanno le ICONE (Commit/Diff/File tree/GPG/
+   b) TAB del pannello inferiore: nell'originale hanno le ICONE (Commit/Diff/File tree/GPG/
       Console/Output); nel port sono solo testo (MainWindow.cs:48-56, IconLoader gia' esiste).
-   d) TOOLBAR in alto: l'originale ha piu' pulsanti e split-button di quelli portati.
-   e) Gia' noti dall'audit e ancora aperti: toolbar ricca della lista file (raggruppamento
+   c) TOOLBAR in alto: l'originale ha piu' pulsanti e split-button di quelli portati.
+   d) Gia' noti dall'audit e ancora aperti: toolbar ricca della lista file (raggruppamento
       per path/estensione/stato, casella di ricerca, toggle ignorati/skip-worktree/untracked
       - FileStatusList.Toolbar.cs) e opzioni del viewer (evidenziazione sintattica, copia
       versione nuova/vecchia - FileViewer.Designer.cs:27-48).
+
+3. Code da M48: push del branch dal menu grid, edit commit e rebase interattivo (serve un
+   harness GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested da cablare, e le gesture
+   Ctrl+M merge / Ctrl+Shift+E rebase / Ctrl+Alt+W worktrees (i service esistono, manca
+   l'entry point in MainWindow).
+
+4. Difetti noti aperti (la perdita di scroll/selezione al refresh e' RISOLTA in M49):
+   CheckoutBranchDialog e' misto italiano/inglese; Avalonia non espone WM_DELETE_WINDOW
+   (finestra non chiudibile dal WM); il "salva come" del diff non e' verificabile headless
+   (serve portal XDG).
+
 5. Minori: dialogo Pull con prune/autostash/tag policy (oggi solo remote+rebase), opzioni di
    merge/cherry-pick, continue/skip/abort per rebase, filtrare i cataloghi .xlf a inglese +
    italiano per togliere ~19 MB dal .deb.
