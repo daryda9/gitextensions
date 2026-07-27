@@ -2,65 +2,143 @@ using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands;
+using GitCommands.Git.Gpg;
 using GitExtensions.Avalonia.Services;
+using GitExtensions.Avalonia.Theming;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
-using GitExtUtils;
+using GitUIPluginInterfaces;
 
 namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
-///  Shows a commit's GPG signature / verification, mirroring the original browse
-///  window's "GPG" tab. Runs <c>git log -1 --show-signature --pretty=medium
-///  &lt;hash&gt;</c> (with a <c>git verify-commit</c> fallback) and renders the
-///  combined stdout/stderr verbatim in a monospace, read-only pane. All git work
-///  runs off the UI thread and never throws.
+///  The browse window's "GPG" tab: the signature verification of the selected
+///  commit, and — as a second, separate section — of its annotated tag.
 ///
-///  <para>Only this view's own wording is translated (through
-///  <see cref="TranslationService"/>, with <c>RevisionGpgInfoControl</c> ids
-///  where upstream has an equivalent): git's own signature output is left
-///  verbatim, because it is what the user would see on the command line. The
-///  placeholder is re-stated on
-///  <see cref="TranslationService.LanguageChanged"/>; a signature already
-///  displayed is not re-verified.</para>
+///  <para>A faithful port of <c>RevisionGpgInfoControl</c>: the commit row shows
+///  the <c>%GG</c> verification message (or "Commit is not signed") next to a
+///  status icon (<c>CommitSignatureOk</c> / <c>…Warning</c> for a missing public
+///  key / <c>…Error</c>, hidden when there is no signature); the tag row shows the
+///  <c>git verify-tag</c> message next to <c>TagOk</c> / <c>TagError</c> /
+///  <c>TagMany</c> / <c>TagWarning</c>, and the whole row disappears when the
+///  revision carries no annotated tag — which is also what turns the layout from
+///  50/50 into 100/0 (<c>ApplyLayout</c>).</para>
+///
+///  <para>The statuses and messages come from
+///  <see cref="GitGpgController"/> itself (it has no WinForms dependency), so the
+///  port runs the very same git commands upstream does — <c>log --pretty=%G?</c>,
+///  <c>log --pretty=%GG</c>, <c>verify-tag</c> — instead of parsing
+///  <c>--show-signature</c> output, which also printed the commit body upstream
+///  never shows.</para>
+///
+///  <para>Upstream <b>removes</b> this tab for an artificial revision (and when
+///  the "show GPG information" setting is off, <c>FormBrowse.cs:1291-1303</c>).
+///  The port's tab is fixed, so an artificial revision empties the pane with a
+///  sentence saying why; the setting is not invented here, because the port has no
+///  settings entry for it.</para>
+///
+///  <para>All git work runs off the UI thread and never throws. The view's own
+///  wording is translated with the <c>RevisionGpgInfoControl</c> ids where
+///  upstream has one; git's messages stay verbatim, as on the command line.</para>
 /// </summary>
 public sealed class GpgView : UserControl
 {
-    private readonly TextBox _text;
-    private readonly ScrollViewer _scroll;
+    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 
-    // False while the pane shows its placeholder rather than git output.
-    private bool _hasCommit;
+    private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
+
+    private readonly Grid _rows;
+    private readonly Image _commitIcon;
+    private readonly Image _tagIcon;
+    private readonly TextBox _commitText;
+    private readonly TextBox _tagText;
+    private readonly Border _tagRow;
+
+    // What the pane currently states without git having said it (no commit
+    // selected, artificial revision), so a language switch can re-state it.
+    private string? _placeholder;
+
+    // The last statuses, so a language switch re-labels "not signed" without
+    // re-verifying.
+    private CommitStatus _commitStatus = CommitStatus.NoSignature;
+    private TagStatus _tagStatus = TagStatus.NoTag;
+    private string? _commitMessage;
+    private string? _tagMessage;
+
+    // Identifies the load whose result may still be applied.
+    private string? _commitHash;
 
     public GpgView()
     {
-        _text = new TextBox
+        _commitIcon = new Image { Width = 16, Height = 16, IsVisible = false };
+        _tagIcon = new Image { Width = 16, Height = 16, IsVisible = false };
+
+        _commitText = MessageBox();
+        _tagText = MessageBox();
+
+        _rows = new Grid
         {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
-            Background = Brush("App.Panel", Brushes.Black),
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            RowDefinitions = new RowDefinitions("*,*"),
+            Background = B("App.Panel"),
         };
 
-        _scroll = new ScrollViewer
-        {
-            Content = _text,
-            Background = Brush("App.Panel", Brushes.Black),
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        };
+        Border commitRow = Section(_commitIcon, _commitText);
+        _tagRow = Section(_tagIcon, _tagText);
 
-        Content = _scroll;
-        Background = Brush("App.Window", Brushes.DimGray);
+        Grid.SetRow(commitRow, 0);
+        Grid.SetRow(_tagRow, 1);
+        _rows.Children.Add(commitRow);
+        _rows.Children.Add(_tagRow);
+
+        Content = _rows;
+        Background = B("App.Window");
         ClipToBounds = true;
 
-        ApplyTranslations();
+        _placeholder = null;
+        ShowPlaceholder(noCommit: true);
         TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    private static TextBox MessageBox() => new()
+    {
+        AcceptsReturn = true,
+        IsReadOnly = true,
+        TextWrapping = TextWrapping.NoWrap,
+        FontFamily = Monospace,
+        Background = B("App.Panel"),
+        Foreground = B("App.Text"),
+        BorderThickness = new Thickness(0),
+        VerticalContentAlignment = VerticalAlignment.Top,
+    };
+
+    // One row of the upstream table layout: the status icon, then the message.
+    private static Border Section(Image icon, TextBox text)
+    {
+        Grid grid = new() { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+
+        Border iconHolder = new()
+        {
+            Child = icon,
+            Margin = new Thickness(8, 8, 4, 8),
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+
+        Grid.SetColumn(iconHolder, 0);
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(iconHolder);
+        grid.Children.Add(text);
+
+        return new Border
+        {
+            Background = B("App.Panel"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = grid,
+        };
     }
 
     // ------------------------------------------------------------ translation
@@ -72,88 +150,174 @@ public sealed class GpgView : UserControl
     private static string F(string format, params object?[] args)
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
-    private void ApplyTranslations()
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
     {
-        if (!_hasCommit)
+        if (_placeholder is not null)
         {
-            _text.Text = T("No commit selected.");
+            // Re-state whichever placeholder is up, in the new language.
+            ShowPlaceholder(noCommit: _commitHash is null);
+            return;
         }
-    }
 
-    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+        Display(_commitStatus, _commitMessage, _tagStatus, _tagMessage);
+    });
+
+    // ------------------------------------------------------------ loading
 
     /// <summary>
-    ///  Loads and shows the signature / verification output for
-    ///  <paramref name="commitHash"/> in the repository at
-    ///  <paramref name="repoPath"/>. Heavy git work runs off the UI thread.
+    ///  Verifies <paramref name="commitHash"/> in the repository at
+    ///  <paramref name="repoPath"/> and shows the commit's (and its tag's)
+    ///  signature status. Heavy git work runs off the UI thread.
     /// </summary>
     public void ShowCommit(string repoPath, string commitHash)
     {
-        string shortHash = commitHash.Length > 8 ? commitHash[..8] : commitHash;
-        _hasCommit = true;
-        _text.Text = F(T("Verifying signature of {0}…"), shortHash);
+        _commitHash = commitHash;
 
-        // Snapshotted on the UI thread: the strings are needed inside the git
-        // run below, and Task.Run must not reach back into the view.
-        string notSigned = F("({0})", T("RevisionGpgInfoControl/_commitNotSigned.Text", "this commit is not signed"));
-        string noInfo = T("(no signature information)");
-        string failedFormat = T("Could not verify signature: {0}");
-
-        _ = Task.Run(() =>
+        // An artificial revision (the working tree, the index) has no signature at
+        // all: upstream drops the tab, the port states why and stops.
+        if (!ObjectId.TryParse(commitHash, out ObjectId objectId) || objectId.IsArtificial)
         {
-            string output;
+            ShowPlaceholder(noCommit: false);
+            return;
+        }
+
+        _placeholder = null;
+        _commitText.Text = F(T("Verifying signature of {0}…"),
+            commitHash.Length > 8 ? commitHash[..8] : commitHash);
+        _commitIcon.IsVisible = false;
+        _tagIcon.IsVisible = false;
+        SetTagRowVisible(false);
+
+        _ = Task.Run(async () =>
+        {
+            CommitStatus commitStatus = CommitStatus.NoSignature;
+            TagStatus tagStatus = TagStatus.NoTag;
+            string? commitMessage = null;
+            string? tagMessage = null;
+            string? error = null;
+
             try
             {
                 GitModule module = GitContext.CreateModule(repoPath);
+                GitGpgController controller = new(() => module);
 
-                GitArgumentBuilder args = new("log")
+                // GitGpgController reads the tag state off the revision's refs, so
+                // they have to be loaded — the dereference refs ("…^{}") are the
+                // annotated tags it looks for.
+                GitRevision revision = new(objectId)
                 {
-                    "-1", "--show-signature", "--pretty=medium", commitHash,
+                    Refs = [.. module.GetRefs(RefsFilter.Tags).Where(r => r.ObjectId == objectId)],
                 };
-                ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
-                output = Combine(result.StandardOutput, result.StandardError);
 
-                // If the log output carried no signature information at all, fall
-                // back to an explicit verify-commit, which always reports status.
-                if (!output.Contains("gpg", StringComparison.OrdinalIgnoreCase)
-                    && !output.Contains("signature", StringComparison.OrdinalIgnoreCase))
-                {
-                    GitArgumentBuilder verify = new("verify-commit") { "-v", commitHash };
-                    ExecutionResult vr = module.GitExecutable.Execute(verify, throwOnErrorExit: false);
-                    string verifyOut = Combine(vr.StandardOutput, vr.StandardError);
-                    output = verifyOut.Trim().Length > 0
-                        ? verifyOut
-                        : (output.Trim().Length > 0 ? output : notSigned);
-                }
+                commitStatus = await controller.GetRevisionCommitSignatureStatusAsync(revision)
+                    .ConfigureAwait(false);
+                commitMessage = controller.GetCommitVerificationMessage(revision);
+
+                tagStatus = await controller.GetRevisionTagSignatureStatusAsync(revision)
+                    .ConfigureAwait(false);
+                tagMessage = controller.GetTagVerifyMessage(revision);
             }
             catch (Exception ex)
             {
-                output = F(failedFormat, ex.Message);
+                error = ex.Message;
             }
 
-            string final = output.Trim().Length > 0 ? output : noInfo;
             Dispatcher.UIThread.Post(() =>
             {
-                _text.Text = final;
-                _scroll.ScrollToHome();
+                // A newer selection already superseded this verification.
+                if (!string.Equals(_commitHash, commitHash, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                if (error is { Length: > 0 })
+                {
+                    _placeholder = F(T("Could not verify signature: {0}"), error);
+                    _commitText.Text = _placeholder;
+                    _commitIcon.IsVisible = false;
+                    SetTagRowVisible(false);
+                    return;
+                }
+
+                Display(commitStatus, commitMessage, tagStatus, tagMessage);
             });
         });
     }
 
-    private static string Combine(string? stdout, string? stderr)
+    /// <summary>Empties the tab (no repository selected).</summary>
+    public void Clear()
     {
-        string a = stdout ?? string.Empty;
-        string b = stderr ?? string.Empty;
-        if (a.Trim().Length == 0)
-        {
-            return b;
-        }
-
-        return b.Trim().Length == 0 ? a : a.TrimEnd() + Environment.NewLine + b;
+        _commitHash = null;
+        ShowPlaceholder(noCommit: true);
     }
 
-    private static IBrush Brush(string key, IBrush fallback)
-        => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b
-            ? b
-            : fallback;
+    private void ShowPlaceholder(bool noCommit)
+    {
+        _placeholder = noCommit
+            ? T("No commit selected.")
+            : T("Signature information is not available for the working tree.");
+
+        _commitText.Text = _placeholder;
+        _commitIcon.IsVisible = false;
+        _tagIcon.IsVisible = false;
+        _tagText.Text = string.Empty;
+        SetTagRowVisible(false);
+    }
+
+    // ------------------------------------------------------------ rendering
+
+    private void Display(CommitStatus commitStatus, string? commitMessage, TagStatus tagStatus, string? tagMessage)
+    {
+        _placeholder = null;
+        _commitStatus = commitStatus;
+        _commitMessage = commitMessage;
+        _tagStatus = tagStatus;
+        _tagMessage = tagMessage;
+
+        // ---- commit section ----
+        SetIcon(_commitIcon, commitStatus switch
+        {
+            CommitStatus.GoodSignature => "CommitSignatureOk",
+            CommitStatus.MissingPublicKey => "CommitSignatureWarning",
+            CommitStatus.SignatureError => "CommitSignatureError",
+            _ => null,
+        });
+
+        _commitText.Text = commitStatus != CommitStatus.NoSignature && commitMessage is { Length: > 0 }
+            ? commitMessage.TrimEnd()
+            : T("RevisionGpgInfoControl/_commitNotSigned.Text", "Commit is not signed");
+
+        // ---- tag section: the row itself is the "is there a tag" signal ----
+        SetIcon(_tagIcon, tagStatus switch
+        {
+            TagStatus.OneGood => "TagOk",
+            TagStatus.OneBad => "TagError",
+            TagStatus.Many => "TagMany",
+            TagStatus.NoPubKey => "TagWarning",
+            _ => null,
+        });
+
+        SetTagRowVisible(tagStatus != TagStatus.NoTag);
+
+        _tagText.Text = tagStatus switch
+        {
+            TagStatus.NoTag => string.Empty,
+            TagStatus.TagNotSigned => T("RevisionGpgInfoControl/_tagNotSigned.Text", "Tag is not signed"),
+            _ => (tagMessage ?? string.Empty).TrimEnd(),
+        };
+    }
+
+    private static void SetIcon(Image target, string? name)
+    {
+        target.Source = name is null ? null : IconLoader.Load(name);
+        target.IsVisible = target.Source is not null;
+    }
+
+    // Upstream's ApplyLayout: 50/50 with a tag, 100/0 without it.
+    private void SetTagRowVisible(bool visible)
+    {
+        _tagRow.IsVisible = visible;
+        _rows.RowDefinitions[0].Height = new GridLength(visible ? 50 : 100, GridUnitType.Star);
+        _rows.RowDefinitions[1].Height = new GridLength(visible ? 50 : 0, GridUnitType.Star);
+    }
 }
