@@ -1146,8 +1146,12 @@ priorità massima)
       protocollo in `WM_PROTOCOLS` e ignora il ClientMessage → con un window manager reale la "X"
       della decorazione **non chiude l'app** e `PersistLayout()` non gira, quindi *tutto* lo stato
       UI (geometria, splitter, tab, collasso, pull action) si perde. Oggi solo `Start → Exit` passa
-      da `Closing`/`PersistLayout`. Scoperto durante la verifica GUI di M52. *da indagare, valore
-      alto*
+      da `Closing`/`PersistLayout`. Scoperto durante la verifica GUI di M52. **Non è una
+      regressione**: è il limite di piattaforma già censito nei blocchi precedenti (Avalonia non
+      espone `WM_DELETE_WINDOW` su X11). La novità è la *conseguenza*, che prima non era stata
+      collegata: non è solo "la X non chiude", è che **si perde tutto lo stato UI**. Se il
+      protocollo non è registrabile dal lato managed, la via è un ricevitore nativo come si è già
+      fatto per XDND (`Services/X11DropTarget.cs`). *valore alto*
 - [ ] 0.17 `RevisionsStar`/`BottomStar` vengono salvati come valori **simil-pixel** (es. 199 / 525)
       invece di rapporti star normalizzati: passano il `Clamp(0.1, 1000)` di `Sanitize` quindi non
       rompono nulla, ma il ripristino dipende dalla dimensione della finestra. *banale*
