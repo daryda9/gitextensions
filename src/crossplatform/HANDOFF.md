@@ -266,69 +266,80 @@ infine A/B con e senza fix.
 
 ## 5. Prompt pronto per riprendere
 
-I blocchi M45–M50 sono chiusi, **priorità P1 e P3 comprese**. Resta il pezzo 2c/2d di P2 più
-la coda dell'audit di parità funzionale. Prompt riutilizzabile (incollabile in `/loop`):
+M45–M51 sono chiusi. Il prossimo blocco (round 9) **non parte da una lista scritta a mano**: parte
+da un **audit sistematico area per area** contro l'originale Windows, che produce lui la coda di
+lavoro. Prompt riutilizzabile (incollabile in `/loop`):
 
 ```
-Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/. Branch:
-linux-avalonia-port (verificare HEAD all'avvio). NON push. NON firmare i commit
-(git -c commit.gpgsign=false). NON refactor multi-target. NON toccare la build Windows.
+Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 9: AUDIT COMPLETO
+DI PARITA' + CHIUSURA DELLE DIFFERENZE. Branch: linux-avalonia-port (verificare HEAD all'avvio).
+NON push. NON firmare i commit (git -c commit.gpgsign=false). NON refactor multi-target. NON
+toccare la build Windows: lavorare SOLO in src/crossplatform/.
 
-LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4: convenzioni Avalonia, trappole,
-ricetta di verifica GUI headless, follow-up aperti.
+LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 (convenzioni Avalonia, trappole, classe di
+bug del core condiviso, ricetta GUI headless, cosa resta) e in PORTING.md i blocchi dei round 8
+("Blocco PRIORITA' P1-P3", "Blocco PANNELLO INFERIORE") per non riaprire lavoro gia' fatto.
 
-DIREZIONE DATA DALL'UTENTE (27/07/2026): le LINGUE non interessano oltre inglese e italiano
--> blocco traduzioni CHIUSO, non aprirne altre unita'. Contano FEATURE e INTEGRAZIONE GUI.
+DIREZIONE DELL'UTENTE: le LINGUE non interessano oltre inglese e italiano (blocco traduzioni
+CHIUSO, non aprirne unita'). Contano FEATURE, FEDELTA' all'originale e INTEGRAZIONE nella GUI.
 
-P1 (grafo), P3 (Pull) e P2 punti a+b (barra pulsanti + ricerca a sinistra, icone dei tab) sono
-FATTI in M50: non riaprirli. DETTAGLIO OPERATIVO in PORTING.md, sezione "Priorita' aperte
-(P1-P3) e coda di lavoro" (stato in testa) e "Blocco PRIORITA' P1-P3 (round 8)" -- LEGGERLE
-prima di iniziare un punto.
+## FASE 1 — AUDIT (prime iterazioni, subagent READ-ONLY in parallelo, NIENTE worktree)
+Obiettivo: l'elenco COMPLETO di cio' che ancora differenzia il port dall'originale, area per area.
+Un subagent per area, sola lettura, nessun commit. Aree DISGIUNTE:
+  A. Barra menu (tutte le voci di FormBrowse.Designer.cs + i menu di FormBrowse.InitMenus*)
+  B. Toolbar in alto (pulsanti, split-button, combo, overflow) vs FormBrowse.Designer.cs
+  C. Pannello sinistro RepoObjectsTree: nodi, menu contestuali per tipo di nodo, drag&drop
+  D. Revision grid: colonne, menu contestuale, filtri, quick search, tastiera, grafo
+  E. Pannello inferiore: residui di M51 (Stash, File tree, GPG) + verifica del resto
+  F. Dialoghi (Commit, Push, Pull, Checkout, Remotes, Clone, Archive, Patch, Submodules,
+     Worktrees, Sparse, Maintenance, Reflog, Bisect, About) vs le Form* corrispondenti
+  G. Impostazioni/Settings: pagine di FormSettings vs SettingsWindow del port
+  H. Chrome globale: status bar, dashboard/start page, hotkey, persistenza dello stato
+Ogni audit consegna: per ogni mancanza -> nome dell'item upstream + file:riga, cosa fa il port
+oggi, cosa manca, COSTO (banale/media/alta), se serve un dato/servizio che il port non ha, e se
+l'originale NON ha nulla in piu' DIRLO ESPLICITAMENTE (per non inventare lavoro).
+Riferimenti visivi: gli screenshot dell'originale in ~/Documents/process dialog with terminal
+command/ (GUI.png, commit dialog.png, push dialog.png, diff view between two commits.png,
+process dialog with terminal command.png) e ~/Documents/pullu'/ — GUARDARLI col tool Read.
+Il loop CONSOLIDA gli audit in una coda unica in PORTING.md ("Coda round 9"), ordinata per
+rapporto valore/costo, marcando cosa e' rinviato e perche'.
 
-1. [P2 residuo, 2c] TOOLBAR IN ALTO: gli altri pulsanti/split-button dell'originale non ancora
-   portati (confronto con ~/Documents/process dialog with terminal command/GUI.png e
-   FormBrowse.Designer.cs). Lo scheletro split-button ora esiste in MainToolbar.cs (Pull):
-   riusarlo.
-2. [PANNELLO INFERIORE, residui di M51] STASH: checkbox "Keep index" (banale) e lista file dello
-   stash, che e' il prerequisito di "Stash selected changes". FILE TREE: albero vero + anteprima
-   del contenuto del file. Entrambi devono CONSUMARE il componente gia' scritto
-   App/Views/FileStatusListView.cs (SetFiles, SelectedFile/SelectedFileChanged, RefreshRequested,
-   List.ContextMenu, AddToolbarItem) -- upstream e' lo stesso FileStatusList di Diff/FormStash,
-   non riscriverlo. GPG: icone di stato firma + sezione per la firma del tag annotato (upstream
-   NON ha pulsanti qui). Rinviati perche' serve infrastruttura assente: git grep nei file del
-   commit, le 11 "Blame options", tab "Command cache", FilterToolBar completa, i 4 tab interni
-   della file history.
-3. [P1 residuo minore] La relativita' dei segmenti del grafo e' dedotta dal bookkeeping delle
-   lane: una lane riusata da un parent di merge puo' restare colorata dove l'upstream
-   disegnerebbe due segmenti distinti. Serve un hash sui RevisionGraphSegment del port.
-4. Code da M48: push del branch dal menu grid, edit commit e rebase interattivo (serve un
-   harness GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested da cablare, gesture Ctrl+M /
-   Ctrl+Shift+E / Ctrl+Alt+W (i service esistono, manca l'entry point in MainWindow).
-5. Difetti noti aperti (scroll/selezione al refresh e' RISOLTA in M49): CheckoutBranchDialog
-   misto italiano/inglese; Avalonia non espone WM_DELETE_WINDOW; "salva come" del diff non
-   verificabile headless (serve portal XDG).
-6. Minori: opzioni di merge/cherry-pick, continue/skip/abort per rebase, filtrare i
-   cataloghi .xlf a inglese + italiano per togliere ~19 MB dal .deb.
+## FASE 2 — CHIUSURA (iterazioni successive, fino a 20 in totale)
+Si lavora la coda dall'alto. Ogni iterazione: 2-3 subagent CLAUDE in worktree isolati
+(isolation: worktree), un'unita' per subagent, file DISGIUNTI; mai subagent Codex con worktree.
+Il loop: cherry-pick dei tip UNO ALLA VOLTA + build check dopo ognuno, integrazione minima
+(il cablaggio in MainWindow lo fa il loop), verifica GUI con screenshot GUARDATI davvero,
+commit, cleanup worktree+branch, aggiornamento di PORTING.md.
+REGOLA: nessun pulsante finto. Se dietro una voce non c'e' il dato, NON metterla e registrare
+perche'. Riusare i componenti che esistono gia' (App/Views/FileStatusListView.cs per le liste
+file, lo split-button di MainToolbar.cs, CommitDetailView per i dettagli commit).
 NON lavorare su repository-host GitHub ne' colonna build status: SKIP fuori scope.
 
-METODO: il loop NON scrive codice a mano — DELEGA a subagent CLAUDE in worktree isolati
-(isolation: worktree), 2-3 in parallelo, file DISGIUNTI; niente subagent Codex con worktree.
-Il loop fa: scelta pezzo, spawn, cherry-pick dei tip UNO ALLA VOLTA + build check dopo
-ognuno, integrazione minima, verifica GUI, commit, cleanup worktree+branch.
+METODO: il loop NON scrive codice a mano tranne il cablaggio minimo in MainWindow.
 REGOLA ANTI-CONFLITTO: un solo subagent per iterazione tocca ciascun file hub (MainWindow,
-MainMenu, MainToolbar, RepoObjectsTree, RevisionGridView, DiffView, WorkingDirectoryView,
-StashPanel, CommitDialog, PushDialog, GitProcessDialog, ConsoleView).
+MainMenu, MainToolbar, RepoObjectsTree, RevisionGridView, DiffView, FileStatusListView,
+CommitDetailView, StashPanel, CommitDialog, PushDialog, PullDialog, GitProcessDialog,
+ConsoleView, SettingsWindow).
 REGOLA subagent: primo step `git reset --hard <SHA_HEAD_corrente>`; verificare che
-src/crossplatform/App/GitContext.cs ESISTA (se manca, base sbagliata → fermarsi);
+src/crossplatform/App/GitContext.cs ESISTA (se manca, base sbagliata -> fermarsi);
 VIETATO git checkout/switch/branch -f nel repo principale; commit Conventional senza firma.
-REGOLA loop: prima di ogni commit verificare `git branch --show-current` ==
-linux-avalonia-port e `git rev-parse HEAD^` == commit atteso.
+REGOLA loop: la cwd di Bash PERSISTE fra le chiamate — usare percorsi assoluti e verificare
+`git branch --show-current` == linux-avalonia-port e `git rev-parse HEAD^` == commit atteso
+PRIMA di ogni commit (un cd in un worktree di subagent ha gia' fatto partire un cherry-pick
+sul branch sbagliato).
 Ambiente: export PATH="$HOME/.dotnet:$PATH"; da src/crossplatform:
-dotnet build App/GitExtensions.Avalonia.csproj -v q → Errori: 0.
+dotnet build App/GitExtensions.Avalonia.csproj -v q -> Errori: 0.
 Verifica GUI headless: xvfb-run -n <display privato> --server-args="-screen 0 1400x900x24
-+extension XINPUTEXTENSION", XDG_CONFIG_HOME isolato (la dimensione finestra persistita
-eccede lo schermo; per forzare stati scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/
-ui-state.json), mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero
-l'immagine. Niente xdotool: python-Xlib fake_input (XTEST).
-Aggiornare PORTING.md (prossima milestone libera: M52) e HANDOFF.md a ogni iterazione.
++extension XINPUTEXTENSION", XDG_CONFIG_HOME isolato (la dimensione finestra persistita eccede
+lo schermo; per forzare stati scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/ui-state.json),
+mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero l'immagine.
+Niente xdotool: python-Xlib fake_input (XTEST). Script pronti in /tmp/loop-verify/ (session.sh,
+click.py, rclick.py, esc.py, miniwm.py, g2_type.py e in r8/: altclick.py, ctrlkey.py).
+Le sleep di shell vengono UCCISE dall'harness (exit 144): usare
+python3 -c "import time;time.sleep(N)". Controllare l'mtime dello screenshot prima di leggerlo.
+Repo di prova /tmp/loop-testrepo; operazioni distruttive SOLO su repo in /tmp, mai su git_ext_mod.
+Aggiornare PORTING.md (prossima milestone libera: M52) e HANDOFF.md a ogni iterazione, e la
+memoria avalonia-port-state.md a fine blocco.
+STOP quando la coda e' chiusa, oppure a 20 iterazioni, oppure se una strada si rivela
+impraticabile (documentare il vicolo cieco invece di forzare).
 ```
