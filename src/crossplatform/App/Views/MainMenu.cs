@@ -21,11 +21,18 @@ namespace GitExtensions.Avalonia.Views;
 ///
 ///  <para>This is also the first view wired to <see cref="TranslationService"/>
 ///  (unit T1 of the translation work). Every caption goes through
-///  <see cref="Item(string?, string, string?, Action, bool)"/> with an explicit
-///  XLIFF key of the form <c>"FormBrowse/&lt;designerName&gt;.Text"</c> — the very
-///  id the upstream WinForms menu item carries — so the existing catalogues apply
-///  verbatim. The whole menu is rebuilt (not restarted) when the language
+///  <see cref="Item(string?, string, string?, Action, bool, BrowseCommand?)"/> with
+///  an explicit XLIFF key of the form <c>"FormBrowse/&lt;designerName&gt;.Text"</c> —
+///  the very id the upstream WinForms menu item carries — so the existing catalogues
+///  apply verbatim. The whole menu is rebuilt (not restarted) when the language
 ///  changes.</para>
+///
+///  <para><b>State.</b> The menu owns none of it. Which entries exist is fixed at
+///  <see cref="Build"/> time; which are <i>visible</i> or <i>enabled</i> comes from
+///  the host through <see cref="SetRepositoryState"/> and
+///  <see cref="SetSelectionState"/>, and the shortcut each entry displays comes from
+///  the host's live <see cref="Hotkeys"/> map. That is the same discipline the View
+///  menu already follows for its check marks: render, never decide.</para>
 /// </summary>
 public sealed class MainMenu : UserControl
 {
