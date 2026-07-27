@@ -72,6 +72,19 @@ public sealed class UiState
     /// </summary>
     public bool LeftPanelCollapsed { get; set; }
 
+    /// <summary>
+    ///  Order of the left panel's category root nodes, as a comma-separated list of
+    ///  category ids (<c>branches,remotes,worktrees,tags,submodules,stashes</c>).
+    ///
+    ///  <para>Written by <c>RepoObjectsTree</c>'s "Move Up" / "Move Down" context-menu
+    ///  items, which upstream reorders the <i>categories</i> and persists their indices
+    ///  (<c>RepoObjectsTree.ContextActions.cs:61-68</c> gates them to a root node, and
+    ///  <c>ReorderTreeNode</c> saves the new order). Unknown or missing ids are ignored
+    ///  when the string is applied, so an old or hand-edited file degrades to the
+    ///  default order instead of losing a category.</para>
+    /// </summary>
+    public string LeftPanelCategoryOrder { get; set; } = string.Empty;
+
     /// <summary>Right area: revision-grid row star weight.</summary>
     public double RevisionsStar { get; set; } = 3;
 

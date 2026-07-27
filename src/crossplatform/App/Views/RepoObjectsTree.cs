@@ -62,6 +62,33 @@ public sealed class RepoObjectsTree : UserControl
     private readonly Dictionary<TreeViewItem, string> _nodeText = new();
     private readonly Dictionary<TreeViewItem, TreeViewItem?> _nodeParent = new();
 
+    // --- Expand / selection state that must survive a rebuild ------------------
+    // BuildTree throws every TreeViewItem away and reassigns ItemsSource, so without
+    // this every Refresh() — after each checkout, merge, stash, and on every
+    // OperationCompleted — would re-collapse the whole tree and drop the selection.
+    // Upstream keeps the same two things across a reload: Tree.FillTreeViewNode
+    // snapshots GetExpandedNodesState() before repopulating, restores the selection
+    // from originalSelectedNodeFullNamePath, then RestoreExpandedNodesState() and
+    // ExpandPathToSelectedNode() + EnsureVerticallyVisible() (LeftPanel/Tree.cs:140-201).
+    //
+    // The state is keyed by a stable path built while the tree is created — the port's
+    // equivalent of upstream's TreeNode.GetFullNamePath() — because the item objects
+    // themselves are new on every build.
+    private readonly Dictionary<TreeViewItem, string> _nodeKey = new();
+    private HashSet<string> _expandedKeys = new(StringComparer.Ordinal);
+    private string? _selectedKey;
+
+    // Set while the tree, not the user, moves the selection (a rebuild restoring the
+    // previous selection, or a right-click landing on another node). Suppresses the
+    // RefSelected notification only — the tree's own selection really does move.
+    // Without it a plain refresh would re-drive the revision grid, and (M51) opening a
+    // context menu would scroll the bottom panel away while the menu was still opening.
+    private bool _suppressSelectionNotify;
+
+    // First build of a repository: nothing to restore, so the Branches node is opened
+    // the way upstream's LocalBranchTree.PostFillTreeViewNode(firstTime) expands it.
+    private bool _firstBuild = true;
+
     // Nodes whose own text matches the current filter, in breadth-first order, plus
     // the rotating cursor used by the magnifier button / Enter to cycle through them.
     private readonly List<TreeViewItem> _matches = [];
@@ -90,10 +117,17 @@ public sealed class RepoObjectsTree : UserControl
     private readonly Dictionary<string, DateTime> _commitDates = new(StringComparer.Ordinal);
     private bool _resolvingDates;
 
-    // Manual local-branch order (branch names) engaged by Move up / Move down.
-    // When set it takes precedence over _sortKey/_sortOrder for local branches;
-    // choosing any explicit sort clears it.
-    private List<string>? _manualBranchOrder;
+    // --- Category order (upstream's Move Up / Move Down) ----------------------
+    // Upstream's mnubtnMoveUp / mnubtnMoveDown are visible only when the selected node
+    // is a category ROOT (ContextActions.cs:61-68 — `selectedNode is Tree`) and they
+    // reorder the categories, persisting the new indices. The port used to put the same
+    // two items on a single local BRANCH, reordering branches inside their category:
+    // a different feature under upstream's name. This is the upstream one; see
+    // CategoryOrder for how the loop persists it.
+    private static readonly string[] DefaultCategoryOrder =
+        ["branches", "remotes", "worktrees", "tags", "submodules", "stashes"];
+
+    private List<string> _categoryOrder = [.. DefaultCategoryOrder];
 
     /// <summary>
     ///  Raised on the UI thread when a branch or tag node is selected, carrying the
@@ -116,6 +150,79 @@ public sealed class RepoObjectsTree : UserControl
     /// </summary>
     public event Action<string>? OpenRepositoryRequested;
 
+    /// <summary>
+    ///  Raised on the UI thread when a tree node wants a tab of the bottom panel
+    ///  brought to the front, carrying the tab key used by <c>UiState.BottomTab</c>
+    ///  ("Stash", "Diff", …). Used by the Stashes root's "Manage stashes…" and by a
+    ///  stash node's "Open stash" / double-click, which upstream routes to
+    ///  <c>StartStashDialog(manageStashes: true)</c> — the port's equivalent surface is
+    ///  the bottom panel's Stash tab. Menu items behind it are shown disabled while
+    ///  nothing is subscribed, so they are never dead.
+    /// </summary>
+    public event Action<string>? BottomTabRequested;
+
+    /// <summary>
+    ///  Raised on the UI thread by the Remotes root's "Fetch all" — upstream's
+    ///  <c>mnuBtnFetchAllRemotes</c>. The host runs it, because a fetch needs the
+    ///  streaming process dialog, the credential retry and the watcher suspension that
+    ///  only the host owns (MainWindow.RunRemoteOp). Shown disabled while nothing is
+    ///  subscribed.
+    /// </summary>
+    public event Action? FetchAllRequested;
+
+    /// <summary>
+    ///  Raised on the UI thread by the Remotes root's "Fetch and prune all" —
+    ///  upstream's <c>mnuBtnPruneAllRemotes</c>. Routed to the host for the same
+    ///  reasons as <see cref="FetchAllRequested"/>.
+    /// </summary>
+    public event Action? FetchAndPruneAllRequested;
+
+    /// <summary>
+    ///  Raised on the UI thread after "Move Up" / "Move Down" reordered the category
+    ///  roots, so the host can persist <see cref="CategoryOrder"/> into
+    ///  <c>UiState.LeftPanelCategoryOrder</c>. Reordering works in-session without a
+    ///  subscriber; only the persistence needs one.
+    /// </summary>
+    public event Action? CategoryOrderChanged;
+
+    /// <summary>
+    ///  The order of the category root nodes, as the comma-separated id list stored in
+    ///  <c>UiState.LeftPanelCategoryOrder</c>. Assigning an incomplete or unknown list
+    ///  is safe: known ids are taken in the given order and every category missing from
+    ///  it is appended in its default position, so no category can be lost.
+    /// </summary>
+    public string CategoryOrder
+    {
+        get => string.Join(',', _categoryOrder);
+        set
+        {
+            List<string> order = [];
+            foreach (string id in (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string trimmed = id.Trim();
+                if (DefaultCategoryOrder.Contains(trimmed, StringComparer.Ordinal)
+                    && !order.Contains(trimmed, StringComparer.Ordinal))
+                {
+                    order.Add(trimmed);
+                }
+            }
+
+            foreach (string id in DefaultCategoryOrder)
+            {
+                if (!order.Contains(id, StringComparer.Ordinal))
+                {
+                    order.Add(id);
+                }
+            }
+
+            _categoryOrder = order;
+            if (_snapshot is { } snapshot)
+            {
+                BuildTree(snapshot);
+            }
+        }
+    }
+
     public RepoObjectsTree()
     {
         _tree = new TreeView
@@ -126,14 +233,43 @@ public sealed class RepoObjectsTree : UserControl
 
         _tree.SelectionChanged += (_, _) => OnSelectionChanged();
         _tree.DoubleTapped += (_, _) => OnActivate();
+        // The hotkeys of upstream's "RepoObjectsTree" scope (RepoObjectsTree.Command.cs +
+        // HotkeySettingsManager.cs:267-271): Delete deletes the selected node, F2 renames
+        // it, F3 jumps to the next search hit. Enter is the port's own activation key and
+        // stays. Delete/F2 route to exactly the same handlers as the context-menu items,
+        // so the gating (no deleting the current branch, no renaming a tag) is shared.
         _tree.KeyDown += (_, e) =>
         {
-            if (e.Key == Key.Enter)
+            switch (e.Key)
             {
-                OnActivate();
-                e.Handled = true;
+                case Key.Enter:
+                    OnActivate();
+                    e.Handled = true;
+                    break;
+
+                case Key.Delete:
+                    e.Handled = OnDeleteSelected();
+                    break;
+
+                case Key.F2:
+                    e.Handled = OnRenameSelected();
+                    break;
+
+                case Key.F3:
+                    SelectNextMatch();
+                    e.Handled = true;
+                    break;
             }
         };
+
+        // A right-click on a TreeView moves the selection before the context menu opens.
+        // That is wanted (Delete / F2 act on the selection, and the menu should point at
+        // what was clicked), but the selection notification is not: it re-drove the
+        // revision grid and scrolled the bottom panel out from under the opening menu
+        // (M51). Tunnelling so it runs before the TreeView moves the selection; the flag
+        // is dropped again on the next dispatcher pass, i.e. after that one selection
+        // change has been delivered.
+        _tree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
 
         _search = new TextBox
         {
@@ -451,7 +587,7 @@ public sealed class RepoObjectsTree : UserControl
                 {
                     _tree.ItemsSource = new[]
                     {
-                        Category(string.Format(CultureInfo.CurrentCulture, "{0}: {1}", T("TranslatedStrings/_error.Text", "Error"), error), null, null),
+                        Category(string.Format(CultureInfo.CurrentCulture, "{0}: {1}", T("TranslatedStrings/_error.Text", "Error"), error), null, null, "error"),
                     };
                 }
             });
@@ -461,7 +597,14 @@ public sealed class RepoObjectsTree : UserControl
     private void BuildTree(RepoSnapshot snapshot)
     {
         _snapshot = snapshot;
+
+        // Everything below throws the live TreeViewItems away, so record what has to
+        // survive first (upstream Tree.cs:162 snapshots GetExpandedNodesState() at the
+        // same point, before Nodes.FillTreeViewNode repopulates).
+        HarvestState();
+
         _nodeText.Clear();
+        _nodeKey.Clear();
 
         List<BranchTagRow> local = [];
         List<BranchTagRow> remote = [];
@@ -475,82 +618,93 @@ public sealed class RepoObjectsTree : UserControl
         IReadOnlyList<SubmoduleRow> submodules = snapshot.Submodules;
         IReadOnlyList<WorktreeRow> worktrees = snapshot.Worktrees;
 
-        List<TreeViewItem> roots = [];
+        // Built by id, emitted in _categoryOrder further down (see CategoryOrder).
+        Dictionary<string, TreeViewItem> categories = new(StringComparer.Ordinal);
 
-        // Branches (local).
-        TreeViewItem branchesNode = Category(T("RepoObjectsTree/tsbShowBranches.ToolTipText", "Branches"), "Branch", local.Count);
+        // Branches (local), as a folder hierarchy: "feature/a" hangs off a collapsible
+        // "feature" node, exactly like upstream's BranchPathNode chain.
+        TreeViewItem branchesNode = Category(T("RepoObjectsTree/tsbShowBranches.ToolTipText", "Branches"), "Branch", local.Count, "branches");
         branchesNode.ContextMenu = RefSortMenu(BranchesRootItems());
-        foreach (BranchTagRow row in OrderLocalBranches(local))
-        {
-            string label = row.IsCurrent ? $"✓ {row.Name}" : row.Name;
-            TreeViewItem leaf = Leaf(label, "BranchLocal", row, row.IsCurrent);
-            leaf.ContextMenu = BranchMenu(row);
-            branchesNode.Items.Add(leaf);
-        }
+        List<BranchTagRow> orderedLocal = OrderLocalBranches(local).ToList();
+        AddRefsWithFolders(
+            branchesNode,
+            "branches",
+            orderedLocal,
+            static r => r.Name,
+            (row, name) =>
+            {
+                TreeViewItem leaf = Leaf(row.IsCurrent ? $"✓ {name}" : name, "BranchLocal", row, row.IsCurrent, "branches/" + row.Name);
+                leaf.ContextMenu = BranchMenu(row);
+                return leaf;
+            },
+            folderMenu: path => BranchFolderMenu(path, orderedLocal));
+        categories["branches"] = branchesNode;
 
-        if (_showBranches)
-        {
-            roots.Add(branchesNode);
-        }
-
-        // Remotes (remote branches grouped by remote name, e.g. "origin/...").
-        TreeViewItem remotesNode = Category(T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), "Remotes", remote.Count);
+        // Remotes: one group node per remote, and inside it the same folder hierarchy —
+        // upstream builds path nodes below a remote too, so "origin/feature/x" is the
+        // leaf "x" under "feature" under "origin", not a flat "feature/x".
+        TreeViewItem remotesNode = Category(T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), "Remotes", remote.Count, "remotes");
         remotesNode.ContextMenu = RemotesRootMenu();
         foreach (IGrouping<string, BranchTagRow> group in remote
                      .GroupBy(RemoteName, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
-            TreeViewItem groupNode = Category(group.Key, "Remote", group.Count());
+            string groupKey = "remotes/" + group.Key;
+            TreeViewItem groupNode = Category(group.Key, "Remote", group.Count(), groupKey);
             groupNode.ContextMenu = RemoteGroupMenu(group.Key);
-            foreach (BranchTagRow row in SortRefs(group))
-            {
-                string label = ShortRemoteName(row.Name, group.Key);
-                TreeViewItem leaf = Leaf(label, "BranchRemote", row, isCurrent: false);
-                leaf.ContextMenu = BranchMenu(row);
-                groupNode.Items.Add(leaf);
-            }
+            AddRefsWithFolders(
+                groupNode,
+                groupKey,
+                SortRefs(group),
+                row => ShortRemoteName(row.Name, group.Key),
+                (row, name) =>
+                {
+                    TreeViewItem leaf = Leaf(name, "BranchRemote", row, isCurrent: false, "remotes/" + row.Name);
+                    leaf.ContextMenu = BranchMenu(row);
+                    return leaf;
+                },
+                folderMenu: null);
 
             remotesNode.Items.Add(groupNode);
         }
 
-        if (_showRemotes)
-        {
-            roots.Add(remotesNode);
-        }
+        categories["remotes"] = remotesNode;
 
-        // Tags.
-        TreeViewItem tagsNode = Category(T("RepoObjectsTree/tsbShowTags.ToolTipText", "Tags"), "Tag", tags.Count);
+        // Tags, likewise foldered: upstream gives a tag whose name contains a '/' a
+        // BasePathNode parent, so "rel/1.2.0" is "1.2.0" under "rel".
+        TreeViewItem tagsNode = Category(T("RepoObjectsTree/tsbShowTags.ToolTipText", "Tags"), "Tag", tags.Count, "tags");
         tagsNode.ContextMenu = RefSortMenu(TagsRootItems());
-        foreach (BranchTagRow row in SortRefs(tags))
-        {
-            TreeViewItem leaf = Leaf(row.Name, "Tag", row, isCurrent: false);
-            leaf.ContextMenu = TagMenu(row);
-            tagsNode.Items.Add(leaf);
-        }
+        AddRefsWithFolders(
+            tagsNode,
+            "tags",
+            SortRefs(tags),
+            static r => r.Name,
+            (row, name) =>
+            {
+                TreeViewItem leaf = Leaf(name, "Tag", row, isCurrent: false, "tags/" + row.Name);
+                leaf.ContextMenu = TagMenu(row);
+                return leaf;
+            },
+            folderMenu: null);
+        categories["tags"] = tagsNode;
 
-        if (_showTags)
-        {
-            roots.Add(tagsNode);
-        }
-
-        // Stashes.
-        TreeViewItem stashesNode = Category(T("RepoObjectsTree/tsbShowStashes.ToolTipText", "Stashes"), "stash", stashes.Count);
+        // Stashes. The root node carries Stash / Stash staged / Manage stashes…
+        // (upstream's mnubtnStashAllFromRootNode & co.), each leaf Open / Apply / Pop / Drop.
+        TreeViewItem stashesNode = Category(T("RepoObjectsTree/tsbShowStashes.ToolTipText", "Stashes"), "stash", stashes.Count, "stashes");
+        stashesNode.ContextMenu = StashRootMenu();
         foreach (StashRow row in stashes)
         {
-            TreeViewItem leaf = Leaf($"{row.Name}: {row.Message}", "stash", row, isCurrent: false);
+            TreeViewItem leaf = Leaf($"{row.Name}: {row.Message}", "stash", row, isCurrent: false, "stashes/" + row.Name);
             leaf.ContextMenu = StashMenu(row);
             stashesNode.Items.Add(leaf);
         }
 
-        if (_showStashes)
-        {
-            roots.Add(stashesNode);
-        }
+        categories["stashes"] = stashesNode;
 
         // Submodules. The root node carries "Update all"; each leaf carries
         // "Open" (open the submodule as the active repository, via
         // OpenRepositoryRequested) plus "Update" for its own path.
-        TreeViewItem submodulesNode = Category(T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), "SubmodulesManage", submodules.Count);
+        TreeViewItem submodulesNode = Category(T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), "SubmodulesManage", submodules.Count, "submodules");
         submodulesNode.ContextMenu = SubmoduleRootMenu();
         foreach (SubmoduleRow row in submodules)
         {
@@ -560,31 +714,44 @@ public sealed class RepoObjectsTree : UserControl
                 SubmoduleState.OutOfDate => TF("{0} (out of date)", row.Display),
                 _ => row.Display,
             };
-            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false);
+            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false, "submodules/" + row.Path);
             leaf.ContextMenu = SubmoduleMenu(row);
             submodulesNode.Items.Add(leaf);
         }
 
-        if (_showSubmodules)
-        {
-            roots.Add(submodulesNode);
-        }
+        categories["submodules"] = submodulesNode;
 
         // Worktrees. The root node carries "Add…" and "Prune"; each leaf carries
         // "Open" (open the worktree as the active repository, via
         // OpenRepositoryRequested) plus "Remove" for its own path.
-        TreeViewItem worktreesNode = Category(T("RepoObjectsTree/tsbShowWorktrees.ToolTipText", "Worktrees"), "WorkTree", worktrees.Count);
+        TreeViewItem worktreesNode = Category(T("RepoObjectsTree/tsbShowWorktrees.ToolTipText", "Worktrees"), "WorkTree", worktrees.Count, "worktrees");
         worktreesNode.ContextMenu = WorktreeRootMenu();
         foreach (WorktreeRow row in worktrees)
         {
-            TreeViewItem leaf = Leaf(row.Display, "WorkTree", row, isCurrent: false);
-            leaf.ContextMenu = WorktreeMenu(row);
+            // The worktree the app currently has open is the "current" one: upstream
+            // marks it bold and refuses to open or delete it; a stale entry (its folder
+            // deleted by hand, so `git worktree prune` would drop it) is greyed out.
+            bool isCurrent = row.IsSamePath(_repoPath);
+            TreeViewItem leaf = Leaf(row.Display, "WorkTree", row, isCurrent, "worktrees/" + row.Path);
+            if (row.IsPrunable)
+            {
+                leaf.Foreground = Brush("App.TextDim", Brushes.Gray);
+            }
+
+            ToolTip.SetTip(leaf, WorktreeTooltip(row, isCurrent));
+            leaf.ContextMenu = WorktreeMenu(row, isCurrent);
             worktreesNode.Items.Add(leaf);
         }
 
-        if (_showWorktrees)
+        categories["worktrees"] = worktreesNode;
+
+        List<TreeViewItem> roots = [];
+        foreach (string id in _categoryOrder)
         {
-            roots.Add(worktreesNode);
+            if (IsCategoryShown(id) && categories.TryGetValue(id, out TreeViewItem? node))
+            {
+                roots.Add(node);
+            }
         }
 
         if (_filter.Length > 0)
@@ -592,14 +759,322 @@ public sealed class RepoObjectsTree : UserControl
             // Filtered: only the matches and their ancestors survive, expanded.
             roots = roots.Where(ApplyFilter).ToList();
         }
-        else
+        else if (_firstBuild)
         {
+            // Nothing to restore yet — open Branches, as upstream's
+            // LocalBranchTree.PostFillTreeViewNode does on its first fill.
             branchesNode.IsExpanded = true;
         }
+
+        // Expand / Collapse and Move Up / Move Down are appended once the tree is
+        // complete: the first pair is only shown for a node that turned out to have
+        // children, the second only for a category root and only towards a sibling that
+        // exists — both gates need the finished shape.
+        AddStructuralMenuItems(roots);
 
         _roots = roots;
         IndexNodes(roots);
         _tree.ItemsSource = roots;
+
+        RestoreState(roots);
+        _firstBuild = false;
+    }
+
+    private bool IsCategoryShown(string id) => id switch
+    {
+        "branches" => _showBranches,
+        "remotes" => _showRemotes,
+        "worktrees" => _showWorktrees,
+        "tags" => _showTags,
+        "submodules" => _showSubmodules,
+        "stashes" => _showStashes,
+        _ => false,
+    };
+
+    /// <summary>
+    ///  Inserts <paramref name="rows"/> under <paramref name="parent"/>, creating a
+    ///  collapsible folder node for every '/'-separated segment of the path returned by
+    ///  <paramref name="pathOf"/> — the port's equivalent of upstream's
+    ///  <c>BaseRevisionNode.CreateRootNode</c> walking up <c>ParentPath</c> and creating
+    ///  a <c>BranchPathNode</c> / <c>BasePathNode</c> per level (BaseRevisionNode.cs:81-105).
+    ///  <para>Folders are created at the position of their first child, so with the rows
+    ///  already in display order the folders end up interleaved with the plain leaves in
+    ///  that same order — "docs", "feature", "main" for the branch set of the original's
+    ///  screenshot. <paramref name="makeLeaf"/> receives the row and the leaf's own last
+    ///  path segment, which is what gets displayed (upstream's <c>Name</c>).</para>
+    /// </summary>
+    private void AddRefsWithFolders(
+        TreeViewItem parent,
+        string parentKey,
+        IReadOnlyList<BranchTagRow> rows,
+        Func<BranchTagRow, string> pathOf,
+        Func<BranchTagRow, string, TreeViewItem> makeLeaf,
+        Func<string, ContextMenu>? folderMenu)
+    {
+        Dictionary<string, TreeViewItem> folders = new(StringComparer.Ordinal);
+
+        foreach (BranchTagRow row in rows)
+        {
+            string path = pathOf(row);
+            int slash = path.LastIndexOf('/');
+            TreeViewItem host = slash < 0 ? parent : Folder(path[..slash]);
+            host.Items.Add(makeLeaf(row, slash < 0 ? path : path[(slash + 1)..]));
+        }
+
+        return;
+
+        // Creates the folder chain for a path on demand, deepest last, memoised so the
+        // second "feature/…" ref reuses the "feature" node instead of adding another.
+        TreeViewItem Folder(string folderPath)
+        {
+            if (folders.TryGetValue(folderPath, out TreeViewItem? existing))
+            {
+                return existing;
+            }
+
+            int slash = folderPath.LastIndexOf('/');
+            TreeViewItem host = slash < 0 ? parent : Folder(folderPath[..slash]);
+
+            TreeViewItem node = new()
+            {
+                Header = HeaderPanel(slash < 0 ? folderPath : folderPath[(slash + 1)..], "BranchFolder", bold: false),
+                Foreground = Brush("App.Text", Brushes.Gainsboro),
+            };
+
+            // Searchable on the whole path, so the filter still finds "feature" when
+            // only its leaves are typed and vice versa.
+            _nodeText[node] = folderPath;
+            _nodeKey[node] = parentKey + "/" + folderPath;
+            node.ContextMenu = folderMenu?.Invoke(folderPath);
+
+            folders[folderPath] = node;
+            host.Items.Add(node);
+            return node;
+        }
+    }
+
+    // --- Expand / selection state across a rebuild (R1) --------------------
+
+    // Records which nodes are open and which one is selected, from the tree that is
+    // about to be discarded.
+    private void HarvestState()
+    {
+        if (_tree.SelectedItem is TreeViewItem selected && _nodeKey.TryGetValue(selected, out string? selectedKey))
+        {
+            _selectedKey = selectedKey;
+        }
+
+        // While a filter is active ApplyFilter force-expands every ancestor of a match,
+        // so harvesting then would record expansion the user never asked for and make
+        // clearing the box leave the tree wide open. The last unfiltered snapshot is
+        // kept instead.
+        if (_filter.Length > 0 || _roots.Count == 0)
+        {
+            return;
+        }
+
+        HashSet<string> expanded = new(StringComparer.Ordinal);
+        Walk(_roots);
+        _expandedKeys = expanded;
+
+        void Walk(IEnumerable<TreeViewItem> nodes)
+        {
+            foreach (TreeViewItem node in nodes)
+            {
+                if (node.IsExpanded && _nodeKey.TryGetValue(node, out string? key))
+                {
+                    expanded.Add(key);
+                }
+
+                Walk(node.Items.OfType<TreeViewItem>());
+            }
+        }
+    }
+
+    // Re-opens the nodes that were open and re-selects the node that was selected,
+    // scrolling it into view — upstream's RestoreExpandedNodesState + the selection
+    // restore + ExpandPathToSelectedNode/EnsureVerticallyVisible (Tree.cs:168-201).
+    // A node that no longer exists (its branch was deleted, its remote removed) simply
+    // has no match, so nothing is restored for it and its key is dropped on the next
+    // harvest.
+    private void RestoreState(IReadOnlyList<TreeViewItem> roots)
+    {
+        TreeViewItem? selection = null;
+
+        Walk(roots);
+
+        if (selection is null)
+        {
+            return;
+        }
+
+        // Opening the ancestors is what makes the restored selection actually visible;
+        // it is deliberately not recorded as user expansion — the next harvest will pick
+        // it up only because it really is open now, which is also upstream's behaviour.
+        for (TreeViewItem? parent = ParentOf(selection); parent is not null; parent = ParentOf(parent))
+        {
+            parent.IsExpanded = true;
+        }
+
+        _suppressSelectionNotify = true;
+        selection.IsSelected = true;
+        TreeViewItem target = selection;
+
+        // The item has no realised layout yet on the pass that assigned ItemsSource, so
+        // BringIntoView has to wait for it (Loaded runs after the layout pass).
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                try
+                {
+                    target.BringIntoView();
+                }
+                catch
+                {
+                    // A tree rebuilt again in the meantime: nothing to scroll to.
+                }
+
+                _suppressSelectionNotify = false;
+            },
+            DispatcherPriority.Loaded);
+
+        void Walk(IEnumerable<TreeViewItem> nodes)
+        {
+            foreach (TreeViewItem node in nodes)
+            {
+                if (_nodeKey.TryGetValue(node, out string? key))
+                {
+                    if (_expandedKeys.Contains(key))
+                    {
+                        node.IsExpanded = true;
+                    }
+
+                    if (selection is null && key == _selectedKey)
+                    {
+                        selection = node;
+                    }
+                }
+
+                Walk(node.Items.OfType<TreeViewItem>());
+            }
+        }
+    }
+
+    // --- Expand / Collapse and Move Up / Move Down (appended post-build) ---
+
+    // Upstream shows Expand / Collapse only for a node that has children, with Expand
+    // enabled while it is closed and Collapse while it is open
+    // (ContextActions.cs:53-59), and Move Up / Move Down only for a category root, each
+    // enabled only when a sibling exists in that direction (:61-68). Both pairs are
+    // therefore appended here, with the finished tree in hand.
+    private void AddStructuralMenuItems(IReadOnlyList<TreeViewItem> roots)
+    {
+        for (int i = 0; i < roots.Count; i++)
+        {
+            TreeViewItem root = roots[i];
+            ContextMenu menu = EnsureMenu(root);
+            menu.Items.Add(new Separator());
+
+            MenuItem up = MenuItem(T("RepoObjectsTree/mnubtnMoveUp.Text", "Move Up"), "ArrowUp", () => MoveCategory(root, up: true));
+            up.IsEnabled = i > 0;
+            ToolTip.SetTip(up, T("RepoObjectsTree/mnubtnMoveUp.ToolTipText", "Move node up"));
+            menu.Items.Add(up);
+
+            MenuItem down = MenuItem(T("RepoObjectsTree/mnubtnMoveDown.Text", "Move Down"), "ArrowDown", () => MoveCategory(root, up: false));
+            down.IsEnabled = i < roots.Count - 1;
+            ToolTip.SetTip(down, T("RepoObjectsTree/mnubtnMoveDown.ToolTipText", "Move node down"));
+            menu.Items.Add(down);
+        }
+
+        AddExpandCollapse(roots);
+
+        void AddExpandCollapse(IEnumerable<TreeViewItem> nodes)
+        {
+            foreach (TreeViewItem node in nodes)
+            {
+                List<TreeViewItem> children = node.Items.OfType<TreeViewItem>().ToList();
+                if (children.Count > 0)
+                {
+                    ContextMenu menu = EnsureMenu(node);
+                    menu.Items.Add(new Separator());
+
+                    // Expand is upstream's ExpandAll: the whole subtree, not one level.
+                    MenuItem expand = MenuItem(T("RepoObjectsTree/mnubtnExpand.Text", "Expand"), "ExpandAll", () => ExpandAll(node));
+                    ToolTip.SetTip(expand, T("RepoObjectsTree/mnubtnExpand.ToolTipText", "Expand all subnodes"));
+                    menu.Items.Add(expand);
+
+                    MenuItem collapse = MenuItem(T("RepoObjectsTree/mnubtnCollapse.Text", "Collapse"), "CollapseAll", () => CollapseSubtree(node));
+                    ToolTip.SetTip(collapse, T("RepoObjectsTree/mnubtnCollapse.ToolTipText", "Collapse all subnodes"));
+                    menu.Items.Add(collapse);
+
+                    // Enabled-ness depends on whether the node is open, which changes
+                    // between builds, so it is decided as the menu opens rather than now.
+                    menu.Opening += (_, _) =>
+                    {
+                        expand.IsEnabled = !node.IsExpanded;
+                        collapse.IsEnabled = node.IsExpanded;
+                    };
+                }
+
+                AddExpandCollapse(children);
+            }
+        }
+
+        static ContextMenu EnsureMenu(TreeViewItem node)
+            => (ContextMenu)(node.ContextMenu ??= new ContextMenu());
+    }
+
+    private static void ExpandAll(TreeViewItem node)
+    {
+        node.IsExpanded = true;
+        foreach (TreeViewItem child in node.Items.OfType<TreeViewItem>())
+        {
+            ExpandAll(child);
+        }
+    }
+
+    private static void CollapseSubtree(TreeViewItem node)
+    {
+        node.IsExpanded = false;
+        foreach (TreeViewItem child in node.Items.OfType<TreeViewItem>())
+        {
+            CollapseSubtree(child);
+        }
+    }
+
+    // Moves a category root one place up or down and rebuilds. The order is session
+    // state here; the host persists it through CategoryOrder / CategoryOrderChanged.
+    private void MoveCategory(TreeViewItem root, bool up)
+    {
+        if (!_nodeKey.TryGetValue(root, out string? id) || _snapshot is not { } snapshot)
+        {
+            return;
+        }
+
+        int index = _categoryOrder.IndexOf(id);
+        if (index < 0)
+        {
+            return;
+        }
+
+        // Neighbour in the ORDER, skipping the categories currently hidden by the
+        // toolbar toggles: swapping with a category that is not on screen would look
+        // like nothing happened.
+        int target = index;
+        do
+        {
+            target += up ? -1 : 1;
+        }
+        while (target >= 0 && target < _categoryOrder.Count && !IsCategoryShown(_categoryOrder[target]));
+
+        if (target < 0 || target >= _categoryOrder.Count)
+        {
+            return;
+        }
+
+        (_categoryOrder[index], _categoryOrder[target]) = (_categoryOrder[target], _categoryOrder[index]);
+        CategoryOrderChanged?.Invoke();
+        BuildTree(snapshot);
     }
 
     private static string RemoteName(BranchTagRow row)
@@ -613,7 +1088,7 @@ public sealed class RepoObjectsTree : UserControl
 
     // --- Node construction ------------------------------------------------
 
-    private TreeViewItem Category(string text, string? icon, int? count)
+    private TreeViewItem Category(string text, string? icon, int? count, string key)
     {
         string header = count is { } c ? string.Format(CultureInfo.CurrentCulture, CategoryCountFormat, text, c) : text;
         TreeViewItem item = new()
@@ -625,10 +1100,14 @@ public sealed class RepoObjectsTree : UserControl
         // Searchable on the bare name: the count suffix is chrome, and matching it
         // would let a digit in the filter hit every category at once.
         _nodeText[item] = text;
+
+        // The count is chrome for the key too — it changes on every operation, and a key
+        // that changed with it would lose the node's expand state on every refresh.
+        _nodeKey[item] = key;
         return item;
     }
 
-    private TreeViewItem Leaf(string text, string? icon, object tag, bool isCurrent)
+    private TreeViewItem Leaf(string text, string? icon, object tag, bool isCurrent, string key)
     {
         TreeViewItem item = new()
         {
@@ -636,6 +1115,8 @@ public sealed class RepoObjectsTree : UserControl
             Tag = tag,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
         };
+
+        _nodeKey[item] = key;
 
         // Refs match on their full name (origin/feature/x), like upstream matching
         // BaseRevisionNode.FullPath, so a filter still finds a leaf whose displayed
@@ -671,32 +1152,66 @@ public sealed class RepoObjectsTree : UserControl
 
     // --- Context menus ----------------------------------------------------
 
+    // Upstream generates a ref's menu from the five IGitRefActions slots in a fixed
+    // order — Checkout, Merge, Rebase, Create branch, Reset — then Rename and Delete
+    // (MenuItemKey + MenuItemsGenerator.Generate). Local branches, remote branches and
+    // tags differ only in the wording of those slots and in which of them apply, so all
+    // three menus are built here from the same sequence.
     private ContextMenu BranchMenu(BranchTagRow row)
     {
         ContextMenu menu = new();
-        if (!row.IsRemote)
-        {
-            menu.Items.Add(MenuItem(T("BranchMenuItemsStrings/Checkout.Text", "Checkout"), "BranchCheckout", () => DoCheckout(row)));
-        }
 
-        menu.Items.Add(MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current"), "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name))));
-        menu.Items.Add(MenuItem(T("BranchMenuItemsStrings/Rebase.Text", "Rebase current onto"), "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
+        MenuItem checkout = row.IsRemote
+            ? MenuItem(T("RemoteBranchMenuItemsStrings/Checkout.Text", "Checkout remote branch…"), "BranchCheckout", () => DoCheckout(row))
+            : MenuItem(T("BranchMenuItemsStrings/Checkout.Text", "Checkout branch…"), "BranchCheckout", () => DoCheckout(row));
+        menu.Items.Add(checkout);
+
+        MenuItem merge = MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name)));
+        menu.Items.Add(merge);
+
+        MenuItem rebase = MenuItem(
+            row.IsRemote
+                ? T("RemoteBranchMenuItemsStrings/Rebase.Text", "Rebase current branch on this remote branch…")
+                : T("BranchMenuItemsStrings/Rebase.Text", "Rebase current branch on this branch…"),
+            "Rebase",
+            () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name)));
+        menu.Items.Add(rebase);
+
+        // "Create branch" from this ref — upstream's GitRefCreateBranch slot, which
+        // opens FormCreateBranch with the ref as the start point.
+        MenuItem create = MenuItem(T("MenuItemsStrings/CreateBranch.Text", "Create branch…"), "BranchCreate", () => _ = DoCreateBranchAsync(row.Name, prefix: string.Empty));
+        menu.Items.Add(create);
+
+        MenuItem reset = ResetCurrentBranchItem(row.Name);
+        menu.Items.Add(reset);
 
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Name)));
+        menu.Items.Add(new Separator());
 
-        if (!row.IsRemote)
+        if (row.IsRemote)
         {
-            menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnMoveUp.Text", "Move up"), null, () => MoveBranch(row, up: true)));
-            menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnMoveDown.Text", "Move down"), null, () => MoveBranch(row, up: false)));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(MenuItem(T("MenuItemsStrings/Rename.Text", "Rename branch…"), "BranchRename", () => _ = DoRenameBranchAsync(row)));
-            menu.Items.Add(MenuItem(T("BranchMenuItemsStrings/Delete.Text", "Delete"), "BranchDelete", () => _ = DoDeleteBranchAsync(row)));
-        }
-        else
-        {
-            menu.Items.Add(new Separator());
             menu.Items.Add(MenuItem(T("RemoteBranchMenuItemsStrings/Delete.Text", "Delete remote branch…"), "BranchDelete", () => _ = DoDeleteRemoteBranchAsync(row)));
+            return menu;
+        }
+
+        MenuItem rename = MenuItem(T("MenuItemsStrings/Rename.Text", "Rename branch…"), "BranchRename", () => _ = DoRenameBranchAsync(row));
+        menu.Items.Add(rename);
+        MenuItem delete = MenuItem(T("BranchMenuItemsStrings/Delete.Text", "Delete branch…"), "BranchDelete", () => _ = DoDeleteBranchAsync(row));
+        menu.Items.Add(delete);
+
+        // The checked-out branch: upstream leaves every item VISIBLE but enables only
+        // Create branch and Rename (LocalBranchMenuItems.CurrentBranchItemKeys, applied
+        // in ContextActions.cs:252-266). Checking out, merging or rebasing the branch you
+        // are already on is a no-op or an error, and it cannot be deleted at all — the
+        // port used to offer all four.
+        if (row.IsCurrent)
+        {
+            checkout.IsEnabled = false;
+            merge.IsEnabled = false;
+            rebase.IsEnabled = false;
+            reset.IsEnabled = false;
+            delete.IsEnabled = false;
         }
 
         return menu;
@@ -705,15 +1220,60 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu TagMenu(BranchTagRow row)
     {
         ContextMenu menu = new();
+
         // Checkout the tag ref: a plain `git checkout <tag>` lands on a detached
         // HEAD, which is the expected "checkout tag revision" behaviour. Reuses
         // the same BranchTagService.Checkout used for branches/revisions.
         menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Checkout.Text", "Checkout tag revision…"), "BranchCheckout", () => DoCheckout(row)));
+        menu.Items.Add(MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Rebase.Text", "Rebase current branch on this tag revision…"), "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("MenuItemsStrings/CreateBranch.Text", "Create branch…"), "BranchCreate", () => _ = DoCreateBranchAsync(row.Name, prefix: string.Empty)));
+        menu.Items.Add(ResetCurrentBranchItem(row.Name));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Name)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Delete.Text", "Delete"), "TagDelete", () => _ = DoDeleteTagAsync(row)));
+        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Delete.Text", "Delete tag…"), "TagDelete", () => _ = DoDeleteTagAsync(row)));
         return menu;
+    }
+
+    // A folder node below Branches — upstream's BranchPathNode, whose menu is exactly
+    // these two items (Designer.cs, mnubtnCreateBranch + mnubtnDeleteAllBranches):
+    // create a branch with the folder as name prefix, and delete every branch under it.
+    private ContextMenu BranchFolderMenu(string folderPath, IReadOnlyList<BranchTagRow> localBranches)
+    {
+        ContextMenu menu = new();
+
+        MenuItem create = MenuItem(T("RepoObjectsTree/mnubtnCreateBranch.Text", "Create Branch…"), "BranchCreate", () => _ = DoCreateBranchAsync("HEAD", prefix: folderPath + "/"));
+        ToolTip.SetTip(create, T("RepoObjectsTree/mnubtnCreateBranch.ToolTipText", "Create a local branch"));
+        menu.Items.Add(create);
+
+        MenuItem deleteAll = MenuItem(T("RepoObjectsTree/mnubtnDeleteAllBranches.Text", "Delete All"), "BranchDelete", () => _ = DoDeleteAllBranchesAsync(folderPath, localBranches));
+        ToolTip.SetTip(deleteAll, T("RepoObjectsTree/mnubtnDeleteAllBranches.ToolTipText", "Delete all child branches, which must all be fully merged in its upstream branch or in HEAD"));
+        menu.Items.Add(deleteAll);
+
+        return menu;
+    }
+
+    // Upstream's GitRefReset slot opens FormResetCurrentBranch, whose three radios are
+    // soft / mixed / hard; the port already exposes the same three as a submenu on the
+    // revision grid, so the tree uses that shape too. Hard is confirmed, since it throws
+    // the working tree away.
+    private MenuItem ResetCurrentBranchItem(string target)
+    {
+        MenuItem reset = new()
+        {
+            Header = T("MenuItemsStrings/Reset.Text", "Reset current branch to here…"),
+        };
+
+        if (IconLoader.Image("ResetCurrentBranchToHere", 16) is { } img)
+        {
+            reset.Icon = img;
+        }
+
+        reset.Items.Add(MenuItem(T("Reset (soft) to here"), null, () => RunStash(() => _stashService.Reset(_repoPath!, target, StashResetMode.Soft))));
+        reset.Items.Add(MenuItem(T("Reset (mixed) to here"), null, () => RunStash(() => _stashService.Reset(_repoPath!, target, StashResetMode.Mixed))));
+        reset.Items.Add(MenuItem(T("Reset (HARD) to here…"), null, () => _ = DoResetHardAsync(target)));
+        return reset;
     }
 
     private ContextMenu WorktreeRootMenu()
@@ -727,28 +1287,113 @@ public sealed class RepoObjectsTree : UserControl
         return menu;
     }
 
-    private ContextMenu WorktreeMenu(WorktreeRow row)
+    // Upstream keeps every worktree item visible and disables the ones that cannot
+    // apply (ContextActions.cs:99-114): Open and Delete are refused for the worktree the
+    // app currently has open and for one whose folder is gone, and "Show in folder"
+    // needs the folder to still exist. The port had no gating at all, so "Remove" could
+    // be asked for on the checked-out worktree.
+    private ContextMenu WorktreeMenu(WorktreeRow row, bool isCurrent)
     {
+        bool canAct = !isCurrent && !row.IsPrunable;
+        bool pathExists = row.Path.Length > 0 && System.IO.Directory.Exists(row.Path);
+
         ContextMenu menu = new();
+
         // "Open" makes the worktree the active repository, routed to the host via
         // OpenRepositoryRequested (the tree never references MainWindow directly).
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnOpenWorktree.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(row.Path)));
+        MenuItem open = MenuItem(T("RepoObjectsTree/mnubtnOpenWorktree.Text", "Open worktree"), "FolderOpen", () => OpenRepositoryRequested?.Invoke(row.Path));
+        open.IsEnabled = canAct;
+        ToolTip.SetTip(open, T("RepoObjectsTree/mnubtnOpenWorktree.ToolTipText", "Open this worktree"));
+        menu.Items.Add(open);
+
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Branch.Length > 0 ? row.Branch : System.IO.Path.GetFileName(row.Path.TrimEnd('/', '\\')))));
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnCopyWorktreePath.Text", "Copy path"), "CopyToClipboard", () => CopyText(row.Path)));
+
+        MenuItem copyPath = MenuItem(T("RepoObjectsTree/mnubtnCopyWorktreePath.Text", "Copy path"), "CopyToClipboard", () => CopyText(row.Path));
+        ToolTip.SetTip(copyPath, T("RepoObjectsTree/mnubtnCopyWorktreePath.ToolTipText", "Copy the worktree path to clipboard"));
+        menu.Items.Add(copyPath);
+
+        MenuItem showInFolder = MenuItem(T("RepoObjectsTree/mnubtnShowWorktreeInFolder.Text", "Show in folder"), "BrowseFileExplorer", () => ShowInFolder(row.Path));
+        showInFolder.IsEnabled = pathExists;
+        ToolTip.SetTip(showInFolder, T("RepoObjectsTree/mnubtnShowWorktreeInFolder.ToolTipText", "Show the worktree in the file manager"));
+        menu.Items.Add(showInFolder);
+
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnDeleteWorktree.Text", "Remove"), "Remove", () => _ = DoRemoveWorktreeAsync(row)));
+
+        MenuItem delete = MenuItem(T("RepoObjectsTree/mnubtnDeleteWorktree.Text", "Delete worktree…"), "Remove", () => _ = DoRemoveWorktreeAsync(row));
+        delete.IsEnabled = canAct;
+        ToolTip.SetTip(delete, T("RepoObjectsTree/mnubtnDeleteWorktree.ToolTipText", "Delete this worktree"));
+        menu.Items.Add(delete);
+
+        return menu;
+    }
+
+    // Upstream's WorktreeNode.GetToolTipText: the path with a "(current)" / "(deleted)"
+    // marker, then the branch (or "bare" / "detached at <sha>"), then the short HEAD.
+    private static string WorktreeTooltip(WorktreeRow row, bool isCurrent)
+    {
+        string shortSha = row.Head.Length >= 7 ? row.Head[..7] : row.Head;
+
+        // Current wins over deleted, as upstream orders the two checks.
+        string status = isCurrent ? T(" (current)")
+            : row.IsPrunable ? T(" (deleted)")
+            : string.Empty;
+
+        string branchLine = row.IsBare ? T("bare")
+            : row.IsDetached ? TF("detached at {0}", shortSha)
+            : row.Branch.Length > 0 ? row.Branch
+            : T("unknown");
+
+        string text = row.Path + status
+            + Environment.NewLine + TF("Branch: {0}", branchLine);
+
+        return shortSha.Length > 0
+            ? text + Environment.NewLine + TF("HEAD: {0}", shortSha)
+            : text;
+    }
+
+    // The Stashes root node, which had no menu at all in the port: upstream's
+    // mnubtnStashAllFromRootNode / mnubtnStashStagedFromRootNode /
+    // mnubtnManageStashFromRootNode.
+    private ContextMenu StashRootMenu()
+    {
+        ContextMenu menu = new();
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnStashAllFromRootNode.Text", "Stash"), "stash", () => RunStash(() => _stashService.StashSave(_repoPath!, string.Empty, includeUntracked: true))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnStashStagedFromRootNode.Text", "Stash staged"), "stash", () => RunStash(() => _stashService.StashStaged(_repoPath!, string.Empty))));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(ManageStashesItem());
         return menu;
     }
 
     private ContextMenu StashMenu(StashRow row)
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnApplyStash.Text", "Apply"), null, () => RunStash(() => _stashService.StashApply(_repoPath!, row.Name))));
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnPopStash.Text", "Pop"), null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
+        menu.Items.Add(OpenStashItem());
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnDropStash.Text", "Drop"), null, () => _ = DoDropStashAsync(row)));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnApplyStash.Text", "Apply stash"), null, () => RunStash(() => _stashService.StashApply(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnPopStash.Text", "Pop stash"), null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnDropStash.Text", "Drop stash…"), null, () => _ = DoDropStashAsync(row)));
         return menu;
+    }
+
+    // Upstream's mnubtnOpenStash and "Manage stashes…" both open FormStash; the port's
+    // equivalent surface is the bottom panel's Stash tab, which only the host can bring
+    // forward — hence BottomTabRequested. Disabled while nothing is listening, so the
+    // item is never dead.
+    private MenuItem OpenStashItem()
+    {
+        MenuItem item = MenuItem(T("RepoObjectsTree/mnubtnOpenStash.Text", "Open stash"), "stash", () => BottomTabRequested?.Invoke("Stash"));
+        item.IsEnabled = BottomTabRequested is not null;
+        ToolTip.SetTip(item, T("RepoObjectsTree/mnubtnOpenStash.ToolTipText", "Open this stash"));
+        return item;
+    }
+
+    private MenuItem ManageStashesItem()
+    {
+        MenuItem item = MenuItem(T("RepoObjectsTree/mnubtnManageStashFromRootNode.Text", "Manage stashes…"), "stash", () => BottomTabRequested?.Invoke("Stash"));
+        item.IsEnabled = BottomTabRequested is not null;
+        return item;
     }
 
     private ContextMenu SubmoduleMenu(SubmoduleRow row)
@@ -779,6 +1424,20 @@ public sealed class RepoObjectsTree : UserControl
     {
         ContextMenu menu = new();
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnuBtnManageRemotesFromRootNode.ToolTipText", "Manage remotes…"), "Remotes", () => _ = DoManageRemotesAsync()));
+        menu.Items.Add(new Separator());
+
+        // Upstream's mnuBtnFetchAllRemotes / mnuBtnPruneAllRemotes. Handed to the host:
+        // a fetch needs the streaming process dialog, the credential retry and the
+        // file-watcher suspension that MainWindow.RunRemoteOp owns, and running it here
+        // would give the tree a second, weaker fetch path.
+        MenuItem fetchAll = MenuItem(T("RepoObjectsTree/mnuBtnFetchAllRemotes.Text", "Fetch all"), "Pull", () => FetchAllRequested?.Invoke());
+        fetchAll.IsEnabled = FetchAllRequested is not null;
+        menu.Items.Add(fetchAll);
+
+        MenuItem pruneAll = MenuItem(T("RepoObjectsTree/mnuBtnPruneAllRemotes.Text", "Fetch and prune all"), "Pull", () => FetchAndPruneAllRequested?.Invoke());
+        pruneAll.IsEnabled = FetchAndPruneAllRequested is not null;
+        menu.Items.Add(pruneAll);
+
         return menu;
     }
 
@@ -847,12 +1506,11 @@ public sealed class RepoObjectsTree : UserControl
         => MenuItem(_sortOrder == order ? "✓ " + text : "    " + text, null, () => SetSort(_sortKey, order));
 
     // Applies new session-local sort settings and rebuilds the tree from the
-    // retained snapshot. Choosing an explicit sort clears any manual order.
+    // retained snapshot.
     private void SetSort(RefSortKey key, RefSortOrder order)
     {
         _sortKey = key;
         _sortOrder = order;
-        _manualBranchOrder = null;
 
         if (_snapshot is not { } snapshot)
         {
@@ -931,21 +1589,11 @@ public sealed class RepoObjectsTree : UserControl
         });
     }
 
-    // Local-branch order: manual order (if engaged) wins, otherwise the current
-    // sort settings.
+    // Local-branch order: the current sort settings. There is no manual per-branch order
+    // any more — see the DefaultCategoryOrder comment for why "Move Up / Move Down" moved
+    // from the branches to the categories.
     private IEnumerable<BranchTagRow> OrderLocalBranches(IReadOnlyList<BranchTagRow> local)
-    {
-        if (_manualBranchOrder is { Count: > 0 } order)
-        {
-            return local.OrderBy(r =>
-            {
-                int i = order.IndexOf(r.Name);
-                return i < 0 ? int.MaxValue : i;
-            }).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase);
-        }
-
-        return SortRefs(local);
-    }
+        => SortRefs(local);
 
     private List<BranchTagRow> SortRefs(IEnumerable<BranchTagRow> rows)
     {
@@ -967,35 +1615,6 @@ public sealed class RepoObjectsTree : UserControl
     private DateTime DateFor(BranchTagRow row)
         => row.ObjectId.Length > 0 && _commitDates.TryGetValue(row.ObjectId, out DateTime d) ? d : DateTime.MinValue;
 
-    // Moves a local branch up/down in the displayed order (session-local visual
-    // only). Engages manual order, seeding it from the currently displayed order
-    // so the first move is relative to what the user sees.
-    private void MoveBranch(BranchTagRow row, bool up)
-    {
-        if (row.IsRemote || row.IsTag || _snapshot is not { } snapshot)
-        {
-            return;
-        }
-
-        List<BranchTagRow> local = snapshot.Refs.Branches.Where(r => !r.IsRemote).ToList();
-        if (local.Count < 2)
-        {
-            return;
-        }
-
-        _manualBranchOrder ??= OrderLocalBranches(local).Select(r => r.Name).ToList();
-
-        int index = _manualBranchOrder.IndexOf(row.Name);
-        int target = up ? index - 1 : index + 1;
-        if (index < 0 || target < 0 || target >= _manualBranchOrder.Count)
-        {
-            return;
-        }
-
-        (_manualBranchOrder[index], _manualBranchOrder[target]) = (_manualBranchOrder[target], _manualBranchOrder[index]);
-        BuildTree(snapshot);
-    }
-
     // Fire-and-forget copy to the system clipboard via the Avalonia TopLevel.
     private void CopyText(string text)
     {
@@ -1015,18 +1634,128 @@ public sealed class RepoObjectsTree : UserControl
 
     private void OnSelectionChanged()
     {
+        if (_suppressSelectionNotify)
+        {
+            return;
+        }
+
         if (_tree.SelectedItem is TreeViewItem { Tag: BranchTagRow row } && row.ObjectId.Length > 0)
         {
             RefSelected?.Invoke(row.ObjectId);
         }
     }
 
+    private void OnTreePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(_tree).Properties.IsRightButtonPressed || _suppressSelectionNotify)
+        {
+            return;
+        }
+
+        _suppressSelectionNotify = true;
+        Dispatcher.UIThread.Post(() => _suppressSelectionNotify = false, DispatcherPriority.Background);
+    }
+
+    // Double-click / Enter. Upstream gives each node type its own OnDoubleClick:
+    // a local branch is checked out (LocalBranchNode), a REMOTE branch is checked out too
+    // (RemoteBranchNode.cs:73-76 — the port did nothing at all), a TAG creates a branch
+    // from it (TagNode.cs:28-31), a STASH opens the stash (StashNode.cs:33-36), and a
+    // worktree is opened unless it is the current or a deleted one (WorktreeNode).
     private void OnActivate()
+    {
+        switch (_tree.SelectedItem)
+        {
+            case TreeViewItem { Tag: BranchTagRow { IsTag: true } tag }:
+                _ = DoCreateBranchAsync(tag.Name, prefix: string.Empty);
+                break;
+
+            case TreeViewItem { Tag: BranchTagRow row }:
+                DoCheckout(row);
+                break;
+
+            case TreeViewItem { Tag: StashRow }:
+                BottomTabRequested?.Invoke("Stash");
+                break;
+
+            case TreeViewItem { Tag: WorktreeRow worktree }:
+                if (!worktree.IsSamePath(_repoPath) && !worktree.IsPrunable)
+                {
+                    OpenRepositoryRequested?.Invoke(worktree.Path);
+                }
+
+                break;
+        }
+    }
+
+    // Del — upstream's RepoObjectsTree.Command.Delete, dispatched to the selected node's
+    // OnDelete. Returns whether the key was consumed, so a node with nothing to delete
+    // leaves Del to the rest of the window.
+    private bool OnDeleteSelected()
+    {
+        switch (_tree.SelectedItem)
+        {
+            case TreeViewItem { Tag: BranchTagRow { IsTag: true } tag }:
+                _ = DoDeleteTagAsync(tag);
+                return true;
+
+            case TreeViewItem { Tag: BranchTagRow { IsRemote: true } remote }:
+                _ = DoDeleteRemoteBranchAsync(remote);
+                return true;
+
+            case TreeViewItem { Tag: BranchTagRow branch }:
+                if (branch.IsCurrent)
+                {
+                    // The checked-out branch cannot be deleted; upstream disables the item.
+                    return true;
+                }
+
+                _ = DoDeleteBranchAsync(branch);
+                return true;
+
+            case TreeViewItem { Tag: StashRow stash }:
+                _ = DoDropStashAsync(stash);
+                return true;
+
+            case TreeViewItem { Tag: WorktreeRow worktree }:
+                if (!worktree.IsSamePath(_repoPath) && !worktree.IsPrunable)
+                {
+                    _ = DoRemoveWorktreeAsync(worktree);
+                }
+
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    // F2 — upstream's RepoObjectsTree.Command.Rename. Only a local branch implements
+    // ICanRename, so that is the only node that answers.
+    private bool OnRenameSelected()
     {
         if (_tree.SelectedItem is TreeViewItem { Tag: BranchTagRow { IsTag: false, IsRemote: false } row })
         {
-            DoCheckout(row);
+            _ = DoRenameBranchAsync(row);
+            return true;
         }
+
+        return false;
+    }
+
+    private void ShowInFolder(string path)
+    {
+        // Off the UI thread: the launcher spawns a process and can block briefly.
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                new ExternalToolService().ShowInFolder(path);
+            }
+            catch
+            {
+                // Nothing to surface from a tree node; the file manager simply does not open.
+            }
+        });
     }
 
     private void DoCheckout(BranchTagRow row) => _ = DoCheckoutAsync(row);
@@ -1052,6 +1781,17 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
+            // A remote branch goes through CheckoutRemoteBranch, which lands on a local
+            // branch tracking it the way upstream's StartCheckoutRemoteBranch does — a
+            // plain `git checkout origin/x` would detach HEAD instead.
+            if (row is { IsRemote: true, IsTag: false })
+            {
+                string remote = RemoteName(row);
+                string branch = ShortRemoteName(row.Name, remote);
+                RunMutation(() => _branchTagService.CheckoutRemoteBranch(repo, remote, branch, changesAction));
+                return;
+            }
+
             RunMutation(() => _branchTagService.Checkout(repo, row.Name, changesAction));
         }
         catch
@@ -1062,7 +1802,17 @@ public sealed class RepoObjectsTree : UserControl
 
     // --- Create branch / tag ----------------------------------------------
 
-    private async Task DoCreateBranchAsync()
+    /// <param name="startPoint">
+    ///  The revision the branch is created at: "HEAD" from the Branches root and from a
+    ///  folder node, or a ref name when the item sits on a branch or tag (upstream's
+    ///  GitRefCreateBranch slot passes the node's ObjectId).
+    /// </param>
+    /// <param name="prefix">
+    ///  Name prefix the dialog starts with — a folder node offers "feature/" already
+    ///  filled in, as upstream's BranchPathNode.CreateBranch passes
+    ///  <c>newBranchNamePrefix</c> (BranchPathNode.cs:24-28).
+    /// </param>
+    private async Task DoCreateBranchAsync(string startPoint = "HEAD", string prefix = "")
     {
         try
         {
@@ -1071,19 +1821,87 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
+            string display = startPoint is "HEAD" or "" ? T("HEAD (current revision)") : startPoint;
             CreateBranchRequest? request = await CreateBranchDialog.AskAsync(
-                TopLevel.GetTopLevel(this) as Window, repo, T("HEAD (current revision)"));
+                TopLevel.GetTopLevel(this) as Window, repo, display, prefix);
 
             if (request is not { } r)
             {
                 return;
             }
 
-            RunMutation(() => _branchTagService.CreateBranch(repo, r.Name, startPoint: "HEAD", r.Checkout));
+            RunMutation(() => _branchTagService.CreateBranch(repo, r.Name, startPoint, r.Checkout));
         }
         catch
         {
             // Never throw from an interaction handler.
+        }
+    }
+
+    // "Delete All" on a branch folder node (upstream mnubtnDeleteAllBranches). The
+    // confirmation lists exactly what is about to go, because one click here can delete
+    // a dozen branches; upstream instead opens FormDeleteBranch with the list preloaded.
+    private async Task DoDeleteAllBranchesAsync(string folderPath, IReadOnlyList<BranchTagRow> localBranches)
+    {
+        try
+        {
+            string prefix = folderPath + "/";
+            List<BranchTagRow> victims = localBranches
+                .Where(r => !r.IsCurrent && r.Name.StartsWith(prefix, StringComparison.Ordinal))
+                .ToList();
+
+            if (victims.Count == 0)
+            {
+                return;
+            }
+
+            string list = string.Join(Environment.NewLine, victims.Select(r => "  " + r.Name));
+            if (!await ConfirmAsync(
+                TF("Delete all {0} branches under '{1}'?", victims.Count, folderPath)
+                + Environment.NewLine + Environment.NewLine + list))
+            {
+                return;
+            }
+
+            // One git call per branch, all off the UI thread, stopping at the first
+            // failure (an unmerged branch) so the reason stays attributable.
+            RunMutation(() =>
+            {
+                BranchTagResult last = new(true, string.Empty);
+                foreach (BranchTagRow victim in victims)
+                {
+                    last = _branchTagService.DeleteBranch(_repoPath!, victim.Name, force: false);
+                    if (!last.Success)
+                    {
+                        break;
+                    }
+                }
+
+                return last;
+            });
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
+        }
+    }
+
+    // `git reset --hard` throws away every uncommitted change, so it is confirmed —
+    // the same treatment the host gives its own "Reset (HARD) to here".
+    private async Task DoResetHardAsync(string target)
+    {
+        try
+        {
+            if (await ConfirmAsync(
+                TF("Reset the current branch to '{0}', discarding all local changes?", target)
+                + Environment.NewLine + T("TranslatedStrings/_resetHardWarning.Text", "This will delete all changes to your working directory and cannot be undone.")))
+            {
+                RunStash(() => _stashService.Reset(_repoPath!, target, StashResetMode.Hard));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the confirm/mutation simply aborts.
         }
     }
 
