@@ -455,17 +455,19 @@ public sealed class DashboardView : UserControl
         }
 
         await _recentService.RemoveAsync(entry.Path);
-        _status.Text = string.Format(T("Removed from the list: {0}"), entry.Path);
+
+        // After the reload, never before: rebuilding the list resets the status.
         await RefreshAsync();
+        _status.Text = string.Format(T("Removed from the list: {0}"), entry.Path);
     }
 
     private async Task RemoveMissingAsync()
     {
         int removed = await _recentService.RemoveMissingAsync();
+        await RefreshAsync();
         _status.Text = removed > 0
             ? string.Format(T("Removed {0} missing project(s) from the list."), removed)
             : T("No missing projects to remove.");
-        await RefreshAsync();
     }
 
     // ---- input ---------------------------------------------------------------------
