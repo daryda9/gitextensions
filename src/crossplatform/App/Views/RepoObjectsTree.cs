@@ -1,7 +1,9 @@
 using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -35,6 +37,37 @@ public sealed class RepoObjectsTree : UserControl
     private readonly WorktreeService _worktreeService = new();
 
     private readonly TreeView _tree;
+
+    // --- Toolbar / search chrome (mirrors the original leftPanelToolStrip +
+    // branchSearchPanel above the tree) ----------------------------------------
+    private readonly TextBox _search;
+
+    // Per-category visibility, driven by the toolbar toggles exactly like
+    // upstream's tsbShow* buttons (which add/remove the whole root subtree).
+    // Session-local: the port has no equivalent of AppSettings.RepoObjectsTreeShow*.
+    private bool _showBranches = true;
+    private bool _showRemotes = true;
+    private bool _showWorktrees = true;
+    private bool _showTags = true;
+    private bool _showSubmodules = true;
+    private bool _showStashes = true;
+
+    // Incremental tree filter. Empty means "no filter" and the tree is shown whole.
+    private string _filter = string.Empty;
+
+    // Searchable text per node, recorded while the tree is built: category nodes
+    // match on their plain name (without the count suffix), ref leaves on the full
+    // ref name the way upstream matches BaseRevisionNode.FullPath rather than the
+    // shortened label. Rebuilt from scratch on every BuildTree.
+    private readonly Dictionary<TreeViewItem, string> _nodeText = new();
+    private readonly Dictionary<TreeViewItem, TreeViewItem?> _nodeParent = new();
+
+    // Nodes whose own text matches the current filter, in breadth-first order, plus
+    // the rotating cursor used by the magnifier button / Enter to cycle through them.
+    private readonly List<TreeViewItem> _matches = [];
+    private int _matchIndex = -1;
+
+    private List<TreeViewItem> _roots = [];
 
     private string? _repoPath;
     private bool _busy;
@@ -102,10 +135,256 @@ public sealed class RepoObjectsTree : UserControl
             }
         };
 
+        _search = new TextBox
+        {
+            Watermark = T("RepoObjectsTree/btnSearch.toolTip", "Search"),
+            MinWidth = 40,
+            Padding = new Thickness(4, 2),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = Brush("App.Control", Brushes.Transparent),
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            BorderBrush = Brush("App.Border", Brushes.Gray),
+        };
+        _search.TextChanged += (_, _) => OnFilterChanged();
+
+        // Tunnelling with handledEventsToo: a TextBox handles most keys itself, so a
+        // bubbling handler would never see Enter and could be beaten to Escape.
+        _search.AddHandler(KeyDownEvent, OnSearchKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
+
+        Grid searchRow = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(3, 0, 3, 3),
+        };
+        searchRow.Children.Add(_search);
+        Button searchButton = IconButton("Preview", T("RepoObjectsTree/btnSearch.toolTip", "Search"), SelectNextMatch);
+        Grid.SetColumn(searchButton, 1);
+        searchRow.Children.Add(searchButton);
+
+        Grid layout = new() { RowDefinitions = new RowDefinitions("Auto,Auto,*") };
+        Control toolbar = BuildToolbar();
+        layout.Children.Add(toolbar);
+        Grid.SetRow(searchRow, 1);
+        layout.Children.Add(searchRow);
+        Grid.SetRow(_tree, 2);
+        layout.Children.Add(_tree);
+
         Background = Brush("App.Panel", Brushes.Transparent);
-        Content = _tree;
+        Content = layout;
 
         TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    // --- Toolbar ----------------------------------------------------------
+
+    // The original's leftPanelToolStrip: "collapse all" followed by one toggle per
+    // category, icon-only with a tooltip, in upstream's own strip order (worktrees
+    // third, stashes last). A WrapPanel rather than a fixed-width horizontal strip so
+    // a narrow left column wraps the buttons onto a second line instead of clipping.
+    private Control BuildToolbar()
+    {
+        WrapPanel bar = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(2),
+        };
+
+        bar.Children.Add(IconButton("CollapseAll", T("RepoObjectsTree/mnubtnCollapse.ToolTipText", "Collapse all subnodes"), CollapseAll));
+        bar.Children.Add(CategoryToggle("LocalBranchRoot", T("RepoObjectsTree/tsbShowBranches.ToolTipText", "Branches"), _showBranches, v => _showBranches = v));
+        bar.Children.Add(CategoryToggle("RemoteBranchRoot", T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), _showRemotes, v => _showRemotes = v));
+        bar.Children.Add(CategoryToggle("WorkTree", T("RepoObjectsTree/tsbShowWorktrees.ToolTipText", "Worktrees"), _showWorktrees, v => _showWorktrees = v));
+        bar.Children.Add(CategoryToggle("TagHorizontal", T("RepoObjectsTree/tsbShowTags.ToolTipText", "Tags"), _showTags, v => _showTags = v));
+        bar.Children.Add(CategoryToggle("FolderSubmodule", T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), _showSubmodules, v => _showSubmodules = v));
+        bar.Children.Add(CategoryToggle("stash", T("RepoObjectsTree/tsbShowStashes.ToolTipText", "Stashes"), _showStashes, v => _showStashes = v));
+
+        return new Border
+        {
+            Background = Brush("App.Toolbar", Brushes.Transparent),
+            Child = bar,
+        };
+    }
+
+    private Button IconButton(string icon, string tip, Action onClick)
+    {
+        Button button = new()
+        {
+            Content = IconLoader.Image(icon, 16),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 3),
+            Margin = new Thickness(0, 0, 1, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(button, tip);
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    // A category toggle: checked = the category's root node is in the tree. Reads the
+    // state back off the control after the click (Click runs post-toggle), so there is
+    // a single source of truth.
+    private ToggleButton CategoryToggle(string icon, string tip, bool initial, Action<bool> apply)
+    {
+        ToggleButton toggle = new()
+        {
+            Content = IconLoader.Image(icon, 16),
+            IsChecked = initial,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 3),
+            Margin = new Thickness(0, 0, 1, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTip.SetTip(toggle, tip);
+        toggle.Click += (_, _) =>
+        {
+            apply(toggle.IsChecked == true);
+            if (_snapshot is { } snapshot)
+            {
+                BuildTree(snapshot);
+            }
+        };
+        return toggle;
+    }
+
+    private void CollapseAll()
+    {
+        foreach (TreeViewItem root in _roots)
+        {
+            Collapse(root);
+        }
+
+        static void Collapse(TreeViewItem node)
+        {
+            node.IsExpanded = false;
+            foreach (TreeViewItem child in node.Items.OfType<TreeViewItem>())
+            {
+                Collapse(child);
+            }
+        }
+    }
+
+    // --- Search / filter --------------------------------------------------
+
+    private void OnFilterChanged()
+    {
+        string text = (_search.Text ?? string.Empty).Trim();
+        if (string.Equals(text, _filter, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _filter = text;
+        if (_snapshot is { } snapshot)
+        {
+            BuildTree(snapshot);
+        }
+    }
+
+    private void OnSearchKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            // Escape clears the box (and so restores the whole tree); with an already
+            // empty box it is left alone so it can still reach the window.
+            if ((_search.Text ?? string.Empty).Length > 0)
+            {
+                _search.Text = string.Empty;
+                e.Handled = true;
+            }
+        }
+        else if (e.Key == Key.Enter)
+        {
+            SelectNextMatch();
+            e.Handled = true;
+        }
+    }
+
+    // Cycles the selection through the matching nodes, upstream's rotating-queue
+    // behaviour (Enter / the magnifier button jump to the next match and wrap around).
+    private void SelectNextMatch()
+    {
+        if (_matches.Count == 0)
+        {
+            return;
+        }
+
+        _matchIndex = (_matchIndex + 1) % _matches.Count;
+        TreeViewItem node = _matches[_matchIndex];
+
+        for (TreeViewItem? parent = ParentOf(node); parent is not null; parent = ParentOf(parent))
+        {
+            parent.IsExpanded = true;
+        }
+
+        node.IsSelected = true;
+        node.BringIntoView();
+    }
+
+    private TreeViewItem? ParentOf(TreeViewItem node)
+        => _nodeParent.TryGetValue(node, out TreeViewItem? parent) ? parent : null;
+
+    private bool MatchesFilter(TreeViewItem node)
+        => _filter.Length > 0
+           && _nodeText.TryGetValue(node, out string? text)
+           && text.Contains(_filter, StringComparison.OrdinalIgnoreCase);
+
+    // Prunes a freshly built subtree down to the nodes matching the filter, keeping
+    // every match's ancestors so the hierarchy still reads (Branches › feature/x).
+    // A node that matches itself keeps its whole subtree untouched. Returns whether
+    // the node survives. Upstream only tints matches and never hides anything; the
+    // port filters, which is what makes the left panel usable on a big repo.
+    private bool ApplyFilter(TreeViewItem node)
+    {
+        if (MatchesFilter(node))
+        {
+            return true;
+        }
+
+        List<TreeViewItem> kept = node.Items.OfType<TreeViewItem>().Where(ApplyFilter).ToList();
+        if (kept.Count == 0)
+        {
+            return false;
+        }
+
+        node.Items.Clear();
+        foreach (TreeViewItem child in kept)
+        {
+            node.Items.Add(child);
+        }
+
+        // Ancestors of a match are expanded, otherwise the match stays out of sight.
+        node.IsExpanded = true;
+        return true;
+    }
+
+    // Records the parent links and the breadth-first match list for the visible tree.
+    private void IndexNodes(IReadOnlyList<TreeViewItem> roots)
+    {
+        _nodeParent.Clear();
+        _matches.Clear();
+        _matchIndex = -1;
+
+        Queue<(TreeViewItem Node, TreeViewItem? Parent)> queue = new();
+        foreach (TreeViewItem root in roots)
+        {
+            queue.Enqueue((root, null));
+        }
+
+        while (queue.Count > 0)
+        {
+            (TreeViewItem node, TreeViewItem? parent) = queue.Dequeue();
+            _nodeParent[node] = parent;
+            if (MatchesFilter(node))
+            {
+                _matches.Add(node);
+            }
+
+            foreach (TreeViewItem child in node.Items.OfType<TreeViewItem>())
+            {
+                queue.Enqueue((child, node));
+            }
+        }
     }
 
     // A language switch re-labels the tree from the snapshot already in memory —
@@ -182,6 +461,7 @@ public sealed class RepoObjectsTree : UserControl
     private void BuildTree(RepoSnapshot snapshot)
     {
         _snapshot = snapshot;
+        _nodeText.Clear();
 
         List<BranchTagRow> local = [];
         List<BranchTagRow> remote = [];
@@ -208,7 +488,10 @@ public sealed class RepoObjectsTree : UserControl
             branchesNode.Items.Add(leaf);
         }
 
-        roots.Add(branchesNode);
+        if (_showBranches)
+        {
+            roots.Add(branchesNode);
+        }
 
         // Remotes (remote branches grouped by remote name, e.g. "origin/...").
         TreeViewItem remotesNode = Category(T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), "Remotes", remote.Count);
@@ -230,7 +513,10 @@ public sealed class RepoObjectsTree : UserControl
             remotesNode.Items.Add(groupNode);
         }
 
-        roots.Add(remotesNode);
+        if (_showRemotes)
+        {
+            roots.Add(remotesNode);
+        }
 
         // Tags.
         TreeViewItem tagsNode = Category(T("RepoObjectsTree/tsbShowTags.ToolTipText", "Tags"), "Tag", tags.Count);
@@ -242,7 +528,10 @@ public sealed class RepoObjectsTree : UserControl
             tagsNode.Items.Add(leaf);
         }
 
-        roots.Add(tagsNode);
+        if (_showTags)
+        {
+            roots.Add(tagsNode);
+        }
 
         // Stashes.
         TreeViewItem stashesNode = Category(T("RepoObjectsTree/tsbShowStashes.ToolTipText", "Stashes"), "stash", stashes.Count);
@@ -253,7 +542,10 @@ public sealed class RepoObjectsTree : UserControl
             stashesNode.Items.Add(leaf);
         }
 
-        roots.Add(stashesNode);
+        if (_showStashes)
+        {
+            roots.Add(stashesNode);
+        }
 
         // Submodules. The root node carries "Update all"; each leaf carries
         // "Open" (open the submodule as the active repository, via
@@ -273,7 +565,10 @@ public sealed class RepoObjectsTree : UserControl
             submodulesNode.Items.Add(leaf);
         }
 
-        roots.Add(submodulesNode);
+        if (_showSubmodules)
+        {
+            roots.Add(submodulesNode);
+        }
 
         // Worktrees. The root node carries "Add…" and "Prune"; each leaf carries
         // "Open" (open the worktree as the active repository, via
@@ -287,9 +582,23 @@ public sealed class RepoObjectsTree : UserControl
             worktreesNode.Items.Add(leaf);
         }
 
-        roots.Add(worktreesNode);
+        if (_showWorktrees)
+        {
+            roots.Add(worktreesNode);
+        }
 
-        branchesNode.IsExpanded = true;
+        if (_filter.Length > 0)
+        {
+            // Filtered: only the matches and their ancestors survive, expanded.
+            roots = roots.Where(ApplyFilter).ToList();
+        }
+        else
+        {
+            branchesNode.IsExpanded = true;
+        }
+
+        _roots = roots;
+        IndexNodes(roots);
         _tree.ItemsSource = roots;
     }
 
@@ -307,20 +616,33 @@ public sealed class RepoObjectsTree : UserControl
     private TreeViewItem Category(string text, string? icon, int? count)
     {
         string header = count is { } c ? string.Format(CultureInfo.CurrentCulture, CategoryCountFormat, text, c) : text;
-        return new TreeViewItem
+        TreeViewItem item = new()
         {
             Header = HeaderPanel(header, icon, bold: true),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
         };
+
+        // Searchable on the bare name: the count suffix is chrome, and matching it
+        // would let a digit in the filter hit every category at once.
+        _nodeText[item] = text;
+        return item;
     }
 
     private TreeViewItem Leaf(string text, string? icon, object tag, bool isCurrent)
-        => new()
+    {
+        TreeViewItem item = new()
         {
             Header = HeaderPanel(text, icon, bold: isCurrent),
             Tag = tag,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
         };
+
+        // Refs match on their full name (origin/feature/x), like upstream matching
+        // BaseRevisionNode.FullPath, so a filter still finds a leaf whose displayed
+        // label was shortened by its remote group.
+        _nodeText[item] = tag is BranchTagRow row ? row.Name : text;
+        return item;
+    }
 
     private static Control HeaderPanel(string text, string? icon, bool bold)
     {
