@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M46,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M47,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,10 +11,10 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `56023619a` (round 4 + bugfix M43–M44 + follow-up 1 / M45 + follow-up residui / M46) |
+| HEAD al momento dell'handoff | `2e9d981eb` (… + follow-up 1 / M45 + follow-up residui / M46 + **feature e integrazione GUI / M47**) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** chiusi |
+| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
 | Push su remote | eseguito dall'utente (origin allineato). Portachiavi **vuoto**: il prossimo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M47**), tiene il contatore iterazione.
+  libera: **M48**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -237,13 +237,27 @@ linux-avalonia-port (verificare HEAD all'avvio). NON push. NON firmare i commit
 LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4: convenzioni Avalonia, trappole,
 ricetta di verifica GUI headless, follow-up aperti.
 
-LAVORARE sui follow-up della sezione 4, in quest'ordine:
-1. Traduzioni: l'infrastruttura c'e' (M46/T1, TranslationService + selettore View -> Language
-   + .xlf copiati). Resta applicare il layer alle view oltre a MainMenu, poche per volta, un
-   file hub per subagent, con la convenzione di chiavi descritta nel follow-up 2.
-2. Unificare i due CollapseHome (MainToolbar.cs / RevisionGridView.cs) e abbreviare il path
-   nel titolo di PushDialog.cs:95.
-NON lavorare su repository-host GitHub né colonna build status: SKIP fuori scope.
+DIREZIONE DATA DALL'UTENTE (27/07/2026): le LINGUE non interessano oltre inglese e italiano
+-> blocco traduzioni CHIUSO, non aprirne altre unita'. Contano FEATURE e INTEGRAZIONE GUI.
+
+LAVORARE su questo, in ordine di impatto/costo (dall'audit di parita' funzionale):
+1. HotkeyService: il port ha DUE scorciatoie (F5, Ctrl+O); l'originale ne definisce ~110 in
+   src/app/GitUI/Hotkey/HotkeySettingsManager.cs:196-330, instradate da FormBrowse.cs:2053.
+   Quotidiane: Ctrl+Space commit, Ctrl+Up/Down push/pull, Ctrl+. checkout, Ctrl+B branch,
+   Ctrl+E focus filtro, Ctrl+0..7 focus pannelli, Ctrl+Tab tab, Ctrl+Alt+Up/Down stash.
+   Include il rendere globale il Ctrl+F del diff (oggi e' locale alla view).
+2. Menu contestuale della grid: oggi 20 voci piatte sempre abilitate (registrate da
+   MainWindow); l'originale ne ha ~60 in sotto-menu con predicati di visibilita' (merge,
+   rebase interattivo, reset another branch to here, delete/rename branch, push branch,
+   apply/pop/drop stash, edit commit...). Vedi RevisionGridControl.Designer.cs:633-692.
+3. Difetti noti aperti: la selezione della grid viene persa da un refresh in background
+   (SetWorkingState -> ApplyFilterCore ribinda ItemsSource); CheckoutBranchDialog e' misto
+   italiano/inglese; Avalonia non espone WM_DELETE_WINDOW (finestra non chiudibile dal WM);
+   il "salva come" del diff non e' verificabile headless (serve portal XDG).
+4. Minori: dialogo Pull con prune/autostash/tag policy (oggi solo remote+rebase), opzioni di
+   merge/cherry-pick, continue/skip/abort per rebase, filtrare i cataloghi .xlf a inglese +
+   italiano per togliere ~19 MB dal .deb.
+NON lavorare su repository-host GitHub ne' colonna build status: SKIP fuori scope.
 
 METODO: il loop NON scrive codice a mano — DELEGA a subagent CLAUDE in worktree isolati
 (isolation: worktree), 2-3 in parallelo, file DISGIUNTI; niente subagent Codex con worktree.

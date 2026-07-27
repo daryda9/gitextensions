@@ -973,6 +973,97 @@ Menu + toolbar:
   installa GCM) → configurato `git-credential-libsecret` (compilato dal contrib di git,
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
+### Blocco FEATURE E INTEGRAZIONE GUI (round 7)
+> **Iterazioni 1–2.** Direzione data dall'utente: **le lingue non interessano oltre inglese
+> e italiano** (blocco traduzioni chiuso), contano **feature e integrazione nella GUI**.
+> Le unità nascono da un audit di parità *funzionale* (non di voci di menu) fra
+> `src/app/GitUI` e il port: la checklist di PORTING contava le voci, non la profondità.
+
+**M47** (2026-07-27) — sette commit. Le lacune chiuse erano tutte "la voce c'è ma fa meno":
+
+- **F1** (`34ae54d0b`) — **la storia non si fermava più a 200 commit**. `RevisionService`
+  aveva `maxCount = 200` come default e nessun chiamante lo cambiava. Ora
+  `LoadRevisionPage(repo, skip, maxCount)` → `RevisionPage(Rows, HasMore)` senza geometria,
+  con `BuildRevisionGraph` sull'intera lista accumulata e metadati (HEAD, ref, note) messi
+  in cache per non rifare `for-each-ref` a ogni append; pagine da 500, append su scroll +
+  pulsante "Load 500 more", dimensione pagina nel menu View. Su git_ext_mod (17 862 commit):
+  prima pagina 57 ms, append 27–34 ms, e page(0,500)+page(500,500) è byte-identica a una
+  singola camminata da 1000. In più: **doppio clic/Enter sulla revisione** (eventi
+  `RevisionActivated`/`ArtificialRowActivated`) e **cronologia di navigazione** `Alt+←/→`.
+  *Bug pre-esistente scoperto e corretto*: il key handler della grid era in **bubbling**,
+  dove la `ListBox` aveva già consumato le frecce → `Alt+↑/↓` si comportavano da frecce
+  semplici e il salto a parent/child **non funzionava affatto**; ora è tunnelling con
+  `handledEventsToo`.
+- **F2** (`ccaf63a40`) — **auto-refresh**: `RepositoryWatcherService` modellato su
+  `GitStatusMonitor`, due `FileSystemWatcher` (work tree + git-dir separata solo quando sta
+  fuori dal work tree), git-dir risolta anche per i worktree collegati (`gitdir:` +
+  `commondir`), debounce 1 s ricaricato a ogni evento con **tetto a 4 s**, pavimento di 5 s
+  fra refresh e rete di sicurezza ogni 5 minuti; rumore ignorato (`*.lock`, `objects/**`,
+  `COMMIT_EDITMSG`, …). **Due guardie anti-loop**: ogni comando git dell'app gira dentro
+  `Suspend()`, e `RefreshAll()` chiude con `NotifyRefreshed()` — così nemmeno un refresh che
+  tocca l'index può innescare il successivo. Verificato: commit da shell → GUI aggiornata in
+  ~1 s **senza F5**; `checkout` di un branch da 1500 file → **un solo** refresh. Esaurimento
+  inotify provato davvero (occupate tutte le 8085 istanze): niente crash, messaggio di
+  degrado e timer a 60 s. Più drag&drop di una cartella e persistenza di posizione/
+  massimizzato/tab attivo con **clamp allo schermo**.
+  ⚠️ **Avalonia 11.3 non implementa XDND su X11**: non interna nemmeno l'atomo `XdndAware`,
+  quindi `DragDrop.DropEvent` non può scattare su Linux (risolto upstream in 12.1, non
+  backportato). Serve `App/Services/X11DropTarget.cs`, ricevitore nativo che pubblica
+  `XdndAware`/`XdndProxy` e risponde al protocollo su una connessione X propria.
+- **F3** (`925be2385`) — nel diff: **ricerca `Ctrl+F`** incrementale con evidenziazione a
+  `Run` e contatore (F3/Shift+F3), soppressa oltre 20 000 righe o 2 000 hit con la
+  navigazione ancora attiva; `Ctrl+G` vai-a-riga; righe di contesto `-U<n>` e "file intero";
+  menu del file da 5 a 10 voci (apri nell'editor, apri questa revisione, mostra nella
+  cartella, salva come, copia patch). Editor risolto come fa git (`GIT_EDITOR` → `core.editor`
+  → `$VISUAL` → `$EDITOR`, editor console avvolto in un terminale), cartella via
+  `org.freedesktop.FileManager1.ShowItems` con fallback `xdg-open`.
+- **F4** (`dff0598c9`) — **checkout che non ignora più le modifiche locali**: prima
+  `LocalChangesAction.DontChange` era hard-coded e con l'albero sporco il checkout falliva
+  con l'errore grezzo di git. Ora albero pulito → nessun dialogo; albero sporco →
+  `CheckoutBranchDialog` con *Don't change / Merge / Reset / Stash*, spiegazione di cosa
+  succede alle modifiche, default persistito in `SettingsService` (Reset mai memorizzato,
+  come upstream). Più `CreateBranchDialog` (checkout-after-create) e `CreateTagDialog`
+  (annotato/firmato/force/push).
+- **G1** (`2e9d981eb`) — **staging per hunk e per righe**, la lacuna singola più pesante:
+  senza, il dialogo non sostituiva `git add -p`. `PatchManager` del core **riusato tal quale**
+  (è .NET puro e già referenziato: contiene sub-chunk, ricalcolo dei contatori `@@`,
+  `\ No newline at end of file`, header dei file nuovi/rinominati); il nuovo
+  `PatchStagingService` è solo raccordo. Selezione a granularità di riga con **due sistemi di
+  coordinate** (render vs sorgente, perché il `\r` sparisce a video ma deve restare nella
+  patch). Ogni operazione verificata byte-esatta contro `git diff --cached`/`git diff`/il file
+  su disco, CRLF compreso. *Trappole Avalonia scoperte*: `SelectableTextBlock` ingoia il tasto
+  destro (`ContextRequested` non scatta mai → menu aperto da `PointerPressed` in tunneling) e
+  un clic semplice non muove il caret (→ hit-test sul `TextLayout`). Non supportati e
+  dichiarati: staging parziale di una cancellazione (git lo rifiuta, come upstream), file
+  untracked, discard dal lato staged.
+- **G2** (`7899fde12`) — **il filtro lo fa git**, non più una substring in memoria su quattro
+  campi. `RevisionFilter` → argomenti `git log` (`--author`/`--committer`/`--grep`, `-S`/`-G`,
+  `--since`/`--until`, path **dopo `--`**, `--no-merges`, `--first-parent`, case/regex, limite
+  applicato attraverso le pagine), nuovo `RevisionFilterDialog`, paginazione filtro-consapevole,
+  indicatore in barra di stato e reset a un clic. **`--parents` è il dettaglio che tiene in
+  piedi il grafo**: riscrive `%P` verso gli antenati sopravvissuti, così il DAG filtrato resta
+  connesso. Correttezza provata su **dieci** casi GUI vs `git log --oneline … | wc -l`, tutti
+  esatti (autore 179, path 62, `-S` 50, nessun filtro 17461). La casella `Filter:` rapida
+  resta **in memoria di proposito**: la sua semantica è un OR fra autore/subject/hash che git
+  non esprime in una invocazione, e filtrare a ogni tasto significherebbe un processo git per
+  carattere. *Bug corretto in corsa*: il DAG filtrato arrivava a ~30 lane e spingeva le colonne
+  fuori dal pannello → lane limitate a 8.
+- **Integrazione del loop** (`1450e0d65`, `a335216b5`) — cablati i punti che le unità non
+  potevano toccare: doppio clic della grid → tab dettagli; i tre percorsi di checkout ancora
+  nudi (dropdown toolbar, "Checkout this commit", `ReflogWindow`) → dialogo F4; i quattro
+  punti di creazione branch/tag → dialoghi F4; voci **Visualizza → Filtro avanzato / Reset dei
+  filtri di revisione**. Nota: in `MainWindow` `LocalChangesAction` va qualificato
+  (`GitCommands.LocalChangesAction`) perché `CommitInfoPosition` esiste sia nel core sia nelle
+  view del port.
+
+**Difetti noti raccolti in questo blocco, non ancora chiusi**: un refresh in background
+(`SetWorkingState` → `ApplyFilterCore`) ribinda `ItemsSource` e **perde la selezione**
+dell'utente pochi secondi dopo l'avvio; `CheckoutBranchDialog` è misto italiano/inglese (le
+descrizioni delle opzioni non hanno `trans-unit`); Avalonia non espone `WM_DELETE_WINDOW`,
+quindi la finestra non è chiudibile dal window manager; `Ctrl+F` del diff è locale alla view,
+non un acceleratore globale; il "salva come" del diff non è verificabile headless (serve un
+portal XDG — follow-up 5).
+
 ### Blocco FOLLOW-UP RESIDUI (round 6) — traduzioni, header grid, strascichi M45
 > **Iterazione: 1 / 15.** Tre unità in parallelo su file disgiunti (T1 traduzioni,
 > T2 header grid, T3 CommitDialog).
