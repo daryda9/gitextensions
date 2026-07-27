@@ -56,7 +56,12 @@ public sealed class SubmodulesDialog : Window
         _update = MakeButton("Update");
         Button updateAll = MakeButton("Update all");
         Button syncAll = MakeButton("Synchronize all");
+        // "Init all" runs a real `git submodule init` — it registers the submodules
+        // from .gitmodules into .git/config WITHOUT cloning or checking anything
+        // out. It used to call UpdateAll, making it a mislabelled duplicate of
+        // "Update all" that quietly did far more than initialise.
         Button initAll = MakeButton("Init all");
+        ToolTip.SetTip(initAll, "git submodule init — registers the submodules in .git/config; does not fetch or check out.");
         Button close = MakeButton("Close");
 
         _update.Click += (_, _) => DoUpdateSelected();

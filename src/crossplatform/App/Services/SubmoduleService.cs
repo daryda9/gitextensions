@@ -135,12 +135,25 @@ public sealed class SubmoduleService
     }
 
     /// <summary>
-    ///  Initializes and updates all submodules recursively. Semantically identical
-    ///  to <see cref="UpdateAll(string)"/> (<c>git submodule update --init --recursive</c>);
-    ///  exposed under an "Init all" label so the manager dialog can offer it as a
-    ///  distinct action.
+    ///  Registers every submodule recorded in <c>.gitmodules</c> into the local
+    ///  <c>.git/config</c>: <c>git submodule init</c>. This is a genuinely distinct
+    ///  operation from <see cref="UpdateAll(string)"/> — it only copies the
+    ///  name/url/branch settings into the local config (so they can then be edited
+    ///  before cloning), it does NOT fetch or check out anything.
+    ///
+    ///  <para>It used to just delegate to <see cref="UpdateAll(string)"/>, which
+    ///  made the dialog's "Init all" button a mislabelled duplicate of "Update
+    ///  all" — an init that silently cloned and checked out every submodule.</para>
     /// </summary>
-    public SubmoduleOpResult InitAll(string repoPath) => UpdateAll(repoPath);
+    public SubmoduleOpResult InitAll(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("submodule")
+        {
+            "init",
+        };
+        return Run(module, args);
+    }
 
     /// <summary>
     ///  Synchronizes every submodule's remote URL with the value in
