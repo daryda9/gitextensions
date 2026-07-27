@@ -1473,7 +1473,9 @@ public sealed class CommitDialog : Window
         ResetAuthor: _resetAuthor,
         CloseAfterCommit: _closeAfterCommit);
 
-    private void DoCommit(bool push)
+    // async void: it is an event handler in all but name (three button/hotkey call
+    // sites), and every await inside is a modal the user drives.
+    private async void DoCommit(bool push)
     {
         int staged = _stagedList.Items.Count;
         string message = _messageBox.Text ?? string.Empty;
@@ -1499,6 +1501,36 @@ public sealed class CommitDialog : Window
         if (message.Trim().Length == 0)
         {
             SetStatus(T("FormCommit/_enterCommitMessage.Text", "Please enter commit message"));
+            return;
+        }
+
+        // The three confirmations upstream asks for and the port used to skip
+        // (FormCommit.cs:1098-1123 and 1191-1231). Order follows upstream: amend
+        // first, then the empty merge commit, then "not on a branch".
+        if (options.Amend
+            && !await ConfirmAsync(
+                T("FormCommit/_amendCommit.Text",
+                    "You are about to rewrite history.\n"
+                    + "Only use Amend if the commit has not been published yet!\n\n"
+                    + "Do you want to continue?"),
+                T("FormCommit/_amendCommitCaption.Text", "Amend commit")))
+        {
+            return;
+        }
+
+        // An empty merge commit is allowed, but the user may equally have forgotten to
+        // stage: upstream asks rather than assuming either way.
+        if (staged == 0 && !options.Amend && _mergeInProgress
+            && !await ConfirmAsync(
+                T("FormCommit/_noFilesStagedAndConfirmAnEmptyMergeCommit.Text",
+                    "There are no files staged for this commit.\nAre you sure you want to commit?"),
+                T("FormCommit/_noStagedChanges.Text", "There are no staged changes")))
+        {
+            return;
+        }
+
+        if (!await ConfirmDetachedHeadAsync())
+        {
             return;
         }
 
@@ -1529,6 +1561,84 @@ public sealed class CommitDialog : Window
                     Close();
                 }
             });
+    }
+
+    /// <summary>
+    ///  Upstream's "not on a branch" prompt (FormCommit.cs:1191-1231): committing on a
+    ///  detached HEAD leaves the commit unreferenced as soon as the user checks
+    ///  something else out. Skipped during a rebase, where a detached HEAD is normal
+    ///  and expected — upstream skips it for the same reason.
+    ///  Returns false when the commit must not proceed.
+    /// </summary>
+    private async Task<bool> ConfirmDetachedHeadAsync()
+    {
+        string repo = _repoPath;
+        (bool detached, bool rebasing) = await Task.Run(() => ReadHeadState(repo));
+        if (!detached || rebasing)
+        {
+            return true;
+        }
+
+        // Upstream offers "Checkout branch", "Create branch" and "Continue". The port
+        // has no checkout dialog reachable from here, so only the two it can really
+        // perform are offered.
+        int choice = await ChooseAsync(
+            T("FormCommit/_notOnBranch.Text",
+                "This commit will be unreferenced when switching to another branch and can be lost.\n\n"
+                + "Do you want to continue?"),
+            T("TranslatedStrings/_errorCaptionNotOnBranch.Text", "Not on a branch"),
+            [
+                T("TranslatedStrings/_buttonCreateBranch.Text", "Create branch"),
+                T("TranslatedStrings/_buttonContinue.Text", "Continue"),
+            ]);
+
+        if (choice == 0)
+        {
+            // Creating the branch is itself a git run through RunActionResult; the
+            // commit is not chained onto it, the user presses Commit again on the
+            // branch that now exists.
+            PromptCreateBranch();
+            SetStatus(T("Create the branch, then commit again."));
+            return false;
+        }
+
+        return choice == 1;
+    }
+
+    // Detached HEAD and rebase state read straight from the git directory: ".git/HEAD"
+    // holds "ref: refs/heads/<name>" on a branch and a bare hash when detached, and a
+    // rebase leaves a rebase-merge / rebase-apply directory behind. No git process, so
+    // it is cheap enough to re-read at commit time instead of trusting the cached
+    // branch caption.
+    private static (bool Detached, bool Rebasing) ReadHeadState(string repoPath)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            string gitDir = ResolveGitDir(module, repoPath);
+            if (gitDir.Length == 0)
+            {
+                return (false, false);
+            }
+
+            string headPath = System.IO.Path.Combine(gitDir, "HEAD");
+            if (!System.IO.File.Exists(headPath))
+            {
+                return (false, false);
+            }
+
+            bool detached = !System.IO.File.ReadAllText(headPath)
+                .TrimStart()
+                .StartsWith("ref:", StringComparison.Ordinal);
+            bool rebasing = System.IO.Directory.Exists(System.IO.Path.Combine(gitDir, "rebase-merge"))
+                || System.IO.Directory.Exists(System.IO.Path.Combine(gitDir, "rebase-apply"));
+            return (detached, rebasing);
+        }
+        catch
+        {
+            // Never block a commit because the state could not be read.
+            return (false, false);
+        }
     }
 
     private async Task PushAsync()
@@ -1844,18 +1954,55 @@ public sealed class CommitDialog : Window
     // Simple in-dialog confirmation flyout on the status line via a modal child window.
     private async void ConfirmThen(string prompt, Action onConfirmed)
     {
+        if (await ConfirmAsync(prompt))
+        {
+            onConfirmed();
+        }
+    }
+
+    /// <summary>
+    ///  Awaitable yes/cancel confirmation, so several of them can be chained before a
+    ///  single action (the commit path asks up to three).
+    /// </summary>
+    private async Task<bool> ConfirmAsync(string prompt, string? caption = null)
+        => await ChooseAsync(prompt, caption, [T("Yes")]) == 0;
+
+    /// <summary>
+    ///  A modal question with N ordered choices plus Cancel; returns the index of the
+    ///  chosen one, or -1 when cancelled. Upstream uses a TaskDialog with command
+    ///  links for exactly this (the "not on a branch" prompt offers three).
+    /// </summary>
+    private async Task<int> ChooseAsync(string prompt, string? caption, IReadOnlyList<string> choices)
+    {
         Window confirm = new()
         {
-            Title = T("Confirm"),
-            Width = 420,
-            Height = 150,
+            Title = caption ?? T("Confirm"),
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Brush("App.Window", Brushes.DimGray),
         };
 
-        bool ok = false;
-        Button yes = MakeButton(T("Yes"), () => { ok = true; confirm.Close(); });
-        Button no = MakeButton(T("FormCommit/Cancel.Text", "Cancel"), confirm.Close);
+        int picked = -1;
+        StackPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+        };
+
+        for (int i = 0; i < choices.Count; i++)
+        {
+            int index = i;
+            buttons.Children.Add(MakeButton(choices[i], () =>
+            {
+                picked = index;
+                confirm.Close();
+            }));
+        }
+
+        buttons.Children.Add(MakeButton(T("FormCommit/Cancel.Text", "Cancel"), confirm.Close));
+
         confirm.Content = new StackPanel
         {
             Margin = new Thickness(16),
@@ -1868,21 +2015,12 @@ public sealed class CommitDialog : Window
                     TextWrapping = TextWrapping.Wrap,
                     Foreground = Brush("App.Foreground", Brushes.Gainsboro),
                 },
-                new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    Spacing = 8,
-                    Children = { yes, no },
-                },
+                buttons,
             },
         };
 
         await confirm.ShowDialog(this);
-        if (ok)
-        {
-            onConfirmed();
-        }
+        return picked;
     }
 
     // ---------- shared execution ----------
