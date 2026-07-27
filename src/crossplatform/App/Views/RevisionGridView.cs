@@ -222,11 +222,26 @@ public sealed class RevisionGridView : UserControl
     // log without the caller re-supplying it (LoadRepository stores it here).
     private string _repoPath = string.Empty;
 
-    // Column visibility toggles (the graph + Subject columns always stay).
+    // Column visibility toggles (the Subject column always stays — upstream has no
+    // toggle for it either, it is the Fill column of the grid).
+    private bool _showGraph = true;    // "Show revision graph column"
     private bool _showHash = true;
     private bool _showAvatar = true;   // offline identicon avatar; default ON
     private bool _showAuthor = true;
     private bool _showDate = true;
+
+    // Whether the synthesised "Working directory" / "Commit index" rows are shown at
+    // all (upstream's AppSettings.RevisionGraphShowArtificialCommits). Independent of
+    // whether there IS pending work: with the toggle off the rows never appear.
+    private bool _showArtificial = true;
+
+    // Whether the git-note indicator is drawn on the commits that carry a note
+    // (upstream's AppSettings.ShowGitNotes). The note flag itself is always loaded.
+    private bool _showGitNotes = true;
+
+    // Walk order: author-date order (--author-date-order), the original's third
+    // RevisionSortOrder. Mutually exclusive with _topoOrder below.
+    private bool _authorDateSort;
 
     // "View" toggles from the original grid. The first four change WHICH commits
     // the walk includes (or the walk order) and therefore reload via the existing
@@ -286,8 +301,9 @@ public sealed class RevisionGridView : UserControl
     // graph's lane count. While a filter is active the effective width is 0.
     private double _graphWidth = LaneWidth;
 
-    // The column width actually used by the header/rows right now (0 while filtering).
-    private double EffectiveGraphWidth => _quickFilterActive ? 0 : _graphWidth;
+    // The column width actually used by the header/rows right now (0 while filtering,
+    // or while the graph column is switched off from the View menu).
+    private double EffectiveGraphWidth => _quickFilterActive || !_showGraph ? 0 : _graphWidth;
 
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
@@ -676,10 +692,19 @@ public sealed class RevisionGridView : UserControl
     }
 
     // Keyboard handling for the grid, on the TUNNEL stage (see the registration in
-    // the constructor): Ctrl+C copies the selected commit's hash, Alt+↑ / Alt+↓ jump
-    // to the first parent / nearest child, Alt+← / Alt+→ walk the navigation history,
-    // Ctrl+G opens the "Go to" box, Enter activates the row, and the remaining keys
-    // drive the quick-search. Plain ↑/↓ are deliberately left to the ListBox.
+    // the constructor). Plain ↑/↓ are deliberately left to the ListBox.
+    //
+    // The bindings are the original's, from HotkeySettingsManager.cs:272-319 (scope
+    // RevisionGridControl). Three of them used to differ, and each divergence was a
+    // real defect:
+    //
+    //  * Alt+↑ / Alt+↓ are QUICK-SEARCH previous / next upstream, not parent / child.
+    //    Parent and child are Ctrl+P / Ctrl+N (plus Ctrl+← for the first parent).
+    //  * "Go to commit" is Ctrl+Shift+G. The port had it on Ctrl+G, which upstream
+    //    reserves for GitBash — so with the focus in the grid Ctrl+G no longer opened
+    //    the terminal. Ctrl+G is now left alone and falls through to the shell.
+    //  * F3 is not a grid key at all: in the FormBrowse scope it is OpenWithDifftool.
+    //    Quick-search stepping is on Alt+↑/↓ and Enter, so F3 is released here.
     private void OnListKeyDown(object? sender, KeyEventArgs e)
     {
         bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
@@ -687,35 +712,111 @@ public sealed class RevisionGridView : UserControl
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
         bool quickActive = _quickSearch.Length > 0;
 
-        if (ctrl && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
+        if (ctrl && !shift && !alt && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
         {
             Copy(row.Hash);
             e.Handled = true;
         }
-        else if (alt && e.Key == Key.Up)
+        else if (ctrl && shift && !alt && e.Key == Key.C)
         {
+            // SelectCurrentRevision.
+            SelectCurrentRevision();
+            e.Handled = true;
+        }
+        else if (ctrl && !shift && !alt && e.Key == Key.V)
+        {
+            // The quick-search buffer accepts a paste (QuickSearchProvider.cs:67-72).
+            _ = PasteIntoQuickSearchAsync();
+            e.Handled = true;
+        }
+        else if (ctrl && !shift && !alt && (e.Key == Key.P || e.Key == Key.Left))
+        {
+            // GoToParent (Ctrl+P) — Ctrl+← is upstream's GoToFirstParent, which in
+            // this port is the same jump: the parent navigation always takes
+            // ParentHashes[0].
             GoToParent();
             e.Handled = true;
         }
-        else if (alt && e.Key == Key.Down)
+        else if (ctrl && !shift && !alt && e.Key == Key.N)
         {
             GoToChild();
             e.Handled = true;
         }
-        else if (ctrl && e.Key == Key.G)
+        else if (ctrl && shift && !alt && e.Key == Key.G)
         {
-            OpenGoTo();
+            OpenGoToCommit();
             e.Handled = true;
         }
-        else if (alt && e.Key == Key.Left)
+        else if (ctrl && shift && !alt && e.Key == Key.K)
         {
-            // Navigation history — Alt+← / Alt+→ as in the original grid. (Alt+↑ /
-            // Alt+↓ are taken by the parent/child jumps above, so the history uses
-            // the horizontal pair.)
+            GoToMergeBase();
+            e.Handled = true;
+        }
+        else if (ctrl && !shift && !alt && e.Key == Key.OemBackslash)
+        {
+            ToggleBetweenArtificialAndHeadCommits();
+            e.Handled = true;
+        }
+        else if (ctrl && !shift && !alt && e.Key == Key.I)
+        {
+            // RevisionFilter: the real (git-side) filter dialog.
+            _ = ShowFilterDialogAsync();
+            e.Handled = true;
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.I)
+        {
+            ResetAllFilters();
+            e.Handled = true;
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.B)
+        {
+            ToggleHighlightSelectedBranch();
+            e.Handled = true;
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.A)
+        {
+            ShowAllBranches();
+            e.Handled = true;
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.U)
+        {
+            ShowCurrentBranchOnly();
+            e.Handled = true;
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.T)
+        {
+            ShowFilteredBranches();
+            e.Handled = true;
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.R)
+        {
+            ToggleShowRemoteBranches();
+            e.Handled = true;
+        }
+        else if (ctrl && alt && !shift && e.Key == Key.T)
+        {
+            ToggleShowTags();
+            e.Handled = true;
+        }
+        else if (alt && !ctrl && e.Key == Key.Up)
+        {
+            // Quick-search previous (PrevQuickSearch).
+            QuickSearchPrevious();
+            e.Handled = true;
+        }
+        else if (alt && !ctrl && e.Key == Key.Down)
+        {
+            // Quick-search next (NextQuickSearch).
+            QuickSearchNext();
+            e.Handled = true;
+        }
+        else if (alt && !ctrl && e.Key == Key.Left)
+        {
+            // Navigation history — Alt+← / Alt+→ as in the original grid.
             NavigateBack();
             e.Handled = true;
         }
-        else if (alt && e.Key == Key.Right)
+        else if (alt && !ctrl && e.Key == Key.Right)
         {
             NavigateForward();
             e.Handled = true;
@@ -728,15 +829,6 @@ public sealed class RevisionGridView : UserControl
             e.Handled = true;
         }
         // --- quick-search navigation (only when the list itself is focused) ---
-        else if (e.Key == Key.F3)
-        {
-            // F3 / Shift+F3 step to the next / previous match, wrapping.
-            if (quickActive)
-            {
-                QuickSearchStep(forward: !shift);
-                e.Handled = true;
-            }
-        }
         else if (e.Key == Key.Enter && quickActive && !ctrl && !alt)
         {
             // Enter also advances to the next match while quick-searching.
@@ -910,7 +1002,8 @@ public sealed class RevisionGridView : UserControl
         _artificialLane = 0;
         _headDisplayIndex = -1;
 
-        bool wanted = (_unstaged > 0 || _staged > 0) && !_quickFilterActive && commits.Count > 0;
+        bool wanted = _showArtificial
+            && (_unstaged > 0 || _staged > 0) && !_quickFilterActive && commits.Count > 0;
         if (!wanted)
         {
             return commits;
@@ -1083,6 +1176,7 @@ public sealed class RevisionGridView : UserControl
         bool showTags = _showTags;
         bool showStashes = _showStashes;
         bool topoOrder = _topoOrder;
+        bool authorDateOrder = _authorDateSort;
         int pageSize = maxCount > 0 ? maxCount : _pageSize;
         RevisionFilter filter = _gitFilter;
 
@@ -1133,7 +1227,8 @@ public sealed class RevisionGridView : UserControl
                     showTags: showTags,
                     showStashes: showStashes,
                     topoOrder: topoOrder,
-                    filter: filter);
+                    filter: filter,
+                    authorDateOrder: authorDateOrder);
 
                 // Merge and rebuild the DAG here, still off the UI thread.
                 List<RevisionRow> merged = new(before.Count + page.Rows.Count);
@@ -1785,52 +1880,31 @@ public sealed class RevisionGridView : UserControl
 
         panel.Children.Add(SectionLabel(T("Show in log")));
 
-        CheckBox remotes = MakeCheck(T("RevisionGrid/ShowRemoteBranches.Text", "Remote branches"), _showRemotes);
-        remotes.IsCheckedChanged += (_, _) =>
-        {
-            _showRemotes = remotes.IsChecked == true;
-            Reload();
-        };
-
-        CheckBox tags = MakeCheck(T("TranslatedStrings/_tagsText.Text", "Tags"), _showTags);
-        tags.IsCheckedChanged += (_, _) =>
-        {
-            _showTags = tags.IsChecked == true;
-            Reload();
-        };
-
-        CheckBox stashes = MakeCheck(T("TranslatedStrings/_stashesText.Text", "Stashes"), _showStashes);
-        stashes.IsCheckedChanged += (_, _) =>
-        {
-            _showStashes = stashes.IsChecked == true;
-            Reload();
-        };
-
-        panel.Children.Add(remotes);
-        panel.Children.Add(tags);
-        panel.Children.Add(stashes);
+        panel.Children.Add(OptionCheck(
+            OptShowRemoteBranches,
+            T("RevisionGrid/ShowRemoteBranches.Text", "Remote branches"),
+            ToggleShowRemoteBranches));
+        panel.Children.Add(OptionCheck(
+            OptShowTags,
+            T("TranslatedStrings/_tagsText.Text", "Tags"),
+            ToggleShowTags));
+        panel.Children.Add(OptionCheck(
+            OptShowStashes,
+            T("TranslatedStrings/_stashesText.Text", "Stashes"),
+            ToggleShowStashes));
+        panel.Children.Add(OptionCheck(
+            OptShowArtificialCommits,
+            T("Artificial commits"),
+            ToggleShowArtificialCommits));
+        panel.Children.Add(OptionCheck(
+            OptShowGitNotes,
+            T("RevisionGridControl/showGitNotesToolStripMenuItem.Text", "Git notes"),
+            ToggleShowGitNotes));
 
         panel.Children.Add(SectionLabel(T("RevisionGrid/SortingToolStripMenuItem.Text", "Order")));
-        RadioButton dateOrder = MakeRadio(T("Date order"), "revOrder", !_topoOrder);
-        RadioButton topoOrder = MakeRadio(T("Topo-order"), "revOrder", _topoOrder);
-        dateOrder.IsCheckedChanged += (_, _) =>
-        {
-            if (dateOrder.IsChecked == true && _topoOrder)
-            {
-                _topoOrder = false;
-                Reload();
-            }
-        };
-        topoOrder.IsCheckedChanged += (_, _) =>
-        {
-            if (topoOrder.IsChecked == true && !_topoOrder)
-            {
-                _topoOrder = true;
-                Reload();
-            }
-        };
-        panel.Children.Add(dateOrder);
-        panel.Children.Add(topoOrder);
+        panel.Children.Add(OptionRadio(OptOrderDefault, T("Date order"), "revOrder", SetDefaultSort));
+        panel.Children.Add(OptionRadio(OptOrderAuthorDate, T("Author date order"), "revOrder", SetAuthorDateSort));
+        panel.Children.Add(OptionRadio(OptOrderTopo, T("Topo-order"), "revOrder", SetTopoSort));
 
         // How much history one page of the incremental walk loads — the port's
         // counterpart of the original's MaxRevisionGraphCommits setting. Changing it
@@ -1856,27 +1930,18 @@ public sealed class RevisionGridView : UserControl
 
         panel.Children.Add(SectionLabel(T("Highlighting")));
 
-        CheckBox nonRelatives = MakeCheck(
+        CheckBox nonRelatives = OptionCheck(
+            OptDrawNonRelativesGray,
             T("RevisionGrid/drawNonrelativesGrayToolStripMenuItem.Text", "Draw non-relatives gray"),
-            _drawNonRelativesGray);
+            ToggleDrawNonRelativesGray);
         ToolTip.SetTip(
             nonRelatives,
             T("Alt+click a commit to highlight the history leading to it"));
-        nonRelatives.IsCheckedChanged += (_, _) =>
-        {
-            _drawNonRelativesGray = nonRelatives.IsChecked == true;
 
-            // RefreshView() re-templates every visible row, so the graph cells are
-            // rebuilt with (or without) the gray brush right away.
-            RefreshView();
-        };
-
-        CheckBox highlight = MakeCheck(T("Highlight current branch"), _highlightCurrentBranch);
-        highlight.IsCheckedChanged += (_, _) =>
-        {
-            _highlightCurrentBranch = highlight.IsChecked == true;
-            RefreshView();
-        };
+        CheckBox highlight = OptionCheck(
+            OptHighlightCurrentBranch,
+            T("Highlight current branch"),
+            ToggleHighlightCurrentBranch);
 
         // Upstream's ToggleHighlightSelectedBranch has no "back to HEAD" counterpart
         // other than a refresh; this puts the anchor back on the checked-out commit
@@ -2010,48 +2075,16 @@ public sealed class RevisionGridView : UserControl
         StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 150 };
 
         panel.Children.Add(SectionLabel(T("Date shown")));
-        RadioButton commit = MakeRadio(T("Commit date"), "revDateSrc", _dateSource == DateSource.Commit);
-        RadioButton author = MakeRadio(T("Author date"), "revDateSrc", _dateSource == DateSource.Author);
-        commit.IsCheckedChanged += (_, _) =>
-        {
-            if (commit.IsChecked == true)
-            {
-                _dateSource = DateSource.Commit;
-                RefreshView();
-            }
-        };
-        author.IsCheckedChanged += (_, _) =>
-        {
-            if (author.IsChecked == true)
-            {
-                _dateSource = DateSource.Author;
-                RefreshView();
-            }
-        };
-        panel.Children.Add(commit);
-        panel.Children.Add(author);
+        panel.Children.Add(OptionRadio(
+            OptCommitDate, T("Commit date"), "revDateSrc", () => SetAuthorDate(false)));
+        panel.Children.Add(OptionRadio(
+            OptAuthorDate, T("Author date"), "revDateSrc", () => SetAuthorDate(true)));
 
         panel.Children.Add(SectionLabel(T("Format")));
-        RadioButton absolute = MakeRadio(T("Absolute"), "revDateFmt", !_relativeDates);
-        RadioButton relative = MakeRadio(T("Relative"), "revDateFmt", _relativeDates);
-        absolute.IsCheckedChanged += (_, _) =>
-        {
-            if (absolute.IsChecked == true)
-            {
-                _relativeDates = false;
-                RefreshView();
-            }
-        };
-        relative.IsCheckedChanged += (_, _) =>
-        {
-            if (relative.IsChecked == true)
-            {
-                _relativeDates = true;
-                RefreshView();
-            }
-        };
-        panel.Children.Add(absolute);
-        panel.Children.Add(relative);
+        panel.Children.Add(OptionRadio(
+            OptAbsoluteDate, T("Absolute"), "revDateFmt", () => SetRelativeDate(false)));
+        panel.Children.Add(OptionRadio(
+            OptRelativeDate, T("Relative"), "revDateFmt", () => SetRelativeDate(true)));
 
         return new Flyout
         {
@@ -2070,38 +2103,18 @@ public sealed class RevisionGridView : UserControl
         StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 140 };
         panel.Children.Add(SectionLabel(T("Show columns")));
 
-        CheckBox hash = MakeCheck(T("Commit ID"), _showHash);
-        hash.IsCheckedChanged += (_, _) =>
-        {
-            _showHash = hash.IsChecked == true;
-            RefreshView();
-        };
-
-        CheckBox avatar = MakeCheck(T("Avatar"), _showAvatar);
-        avatar.IsCheckedChanged += (_, _) =>
-        {
-            _showAvatar = avatar.IsChecked == true;
-            RefreshView();
-        };
-
-        CheckBox author = MakeCheck(T("TranslatedStrings/_author.Text", "Author"), _showAuthor);
-        author.IsCheckedChanged += (_, _) =>
-        {
-            _showAuthor = author.IsChecked == true;
-            RefreshView();
-        };
-
-        CheckBox date = MakeCheck(T("TranslatedStrings/_dateText.Text", "Date"), _showDate);
-        date.IsCheckedChanged += (_, _) =>
-        {
-            _showDate = date.IsChecked == true;
-            RefreshView();
-        };
-
-        panel.Children.Add(hash);
-        panel.Children.Add(avatar);
-        panel.Children.Add(author);
-        panel.Children.Add(date);
+        // Same order as the columns themselves (and as the original's Columns group):
+        // graph, avatar, author name, date, SHA-1.
+        panel.Children.Add(OptionCheck(
+            OptGraphColumn, T("Revision graph"), ToggleRevisionGraphColumn));
+        panel.Children.Add(OptionCheck(
+            OptAvatarColumn, T("Avatar"), ToggleAuthorAvatarColumn));
+        panel.Children.Add(OptionCheck(
+            OptAuthorColumn, T("TranslatedStrings/_author.Text", "Author"), ToggleAuthorNameColumn));
+        panel.Children.Add(OptionCheck(
+            OptDateColumn, T("TranslatedStrings/_dateText.Text", "Date"), ToggleDateColumn));
+        panel.Children.Add(OptionCheck(
+            OptIdColumn, T("Commit ID"), ToggleObjectIdColumn));
 
         return new Flyout
         {
@@ -2123,17 +2136,21 @@ public sealed class RevisionGridView : UserControl
 
         panel.Children.Add(SectionLabel(T("Branches shown")));
 
-        RadioButton all = MakeRadio(T("FormBrowse/tssbtnShowBranches.Text", "All branches"), "revBranchScope", _branchScope == BranchScope.AllBranches);
-        RadioButton current = MakeRadio(T("RevisionGrid/ShowCurrentBranchOnly.Text", "Current branch only"), "revBranchScope", _branchScope == BranchScope.CurrentBranch);
-        RadioButton filtered = MakeRadio(T("RevisionGrid/ShowFilteredBranches.Text", "Filtered branches"), "revBranchScope", _branchScope == BranchScope.Filtered);
-
-        all.IsCheckedChanged += (_, _) => SelectScope(all, BranchScope.AllBranches);
-        current.IsCheckedChanged += (_, _) => SelectScope(current, BranchScope.CurrentBranch);
-        filtered.IsCheckedChanged += (_, _) => SelectScope(filtered, BranchScope.Filtered);
-
-        panel.Children.Add(all);
-        panel.Children.Add(current);
-        panel.Children.Add(filtered);
+        panel.Children.Add(OptionRadio(
+            OptShowAllBranches,
+            T("FormBrowse/tssbtnShowBranches.Text", "All branches"),
+            "revBranchScope",
+            ShowAllBranches));
+        panel.Children.Add(OptionRadio(
+            OptShowCurrentBranchOnly,
+            T("RevisionGrid/ShowCurrentBranchOnly.Text", "Current branch only"),
+            "revBranchScope",
+            ShowCurrentBranchOnly));
+        panel.Children.Add(OptionRadio(
+            OptShowFilteredBranches,
+            T("RevisionGrid/ShowFilteredBranches.Text", "Filtered branches"),
+            "revBranchScope",
+            ShowFilteredBranches));
 
         // "Filtered" has no selection UI yet, so it walks the current branch.
         panel.Children.Add(new TextBlock
@@ -2156,21 +2173,6 @@ public sealed class RevisionGridView : UserControl
         };
     }
 
-    // Applies a newly-checked branch-scope radio: updates the mode and re-runs the
-    // log. Guarded so the uncheck half of a radio pair does nothing, and a no-op
-    // re-selection of the same mode does not trigger a redundant reload.
-    private void SelectScope(RadioButton radio, BranchScope scope)
-    {
-        // The uncheck half of a radio pair fires too; ignore it and defer to the
-        // shared SetBranchScope so the header menu and the toolbar drive one path.
-        if (radio.IsChecked != true)
-        {
-            return;
-        }
-
-        SetBranchScope(scope);
-    }
-
     /// <summary>
     ///  Sets the branch scope (All branches / current branch / filtered) and
     ///  re-runs the log. Shared by the grid's own header menu and by the host
@@ -2186,11 +2188,608 @@ public sealed class RevisionGridView : UserControl
 
         _branchScope = scope;
         Reload();
+        OptionsChanged();
+    }
+
+    // =========================================================================
+    //  The grid's "Navigate" / "View" command surface
+    // =========================================================================
+    //
+    // Upstream, the Navigate and View menus of FormBrowse are not wired to the grid
+    // item by item: RevisionGridMenuCommands builds a list of MenuCommand records,
+    // each with a NAME, an ExecuteAction and (for the checkable ones) an
+    // IsCheckedFunc, and the menu is generated from that list. This port keeps the
+    // same indirection: MainMenu builds its items from the ids below and raises ONE
+    // event carrying the id, which lands in <see cref="ExecuteMenuCommand"/>; the
+    // check marks come from <see cref="ViewOptions"/> and are refreshed whenever
+    // <see cref="ViewOptionsChanged"/> fires.
+    //
+    // The ids are upstream's MenuCommand.Name values wherever one exists, so the two
+    // menus can be compared entry by entry.
+
+    // --- Navigate -------------------------------------------------------------
+    public const string CmdToggleArtificialAndHead = "ToggleBetweenArtificialAndHeadCommits";
+    public const string CmdGoToCurrentRevision = "GotoCurrentRevision";
+    public const string CmdGoToCommit = "GotoCommit";
+    public const string CmdGoToChildCommit = "GotoChildCommit";
+    public const string CmdGoToParentCommit = "GotoParentCommit";
+    public const string CmdGoToMergeBase = "GotoMergeBaseCommit";
+    public const string CmdNavigateBackward = "NavigateBackward";
+    public const string CmdNavigateForward = "NavigateForward";
+    public const string CmdQuickSearchHelp = "QuickSearch";
+    public const string CmdQuickSearchPrevious = "PrevQuickSearch";
+    public const string CmdQuickSearchNext = "NextQuickSearch";
+
+    // --- View: commands (not checkable) ---------------------------------------
+    public const string CmdAdvancedFilter = "filterToolStripMenuItem";
+    public const string CmdHighlightSelectedBranch = "HighlightSelectedBranch";
+
+    // --- View: checkable toggles ----------------------------------------------
+    // Branch scope.
+    public const string OptShowAllBranches = "ShowAllBranches";
+    public const string OptShowCurrentBranchOnly = "ShowCurrentBranchOnly";
+    public const string OptShowFilteredBranches = "ShowFilteredBranches";
+
+    // Highlighting.
+    public const string OptDrawNonRelativesGray = "drawNonrelativesGrayToolStripMenuItem";
+    public const string OptHighlightCurrentBranch = "HighlightCurrentBranch";
+
+    // Which commits the walk includes.
+    public const string OptShowArtificialCommits = "ShowArtificialCommits";
+    public const string OptShowStashes = "ShowStashes";
+    public const string OptShowGitNotes = "showGitNotesToolStripMenuItem";
+
+    // Grid labels (the ref pills).
+    public const string OptShowRemoteBranches = "ShowRemoteBranches";
+    public const string OptShowTags = "showTagsToolStripMenuItem";
+
+    // Grid info (what the Date column shows).
+    public const string OptAuthorDate = "showAuthorDateToolStripMenuItem";
+    public const string OptCommitDate = "showCommitDateToolStripMenuItem";
+    public const string OptRelativeDate = "showRelativeDateToolStripMenuItem";
+    public const string OptAbsoluteDate = "showAbsoluteDateToolStripMenuItem";
+
+    // Columns.
+    public const string OptGraphColumn = "showRevisionGraphColumnToolStripMenuItem";
+    public const string OptAvatarColumn = "showAuthorAvatarColumnToolStripMenuItem";
+    public const string OptAuthorColumn = "showAuthorNameColumnToolStripMenuItem";
+    public const string OptDateColumn = "showDateColumnToolStripMenuItem";
+    public const string OptIdColumn = "showIdColumnToolStripMenuItem";
+
+    // Sorting.
+    public const string OptOrderDefault = "GitDefaultOrder";
+    public const string OptOrderAuthorDate = "AuthorDateSort";
+    public const string OptOrderTopo = "TopoOrder";
+
+    /// <summary>
+    ///  Raised whenever any "View" option changes, from whichever surface changed it
+    ///  (the grid's own header flyouts, the main menu, a keyboard shortcut). The
+    ///  argument is the same snapshot <see cref="ViewOptions"/> returns, so a menu
+    ///  can simply re-apply it to its checkable items.
+    /// </summary>
+    public event Action<IReadOnlyDictionary<string, bool>>? ViewOptionsChanged;
+
+    /// <summary>
+    ///  The current state of every checkable "View" option, keyed by the
+    ///  <c>Opt…</c> ids above. This view is the single source of truth: neither the
+    ///  header flyouts nor the main menu keep a copy.
+    /// </summary>
+    public IReadOnlyDictionary<string, bool> ViewOptions => new Dictionary<string, bool>(StringComparer.Ordinal)
+    {
+        [OptShowAllBranches] = _branchScope == BranchScope.AllBranches,
+        [OptShowCurrentBranchOnly] = _branchScope == BranchScope.CurrentBranch,
+        [OptShowFilteredBranches] = _branchScope == BranchScope.Filtered,
+        [OptDrawNonRelativesGray] = _drawNonRelativesGray,
+        [OptHighlightCurrentBranch] = _highlightCurrentBranch,
+        [OptShowArtificialCommits] = _showArtificial,
+        [OptShowStashes] = _showStashes,
+        [OptShowGitNotes] = _showGitNotes,
+        [OptShowRemoteBranches] = _showRemotes,
+        [OptShowTags] = _showTags,
+        [OptAuthorDate] = _dateSource == DateSource.Author,
+        [OptCommitDate] = _dateSource == DateSource.Commit,
+        [OptRelativeDate] = _relativeDates,
+        [OptAbsoluteDate] = !_relativeDates,
+        [OptGraphColumn] = _showGraph,
+        [OptAvatarColumn] = _showAvatar,
+        [OptAuthorColumn] = _showAuthor,
+        [OptDateColumn] = _showDate,
+        [OptIdColumn] = _showHash,
+        [OptOrderDefault] = !_topoOrder && !_authorDateSort,
+        [OptOrderAuthorDate] = _authorDateSort,
+        [OptOrderTopo] = _topoOrder,
+    };
+
+    // Every toggle control this view built for a "View" option, by id, together with
+    // the reader for its value. The builders overwrite their entry each time a flyout
+    // is rebuilt (a language switch), so no stale control is ever synced.
+    private readonly Dictionary<string, (Control Toggle, Func<bool> Value)> _optionSurfaces =
+        new(StringComparer.Ordinal);
+
+    // Set while the option controls are being brought in line with the state, so
+    // their own change handlers do not read the write back as a user action.
+    private bool _syncingOptions;
+
+    // Builds a check box for an option: reads its current value from ViewOptions and
+    // invokes the toggle when the user flips it.
+    private CheckBox OptionCheck(string id, string text, Action toggle)
+    {
+        bool Value() => ViewOptions.TryGetValue(id, out bool v) && v;
+
+        CheckBox box = MakeCheck(text, Value());
+        box.IsCheckedChanged += (_, _) =>
+        {
+            if (_syncingOptions || (box.IsChecked == true) == Value())
+            {
+                return;
+            }
+
+            toggle();
+        };
+
+        _optionSurfaces[id] = (box, Value);
+        return box;
+    }
+
+    // Same for a radio button: only the CHECKED half of the pair acts, and a
+    // re-selection of the already-active option is a no-op (no redundant reload).
+    private RadioButton OptionRadio(string id, string text, string group, Action select)
+    {
+        bool Value() => ViewOptions.TryGetValue(id, out bool v) && v;
+
+        RadioButton radio = MakeRadio(text, group, Value());
+        radio.IsCheckedChanged += (_, _) =>
+        {
+            if (_syncingOptions || radio.IsChecked != true || Value())
+            {
+                return;
+            }
+
+            select();
+        };
+
+        _optionSurfaces[id] = (radio, Value);
+        return radio;
+    }
+
+    // Called by every toggle below: brings the header flyouts back in line with the
+    // state (so a change made from the main menu shows up there too) and tells the
+    // host, which re-applies the check marks to its own menu items.
+    //
+    // The controls are UPDATED IN PLACE rather than rebuilt: rebuilding a flyout's
+    // content while it is open would pull the visual tree out from under the pointer.
+    private void OptionsChanged()
+    {
+        _syncingOptions = true;
+        try
+        {
+            foreach ((Control toggle, Func<bool> value) in _optionSurfaces.Values)
+            {
+                bool wanted = value();
+                switch (toggle)
+                {
+                    case CheckBox box when box.IsChecked != wanted:
+                        box.IsChecked = wanted;
+                        break;
+
+                    // A radio button is only ever SET, never unset directly: checking
+                    // its sibling is what clears it.
+                    case RadioButton radio when wanted && radio.IsChecked != true:
+                        radio.IsChecked = true;
+                        break;
+                }
+            }
+        }
+        finally
+        {
+            _syncingOptions = false;
+        }
+
+        ViewOptionsChanged?.Invoke(ViewOptions);
+    }
+
+    /// <summary>
+    ///  Runs one of the grid's Navigate/View menu commands, named by the
+    ///  <c>Cmd…</c> / <c>Opt…</c> ids above. An unknown id is ignored, so a host
+    ///  menu can carry entries this view does not implement without crashing.
+    /// </summary>
+    public void ExecuteMenuCommand(string id)
+    {
+        switch (id)
+        {
+            // --- Navigate ----------------------------------------------------
+            case CmdToggleArtificialAndHead: ToggleBetweenArtificialAndHeadCommits(); break;
+            case CmdGoToCurrentRevision: SelectCurrentRevision(); break;
+            case CmdGoToCommit: OpenGoToCommit(); break;
+            case CmdGoToChildCommit: GoToChild(); break;
+            case CmdGoToParentCommit: GoToParent(); break;
+            case CmdGoToMergeBase: GoToMergeBase(); break;
+            case CmdNavigateBackward: NavigateBack(); break;
+            case CmdNavigateForward: NavigateForward(); break;
+            case CmdQuickSearchHelp: ShowQuickSearchHelp(); break;
+            case CmdQuickSearchPrevious: QuickSearchPrevious(); break;
+            case CmdQuickSearchNext: QuickSearchNext(); break;
+
+            // --- View: commands ----------------------------------------------
+            case CmdAdvancedFilter: _ = ShowFilterDialogAsync(); break;
+            case CmdHighlightSelectedBranch: ToggleHighlightSelectedBranch(); break;
+
+            // --- View: toggles ------------------------------------------------
+            case OptShowAllBranches: ShowAllBranches(); break;
+            case OptShowCurrentBranchOnly: ShowCurrentBranchOnly(); break;
+            case OptShowFilteredBranches: ShowFilteredBranches(); break;
+            case OptDrawNonRelativesGray: ToggleDrawNonRelativesGray(); break;
+            case OptHighlightCurrentBranch: ToggleHighlightCurrentBranch(); break;
+            case OptShowArtificialCommits: ToggleShowArtificialCommits(); break;
+            case OptShowStashes: ToggleShowStashes(); break;
+            case OptShowGitNotes: ToggleShowGitNotes(); break;
+            case OptShowRemoteBranches: ToggleShowRemoteBranches(); break;
+            case OptShowTags: ToggleShowTags(); break;
+            case OptAuthorDate: SetAuthorDate(_dateSource != DateSource.Author); break;
+            case OptRelativeDate: SetRelativeDate(!_relativeDates); break;
+            case OptGraphColumn: ToggleRevisionGraphColumn(); break;
+            case OptAvatarColumn: ToggleAuthorAvatarColumn(); break;
+            case OptAuthorColumn: ToggleAuthorNameColumn(); break;
+            case OptDateColumn: ToggleDateColumn(); break;
+            case OptIdColumn: ToggleObjectIdColumn(); break;
+            case OptOrderAuthorDate: ToggleAuthorDateSort(); break;
+            case OptOrderTopo: ToggleTopoOrder(); break;
+        }
+    }
+
+    // --- Branch scope ---------------------------------------------------------
+
+    /// <summary>Walks every ref (upstream's "Show all branches", Ctrl+Shift+A).</summary>
+    public void ShowAllBranches() => SetBranchScope(BranchScope.AllBranches);
+
+    /// <summary>Walks HEAD only (upstream's "Show current branch only", Ctrl+Shift+U).</summary>
+    public void ShowCurrentBranchOnly() => SetBranchScope(BranchScope.CurrentBranch);
+
+    /// <summary>Walks the filtered ref set (upstream's "Show filtered branches", Ctrl+Shift+T).</summary>
+    public void ShowFilteredBranches() => SetBranchScope(BranchScope.Filtered);
+
+    // --- Walk contents (these re-run the log) ---------------------------------
+
+    /// <summary>Includes/excludes remote-tracking branches in the walk (Ctrl+Shift+R).</summary>
+    public void ToggleShowRemoteBranches()
+    {
+        _showRemotes = !_showRemotes;
+        Reload();
+        OptionsChanged();
+    }
+
+    /// <summary>Includes/excludes tags in the walk (Ctrl+Alt+T).</summary>
+    public void ToggleShowTags()
+    {
+        _showTags = !_showTags;
+        Reload();
+        OptionsChanged();
+    }
+
+    /// <summary>Includes/excludes stash commits in the walk.</summary>
+    public void ToggleShowStashes()
+    {
+        _showStashes = !_showStashes;
+        Reload();
+        OptionsChanged();
+    }
+
+    /// <summary>
+    ///  Shows/hides the synthesised "Working directory" and "Commit index" rows.
+    ///  No git work: the rows are rebuilt from the pending-work counts already held.
+    /// </summary>
+    public void ToggleShowArtificialCommits()
+    {
+        _showArtificial = !_showArtificial;
+        ApplyFilterCore(_search.Text, preserveViewport: true);
+        OptionsChanged();
+    }
+
+    // --- Render-time options (no reload) --------------------------------------
+
+    /// <summary>Shows/hides the git-note indicator on the commits that carry one.</summary>
+    public void ToggleShowGitNotes()
+    {
+        _showGitNotes = !_showGitNotes;
+        RefreshView();
+        OptionsChanged();
+    }
+
+    /// <summary>Grays out everything that is not a relative of the highlight anchor.</summary>
+    public void ToggleDrawNonRelativesGray()
+    {
+        _drawNonRelativesGray = !_drawNonRelativesGray;
+
+        // RefreshView() re-templates every visible row, so the graph cells are
+        // rebuilt with (or without) the gray brush right away.
+        RefreshView();
+        OptionsChanged();
+    }
+
+    /// <summary>Emphasises HEAD's first-parent line.</summary>
+    public void ToggleHighlightCurrentBranch()
+    {
+        _highlightCurrentBranch = !_highlightCurrentBranch;
+        RefreshView();
+        OptionsChanged();
+    }
+
+    /// <summary>
+    ///  Re-anchors the graph highlighting on the SELECTED commit — upstream's
+    ///  "Highlight selected branch (until refresh)" (Ctrl+Shift+B), the keyboard
+    ///  equivalent of Alt+clicking the row. With nothing selected (or an artificial
+    ///  row selected) the anchor goes back to HEAD.
+    /// </summary>
+    public void ToggleHighlightSelectedBranch()
+        => HighlightBranchOf(_list.SelectedItem is RevisionRow row && !IsArtificial(row) ? row.Hash : null);
+
+    /// <summary>Switches the Date column between the author and the commit timestamp.</summary>
+    public void SetAuthorDate(bool authorDate)
+    {
+        DateSource wanted = authorDate ? DateSource.Author : DateSource.Commit;
+        if (_dateSource == wanted)
+        {
+            return;
+        }
+
+        _dateSource = wanted;
+        RefreshView();
+        OptionsChanged();
+    }
+
+    /// <summary>Switches the Date column between "3 days ago" and an absolute stamp.</summary>
+    public void SetRelativeDate(bool relative)
+    {
+        if (_relativeDates == relative)
+        {
+            return;
+        }
+
+        _relativeDates = relative;
+        RefreshView();
+        OptionsChanged();
+    }
+
+    /// <summary>Shows/hides the DAG column.</summary>
+    public void ToggleRevisionGraphColumn() => ToggleColumn(() => _showGraph = !_showGraph);
+
+    /// <summary>Shows/hides the author-avatar (identicon) column.</summary>
+    public void ToggleAuthorAvatarColumn() => ToggleColumn(() => _showAvatar = !_showAvatar);
+
+    /// <summary>Shows/hides the author-name column.</summary>
+    public void ToggleAuthorNameColumn() => ToggleColumn(() => _showAuthor = !_showAuthor);
+
+    /// <summary>Shows/hides the date column.</summary>
+    public void ToggleDateColumn() => ToggleColumn(() => _showDate = !_showDate);
+
+    /// <summary>Shows/hides the SHA-1 column.</summary>
+    public void ToggleObjectIdColumn() => ToggleColumn(() => _showHash = !_showHash);
+
+    private void ToggleColumn(Action flip)
+    {
+        flip();
+        RefreshView();
+        OptionsChanged();
+    }
+
+    // --- Sorting (these re-run the log) --------------------------------------
+
+    /// <summary>
+    ///  Turns author-date ordering on, or back to git's default order when it is
+    ///  already on — the behaviour of upstream's checkable "Sort commits by author
+    ///  date" entry.
+    /// </summary>
+    public void ToggleAuthorDateSort()
+    {
+        if (_authorDateSort)
+        {
+            SetDefaultSort();
+            return;
+        }
+
+        SetAuthorDateSort();
+    }
+
+    /// <summary>Same for "Arrange commits by topo order".</summary>
+    public void ToggleTopoOrder()
+    {
+        if (_topoOrder)
+        {
+            SetDefaultSort();
+            return;
+        }
+
+        SetTopoSort();
+    }
+
+    private void SetDefaultSort() => SetSort(authorDate: false, topo: false);
+
+    private void SetAuthorDateSort() => SetSort(authorDate: true, topo: false);
+
+    private void SetTopoSort() => SetSort(authorDate: false, topo: true);
+
+    // The three orders are mutually exclusive (upstream's single RevisionSortOrder
+    // enum), so one setter owns both flags.
+    private void SetSort(bool authorDate, bool topo)
+    {
+        if (_authorDateSort == authorDate && _topoOrder == topo)
+        {
+            return;
+        }
+
+        _authorDateSort = authorDate;
+        _topoOrder = topo;
+        Reload();
+        OptionsChanged();
+    }
+
+    // --- Navigation commands -------------------------------------------------
+
+    /// <summary>Selects the checked-out revision (upstream's Ctrl+Shift+C).</summary>
+    public void SelectCurrentRevision() => GoToCurrentRevision();
+
+    /// <summary>Opens the "Go to commit" entry box (upstream's Ctrl+Shift+G).</summary>
+    public void OpenGoToCommit() => OpenGoTo();
+
+    /// <summary>Selects the first parent of the current selection (Ctrl+P).</summary>
+    public void GoToParentCommit() => GoToParent();
+
+    /// <summary>Selects the nearest child of the current selection (Ctrl+N).</summary>
+    public void GoToChildCommit() => GoToChild();
+
+    /// <summary>Advances the quick-search to the next match (Alt+↓).</summary>
+    public void QuickSearchNext() => QuickSearchStepOrHint(forward: true);
+
+    /// <summary>Steps the quick-search back to the previous match (Alt+↑).</summary>
+    public void QuickSearchPrevious() => QuickSearchStepOrHint(forward: false);
+
+    // With an empty buffer there is nothing to step through, so say how to start one
+    // instead of silently doing nothing.
+    private void QuickSearchStepOrHint(bool forward)
+    {
+        if (_quickSearch.Length == 0)
+        {
+            FlashStatus(QuickSearchHelpText);
+            return;
+        }
+
+        QuickSearchStep(forward);
+    }
+
+    /// <summary>
+    ///  Explains the quick-search, like the information box behind upstream's
+    ///  "Quick search" Navigate entry. Shown modally when there is a window to own
+    ///  the dialog, and in the status line when there is not.
+    /// </summary>
+    public void ShowQuickSearchHelp() => _ = ShowQuickSearchHelpAsync();
+
+    private async Task ShowQuickSearchHelpAsync()
+    {
+        if (TopLevel.GetTopLevel(this) is not Window)
+        {
+            FlashStatus(QuickSearchHelpText);
+            return;
+        }
+
+        await InfoAsync(QuickSearchHelpText);
+    }
+
+    private static string QuickSearchHelpText => T(
+        "RevisionGridMenuCommands/_quickSearchQuickHelp.Text",
+        "Start typing in revision grid to start quick search.");
+
+    /// <summary>
+    ///  Moves the selection between the artificial rows and the checked-out commit
+    ///  (upstream's ToggleBetweenArtificialAndHeadCommits, Ctrl+\): from a commit it
+    ///  jumps to the topmost artificial row, from an artificial row back to HEAD.
+    ///  With no artificial row on screen it simply goes to HEAD.
+    /// </summary>
+    public void ToggleBetweenArtificialAndHeadCommits()
+    {
+        bool onArtificial = _list.SelectedItem is RevisionRow row && IsArtificial(row);
+        if (!onArtificial && _artificialCount > 0 && _rows.Count > 0)
+        {
+            string? from = CurrentHash;
+            SelectIndex(0);
+            PushHistory(from);
+            return;
+        }
+
+        GoToCurrentRevision();
+    }
+
+    /// <summary>
+    ///  Selects the merge base of the selection — upstream's "Go to common ancestor
+    ///  (merge base)" (Ctrl+Shift+K). With two commits selected it is their common
+    ///  ancestor; with one, the common ancestor of that commit and HEAD.
+    ///
+    ///  <para>The <c>git merge-base</c> call runs off the UI thread (M43) and the
+    ///  result is applied through the dispatcher. Unrelated histories, or a base that
+    ///  is not inside the loaded window, are reported in the status line rather than
+    ///  silently doing nothing.</para>
+    /// </summary>
+    public void GoToMergeBase()
+    {
+        List<RevisionRow> selected = SelectedCommits();
+        if (_repoPath.Length == 0 || selected.Count == 0)
+        {
+            return;
+        }
+
+        string first = selected[0].Hash;
+        string second = selected.Count >= 2 ? selected[1].Hash : "HEAD";
+        if (selected.Count == 1 && selected[0].IsHead)
+        {
+            FlashStatus(T("The selected commit is the current revision."));
+            return;
+        }
+
+        string repoPath = _repoPath;
+        FlashStatus(T("Looking for the merge base…"));
+
+        _ = Task.Run(() =>
+        {
+            string? mergeBase = MergeBaseService.FindMergeBase(repoPath, first, second);
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (mergeBase is null)
+                {
+                    FlashStatus(T("The selected commits have no common ancestor."));
+                    return;
+                }
+
+                if (FindIndex(_rows, mergeBase) < 0 && FindIndex(_allRows, mergeBase) < 0)
+                {
+                    FlashStatus(T("The merge base is not in the loaded history."));
+                    return;
+                }
+
+                GoToCommit(mergeBase);
+            });
+        });
+    }
+
+    // A minimal modal information box (one OK button), the port's counterpart of
+    // upstream's MessageBoxes.Show(..., MessageBoxIcon.Information).
+    private async Task InfoAsync(string message)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return;
+        }
+
+        Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK") };
+        Window dialog = new()
+        {
+            Title = T("Information"),
+            Width = 380,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = B("App.Panel"),
+        };
+        ok.Click += (_, _) => dialog.Close();
+
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = B("App.Text"),
+        });
+        content.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { ok },
+        });
+        dialog.Content = content;
+
+        await dialog.ShowDialog(owner);
     }
 
     // "Go to" menu: buttons to jump to the first parent / nearest child of the
     // current selection, plus a hash box to select an arbitrary commit. All three
-    // also work via keyboard (Alt+↑, Alt+↓, Ctrl+G).
+    // also work via keyboard (Ctrl+P, Ctrl+N, Ctrl+Shift+G).
     private Flyout BuildGoToFlyout()
     {
         StackPanel panel = new() { Spacing = 4, Margin = new Thickness(6), MinWidth = 190 };
@@ -2199,7 +2798,7 @@ public sealed class RevisionGridView : UserControl
 
         panel.Children.Add(SectionLabel(T("FormBrowse/navigateToolStripMenuItem.Text", "Navigate")));
 
-        Button parent = MakeMenuButton(string.Format(T("↑  {0}   (Alt+↑)"),
+        Button parent = MakeMenuButton(string.Format(T("↑  {0}   (Ctrl+P)"),
             T("RevisionGrid/GotoFirstParentCommit.Text", "First parent")));
         parent.Click += (_, _) =>
         {
@@ -2207,7 +2806,7 @@ public sealed class RevisionGridView : UserControl
             GoToParent();
         };
 
-        Button child = MakeMenuButton(string.Format(T("↓  {0}   (Alt+↓)"),
+        Button child = MakeMenuButton(string.Format(T("↓  {0}   (Ctrl+N)"),
             T("RevisionGrid/GotoChildCommit.Text", "Nearest child")));
         child.Click += (_, _) =>
         {
@@ -2308,7 +2907,7 @@ public sealed class RevisionGridView : UserControl
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
 
-    // Opens the "Go to" flyout and focuses the hash box (Ctrl+G).
+    // Opens the "Go to" flyout and focuses the hash box (Ctrl+Shift+G).
     private void OpenGoTo()
     {
         if (_goToButton.Flyout is Flyout f)
@@ -2408,11 +3007,63 @@ public sealed class RevisionGridView : UserControl
         return -1;
     }
 
-    // Quick-search matches on the subject or author (not the hash — that is what
-    // the "Go to commit" box is for), case-insensitively.
+    // Quick-search matches exactly the fields the original tests, in the same order
+    // (GitRevisionTester.Matches, GitRevisionTester.cs:97-109):
+    //  * any REF NAME containing the query — which is how "type a branch name to
+    //    jump to its tip" works, and what the port was missing;
+    //  * the commit hash PREFIX, but only from three characters on, so a one- or
+    //    two-letter query does not snap onto an unrelated commit;
+    //  * finally the author and the subject.
     private static bool QuickMatches(RevisionRow row, string query)
-        => row.Subject.Contains(query, StringComparison.OrdinalIgnoreCase)
-        || row.Author.Contains(query, StringComparison.OrdinalIgnoreCase);
+    {
+        foreach (string refName in row.RefNames)
+        {
+            if (refName.Length > 0 && refName.Contains(query, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        if (query.Length > 2 && row.Hash.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return row.Author.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || row.Subject.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Ctrl+V while quick-searching appends the clipboard to the buffer, as the
+    // original's QuickSearchProvider does (QuickSearchProvider.cs:67-72). The
+    // clipboard is asynchronous here, so the buffer is extended when it arrives;
+    // a paste with an empty clipboard leaves the buffer untouched.
+    private async Task PasteIntoQuickSearchAsync()
+    {
+        string? text = TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard
+            ? await clipboard.GetTextAsync()
+            : null;
+
+        if (string.IsNullOrEmpty(text) || _rows.Count == 0)
+        {
+            return;
+        }
+
+        // One line only: a multi-line paste would never match a subject anyway, and
+        // the adorner is a single-line pill.
+        int newline = text.IndexOfAny(['\r', '\n']);
+        if (newline >= 0)
+        {
+            text = text[..newline];
+        }
+
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        _quickSearch += text;
+        QuickSearchApply(fromCurrentInclusive: true);
+    }
 
     // Shows/refreshes the transient adorner and (re)arms the idle-dismiss timer.
     private void ShowQuickSearch(bool found)
@@ -2999,7 +3650,7 @@ public sealed class RevisionGridView : UserControl
         // segments (which reference adjacent rows in the full list) no longer make
         // sense — the column is collapsed to zero width and the graph is skipped
         // to avoid rendering a garbled DAG. It returns in full once the filter clears.
-        if (!_quickFilterActive)
+        if (_showGraph && !_quickFilterActive)
         {
             (bool Node, bool[] Segments)? flags = _drawNonRelativesGray
                 ? GraphRelatives(index)
@@ -3084,7 +3735,7 @@ public sealed class RevisionGridView : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        if (row.HasNotes)
+        if (row.HasNotes && _showGitNotes)
         {
             subject.Children.Add(BuildNotesBadge());
         }
@@ -3139,7 +3790,7 @@ public sealed class RevisionGridView : UserControl
         int index = IndexOf(_rows, row);
         RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
 
-        if (!_quickFilterActive)
+        if (_showGraph && !_quickFilterActive)
         {
             RevisionGraphControl graph = new(
                 ArtificialSegments(index), _artificialLane, LaneWidth, artificialNode: true);
@@ -3624,12 +4275,17 @@ public sealed class RevisionGridView : UserControl
         {
             Header = Strip(T("FormBrowse/navigateToolStripMenuItem.Text", "&Navigate")),
         };
-        AddChild(navigate, MakeItem(T("RevisionGrid/GotoFirstParentCommit.Text", "First parent"), GoToParent),
+        AddChild(navigate, MakeItem(T("RevisionGrid/GotoFirstParentCommit.Text", "First parent") + "   (Ctrl+P)", GoToParent),
             ctx => true, ctx => ctx.SelectionCount <= 1);
-        AddChild(navigate, MakeItem(T("RevisionGrid/GotoChildCommit.Text", "Nearest child"), GoToChild),
+        AddChild(navigate, MakeItem(T("RevisionGrid/GotoChildCommit.Text", "Nearest child") + "   (Ctrl+N)", GoToChild),
             ctx => true, ctx => ctx.SelectionCount <= 1);
-        AddChild(navigate, MakeItem(T("RevisionGrid/GotoCurrentRevision.Text", "Go to current revision"), GoToCurrentRevision));
-        AddChild(navigate, MakeItem(T("FormGoToCommit/$this.Text", "Go to commit") + "…", () => _ = GoToCommitPromptAsync()));
+        AddChild(
+            navigate,
+            MakeItem(T("RevisionGrid/GotoMergeBaseCommit.Text", "Common ancestor (merge base)") + "   (Ctrl+Shift+K)", GoToMergeBase),
+            ctx => !ctx.Artificial,
+            ctx => ctx.SelectionCount is 1 or 2);
+        AddChild(navigate, MakeItem(T("RevisionGrid/GotoCurrentRevision.Text", "Go to current revision") + "   (Ctrl+Shift+C)", GoToCurrentRevision));
+        AddChild(navigate, MakeItem(T("FormGoToCommit/$this.Text", "Go to commit") + "…   (Ctrl+Shift+G)", () => _ = GoToCommitPromptAsync()));
         AddChild(navigate, MakeItem(T("RevisionGrid/NavigateBackward.Text", "Backward") + "   (Alt+←)", () => NavigateBack()));
         AddChild(navigate, MakeItem(T("RevisionGrid/NavigateForward.Text", "Forward") + "   (Alt+→)", () => NavigateForward()));
         Rule(navigate, ctx => true);

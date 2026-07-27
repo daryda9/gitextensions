@@ -425,7 +425,9 @@ public sealed class RevisionService
     ///  walk an explicit HEAD/ref set only.</para>
     ///
     ///  <para><paramref name="topoOrder"/> switches the walk from the default date
-    ///  order to topological order (<c>--topo-order</c>).</para>
+    ///  order to topological order (<c>--topo-order</c>); the page loader also
+    ///  accepts an author-date order (<c>--author-date-order</c>), which is the
+    ///  original's third <c>RevisionSortOrder</c>.</para>
     /// </summary>
     public IReadOnlyList<RevisionRow> LoadRevisions(
         string repoPath,
@@ -481,6 +483,7 @@ public sealed class RevisionService
         bool showStashes = false,
         bool topoOrder = false,
         RevisionFilter? filter = null,
+        bool authorDateOrder = false,
         CancellationToken cancellationToken = default)
     {
         RevisionFilter criteria = filter ?? RevisionFilter.None;
@@ -553,8 +556,12 @@ public sealed class RevisionService
                 : "HEAD";
         }
 
-        // Topological vs. the default (commit-date) ordering.
-        string orderArg = topoOrder ? " --topo-order" : string.Empty;
+        // Walk order, mirroring the original's RevisionSortOrder (GitDefault /
+        // AuthorDate / Topology): topological order wins when both are asked for,
+        // since it is the stronger constraint.
+        string orderArg = topoOrder
+            ? " --topo-order"
+            : authorDateOrder ? " --author-date-order" : string.Empty;
 
         // --skip selects the page. git applies it BEFORE --max-count, and the walk is
         // deterministic for a fixed ref set + order, so consecutive pages line up into
