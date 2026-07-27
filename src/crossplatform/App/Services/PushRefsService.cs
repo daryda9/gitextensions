@@ -32,6 +32,26 @@ public sealed record PushRefsListing(
     IReadOnlyList<PushBranchRow> Branches);
 
 /// <summary>
+///  How hard a push may overwrite the remote. Three states, like the Windows
+///  dialog's two mutually exclusive check boxes (<c>ckForceWithLease</c> /
+///  <c>ForcePushBranches</c>):
+///  <list type="bullet">
+///   <item><see cref="None"/> — plain push, no force.</item>
+///   <item><see cref="WithLease"/> — <c>--force-with-lease</c>: refused when the
+///    remote ref moved since our last fetch, so it cannot clobber unseen work.</item>
+///   <item><see cref="Force"/> — plain <c>--force</c>. Needed for TAGS, which
+///    git cannot push with a lease (see <c>FormPush.GetForcePushOption</c>),
+///    and unavoidable when the remote branch has no local tracking ref.</item>
+///  </list>
+/// </summary>
+public enum PushForceMode
+{
+    None = 0,
+    WithLease = 1,
+    Force = 2,
+}
+
+/// <summary>
 ///  Push operations that go beyond the single-branch case handled by
 ///  <see cref="RemoteService.PushStreaming"/>: pushing an arbitrary set of
 ///  refspecs (several branches at once, individual tags, <c>--tags</c>) and
@@ -90,6 +110,61 @@ public sealed class PushRefsService
         return new PushRefsListing(tags, branches);
     }
 
+    /// <summary>
+    ///  Lists, per configured remote, the branch names that already exist ON that
+    ///  remote (as known locally from <c>refs/remotes/</c>), with the
+    ///  <c>&lt;remote&gt;/</c> prefix stripped — i.e. exactly the names that are
+    ///  valid destinations for a push to that remote.
+    ///
+    ///  The push dialog needs this to populate its "Remote branch" combo: offering
+    ///  the LOCAL branch names there is wrong, because a name that exists locally
+    ///  but not on the remote silently CREATES a remote branch.
+    ///
+    ///  <c>refs/remotes/&lt;remote&gt;/HEAD</c> is skipped: it is a symbolic alias,
+    ///  not a pushable branch.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> LoadRemoteBranches(string repoPath)
+    {
+        Dictionary<string, List<string>> map = new(StringComparer.Ordinal);
+
+        foreach (string line in Capture(repoPath, "for-each-ref --sort=refname --format=%(refname) refs/remotes"))
+        {
+            const string prefix = "refs/remotes/";
+            string reference = line.Trim();
+            if (!reference.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string rest = reference[prefix.Length..];
+            int slash = rest.IndexOf('/');
+            if (slash <= 0 || slash + 1 >= rest.Length)
+            {
+                continue;
+            }
+
+            string remote = rest[..slash];
+            string branch = rest[(slash + 1)..];
+            if (branch is "HEAD")
+            {
+                continue;
+            }
+
+            if (!map.TryGetValue(remote, out List<string>? list))
+            {
+                list = [];
+                map[remote] = list;
+            }
+
+            list.Add(branch);
+        }
+
+        return map.ToDictionary(
+            kv => kv.Key,
+            kv => (IReadOnlyList<string>)kv.Value,
+            StringComparer.Ordinal);
+    }
+
     // "[ahead 2, behind 1]" / "[ahead 3]" / "[behind 4]" / "[gone]" / "" (in sync).
     private static (int Ahead, int Behind) ParseTrack(string track)
     {
@@ -135,7 +210,7 @@ public sealed class PushRefsService
     /// <param name="repoPath">Repository working directory.</param>
     /// <param name="target">Remote name or URL to push to.</param>
     /// <param name="refspecs">Refspecs (e.g. <c>main:main</c>, <c>refs/tags/v1</c>); may be empty when <paramref name="allTags"/> is set.</param>
-    /// <param name="force">Use <c>--force-with-lease</c> (safe force).</param>
+    /// <param name="force">How hard to overwrite the remote — see <see cref="PushForceMode"/>.</param>
     /// <param name="allTags">Add <c>--tags</c> (push every local tag).</param>
     /// <param name="setUpstream">Add <c>-u</c> so pushed branches start tracking.</param>
     /// <param name="recurseSubmodules">Add <c>--recurse-submodules=on-demand</c>.</param>
@@ -145,7 +220,7 @@ public sealed class PushRefsService
         string repoPath,
         string target,
         IReadOnlyList<string> refspecs,
-        bool force,
+        PushForceMode force,
         bool allTags,
         bool setUpstream,
         bool recurseSubmodules,
@@ -163,9 +238,14 @@ public sealed class PushRefsService
         }
 
         StringBuilder args = new("push --progress");
-        if (force)
+        switch (force)
         {
-            args.Append(" --force-with-lease");
+            case PushForceMode.WithLease:
+                args.Append(" --force-with-lease");
+                break;
+            case PushForceMode.Force:
+                args.Append(" --force");
+                break;
         }
 
         if (allTags)
@@ -230,6 +310,32 @@ public sealed class PushRefsService
         string output = sb.ToString();
         return new RemoteOpResult(exit == 0, output, LooksLikeAuthFailure(output));
     }
+
+    /// <summary>
+    ///  Two-state overload kept for the historical call sites: <c>force: true</c>
+    ///  means the SAFE force (<c>--force-with-lease</c>), which is what the single
+    ///  boolean used to mean everywhere in the port.
+    /// </summary>
+    public RemoteOpResult PushRefsStreaming(
+        string repoPath,
+        string target,
+        IReadOnlyList<string> refspecs,
+        bool force,
+        bool allTags,
+        bool setUpstream,
+        bool recurseSubmodules,
+        Action<string> onOutput,
+        GitCredentials? credentials = null)
+        => PushRefsStreaming(
+            repoPath,
+            target,
+            refspecs,
+            force ? PushForceMode.WithLease : PushForceMode.None,
+            allTags,
+            setUpstream,
+            recurseSubmodules,
+            onOutput,
+            credentials);
 
     // Refuses to run and ALSO emits the reason: the streaming process dialog shows
     // only the emitted lines, so a silent refusal would look like an empty failure.

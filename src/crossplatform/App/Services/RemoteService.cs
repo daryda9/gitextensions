@@ -440,8 +440,27 @@ public sealed class RemoteService
 
     /// <summary>
     ///  Streaming variant of <see cref="Push"/> — see <see cref="FetchStreaming"/>.
+    ///
+    ///  <para>Kept for the existing call sites: it is the two-state (plain / safe
+    ///  force) shorthand for the <see cref="PushForceMode"/> overload, where
+    ///  <c>force: true</c> means <c>--force-with-lease</c>.</para>
     /// </summary>
     public RemoteOpResult PushStreaming(string repoPath, string remote, string branch, bool force, Action<string> onOutput, GitCredentials? credentials = null)
+        => PushStreaming(
+            repoPath,
+            remote,
+            branch,
+            force ? PushForceMode.WithLease : PushForceMode.None,
+            onOutput,
+            credentials);
+
+    /// <summary>
+    ///  Streaming push with the full three-state force choice — see
+    ///  <see cref="PushForceMode"/>. Branches should use
+    ///  <see cref="PushForceMode.WithLease"/>; plain <see cref="PushForceMode.Force"/>
+    ///  is what tags require, as git cannot lease a tag.
+    /// </summary>
+    public RemoteOpResult PushStreaming(string repoPath, string remote, string branch, PushForceMode force, Action<string> onOutput, GitCredentials? credentials = null)
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
@@ -459,7 +478,12 @@ public sealed class RemoteService
             remote: remote,
             fromBranch: branch,
             toBranch: branch,
-            force: force ? ForcePushOptions.ForceWithLease : ForcePushOptions.DoNotForce,
+            force: force switch
+            {
+                PushForceMode.WithLease => ForcePushOptions.ForceWithLease,
+                PushForceMode.Force => ForcePushOptions.Force,
+                _ => ForcePushOptions.DoNotForce,
+            },
             track: true,
             recursiveSubmodules: 0);
 

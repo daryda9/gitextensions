@@ -58,6 +58,7 @@ public sealed class PushDialog : Window
     private readonly ComboBox _localBranchCombo;
     private readonly ComboBox _remoteBranchCombo;
     private readonly CheckBox _forceWithLease;
+    private readonly CheckBox _forcePush;
     private readonly CheckBox _pushAllTagsOption;
     private readonly CheckBox _recursiveSubmodules;
     private readonly TextBlock _branchFromLabel;
@@ -75,6 +76,7 @@ public sealed class PushDialog : Window
     private readonly Button _tagsSelectNone;
 
     // Push multiple branches tab.
+    private readonly CheckBox _multiForceWithLease;
     private readonly CheckBox _multiForce;
     private readonly CheckBox _multiSelectAll;
     private readonly StackPanel _multiPanel;
@@ -90,6 +92,15 @@ public sealed class PushDialog : Window
 
     private bool _pushLaunched;
     private bool _suppressSelectAll;
+    private bool _suppressForceSync;
+
+    /// <summary>
+    ///  Branches that already exist on each configured remote, keyed by remote name
+    ///  (<c>origin</c> → <c>main</c>, <c>feature/x</c>, …). Feeds the "Remote
+    ///  branch" combo and the "this would create a NEW remote branch" confirmation.
+    ///  Reloaded off the UI thread whenever the remote list changes.
+    /// </summary>
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> _remoteBranches;
 
     /// <summary>A row of the "Push multiple branches" grid.</summary>
     private sealed record MultiBranchRow(string Local, CheckBox Check, TextBox Destination);
@@ -105,11 +116,13 @@ public sealed class PushDialog : Window
         string CurrentBranch,
         IReadOnlyList<string> LocalBranches,
         IReadOnlyList<PushTagRow> Tags,
-        IReadOnlyList<PushBranchRow> BranchRows);
+        IReadOnlyList<PushBranchRow> BranchRows,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> RemoteBranches);
 
     private PushDialog(string repoPath, PushData data)
     {
         _repoPath = repoPath ?? string.Empty;
+        _remoteBranches = data.RemoteBranches;
 
         Width = 660;
         Height = 520;
@@ -195,41 +208,30 @@ public sealed class PushDialog : Window
             _localBranchCombo.Items.Add(b);
         }
 
+        // The destination combo lists the branches that already exist ON the
+        // selected remote — NOT the local ones, which would invite pushing to a
+        // wrongly-named (and silently created) remote branch. It stays editable
+        // because creating a new remote branch is legitimate; that case is
+        // confirmed explicitly before the push runs.
         _remoteBranchCombo = new ComboBox
         {
             MinWidth = 220,
             VerticalAlignment = VerticalAlignment.Center,
             IsEditable = true,
         };
-        foreach (string b in localBranches)
-        {
-            _remoteBranchCombo.Items.Add(b);
-        }
 
         // Default local branch = current; remote target = same name.
         SelectBranch(_localBranchCombo, currentBranch, localBranches);
-        if (!string.IsNullOrEmpty(currentBranch))
-        {
-            _remoteBranchCombo.SelectedItem = _localBranchCombo.SelectedItem;
-            if (_remoteBranchCombo.SelectedItem is null)
-            {
-                _remoteBranchCombo.Items.Add(currentBranch);
-                _remoteBranchCombo.SelectedItem = currentBranch;
-            }
-        }
+        UpdateRemoteBranchCombo(LocalBranchName());
 
-        // Keep the remote target in step with the local selection.
-        _localBranchCombo.SelectionChanged += (_, _) =>
-        {
-            if (_localBranchCombo.SelectedItem is string name)
-            {
-                if (!_remoteBranchCombo.Items.Contains(name))
-                {
-                    _remoteBranchCombo.Items.Add(name);
-                }
-                _remoteBranchCombo.SelectedItem = name;
-            }
-        };
+        // The destination list belongs to the selected remote, so it is rebuilt
+        // whenever the remote changes (upstream: UpdateRemoteBranchDropDown).
+        _remoteCombo.SelectionChanged += (_, _) => UpdateRemoteBranchCombo(LocalBranchName());
+
+        // Keep the remote target in step with the local selection: picking another
+        // branch to push retargets the destination (as upstream's
+        // BranchSelectedValueChanged does), typed-over name included.
+        _localBranchCombo.SelectionChanged += (_, _) => UpdateRemoteBranchCombo(LocalBranchName(), discardTyped: true);
 
         _branchFromLabel = Label(string.Empty);
         _branchToLabel = Label(string.Empty);
@@ -248,6 +250,8 @@ public sealed class PushDialog : Window
         };
 
         _forceWithLease = MakeCheck();
+        _forcePush = MakeCheck();
+        MakeExclusive(_forceWithLease, _forcePush);
         _pushAllTagsOption = MakeCheck();
         _recursiveSubmodules = MakeCheck();
 
@@ -258,7 +262,17 @@ public sealed class PushDialog : Window
                 Orientation = Orientation.Vertical,
                 Spacing = 4,
                 Margin = new Thickness(0, 6, 0, 0),
-                Children = { _forceWithLease, _pushAllTagsOption, _recursiveSubmodules },
+                Children =
+                {
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 12,
+                        Children = { _forceWithLease, _forcePush },
+                    },
+                    _pushAllTagsOption,
+                    _recursiveSubmodules,
+                },
             },
             Margin = new Thickness(0, 8, 0, 0),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
@@ -392,14 +406,23 @@ public sealed class PushDialog : Window
         AddAt(multiHeader, _multiTrackHeader, 0, 3);
         multiHeader.Margin = new Thickness(0, 0, 0, 4);
 
+        _multiForceWithLease = MakeCheck();
         _multiForce = MakeCheck();
+        MakeExclusive(_multiForceWithLease, _multiForce);
+
+        StackPanel multiForceRow = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            Margin = new Thickness(0, 8, 0, 0),
+            Children = { _multiForceWithLease, _multiForce },
+        };
 
         DockPanel multiTabContent = new() { Margin = new Thickness(6) };
         DockPanel.SetDock(multiHeader, Dock.Top);
-        DockPanel.SetDock(_multiForce, Dock.Bottom);
-        _multiForce.Margin = new Thickness(0, 8, 0, 0);
+        DockPanel.SetDock(multiForceRow, Dock.Bottom);
         multiTabContent.Children.Add(multiHeader);
-        multiTabContent.Children.Add(_multiForce);
+        multiTabContent.Children.Add(multiForceRow);
         multiTabContent.Children.Add(Scroll(_multiPanel));
 
         SyncSelectAll();
@@ -471,6 +494,7 @@ public sealed class PushDialog : Window
         _branchToLabel.Text = T("FormPush/labelTo.Text", "to");
         _showOptions.Header = T("FormPush/ShowOptions.Text", "Show options");
         _forceWithLease.Content = ForceWithLeaseCaption;
+        _forcePush.Content = ForcePushCaption;
         _pushAllTagsOption.Content = PushAllTagsCaption;
         _recursiveSubmodules.Content = T("FormPush/label2.Text", "Recursive submodules");
 
@@ -478,13 +502,18 @@ public sealed class PushDialog : Window
         _tagsSelectAll.Content = T("FormPush/selectAllToolStripMenuItem.Text", "Select all");
         _tagsSelectNone.Content = T("FormPush/unselectAllToolStripMenuItem.Text", "Select none");
         _tagsAll.Content = PushAllTagsCaption + " (--tags)";
-        _tagsForce.Content = ForceWithLeaseCaption;
+
+        // Tags get a PLAIN force check box, not "force with lease": git cannot push
+        // a tag with a lease, so the tags tab has one force option only — the same
+        // single ForcePushTags check box the Windows dialog shows.
+        _tagsForce.Content = ForcePushCaption + " (--force)";
         _tagsEmpty.Text = T("This repository has no local tags.");
 
         _multiLocalHeader.Text = T("FormPush/LocalColumn.HeaderText", "Local branch");
         _multiRemoteHeader.Text = T("FormPush/RemoteColumn.HeaderText", "Remote branch");
         _multiTrackHeader.Text = T("FormPush/NewColumn.HeaderText", "Ahead/behind");
-        _multiForce.Content = ForceWithLeaseCaption;
+        _multiForceWithLease.Content = ForceWithLeaseCaption;
+        _multiForce.Content = ForcePushCaption;
         if (_multiEmpty is not null)
         {
             _multiEmpty.Text = T("This repository has no local branches.");
@@ -498,6 +527,8 @@ public sealed class PushDialog : Window
     // kept as the English fallback and replaced wholesale once translated.
     private static string ForceWithLeaseCaption
         => T("FormPush/ckForceWithLease.Text", "Force with lease (safe force)");
+
+    private static string ForcePushCaption => T("FormPush/ForcePushBranches.Text", "Force push");
 
     private static string PushAllTagsCaption => T("Push all tags");
 
@@ -571,7 +602,27 @@ public sealed class PushDialog : Window
             listing = new PushRefsListing([], []);
         }
 
-        return new PushData(remoteRows, current, locals, listing.Tags, listing.Branches);
+        return new PushData(
+            remoteRows,
+            current,
+            locals,
+            listing.Tags,
+            listing.Branches,
+            LoadRemoteBranches(repoPath));
+    }
+
+    // Branches known to exist on each remote. Must run OFF the UI thread (it shells
+    // out to git), which is why it is only ever called from LoadData / a Task.Run.
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> LoadRemoteBranches(string repoPath)
+    {
+        try
+        {
+            return new PushRefsService().LoadRemoteBranches(repoPath);
+        }
+        catch (Exception)
+        {
+            return new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        }
     }
 
     // --- Target (remote / url) -------------------------------------------
@@ -608,6 +659,78 @@ public sealed class PushDialog : Window
         _remoteCombo.SelectedIndex = index >= 0 ? index : 0;
     }
 
+    /// <summary>The local branch currently picked in the "Branch to push" combo.</summary>
+    private string LocalBranchName() => _localBranchCombo.SelectedItem as string ?? string.Empty;
+
+    /// <summary>
+    ///  The destination branch as it will be pushed: the text of the editable combo
+    ///  (so a name the user typed counts), falling back to the selected item.
+    /// </summary>
+    private string RemoteBranchName()
+    {
+        string typed = (_remoteBranchCombo.Text ?? string.Empty).Trim();
+        return typed.Length > 0 ? typed : (_remoteBranchCombo.SelectedItem as string ?? string.Empty).Trim();
+    }
+
+    /// <summary>Branches known to exist on the currently selected remote.</summary>
+    private IReadOnlyList<string> BranchesOnSelectedRemote()
+        => _remoteCombo.SelectedItem is string remote
+            && _remoteBranches.TryGetValue(remote, out IReadOnlyList<string>? list)
+            ? list
+            : [];
+
+    /// <summary>
+    ///  Rebuilds the "Remote branch" drop-down for the currently selected remote:
+    ///  <paramref name="preferred"/> (the local branch name, the natural
+    ///  destination) first, then every branch that already exists on that remote.
+    ///  Mirrors <c>FormPush.UpdateRemoteBranchDropDown</c>.
+    ///
+    ///  Anything the user had typed is preserved, unless
+    ///  <paramref name="discardTyped"/> asks for the destination to be retargeted;
+    ///  otherwise the destination defaults to <paramref name="preferred"/>.
+    /// </summary>
+    private void UpdateRemoteBranchCombo(string preferred, bool discardTyped = false)
+    {
+        // A destination the user typed by hand must survive the rebuild; a value we
+        // put there ourselves (an item of the old list) must not, or switching
+        // remote would keep pointing at the other remote's branch.
+        string typed = !discardTyped && _remoteBranchCombo.SelectedItem is null
+            ? (_remoteBranchCombo.Text ?? string.Empty).Trim()
+            : string.Empty;
+
+        _remoteBranchCombo.Items.Clear();
+
+        if (preferred.Length > 0)
+        {
+            _remoteBranchCombo.Items.Add(preferred);
+        }
+
+        foreach (string branch in BranchesOnSelectedRemote())
+        {
+            if (!_remoteBranchCombo.Items.Contains(branch))
+            {
+                _remoteBranchCombo.Items.Add(branch);
+            }
+        }
+
+        if (typed.Length > 0)
+        {
+            _remoteBranchCombo.SelectedItem = _remoteBranchCombo.Items.Contains(typed) ? typed : null;
+            _remoteBranchCombo.Text = typed;
+            return;
+        }
+
+        if (preferred.Length > 0)
+        {
+            _remoteBranchCombo.SelectedItem = preferred;
+            _remoteBranchCombo.Text = preferred;
+        }
+        else if (_remoteBranchCombo.Items.Count > 0)
+        {
+            _remoteBranchCombo.SelectedIndex = 0;
+        }
+    }
+
     private void UpdateTargetEnabled()
     {
         bool byRemote = _remoteRadio.IsChecked == true;
@@ -632,22 +755,32 @@ public sealed class PushDialog : Window
             RemotesDialog dialog = new(_repoPath);
             await dialog.ShowDialog(this);
 
-            // Remotes may have been added / renamed / removed → reload the list
-            // OFF the UI thread and repopulate both target combos.
+            // Remotes may have been added / renamed / removed → reload the list AND
+            // each remote's branches OFF the UI thread, then repopulate the target
+            // combos (which in turn rebuilds the destination-branch drop-down).
             string repo = _repoPath;
-            IReadOnlyList<RemoteRow> rows = await Task.Run(() =>
-            {
-                try
+            (IReadOnlyList<RemoteRow> Rows, IReadOnlyDictionary<string, IReadOnlyList<string>> Branches) reloaded
+                = await Task.Run(() =>
                 {
-                    return new RemoteService().ListRemotes(repo);
-                }
-                catch (Exception)
-                {
-                    return (IReadOnlyList<RemoteRow>)[];
-                }
-            });
+                    IReadOnlyList<RemoteRow> list;
+                    try
+                    {
+                        list = new RemoteService().ListRemotes(repo);
+                    }
+                    catch (Exception)
+                    {
+                        list = [];
+                    }
 
-            PopulateRemotes(rows);
+                    return (list, LoadRemoteBranches(repo));
+                });
+
+            _remoteBranches = reloaded.Branches;
+            PopulateRemotes(reloaded.Rows);
+
+            // PopulateRemotes only fires SelectionChanged when the selection really
+            // changed, so refresh the destination list unconditionally.
+            UpdateRemoteBranchCombo(LocalBranchName());
         }
         catch (Exception)
         {
@@ -766,10 +899,8 @@ public sealed class PushDialog : Window
 
     private async Task PushSingleBranchAsync(string target)
     {
-        string local = _localBranchCombo.SelectedItem as string ?? string.Empty;
-        string remoteBranch = _remoteBranchCombo.SelectedItem as string
-            ?? _remoteBranchCombo.Text
-            ?? local;
+        string local = LocalBranchName();
+        string remoteBranch = RemoteBranchName();
 
         if (string.IsNullOrEmpty(remoteBranch))
         {
@@ -781,7 +912,21 @@ public sealed class PushDialog : Window
             return;
         }
 
-        bool force = _forceWithLease.IsChecked == true;
+        // Creating a branch on the remote is legitimate but easy to do by accident
+        // (a typo in the editable destination combo), so it is confirmed — upstream
+        // FormPush does the same before pushing an unknown destination.
+        if (!TargetIsUrl() && !BranchesOnSelectedRemote().Contains(remoteBranch)
+            && !await ConfirmNewRemoteBranchAsync([remoteBranch], target))
+        {
+            return;
+        }
+
+        PushForceMode? mode = await ResolveForceAsync(_forceWithLease, _forcePush);
+        if (mode is not { } force)
+        {
+            return;
+        }
+
         bool allTags = _pushAllTagsOption.IsChecked == true;
         bool recurse = _recursiveSubmodules.IsChecked == true;
         string repo = _repoPath;
@@ -820,7 +965,11 @@ public sealed class PushDialog : Window
             return;
         }
 
-        bool force = _tagsForce.IsChecked == true;
+        // TAGS CANNOT BE FORCE-PUSHED WITH A LEASE: git only honours
+        // --force-with-lease for branches, so a leased tag push either errors or
+        // silently does nothing. Upstream therefore maps its tag force check box to
+        // plain ForcePushOptions.Force (FormPush.GetForcePushOption), and so do we.
+        PushForceMode force = _tagsForce.IsChecked == true ? PushForceMode.Force : PushForceMode.None;
         string repo = _repoPath;
         await RunPushAsync(T("FormPush/TagTab.Text", "Push tags"), (emit, creds) => new PushRefsService().PushRefsStreaming(
             repo, target, refspecs, force, allTags: all, setUpstream: false, recurseSubmodules: false, emit, creds));
@@ -829,6 +978,8 @@ public sealed class PushDialog : Window
     private async Task PushMultipleBranchesAsync(string target)
     {
         List<string> refspecs = [];
+        List<string> created = [];
+        IReadOnlyList<string> known = BranchesOnSelectedRemote();
         foreach (MultiBranchRow row in _multiRows)
         {
             if (row.Check.IsChecked != true)
@@ -843,6 +994,10 @@ public sealed class PushDialog : Window
             }
 
             refspecs.Add($"{row.Local}:refs/heads/{dest}");
+            if (!known.Contains(dest))
+            {
+                created.Add(dest);
+            }
         }
 
         if (refspecs.Count == 0)
@@ -850,8 +1005,21 @@ public sealed class PushDialog : Window
             return;
         }
 
+        // Same guard as the single-branch tab: a destination that does not exist on
+        // the remote yet would be CREATED there, so say so before doing it.
+        if (!TargetIsUrl() && created.Count > 0
+            && !await ConfirmNewRemoteBranchAsync(created, target))
+        {
+            return;
+        }
+
+        PushForceMode? mode = await ResolveForceAsync(_multiForceWithLease, _multiForce);
+        if (mode is not { } force)
+        {
+            return;
+        }
+
         // Snapshot the control values on the UI thread (see PushSingleBranchAsync).
-        bool force = _multiForce.IsChecked == true;
         bool isUrl = TargetIsUrl();
         string repo = _repoPath;
         await RunPushAsync(T("FormPush/BranchTab.Text", "Push branches"), (emit, creds) => new PushRefsService().PushRefsStreaming(
@@ -904,6 +1072,144 @@ public sealed class PushDialog : Window
         string repo = _repoPath;
         await RunPushAsync(T("FormPush/Pull.Text", "Pull"), (emit, creds) =>
             new RemoteService().PullStreaming(repo, remote, rebase: false, emit, creds));
+    }
+
+    // --- Force choice / confirmations -------------------------------------
+
+    // Two force check boxes are mutually exclusive, like the Windows dialog's
+    // ckForceWithLease / ForcePushBranches pair: ticking one clears the other.
+    private void MakeExclusive(CheckBox lease, CheckBox plain)
+    {
+        lease.IsCheckedChanged += (_, _) => Sync(lease, plain);
+        plain.IsCheckedChanged += (_, _) => Sync(plain, lease);
+
+        void Sync(CheckBox changed, CheckBox other)
+        {
+            if (_suppressForceSync || changed.IsChecked != true)
+            {
+                return;
+            }
+
+            _suppressForceSync = true;
+            other.IsChecked = false;
+            _suppressForceSync = false;
+        }
+    }
+
+    /// <summary>
+    ///  Turns a lease/plain check box pair into the effective
+    ///  <see cref="PushForceMode"/>. When plain force is requested the user is
+    ///  offered the safer lease instead (upstream's <c>_useForceWithLeaseInstead</c>
+    ///  Yes/No/Cancel question); <c>null</c> means "cancelled, do not push".
+    /// </summary>
+    private async Task<PushForceMode?> ResolveForceAsync(CheckBox lease, CheckBox plain)
+    {
+        if (plain.IsChecked != true)
+        {
+            return lease.IsChecked == true ? PushForceMode.WithLease : PushForceMode.None;
+        }
+
+        return await AskForceWithLeaseAsync() switch
+        {
+            // Yes → switch to the safe force, and reflect it in the check boxes.
+            true => Switch(),
+            // No → go ahead with the plain, unsafe force.
+            false => PushForceMode.Force,
+            // Cancel → abandon the push.
+            _ => null,
+        };
+
+        PushForceMode Switch()
+        {
+            _suppressForceSync = true;
+            plain.IsChecked = false;
+            lease.IsChecked = true;
+            _suppressForceSync = false;
+            return PushForceMode.WithLease;
+        }
+    }
+
+    // Yes = use force with lease, No = keep the plain force, null = cancel.
+    private Task<bool?> AskForceWithLeaseAsync()
+        => AskAsync(
+            T("FormPush/_useForceWithLeaseInstead.Text",
+                "Force push may overwrite changes since your last fetch. "
+                + "Do you want to use the safer force with lease instead?"),
+            T("Use force with lease"),
+            T("Force push anyway"),
+            cancel: true);
+
+    private async Task<bool> ConfirmNewRemoteBranchAsync(IReadOnlyList<string> branches, string remote)
+    {
+        string names = string.Join(", ", branches);
+        string message = T("FormPush/_branchNewForRemote.Text",
+                "The branch you are about to push seems to be a new branch for the remote."
+                + Environment.NewLine + "Are you sure you want to push this branch?")
+            + Environment.NewLine + Environment.NewLine
+            + string.Format(T("Will be created on '{0}': {1}"), remote, names);
+
+        return await AskAsync(message, T("Push"), T("Cancel"), cancel: false) == true;
+    }
+
+    /// <summary>
+    ///  Minimal modal question with two or three answers, matching the inline
+    ///  confirm dialogs the other ported dialogs use. Returns <c>true</c> for the
+    ///  affirmative button, <c>false</c> for the negative one and <c>null</c> when
+    ///  cancelled (or dismissed).
+    /// </summary>
+    private async Task<bool?> AskAsync(string message, string yesText, string noText, bool cancel)
+    {
+        TaskCompletionSource<bool?> tcs = new();
+
+        Window dialog = new()
+        {
+            Title = Title,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Panel", Brushes.DimGray),
+        };
+
+        StackPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+
+        Button yes = MakeButton();
+        yes.Content = yesText;
+        yes.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
+        buttons.Children.Add(yes);
+
+        Button no = MakeButton();
+        no.Content = noText;
+        no.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+        buttons.Children.Add(no);
+
+        if (cancel)
+        {
+            Button abort = MakeButton();
+            abort.Content = T("Cancel");
+            abort.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+            buttons.Children.Add(abort);
+        }
+
+        // Dismissing the window (Esc / close box) must never be read as consent.
+        dialog.Closed += (_, _) => tcs.TrySetResult(cancel ? null : false);
+
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        });
+        content.Children.Add(buttons);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(this);
+        return await tcs.Task;
     }
 
     // --- Helpers ----------------------------------------------------------
