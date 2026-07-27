@@ -250,6 +250,16 @@ public sealed class StashPanel : UserControl
         RefreshStashes();
     }
 
+    /// <summary>
+    ///  Opens the "create a stash" prompt (message + include-untracked), the same flow
+    ///  as the panel's own "Stash…" button. Exposed so the main toolbar's stash
+    ///  split-button entry "Create a stash…" — upstream's
+    ///  <c>createAStashToolStripMenuItem</c>, i.e. <c>StartStashDialog(this, false)</c>
+    ///  — has a real surface to open. No-ops until <see cref="LoadRepository"/> has
+    ///  been called. Call from the UI thread.
+    /// </summary>
+    public void BeginCreateStash() => _ = DoStashDialogAsync();
+
     private void RefreshStashes()
     {
         if (_repoPath is not { Length: > 0 } repo)
