@@ -993,6 +993,25 @@ git figli possono ereditare un `HOME` sbagliato — fix non fatto perché tocca 
 condiviso con la build Windows. **SKIP confermati fuori scope**: repository-host GitHub,
 colonna build status.
 
+- **M44** (bugfix post-blocco, 2026-07-27) — **il push chiedeva le credenziali ogni volta**.
+  Il core riscrive `HOME` per l'intero processo a ogni costruzione di `Executable`
+  (`EnvironmentConfiguration.SetEnvironmentVariables`), e su Linux il suo
+  `GetDefaultHomeDir()` è sbagliato: legge `HOME` dai target `User`/`Machine`
+  dell'environment, che .NET supporta **solo su Windows** — su Unix tornano entrambi
+  `null`, quindi cade su `SpecialFolder.Personal` = `~/Documents`. I git figli cercavano
+  `~/Documents/.gitconfig`, non trovavano nessun `credential.helper` → prompt a ogni push
+  **e** il `git credential approve` di M38 non salvava nulla (parlava con un git senza
+  helper), motivo per cui il portachiavi era rimasto vuoto.
+  Fix in `App/HomeDirectoryFix.cs`, **senza toccare il core condiviso**: un
+  `[ModuleInitializer]` (gira prima di `Main` e prima che qualsiasi tipo del core venga
+  toccato) cattura l'`HOME` vero e lo scrive in `AppSettings.CustomHomeDir`, che è il
+  **primo** ramo di `ComputeHomeLocation()` → ogni ricalcolo successivo atterra sulla home
+  giusta. Non sovrascrive una home impostata deliberatamente dall'utente.
+  Aggiunte due diagnostiche permanenti a `--selftest`: `[11]` HOME effettivo per i git
+  figli, `[12]` `credential.helper` risolto. Prova A/B con quelle:
+  senza fix → `HOME=/home/dario/Documents`, helper `<none>`; con fix →
+  `HOME=/home/dario`, helper `git-credential-libsecret`. Commit `f1caa6512`.
+
 - **M43** (bugfix post-blocco, 2026-07-27) — **Fetch/Pull bloccavano la GUI**.
   `RemoteService.ListRemotes` fa sync-over-async (`GetRemotesAsync().GetAwaiter().GetResult()`)
   e `MainWindow.RunRemoteOp` lo chiamava **sul thread UI**: la continuazione veniva postata

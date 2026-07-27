@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M42,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M44,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,12 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `8b84ce913` (round 4 completo) |
+| HEAD al momento dell'handoff | `f1caa6512` (round 4 + bugfix M43–M44) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** chiusi |
+| Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **mai eseguito** (vincolo del lavoro finora) |
+| Push su remote | eseguito dall'utente (origin allineato). Portachiavi **vuoto**: il prossimo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -79,7 +80,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M43**), tiene il contatore iterazione.
+  libera: **M45**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -173,14 +174,33 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
    esiste un layer `ITranslate` (ogni stringa delle view è un letterale) e non c'è selettore
    lingua. Servono: copia MSBuild di `src/app/GitUI/Translation/*.xlf`, layer `ITranslate`
    su tutte le view Avalonia, chooser lingua persistito.
-3. **`HOME` riscritto dal core** — `EnvironmentConfiguration.SetEnvironmentVariables` imposta
-   `HOME` a `~/Documents` (o lo svuota) all'avvio, da un thread di background: i processi git
-   figli possono ereditarlo e cercare `~/Documents/.gitconfig`. In toolbar è stato aggirato
-   con uno snapshot in `[ModuleInitializer]`; il fix vero tocca il core condiviso con la
-   build Windows, quindi non è stato fatto.
+3. ✅ **RISOLTO M44** — `HOME` riscritto dal core: `App/HomeDirectoryFix.cs` semina
+   `AppSettings.CustomHomeDir` con la home vera da un `[ModuleInitializer]`. Diagnostica in
+   `./run.sh --selftest`: riga `[11]` = HOME per i git figli, `[12]` = `credential.helper`
+   risolto. Il difetto di fondo resta **nel core condiviso** (`GetDefaultHomeDir()` legge
+   `HOME` dai target `User`/`Machine`, che su Unix sono sempre `null`): se un giorno si
+   tocca il core, è lì che va corretto.
 4. **Header della revision grid** stampa ancora il path assoluto (non abbreviato con `~`).
 5. **Compat/** — restano no-op solo shim **irraggiungibili** dal port (censiti in M42/D12);
    i file picker richiedono un portal XDG, altrimenti servirebbe `UseManagedSystemDialogs()`.
+6. **Clipboard** — verificato solo fino al confine Avalonia: sotto Xvfb il clipboard X11 di
+   Avalonia è inerte (controprova con `xclip`: il round-trip nudo funziona, `SetTextAsync`
+   no). Va provato su un display reale con "Copy hash" / "Copy file path".
+
+### ⚠️ Classe di bug ricorrente: il core condiviso su Linux
+M43 e M44 sono lo stesso genere di difetto — codice del core che assume Windows o un thread
+WinForms e si rompe qui. Quando qualcosa "si blocca" o "non persiste", sospettare prima
+questo:
+- **sync-over-async chiamato dal thread UI** → deadlock totale, spesso *prima* che appaia
+  qualsiasi dialog, quindi sembra un freeze inspiegabile (M43: `RemoteService.ListRemotes`).
+  Difesa: i service ora usano `RunDetached` (hop sul thread pool), ma i chiamanti devono
+  comunque stare fuori dall'UI thread.
+- **API .NET che su Unix rispondono `null`/vuoto** dove su Windows hanno un valore (M44:
+  `GetEnvironmentVariable(..., Target.User/Machine)`), con fallback silenzioso su un
+  percorso plausibile ma sbagliato.
+Metodo che ha funzionato: riprodurre headless, verificare se l'UI risponde ancora a un click
+(se no → thread UI bloccato), guardare se il processo git è stato **davvero** avviato, e
+infine A/B con e senza fix.
 
 ### Fuori scope (SKIP consapevoli — le 3 voci mancanti al 100%)
 - **Repository hosts (GitHub)**: fork / view-create PR / add upstream. Realizzabile come
@@ -232,5 +252,5 @@ Verifica GUI headless: xvfb-run -n <display privato> --server-args="-screen 0 14
 eccede lo schermo; per forzare stati scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/
 ui-state.json), mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero
 l'immagine. Niente xdotool: python-Xlib fake_input (XTEST).
-Aggiornare PORTING.md (prossima milestone libera: M43) e HANDOFF.md a ogni iterazione.
+Aggiornare PORTING.md (prossima milestone libera: M45) e HANDOFF.md a ogni iterazione.
 ```
