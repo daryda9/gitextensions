@@ -72,6 +72,19 @@ public sealed class CommitDialog : Window
     private readonly MenuItem _unstagedCopyItem = new();
     private readonly MenuItem _unstageItem = new();
     private readonly MenuItem _stagedCopyItem = new();
+
+    // Per-hunk / per-line entries on the diff panel's own context menu (the port's
+    // answer to `git add -p`). Like every other menu here the Items are fixed and
+    // only IsEnabled / IsVisible move while the menu opens.
+    private readonly MenuItem _stageHunkItem = new();
+    private readonly MenuItem _stageLinesItem = new();
+    private readonly MenuItem _unstageHunkItem = new();
+    private readonly MenuItem _unstageLinesItem = new();
+    private readonly MenuItem _discardHunkItem = new();
+    private readonly MenuItem _discardLinesItem = new();
+    private readonly MenuItem _selectAllLinesItem = new();
+    private readonly MenuItem _copyDiffItem = new();
+    private ContextMenu _diffMenu = new();
     private readonly TextBlock _unstagedHeader = MakeHeaderLabel();
     private readonly TextBlock _stagedHeader = MakeHeaderLabel();
     private readonly Button _stageBtn;
@@ -105,6 +118,61 @@ public sealed class CommitDialog : Window
 
     // Guards the programmatic cross-list selection reset against re-entrancy.
     private bool _syncingSelection;
+
+    // ---- diff panel / line-patching state ----
+
+    // One entry per line of the diff currently on screen. Two coordinate systems
+    // are needed and they are NOT the same:
+    //  • Render* are offsets into the text the SelectableTextBlock lays out, which
+    //    is what its SelectionStart / SelectionEnd refer to;
+    //  • Source* are offsets into _diffText, the untouched bytes git produced,
+    //    which is what PatchManager must be given.
+    // They drift apart on CRLF files: a '\r' is dropped for display but has to stay
+    // in the patch, otherwise the removed lines no longer match the blob.
+    private readonly record struct DiffLineSpan(
+        int RenderStart,
+        int RenderLength,
+        int SourceStart,
+        int SourceLength,
+        int HunkIndex);
+
+    private DiffLineSpan[] _diffSpans = [];
+
+    // The exact string the patch is cut from: a CLEAN diff (no colour, no -w, no
+    // word-diff, no textconv), rendered verbatim so the offsets above are valid.
+    private string _diffText = string.Empty;
+
+    // Which file the panel is showing, and on which side. Line patching is only
+    // offered while these are set and the lists have not moved underneath.
+    private string _diffPath = string.Empty;
+    private bool _diffStaged;
+    private bool _diffFileIsNew;
+    private bool _diffFileIsRenamed;
+
+    // Sequence number of the LoadDiff in flight, so a slow diff cannot land on top
+    // of a newer one and leave _diffText describing the wrong file.
+    private int _diffToken;
+
+    // Last non-empty selection seen in the diff panel. Right-clicking may collapse
+    // the caret depending on how the platform delivers the press, so the menu falls
+    // back to this rather than silently acting on nothing.
+    private int _lastSelStart;
+    private int _lastSelLength;
+
+    // Character index under the pointer at the last right-click, hit-tested against
+    // the diff's text layout. -1 when the menu was not opened by pointer.
+    private int _pointerCaret = -1;
+
+    // Selection snapshot taken when the context menu opens, used by the click
+    // handlers so they cannot act on a range the user no longer sees highlighted.
+    private int _menuSelFirstLine = -1;
+    private int _menuSelLastLine = -1;
+
+    // After a partial stage the file is usually still in both lists; remember what
+    // to re-select so the next Reload puts the user back where they were instead of
+    // blanking the diff panel.
+    private string? _reselectPath;
+    private bool _reselectStaged;
 
     // Options-menu state (mirrors the original commit form's Options dropdown).
     // Amend lives in _amendBox so the visible checkbox and the menu stay in sync.
@@ -232,6 +300,8 @@ public sealed class CommitDialog : Window
             _stagedCopyItem.Header = WithCount(CopyPathCaption, count);
         };
         _stagedList.ContextMenu = stagedMenu;
+
+        BuildDiffMenu();
 
         _conflictText = new TextBlock
         {
@@ -405,6 +475,21 @@ public sealed class CommitDialog : Window
         _takeTheirsItem.Header = T("Take theirs");
         _markResolvedItem.Header = T("Mark resolved");
 
+        // Diff-panel entries. The three line-level verbs reuse the upstream
+        // FileViewer trans-units so the catalogues fit; the hunk-level variants
+        // have no upstream equivalent and go through the English-literal lookup.
+        _stageLinesItem.Header =
+            T("FileViewer/stageSelectedLinesToolStripMenuItem.Text", "Stage selected line(s)");
+        _unstageLinesItem.Header =
+            T("FileViewer/unstageSelectedLinesToolStripMenuItem.Text", "Unstage selected line(s)");
+        _discardLinesItem.Header =
+            T("FileViewer/resetSelectedLinesToolStripMenuItem.Text", "Reset selected line(s)");
+        _stageHunkItem.Header = T("Stage hunk");
+        _unstageHunkItem.Header = T("Unstage hunk");
+        _discardHunkItem.Header = T("Reset hunk");
+        _selectAllLinesItem.Header = T("Select whole diff");
+        _copyDiffItem.Header = T("FormBrowse/copyToolStripMenuItem.Text", "Copy");
+
         _ignorePathItem.Header = T("FileStatusList/tsmiAddFileToGitIgnore.Text", "Add to .gitignore");
         _ignoreExtItem.Header = T("Ignore by extension");
         _ignoreFolderItem.Header = T("Ignore in folder");
@@ -532,7 +617,7 @@ public sealed class CommitDialog : Window
             // stale diff for a file that is no longer listed.
             if (SelectedRows(other).Count == 0)
             {
-                RenderDiff(string.Empty);
+                ClearDiff();
             }
 
             return;
@@ -552,61 +637,523 @@ public sealed class CommitDialog : Window
 
         // With a multi-selection the panel always shows the LAST selected row —
         // the one the user just clicked / extended the range to.
-        LoadDiff(rows[^1].Path, staged);
+        LoadDiff(rows[^1], staged);
     }
 
-    private void LoadDiff(string path, bool staged)
+    // Loads the CLEAN diff of one file. "Clean" is the whole point: the string that
+    // lands in the panel is the same string PatchStagingService cuts the patch from,
+    // so it must never carry a display-only option (-w, --word-diff, colour…).
+    private void LoadDiff(WorkingDirFileRow row, bool staged)
     {
         string repo = _repoPath;
+        string path = row.Path;
+        bool isNew = row.Status == "new";
+        bool isRenamed = row.Status == "renamed" || row.Status == "copied";
+        int token = ++_diffToken;
+
         _ = Task.Run(() =>
         {
             try
             {
-                GitModule module = GitContext.CreateModule(repo);
-                var res = module.GitExecutable.Execute(
-                    staged ? $"diff --cached -- \"{path}\"" : $"diff -- \"{path}\"",
-                    throwOnErrorExit: false);
-                return res.AllOutput;
+                return (Text: PatchStagingService.LoadDiff(repo, path, staged), Failed: false);
             }
             catch (Exception ex)
             {
-                return string.Format(T("Could not load diff: {0}"), ex.Message);
+                return (Text: string.Format(T("Could not load diff: {0}"), ex.Message), Failed: true);
             }
-        }).ContinueWith(t =>
-            Dispatcher.UIThread.Post(() => RenderDiff(t.Result)),
-            TaskScheduler.Default);
+        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        {
+            // A newer selection already won the race; drop this result rather than
+            // letting _diffText describe a file the panel is no longer showing.
+            if (token != _diffToken)
+            {
+                return;
+            }
+
+            (string text, bool failed) = t.Result;
+            _diffPath = failed ? string.Empty : path;
+            _diffStaged = staged;
+            _diffFileIsNew = isNew;
+            _diffFileIsRenamed = isRenamed;
+
+            // On failure the panel still shows git's message, but the patch source
+            // stays empty so nothing can be cut from it.
+            RenderDiff(failed ? string.Empty : text, text);
+        }), TaskScheduler.Default);
     }
 
-    private void RenderDiff(string diff)
+    // Blanks the panel and forgets everything line patching depends on.
+    private void ClearDiff() => RenderDiff(string.Empty, string.Empty);
+
+    /// <summary>
+    ///  Renders the diff and, at the same time, records the render-offset ↔
+    ///  source-offset map the patch builder needs.
+    /// </summary>
+    /// <param name="source">
+    ///  The patch source: untouched git output, or empty when the panel is showing
+    ///  something that is not a real diff (an error message, a blank panel), in
+    ///  which case line patching stays disabled.
+    /// </param>
+    /// <param name="display">The text to put on screen.</param>
+    private void RenderDiff(string source, string? display = null)
     {
+        _diffText = source ?? string.Empty;
+        string text = display ?? _diffText;
+        if (_diffText.Length == 0)
+        {
+            _diffPath = string.Empty;
+        }
+
         InlineCollection inlines = new();
+        List<DiffLineSpan> spans = [];
         IBrush add = Brush("App.DiffAdded", Brushes.LimeGreen);
         IBrush del = Brush("App.DiffRemoved", Brushes.OrangeRed);
         IBrush hunk = Brush("App.Accent", Brushes.DeepSkyBlue);
         IBrush normal = Brush("App.Foreground", Brushes.Gainsboro);
 
-        foreach (string line in (diff ?? string.Empty).Replace("\r\n", "\n").Split('\n'))
+        // The map is only meaningful when what is rendered IS the patch source.
+        bool mapped = ReferenceEquals(text, _diffText) || text == _diffText;
+        int renderPos = 0;
+        int sourcePos = 0;
+        int hunkIndex = -1;
+
+        foreach (string rawLine in text.Split('\n'))
         {
+            // The '\r' of a CRLF file is hidden on screen but kept in the source
+            // span, so the patch still carries it.
+            string shown = rawLine.EndsWith('\r') ? rawLine[..^1] : rawLine;
+
             IBrush color = normal;
-            if (line.StartsWith("@@", StringComparison.Ordinal))
+            if (shown.StartsWith("@@", StringComparison.Ordinal))
             {
                 color = hunk;
+                hunkIndex++;
             }
-            else if (line.StartsWith('+') && !line.StartsWith("+++", StringComparison.Ordinal))
+            else if (shown.StartsWith('+') && !shown.StartsWith("+++", StringComparison.Ordinal))
             {
                 color = add;
             }
-            else if (line.StartsWith('-') && !line.StartsWith("---", StringComparison.Ordinal))
+            else if (shown.StartsWith('-') && !shown.StartsWith("---", StringComparison.Ordinal))
             {
                 color = del;
             }
 
-            inlines.Add(new Run(line + "\n") { Foreground = color });
+            inlines.Add(new Run(shown + "\n") { Foreground = color });
+            if (mapped)
+            {
+                spans.Add(new DiffLineSpan(renderPos, shown.Length, sourcePos, rawLine.Length, hunkIndex));
+            }
+
+            renderPos += shown.Length + 1;
+            sourcePos += rawLine.Length + 1;
         }
 
+        _diffSpans = mapped && _diffText.Length > 0 ? [.. spans] : [];
+        _lastSelStart = 0;
+        _lastSelLength = 0;
+        _pointerCaret = -1;
+        _menuSelFirstLine = -1;
+        _menuSelLastLine = -1;
         _diffView.Inlines = inlines;
+        _diffView.SelectionStart = 0;
+        _diffView.SelectionEnd = 0;
         _diffScroll.Offset = default;
     }
+
+    // ---------- per-hunk / per-line staging (the port's `git add -p`) ----------
+
+    // The diff panel's own context menu. Both sides live in the same menu and are
+    // shown/hidden by side while it opens — building the Items later would leave
+    // the popup unmeasured (HANDOFF §3).
+    private void BuildDiffMenu()
+    {
+        _stageHunkItem.Click += (_, _) => ApplyLines(PatchStagingAction.Stage, wholeHunk: true);
+        _stageLinesItem.Click += (_, _) => ApplyLines(PatchStagingAction.Stage, wholeHunk: false);
+        _unstageHunkItem.Click += (_, _) => ApplyLines(PatchStagingAction.Unstage, wholeHunk: true);
+        _unstageLinesItem.Click += (_, _) => ApplyLines(PatchStagingAction.Unstage, wholeHunk: false);
+        _discardHunkItem.Click += (_, _) => ApplyLines(PatchStagingAction.DiscardWorkTree, wholeHunk: true);
+        _discardLinesItem.Click += (_, _) => ApplyLines(PatchStagingAction.DiscardWorkTree, wholeHunk: false);
+        _selectAllLinesItem.Click += (_, _) => SelectWholeDiff();
+        _copyDiffItem.Click += (_, _) => CopyDiffSelection();
+
+        // Avalonia gives SelectableTextBlock a built-in "Copy" ContextFlyout. Left
+        // in place it opens ON TOP of this menu (both popups were visible at once
+        // in the headless run), so it is dropped and Copy is folded in here.
+        _diffView.ContextFlyout = null;
+
+        _diffMenu = new ContextMenu
+        {
+            Placement = PlacementMode.Pointer,
+            ItemsSource = new Control[]
+            {
+                _stageHunkItem, _stageLinesItem,
+                _unstageHunkItem, _unstageLinesItem,
+                new Separator(),
+                _discardHunkItem, _discardLinesItem,
+                new Separator(),
+                _selectAllLinesItem,
+                _copyDiffItem,
+            },
+        };
+        _diffMenu.Opening += (_, _) => UpdateDiffMenuState();
+
+        // The menu is opened by hand instead of through _diffView.ContextMenu.
+        // SelectableTextBlock captures the pointer and marks the press handled, so
+        // the built-in ContextRequested path never fires on it (verified headless:
+        // right-clicking the diff simply did nothing). Handling the press in the
+        // TUNNELLING phase gets in before that, and has the welcome side effect of
+        // leaving an existing highlight alone instead of collapsing it.
+        _diffScroll.AddHandler(
+            PointerPressedEvent,
+            (object? _, PointerPressedEventArgs e) =>
+            {
+                if (!e.GetCurrentPoint(_diffScroll).Properties.IsRightButtonPressed)
+                {
+                    return;
+                }
+
+                e.Handled = true;
+
+                // Which line was right-clicked, worked out from the text layout
+                // rather than from the control's caret: a plain click on a
+                // SelectableTextBlock does not move SelectionStart, so relying on
+                // it left every entry disabled (seen headless). Hit-testing is the
+                // same thing the control itself would do, minus the guesswork.
+                _pointerCaret = -1;
+                try
+                {
+                    _pointerCaret = _diffView.TextLayout
+                        .HitTestPoint(e.GetPosition(_diffView)).TextPosition;
+                }
+                catch
+                {
+                    // No layout yet — fall back to whatever is selected.
+                }
+
+                // State is settled BEFORE the popup is shown: mutating Items (or
+                // even sizes) from Opening leaves it unmeasured — HANDOFF §3.
+                UpdateDiffMenuState();
+                _diffMenu.Open(_diffView);
+            },
+            RoutingStrategies.Tunnel);
+
+        // Remember the last non-empty highlight: on some backends the secondary
+        // press collapses the caret before the menu opens, and acting on an empty
+        // range would look like the command silently did nothing.
+        _diffView.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != SelectableTextBlock.SelectionStartProperty
+                && e.Property != SelectableTextBlock.SelectionEndProperty)
+            {
+                return;
+            }
+
+            int start = Math.Min(_diffView.SelectionStart, _diffView.SelectionEnd);
+            int end = Math.Max(_diffView.SelectionStart, _diffView.SelectionEnd);
+            if (end > start)
+            {
+                _lastSelStart = start;
+                _lastSelLength = end - start;
+            }
+        };
+    }
+
+    // Snapshots the highlight and re-labels / enables the diff-menu entries for it.
+    private void UpdateDiffMenuState()
+    {
+        (int first, int last) = SnapshotSelection();
+        _menuSelFirstLine = first;
+        _menuSelLastLine = last;
+
+        bool patchable = _diffSpans.Length > 0 && _diffPath.Length > 0 && !_busy;
+        bool hasLines = patchable && first >= 0 && SpanRangeTouchesContent(first, last);
+        bool hasHunk = patchable && first >= 0 && HunkRange(first, last) is not null;
+
+        // Only the side the diff belongs to is offered; the opposite verb would
+        // silently build a patch against the wrong blob.
+        _stageHunkItem.IsVisible = !_diffStaged;
+        _stageLinesItem.IsVisible = !_diffStaged;
+        _discardHunkItem.IsVisible = !_diffStaged;
+        _discardLinesItem.IsVisible = !_diffStaged;
+        _unstageHunkItem.IsVisible = _diffStaged;
+        _unstageLinesItem.IsVisible = _diffStaged;
+
+        _stageHunkItem.IsEnabled = hasHunk;
+        _unstageHunkItem.IsEnabled = hasHunk;
+        _discardHunkItem.IsEnabled = hasHunk;
+        _stageLinesItem.IsEnabled = hasLines;
+        _unstageLinesItem.IsEnabled = hasLines;
+        _discardLinesItem.IsEnabled = hasLines;
+        _selectAllLinesItem.IsEnabled = _diffSpans.Length > 0;
+        _copyDiffItem.IsEnabled = _diffView.SelectionEnd != _diffView.SelectionStart;
+    }
+
+    // Replaces the built-in Copy that was dropped with the default ContextFlyout.
+    private void CopyDiffSelection()
+    {
+        int start = Math.Min(_diffView.SelectionStart, _diffView.SelectionEnd);
+        int end = Math.Max(_diffView.SelectionStart, _diffView.SelectionEnd);
+        if (end <= start || _diffSpans.Length == 0)
+        {
+            return;
+        }
+
+        // Rebuilt from the spans rather than substring'd out of _diffText: the two
+        // coordinate systems differ on CRLF files.
+        List<string> picked = [];
+        foreach (DiffLineSpan span in _diffSpans)
+        {
+            if (span.RenderStart + span.RenderLength >= start && span.RenderStart <= end)
+            {
+                picked.Add(_diffText.Substring(span.SourceStart, span.SourceLength));
+            }
+        }
+
+        try
+        {
+            _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(string.Join("\n", picked));
+            SetStatus(string.Format(T("Copied {0} line(s)."), picked.Count));
+        }
+        catch (Exception ex)
+        {
+            SetStatus(string.Format(T("Could not copy the path: {0}"), ex.Message));
+        }
+    }
+
+    private void SelectWholeDiff()
+    {
+        if (_diffSpans.Length == 0)
+        {
+            return;
+        }
+
+        DiffLineSpan last = _diffSpans[^1];
+        _diffView.SelectionStart = 0;
+        _diffView.SelectionEnd = last.RenderStart + last.RenderLength;
+    }
+
+    // The current highlight expressed as a LINE range. Line granularity is the
+    // whole trick: PatchManager wants character offsets into the raw diff, but the
+    // control reports offsets into the rendered text, and the two differ on CRLF
+    // files. Rounding the highlight out to whole lines first — which is also the
+    // only granularity `git apply` understands — makes the conversion exact.
+    private (int First, int Last) SnapshotSelection()
+    {
+        if (_diffSpans.Length == 0)
+        {
+            return (-1, -1);
+        }
+
+        // Priority: a live highlight beats everything, then the line the pointer is
+        // actually on, then the last highlight seen (for a keyboard-opened menu).
+        int start = Math.Min(_diffView.SelectionStart, _diffView.SelectionEnd);
+        int end = Math.Max(_diffView.SelectionStart, _diffView.SelectionEnd);
+        if (end <= start)
+        {
+            if (_pointerCaret >= 0)
+            {
+                start = _pointerCaret;
+                end = start + 1;
+            }
+            else if (_lastSelLength > 0)
+            {
+                start = _lastSelStart;
+                end = _lastSelStart + _lastSelLength;
+            }
+            else
+            {
+                return (-1, -1);
+            }
+        }
+
+        int first = LineAt(start);
+        int last = LineAt(Math.Max(start, end - 1));
+        return first < 0 || last < 0 ? (-1, -1) : (Math.Min(first, last), Math.Max(first, last));
+    }
+
+    private int LineAt(int renderOffset)
+    {
+        for (int i = 0; i < _diffSpans.Length; i++)
+        {
+            DiffLineSpan span = _diffSpans[i];
+            if (renderOffset >= span.RenderStart && renderOffset <= span.RenderStart + span.RenderLength)
+            {
+                return i;
+            }
+        }
+
+        return renderOffset > 0 && _diffSpans.Length > 0 ? _diffSpans.Length - 1 : -1;
+    }
+
+    // True when the line range holds at least one +/- line: a selection made only
+    // of headers or context produces an empty patch, so the entry stays disabled.
+    private bool SpanRangeTouchesContent(int first, int last)
+    {
+        for (int i = first; i <= last && i < _diffSpans.Length; i++)
+        {
+            if (_diffSpans[i].HunkIndex < 0)
+            {
+                continue;
+            }
+
+            string line = SourceLine(i);
+            if ((line.StartsWith('+') || line.StartsWith('-')) && !line.StartsWith("+++") && !line.StartsWith("---"))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private string SourceLine(int index)
+    {
+        DiffLineSpan span = _diffSpans[index];
+        return _diffText.Substring(span.SourceStart, span.SourceLength);
+    }
+
+    // The full line range of every hunk the selection touches — this is what makes
+    // "Stage hunk" work from a single click anywhere inside it.
+    private (int First, int Last)? HunkRange(int first, int last)
+    {
+        int lo = int.MaxValue;
+        int hi = -1;
+        for (int i = first; i <= last && i < _diffSpans.Length; i++)
+        {
+            if (_diffSpans[i].HunkIndex >= 0)
+            {
+                lo = Math.Min(lo, _diffSpans[i].HunkIndex);
+                hi = Math.Max(hi, _diffSpans[i].HunkIndex);
+            }
+        }
+
+        if (hi < 0)
+        {
+            return null;
+        }
+
+        int firstLine = -1;
+        int lastLine = -1;
+        for (int i = 0; i < _diffSpans.Length; i++)
+        {
+            if (_diffSpans[i].HunkIndex >= lo && _diffSpans[i].HunkIndex <= hi)
+            {
+                if (firstLine < 0)
+                {
+                    firstLine = i;
+                }
+
+                lastLine = i;
+            }
+        }
+
+        return firstLine < 0 ? null : (firstLine, lastLine);
+    }
+
+    private void ApplyLines(PatchStagingAction action, bool wholeHunk)
+    {
+        if (_diffSpans.Length == 0 || _diffPath.Length == 0)
+        {
+            SetStatus(T(PatchStagingService.NoSelectionMessage));
+            return;
+        }
+
+        (int first, int last) = _menuSelFirstLine >= 0
+            ? (_menuSelFirstLine, _menuSelLastLine)
+            : SnapshotSelection();
+        if (first < 0)
+        {
+            SetStatus(T(PatchStagingService.NoSelectionMessage));
+            return;
+        }
+
+        if (wholeHunk)
+        {
+            if (HunkRange(first, last) is not (int hFirst, int hLast))
+            {
+                SetStatus(T(PatchStagingService.NoSelectionMessage));
+                return;
+            }
+
+            (first, last) = (hFirst, hLast);
+        }
+
+        // Line range -> exact character range in the RAW diff. The end deliberately
+        // stops at the last character of the last line, before its newline: one
+        // character further and PatchManager would also pull in the line after it.
+        int selectionStart = _diffSpans[first].SourceStart;
+        int selectionLength = _diffSpans[last].SourceStart + _diffSpans[last].SourceLength - selectionStart;
+        if (selectionLength <= 0)
+        {
+            SetStatus(T(PatchStagingService.NoSelectionMessage));
+            return;
+        }
+
+        string repo = _repoPath;
+        string diffText = _diffText;
+        string path = _diffPath;
+        bool staged = _diffStaged;
+        bool isNew = _diffFileIsNew;
+        bool isRenamed = _diffFileIsRenamed;
+        int lines = last - first + 1;
+
+        void Run()
+        {
+            SetStatus(string.Format(DescribeLineAction(action), lines));
+            _reselectPath = path;
+            _reselectStaged = staged;
+            RunGitResult(
+                () =>
+                {
+                    PatchStagingResult result = PatchStagingService.Apply(
+                        repo, diffText, selectionStart, selectionLength, action, isNew, isRenamed);
+                    return new WorkingDirCommitResult(result.Success, result.Output);
+                },
+                result =>
+                {
+                    SetStatus(result.Success
+                        ? string.Format(DescribeLineDone(action), lines)
+                        : string.Format(T("Patch failed: {0}"), Translate(FirstLine(result.Output))));
+                    Reload();
+                });
+        }
+
+        if (action == PatchStagingAction.DiscardWorkTree)
+        {
+            // Destructive and unrecoverable — the lines are not in the index either.
+            ConfirmThen(
+                T("TranslatedStrings/_resetSelectedLinesConfirmation.Text",
+                  "Are you sure you want to reset the changes to the selected lines?"),
+                Run);
+            return;
+        }
+
+        Run();
+    }
+
+    // The service speaks plain English so it stays UI-free; the dialog is where its
+    // few fixed messages get a translation.
+    private static string Translate(string message) => message switch
+    {
+        PatchStagingService.NoHunksMessage => T("This file has no text hunks to patch (binary, or nothing changed)."),
+        PatchStagingService.NotUtf8Message => T("The diff is not valid UTF-8; line staging is not available for this file."),
+        PatchStagingService.NoSelectionMessage => T("Select one or more diff lines first."),
+        _ => message,
+    };
+
+    private static string DescribeLineAction(PatchStagingAction action) => action switch
+    {
+        PatchStagingAction.Stage => T("Staging {0} line(s) …"),
+        PatchStagingAction.Unstage => T("Unstaging {0} line(s) …"),
+        _ => T("Discarding {0} line(s) …"),
+    };
+
+    private static string DescribeLineDone(PatchStagingAction action) => action switch
+    {
+        PatchStagingAction.Stage => T("Staged {0} line(s)."),
+        PatchStagingAction.Unstage => T("Unstaged {0} line(s)."),
+        _ => T("Discarded {0} line(s)."),
+    };
 
     // ---------- stage / unstage ----------
 
@@ -1527,8 +2074,39 @@ public sealed class CommitDialog : Window
                 ? status.Staged
                 : [.. status.Staged.Where(r => !_conflictPaths.Contains(r.Path))];
             _conflictBanner.IsVisible = _conflictPaths.Count > 0;
+            RestoreDiffSelection();
             RenderStatus();
         }), TaskScheduler.Default);
+    }
+
+    // After a partial stage / unstage the file is normally still listed, but the
+    // fresh ItemsSource has dropped the selection and with it the diff. Put the user
+    // back on the same row so a second hunk can be staged straight away; if the file
+    // has left that list (everything staged), fall back to the other side.
+    private void RestoreDiffSelection()
+    {
+        string? path = _reselectPath;
+        _reselectPath = null;
+        if (path is null)
+        {
+            return;
+        }
+
+        foreach (ListBox list in _reselectStaged
+            ? new[] { _stagedList, _unstagedList }
+            : [_unstagedList, _stagedList])
+        {
+            WorkingDirFileRow? row = list.Items
+                .OfType<WorkingDirFileRow>()
+                .FirstOrDefault(r => string.Equals(r.Path, path, StringComparison.Ordinal));
+            if (row is not null)
+            {
+                list.SelectedItem = row;
+                return;
+            }
+        }
+
+        ClearDiff();
     }
 
     // Records the merge state and, while a merge is pending, seeds the message box
