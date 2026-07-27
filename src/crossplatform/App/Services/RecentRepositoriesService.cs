@@ -12,29 +12,45 @@ namespace GitExtensions.Avalonia.Services;
 ///  settings). Reusing it means the Linux app shares one recent-repositories
 ///  list with the rest of the reused core instead of forking a second store.
 ///
-///  <para>The stored history rots: entries survive after their directory is
-///  deleted (notably the ephemeral <c>.claude/worktrees/agent-*</c> checkouts
-///  this port is developed in), and the raw list can hold duplicates that only
-///  differ by a trailing separator. <see cref="LoadAsync"/> therefore prunes the
-///  list and writes the pruned version back, so the rot is removed for good
-///  instead of merely hidden at display time. All filesystem probing happens off
-///  the UI thread (dead paths can stall a <c>stat</c>).</para>
+///  <para>The stored history rots in two different ways, and they are NOT
+///  treated alike:</para>
+///  <list type="bullet">
+///   <item>Noise the user never created — duplicates that differ only by a
+///    trailing separator, and the ephemeral <c>.claude/worktrees/agent-*</c>
+///    checkouts this port is developed in — is dropped silently and the pruned
+///    list is written back.</item>
+///   <item>Entries whose directory is simply gone are <em>kept</em> and reported
+///    with <see cref="RecentRepositoryEntry.Exists"/> set to <see
+///    langword="false"/>. Upstream does the same (it flags them with an error
+///    icon and only removes them once the user confirms,
+///    <c>InvalidRepositoryRemover</c>); deleting them behind the user's back
+///    also made "Remove missing projects from the list" unreachable, since
+///    nothing missing ever survived loading.</item>
+///  </list>
+///  <para>All filesystem probing happens off the UI thread (dead paths can stall
+///  a <c>stat</c>).</para>
 /// </summary>
 public sealed class RecentRepositoriesService
 {
     /// <summary>
-    ///  Returns the recent repository paths, most-recent first, with stale
-    ///  entries dropped. Any pruning is persisted back to the core MRU.
+    ///  One MRU entry: its normalised path and whether it still resolves to a
+    ///  git working copy on disk.
     /// </summary>
-    public async Task<IReadOnlyList<string>> LoadAsync()
+    public sealed record RecentRepositoryEntry(string Path, bool Exists);
+
+    /// <summary>
+    ///  Returns the recent repositories, most-recent first, each flagged with
+    ///  whether it still exists. Duplicates and ephemeral agent worktrees are
+    ///  dropped (and the pruning persisted); missing repositories are kept so the
+    ///  caller can show them as broken and offer to remove them.
+    /// </summary>
+    public async Task<IReadOnlyList<RecentRepositoryEntry>> LoadEntriesAsync()
     {
         IList<Repository> history = await RepositoryHistoryManager.Locals.LoadRecentHistoryAsync();
 
-        // Probing the filesystem must never happen on the UI thread: a path that
-        // pointed at a removed mount/worktree can block for seconds in stat().
-        (List<string> paths, List<Repository> kept, bool changed) = await Task.Run(() =>
+        (List<RecentRepositoryEntry> entries, List<Repository> kept, bool changed) = await Task.Run(() =>
         {
-            List<string> keptPaths = new(history.Count);
+            List<RecentRepositoryEntry> result = new(history.Count);
             List<Repository> keptRepos = new(history.Count);
             HashSet<string> seen = new(StringComparer.Ordinal);
             bool pruned = false;
@@ -42,13 +58,13 @@ public sealed class RecentRepositoriesService
             foreach (Repository repository in history)
             {
                 string? path = Normalize(repository.Path);
-                if (path is null || !seen.Add(path) || !IsUsableRepository(path))
+                if (path is null || !seen.Add(path) || IsEphemeralWorktree(path))
                 {
                     pruned = true;
                     continue;
                 }
 
-                keptPaths.Add(path);
+                result.Add(new RecentRepositoryEntry(path, IsUsableRepository(path)));
 
                 // Re-emit with the normalised path so the stored list converges
                 // too (categories/anchors are preserved).
@@ -61,23 +77,145 @@ public sealed class RecentRepositoriesService
                 keptRepos.Add(repository);
             }
 
-            return (keptPaths, keptRepos, pruned);
+            return (result, keptRepos, pruned);
         });
 
         if (changed)
         {
-            try
-            {
-                await RepositoryHistoryManager.Locals.SaveRecentHistoryAsync(kept);
-            }
-            catch
-            {
-                // Best-effort cleanup: a failed write must not hide the list.
-            }
+            await SaveAsync(kept);
         }
 
-        return paths;
+        return entries;
     }
+
+    /// <summary>
+    ///  Drops <paramref name="repoPath"/> from the MRU (upstream's "Remove project
+    ///  from the list"). Missing entries can be removed too — that is the point.
+    /// </summary>
+    /// <returns><see langword="true"/> when an entry was actually removed.</returns>
+    public async Task<bool> RemoveAsync(string repoPath)
+    {
+        string? target = Normalize(repoPath);
+        if (target is null)
+        {
+            return false;
+        }
+
+        IList<Repository> history = await RepositoryHistoryManager.Locals.LoadRecentHistoryAsync();
+        List<Repository> kept = history
+            .Where(r => !string.Equals(Normalize(r.Path), target, StringComparison.Ordinal))
+            .ToList();
+
+        if (kept.Count == history.Count)
+        {
+            return false;
+        }
+
+        await SaveAsync(kept);
+        return true;
+    }
+
+    /// <summary>
+    ///  Drops every entry whose directory no longer holds a git working copy
+    ///  (upstream's "Remove missing projects from the list"). The probing runs off
+    ///  the UI thread.
+    /// </summary>
+    /// <returns>How many entries were removed.</returns>
+    public async Task<int> RemoveMissingAsync()
+    {
+        IList<Repository> history = await RepositoryHistoryManager.Locals.LoadRecentHistoryAsync();
+
+        List<Repository> kept = await Task.Run(() => history
+            .Where(r => Normalize(r.Path) is string p && IsUsableRepository(p))
+            .ToList());
+
+        int removed = history.Count - kept.Count;
+        if (removed > 0)
+        {
+            await SaveAsync(kept);
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    ///  Reads the checked-out branch of <paramref name="repoPath"/> straight from
+    ///  <c>.git/HEAD</c>, returning a short hash for a detached HEAD and
+    ///  <see langword="null"/> when nothing can be read.
+    ///
+    ///  <para>Upstream shows the same value on every tile and gets it from a cache
+    ///  warmed in parallel (<c>RepositoryHistoryUIService</c>). Parsing the HEAD
+    ///  file costs a single small read instead of a <c>git</c> process per row,
+    ///  which is what makes a per-row branch name affordable at all — but it is
+    ///  still I/O, so callers must stay off the UI thread.</para>
+    /// </summary>
+    public static string? ReadCurrentBranch(string repoPath)
+    {
+        try
+        {
+            string dotGit = Path.Combine(repoPath, ".git");
+            string gitDir = dotGit;
+
+            if (File.Exists(dotGit))
+            {
+                // Worktree or submodule: ".git" is a file pointing at the real dir.
+                string content = File.ReadAllText(dotGit).Trim();
+                const string prefix = "gitdir:";
+                if (!content.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                string target = content[prefix.Length..].Trim();
+                gitDir = Path.IsPathRooted(target) ? target : Path.Combine(repoPath, target);
+            }
+            else if (!Directory.Exists(dotGit))
+            {
+                return null;
+            }
+
+            string headFile = Path.Combine(gitDir, "HEAD");
+            if (!File.Exists(headFile))
+            {
+                return null;
+            }
+
+            string head = File.ReadAllText(headFile).Trim();
+            const string refPrefix = "ref: refs/heads/";
+            if (head.StartsWith(refPrefix, StringComparison.Ordinal))
+            {
+                return head[refPrefix.Length..].Trim();
+            }
+
+            // Detached HEAD: upstream shows the (short) commit it points at.
+            return head.Length >= 7 ? $"({head[..7]})" : null;
+        }
+        catch
+        {
+            // Unreadable/permission denied: no branch to show, never a failure.
+            return null;
+        }
+    }
+
+    private static async Task SaveAsync(IList<Repository> repositories)
+    {
+        try
+        {
+            await RepositoryHistoryManager.Locals.SaveRecentHistoryAsync(repositories);
+        }
+        catch
+        {
+            // Best-effort: a failed write must never take the list down with it.
+        }
+    }
+
+    /// <summary>
+    ///  Returns the recent repository paths, most-recent first, for callers that
+    ///  do not care whether an entry still exists. Missing repositories are part
+    ///  of the result — see <see cref="LoadEntriesAsync"/> for the reasoning.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> LoadAsync()
+        => (await LoadEntriesAsync()).Select(e => e.Path).ToList();
 
     /// <summary>
     ///  Records <paramref name="repoPath"/> as the most-recently used repository.
