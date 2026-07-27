@@ -306,6 +306,29 @@ public sealed class RevisionGridView : UserControl
     private double EffectiveGraphWidth => _quickFilterActive || !_showGraph ? 0 : _graphWidth;
 
     /// <summary>
+    ///  What the grid currently has selected, reduced to the two facts the menu bar
+    ///  needs to decide what makes sense: how many rows, and whether every one of
+    ///  them is a real commit (the "Working directory" / "Commit index" rows are
+    ///  not). Upstream reads the same two facts straight off
+    ///  <c>RevisionGrid.GetSelectedRevisions()</c> in
+    ///  <c>FormBrowse.CommandsToolStripMenuItem_DropDownOpening</c>
+    ///  (FormBrowse.cs:2332-2333); this port has no public revision list on the grid,
+    ///  so the summary is exposed instead of the rows.
+    ///
+    ///  <para>A pull, not a push: it is read when the Commands menu drops down, which
+    ///  is exactly when upstream recomputes it, so no event has to fire on every
+    ///  arrow-key move.</para>
+    /// </summary>
+    public (int Count, bool AllNonArtificial) SelectionSummary
+    {
+        get
+        {
+            IList<RevisionRow> rows = _list.SelectedItems?.OfType<RevisionRow>().ToList() ?? [];
+            return (rows.Count, rows.Count > 0 && rows.All(r => !IsArtificial(r)));
+        }
+    }
+
+    /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
     /// </summary>
     public event Action<string>? RevisionSelected;
