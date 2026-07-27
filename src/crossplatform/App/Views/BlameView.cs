@@ -15,6 +15,15 @@ namespace GitExtensions.Avalonia.Views;
 ///  monospace multi-column list. Heavy git work runs off the UI thread, matching
 ///  <see cref="DiffView"/>. Built on a <see cref="ListBox"/> with a templated
 ///  multi-column row so no extra NuGet package (e.g. DataGrid) is required.
+///
+///  <para>Captions go through <see cref="TranslationService"/>. Upstream's
+///  <c>FormBlame</c> carries a single trans-unit (the window title) and its blame
+///  grid headers are hard-coded in code, so only the columns that do have an
+///  upstream equivalent are keyed (<c>FormVerify/columnHash</c>,
+///  <c>TranslatedStrings/_author</c>); "Line" and "Text" fall back to the
+///  one-argument overload and therefore stay English until a catalogue gains them.
+///  The header and the status line are rebuilt on
+///  <see cref="TranslationService.LanguageChanged"/>.</para>
 /// </summary>
 public sealed class BlameView : UserControl
 {
@@ -28,9 +37,20 @@ public sealed class BlameView : UserControl
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
     private static readonly IBrush MetaBrush = B("App.TextDim");
 
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string T(string english) => TranslationService.T(english);
+
     private readonly BlameService _service = new();
     private readonly ListBox _list;
     private readonly TextBlock _status;
+    private readonly Border _headerHost;
+
+    // Last successful load, kept so a language switch can re-word the status line
+    // without re-running git.
+    private string? _shownFile;
+    private string? _shownCommit;
+    private int _shownLines;
 
     public BlameView()
     {
@@ -40,7 +60,8 @@ public sealed class BlameView : UserControl
             Foreground = B("App.TextDim"),
             Background = B("App.Toolbar"),
             Padding = new Thickness(4, 4, 4, 4),
-            Text = "No file loaded.",
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Text = T("No file loaded."),
         };
 
         _list = new ListBox
@@ -61,17 +82,37 @@ public sealed class BlameView : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        Control header = BuildHeader();
+        _headerHost = new Border
+        {
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = BuildHeader(),
+        };
 
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
-        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(_headerHost, Dock.Top);
         root.Children.Add(_status);
-        root.Children.Add(header);
+        root.Children.Add(_headerHost);
         root.Children.Add(scroll);
 
         Content = root;
+
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // The event fires on whichever thread finished loading the catalogue, so the
+    // relabel is marshalled to the UI thread.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(Retranslate);
+
+    private void Retranslate()
+    {
+        _headerHost.Child = BuildHeader();
+        _status.Text = _shownFile is null ? T("No file loaded.") : StatusLine();
+    }
+
+    private string StatusLine() => string.Format(
+        T("{0}  —  {1} line(s)  @ {2}"), _shownFile, _shownLines, _shownCommit);
 
     /// <summary>
     ///  Loads and displays the blame of <paramref name="filePath"/> in the
@@ -81,7 +122,8 @@ public sealed class BlameView : UserControl
     public void ShowBlame(string repoPath, string filePath, string? commit = null)
     {
         _list.ItemsSource = null;
-        _status.Text = $"Blaming {filePath}…";
+        _shownFile = null;
+        _status.Text = string.Format(T("Blaming {0}…"), filePath);
 
         _ = Task.Run(() =>
         {
@@ -91,12 +133,15 @@ public sealed class BlameView : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     _list.ItemsSource = rows;
-                    _status.Text = $"{filePath}  —  {rows.Count} line(s)  @ {commit ?? "HEAD"}";
+                    _shownFile = filePath;
+                    _shownCommit = commit ?? "HEAD";
+                    _shownLines = rows.Count;
+                    _status.Text = StatusLine();
                 });
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = "Error: " + ex.Message);
+                Dispatcher.UIThread.Post(() => _status.Text = string.Format(T("Error: {0}"), ex.Message));
             }
         });
     }
@@ -112,17 +157,12 @@ public sealed class BlameView : UserControl
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(8, 0, 8, 2);
 
-        AddCell(grid, 0, "Hash", bold: true);
-        AddCell(grid, 1, "Author", bold: true);
-        AddCell(grid, 2, "Line", bold: true);
-        AddCell(grid, 3, "Text", bold: true);
+        AddCell(grid, 0, T("FormVerify/columnHash.HeaderText", "Hash"), bold: true);
+        AddCell(grid, 1, T("TranslatedStrings/_author.Text", "Author"), bold: true);
+        AddCell(grid, 2, T("Line"), bold: true);
+        AddCell(grid, 3, T("Text"), bold: true);
 
-        return new Border
-        {
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = grid,
-        };
+        return grid;
     }
 
     private static Control BuildRow(BlameLineRow row)

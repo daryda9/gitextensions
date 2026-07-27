@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -15,6 +17,14 @@ namespace GitExtensions.Avalonia.Views;
 ///  header (author, dates, committer, full hash, clickable parent/child links,
 ///  containing branches/tags and the nearest describe tag) above the full commit
 ///  message. Heavy git work is performed off the UI thread, matching <see cref="DiffView"/>.
+///
+///  <para>Captions go through <see cref="TranslationService"/>. Upstream keeps this
+///  panel's field labels not in <c>CommitInfo</c> — which only owns the context menu
+///  and the "Derives from…" wording — but in the shared <c>TranslatedStrings</c>
+///  category, so that is where most keys point. The count-dependent ones
+///  (<c>{0:Parent|Parents}</c>) are resolved by <see cref="Plural"/> rather than
+///  concatenated, and the date cell is one format with two placeholders instead of
+///  a relative string glued to an absolute one.</para>
 /// </summary>
 public sealed class CommitDetailView : UserControl
 {
@@ -24,12 +34,20 @@ public sealed class CommitDetailView : UserControl
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string T(string english) => TranslationService.T(english);
+
     private readonly CommitDetailService _service = new();
 
     private readonly TextBlock _status;
     private readonly Border _avatarHost;
     private readonly StackPanel _details;
     private readonly SelectableTextBlock _message;
+
+    // Last rendered commit, kept so a language switch can re-label the panel
+    // without another git round-trip.
+    private CommitDetailInfo? _rendered;
 
     private CancellationTokenSource? _cts;
 
@@ -49,7 +67,7 @@ public sealed class CommitDetailView : UserControl
             Foreground = B("App.Text"),
             FontWeight = FontWeight.SemiBold,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            Text = "No commit selected.",
+            Text = T("No commit selected."),
         };
 
         _avatarHost = new Border
@@ -104,6 +122,24 @@ public sealed class CommitDetailView : UserControl
         root.Children.Add(messageScroll);
 
         Content = root;
+
+        TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    // Re-label in place on a language switch. The event fires on whichever thread
+    // completed the catalogue load, so the UI work is marshalled explicitly.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(Retranslate);
+
+    private void Retranslate()
+    {
+        if (_rendered is not null)
+        {
+            Render(_rendered);
+        }
+        else
+        {
+            _status.Text = T("No commit selected.");
+        }
     }
 
     /// <summary>
@@ -118,7 +154,7 @@ public sealed class CommitDetailView : UserControl
         CancellationToken token = _cts.Token;
 
         Clear();
-        _status.Text = $"Loading commit {commitHash}…";
+        _status.Text = string.Format(T("Loading commit {0}…"), commitHash);
 
         _ = Task.Run(() =>
         {
@@ -139,7 +175,7 @@ public sealed class CommitDetailView : UserControl
 
                     if (detail is null)
                     {
-                        _status.Text = $"Commit not found: {commitHash}";
+                        _status.Text = string.Format(T("Commit not found: {0}"), commitHash);
                         return;
                     }
 
@@ -156,7 +192,7 @@ public sealed class CommitDetailView : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        _status.Text = "Error: " + ex.Message;
+                        _status.Text = string.Format(T("Error: {0}"), ex.Message);
                     }
                 });
             }
@@ -165,6 +201,7 @@ public sealed class CommitDetailView : UserControl
 
     private void Render(CommitDetailInfo detail)
     {
+        _rendered = detail;
         _status.Text = detail.Subject;
 
         _avatarHost.Child = new AvatarControl(Identicon.Create(
@@ -179,28 +216,38 @@ public sealed class CommitDetailView : UserControl
         Grid grid = new() { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
         int row = 0;
 
-        AddRow(grid, ref row, "Author", TextValue(detail.Author, monospace: false));
-        AddRow(grid, ref row, "Date", TextValue(DateDisplay(detail.AuthorDate, detail.AuthorDateRelative), monospace: false));
+        string none = T("UserRepositoriesList/tsmiCategoryNone.Text", "(none)");
+
+        AddRow(grid, ref row, T("TranslatedStrings/_author.Text", "Author"),
+            TextValue(detail.Author, monospace: false));
+        AddRow(grid, ref row, T("TranslatedStrings/_dateText.Text", "Date"),
+            TextValue(DateDisplay(detail.AuthorDate, detail.AuthorDateRelative), monospace: false));
 
         if (detail.CommitterDiffers)
         {
-            AddRow(grid, ref row, "Committer", TextValue(detail.Committer, monospace: false));
-            AddRow(grid, ref row, "Commit Date", TextValue(DateDisplay(detail.CommitDate, detail.CommitDateRelative), monospace: false));
+            AddRow(grid, ref row, T("TranslatedStrings/_committerText.Text", "Committer"),
+                TextValue(detail.Committer, monospace: false));
+            AddRow(grid, ref row,
+                Plural(T("TranslatedStrings/_commitDateText.Text", "{0:Commit date|Commit dates}"), 1),
+                TextValue(DateDisplay(detail.CommitDate, detail.CommitDateRelative), monospace: false));
         }
 
-        AddRow(grid, ref row, "Commit hash", TextValue(detail.Hash, monospace: true));
+        AddRow(grid, ref row, T("PatchGrid/CommitHash.HeaderText", "Commit hash"),
+            TextValue(detail.Hash, monospace: true));
 
-        AddRow(grid, ref row, "Parent",
-            detail.ParentHashes.Count > 0 ? LinkRow(detail.ParentHashes) : TextValue("(none)", monospace: false));
-        AddRow(grid, ref row, "Child",
-            detail.ChildHashes.Count > 0 ? LinkRow(detail.ChildHashes) : TextValue("(none)", monospace: false));
+        AddRow(grid, ref row,
+            Plural(T("TranslatedStrings/_parentsText.Text", "{0:Parent|Parents}"), detail.ParentHashes.Count),
+            detail.ParentHashes.Count > 0 ? LinkRow(detail.ParentHashes) : TextValue(none, monospace: false));
+        AddRow(grid, ref row,
+            Plural(T("TranslatedStrings/_childrenText.Text", "{0:Child|Children}"), detail.ChildHashes.Count),
+            detail.ChildHashes.Count > 0 ? LinkRow(detail.ChildHashes) : TextValue(none, monospace: false));
 
         _details.Children.Add(grid);
 
         // Contained-in branches.
         _details.Children.Add(SectionLabel(detail.Branches.Count > 0
-            ? "Contained in branches:"
-            : "Contained in no branch"));
+            ? T("TranslatedStrings/_containedInBranchesText.Text", "Contained in branches:")
+            : T("TranslatedStrings/_containedInNoBranchText.Text", "Contained in no branch")));
         if (detail.Branches.Count > 0)
         {
             _details.Children.Add(TagWrap(detail.Branches, B("App.GraphGreen")));
@@ -209,18 +256,26 @@ public sealed class CommitDetailView : UserControl
         // Contained-in tags.
         if (detail.Tags.Count > 0)
         {
-            _details.Children.Add(SectionLabel("Contained in tags:"));
+            _details.Children.Add(SectionLabel(T("TranslatedStrings/_containedInTagsText.Text", "Contained in tags:")));
             _details.Children.Add(TagWrap(detail.Tags, B("App.Accent")));
         }
         else
         {
-            _details.Children.Add(SectionLabel("Contained in no tag"));
+            _details.Children.Add(SectionLabel(T("TranslatedStrings/_containedInNoTagText.Text", "Contained in no tag")));
         }
 
-        // Derives-from-tag.
+        // Derives-from-tag. One format with a placeholder, so a language whose
+        // word order differs can move the tag name.
         if (!string.IsNullOrEmpty(detail.DescribeTag))
         {
-            _details.Children.Add(SectionLabel($"Derives from tag: {detail.DescribeTag}"));
+            _details.Children.Add(SectionLabel(string.Format(
+                "{0} {1}",
+                T("CommitInfo/_derivesFromTag.Text", "Derives from tag:"),
+                detail.DescribeTag)));
+        }
+        else
+        {
+            _details.Children.Add(SectionLabel(T("CommitInfo/_derivesFromNoTag.Text", "Derives from no tag")));
         }
 
         _message.Text = detail.Message;
@@ -228,11 +283,14 @@ public sealed class CommitDetailView : UserControl
 
     private void Clear()
     {
+        _rendered = null;
         _avatarHost.Child = null;
         _details.Children.Clear();
         _message.Text = string.Empty;
     }
 
+    // Relative and absolute date in a single translatable format, never two
+    // concatenated fragments.
     private static string DateDisplay(string absolute, string relative)
     {
         if (string.IsNullOrEmpty(absolute))
@@ -240,7 +298,60 @@ public sealed class CommitDetailView : UserControl
             return relative;
         }
 
-        return string.IsNullOrEmpty(relative) ? absolute : $"{relative}  ({absolute})";
+        return string.IsNullOrEmpty(relative)
+            ? absolute
+            : string.Format(T("{0}  ({1})"), relative, absolute);
+    }
+
+    /// <summary>
+    ///  Resolves the pluralised placeholder syntax the upstream catalogues use for
+    ///  these labels — <c>"{0:Parent|Parents}"</c> — picking the singular for
+    ///  <paramref name="count"/> 0 or 1 and the plural otherwise, then substituting
+    ///  any bare <c>{0}</c> with the count itself.
+    ///
+    ///  <para>Some catalogues (the Italian one among them) separate the two forms
+    ///  with a backslash instead of a pipe — <c>"{0:Data commit\Data commit}"</c> —
+    ///  so both separators are accepted; otherwise the raw placeholder would leak
+    ///  into the UI.</para>
+    /// </summary>
+    private static string Plural(string format, int count)
+    {
+        StringBuilder sb = new(format.Length);
+
+        for (int i = 0; i < format.Length; i++)
+        {
+            char c = format[i];
+            if (c != '{')
+            {
+                sb.Append(c);
+                continue;
+            }
+
+            int close = format.IndexOf('}', i + 1);
+            if (close < 0)
+            {
+                sb.Append(format, i, format.Length - i);
+                break;
+            }
+
+            string body = format[(i + 1)..close];
+            int colon = body.IndexOf(':');
+            if (colon < 0)
+            {
+                // A bare "{0}" — the count itself.
+                sb.Append(count.ToString(CultureInfo.CurrentCulture));
+            }
+            else
+            {
+                string forms = body[(colon + 1)..];
+                int sep = forms.IndexOfAny(['|', '\\']);
+                sb.Append(sep < 0 ? forms : (count is 0 or 1 ? forms[..sep] : forms[(sep + 1)..]));
+            }
+
+            i = close;
+        }
+
+        return sb.ToString();
     }
 
     private static SelectableTextBlock TextValue(string text, bool monospace)

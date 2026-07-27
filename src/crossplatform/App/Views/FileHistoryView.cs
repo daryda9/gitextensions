@@ -15,6 +15,14 @@ namespace GitExtensions.Avalonia.Views;
 ///  following it across renames. Heavy git work runs off the UI thread, matching
 ///  <see cref="DiffView"/>. Built on a <see cref="ListBox"/> with a templated
 ///  multi-column row so no extra NuGet package (e.g. DataGrid) is required.
+///
+///  <para>Captions go through <see cref="TranslationService"/>. Upstream's
+///  <c>FormFileHistory</c> is a tabbed window whose grid is a
+///  <c>RevisionGridControl</c>, so its trans-units are tabs and menu entries rather
+///  than column headers; the four headers here are keyed to the equivalent
+///  upstream columns (<c>FormVerify</c>) and to the shared
+///  <c>TranslatedStrings</c> labels. Header and status line are rebuilt on
+///  <see cref="TranslationService.LanguageChanged"/>.</para>
 /// </summary>
 public sealed class FileHistoryView : UserControl
 {
@@ -27,9 +35,19 @@ public sealed class FileHistoryView : UserControl
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string T(string english) => TranslationService.T(english);
+
     private readonly FileHistoryService _service = new();
     private readonly ListBox _list;
     private readonly TextBlock _status;
+    private readonly Border _headerHost;
+
+    // Last successful load, so a language switch can re-word the status line
+    // without re-running git.
+    private string? _shownFile;
+    private int _shownCommits;
 
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
@@ -44,7 +62,8 @@ public sealed class FileHistoryView : UserControl
             Foreground = B("App.TextDim"),
             Background = B("App.Toolbar"),
             Padding = new Thickness(4, 4, 4, 4),
-            Text = "No file loaded.",
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Text = T("No file loaded."),
         };
 
         _list = new ListBox
@@ -75,17 +94,36 @@ public sealed class FileHistoryView : UserControl
             }
         };
 
-        Control header = BuildHeader();
+        _headerHost = new Border
+        {
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = BuildHeader(),
+        };
 
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
-        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(_headerHost, Dock.Top);
         root.Children.Add(_status);
-        root.Children.Add(header);
+        root.Children.Add(_headerHost);
         root.Children.Add(_list);
 
         Content = root;
+
+        TranslationService.LanguageChanged += OnLanguageChanged;
     }
+
+    // Fired on the catalogue-loading thread; marshal the relabel to the UI thread.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(Retranslate);
+
+    private void Retranslate()
+    {
+        _headerHost.Child = BuildHeader();
+        _status.Text = _shownFile is null ? T("No file loaded.") : StatusLine();
+    }
+
+    private string StatusLine()
+        => string.Format(T("{0}  —  {1} commit(s)"), _shownFile, _shownCommits);
 
     /// <summary>
     ///  Loads and displays the commit history of <paramref name="filePath"/> in
@@ -95,7 +133,8 @@ public sealed class FileHistoryView : UserControl
     public void ShowHistory(string repoPath, string filePath)
     {
         _list.ItemsSource = null;
-        _status.Text = $"Loading history of {filePath}…";
+        _shownFile = null;
+        _status.Text = string.Format(T("Loading history of {0}…"), filePath);
 
         _ = Task.Run(() =>
         {
@@ -105,12 +144,14 @@ public sealed class FileHistoryView : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     _list.ItemsSource = rows;
-                    _status.Text = $"{filePath}  —  {rows.Count} commit(s)";
+                    _shownFile = filePath;
+                    _shownCommits = rows.Count;
+                    _status.Text = StatusLine();
                 });
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = "Error: " + ex.Message);
+                Dispatcher.UIThread.Post(() => _status.Text = string.Format(T("Error: {0}"), ex.Message));
             }
         });
     }
@@ -126,17 +167,12 @@ public sealed class FileHistoryView : UserControl
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(8, 0, 8, 2);
 
-        AddCell(grid, 0, "Hash", bold: true);
-        AddCell(grid, 1, "Author", bold: true);
-        AddCell(grid, 2, "Date", bold: true);
-        AddCell(grid, 3, "Subject", bold: true);
+        AddCell(grid, 0, T("FormVerify/columnHash.HeaderText", "Hash"), bold: true);
+        AddCell(grid, 1, T("TranslatedStrings/_author.Text", "Author"), bold: true);
+        AddCell(grid, 2, T("TranslatedStrings/_dateText.Text", "Date"), bold: true);
+        AddCell(grid, 3, T("FormVerify/columnSubject.HeaderText", "Subject"), bold: true);
 
-        return new Border
-        {
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = grid,
-        };
+        return grid;
     }
 
     private static Control BuildRow(FileHistoryRow row)
