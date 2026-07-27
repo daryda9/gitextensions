@@ -119,6 +119,14 @@ public sealed class MainWindow : Window
     private string? _repoPath;
     private string? _lastSelectedHash;
 
+    private const string DefaultTitle = "Git Extensions (Avalonia / Linux)";
+
+    // Which commit each lazily-loaded bottom tab is currently showing; null = stale.
+    private string? _detailLoadedFor;
+    private string? _diffLoadedFor;
+    private string? _fileTreeLoadedFor;
+    private string? _gpgLoadedFor;
+
     // The commit chosen as the "BASE" for the grid's Compare actions (single-select
     // grid, so BASE + "Compare to BASE" together stand in for a two-commit compare).
     private string? _compareBaseHash;
@@ -130,7 +138,7 @@ public sealed class MainWindow : Window
         _uiState = _uiStateService.Load();
         Theming.ThemeManager.Apply(_uiState.Theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
 
-        Title = "Git Extensions (Avalonia / Linux)";
+        Title = DefaultTitle;
         Width = _uiState.WindowWidth;
         Height = _uiState.WindowHeight;
         _normalWidth = _uiState.WindowWidth;
@@ -189,6 +197,9 @@ public sealed class MainWindow : Window
                 _stashTab, _blameTab, _historyTab,
             },
         };
+
+        // Showing a lazily-loaded tab is what brings it up to date.
+        _bottom.SelectionChanged += (_, _) => LoadSelectedBottomTab();
 
         // ---- right side: revision grid + bottom panel, with the commit-info panel
         // positioned relative to the grid (below / left / right). Built dynamically
@@ -1641,11 +1652,49 @@ public sealed class MainWindow : Window
         }
 
         _lastSelectedHash = commitHash;
-        _detail.ShowCommit(_repoPath, commitHash);
-        _diff.ShowCommit(_repoPath, commitHash);
-        _fileTree.ShowCommit(_repoPath, commitHash);
-        _gpg.ShowCommit(_repoPath, commitHash);
+
+        // Upstream loads only the tab that is actually showing (FormBrowse.cs:1240,
+        // 1251, 1306) and marks the others stale. Loading all four on every selection
+        // fired four git chains — including --show-signature and a full ls-tree -r —
+        // of which three were invisible.
+        _detailLoadedFor = null;
+        _diffLoadedFor = null;
+        _fileTreeLoadedFor = null;
+        _gpgLoadedFor = null;
         _bottom.SelectedItem = _commitInfoTab;
+        LoadSelectedBottomTab();
+    }
+
+    // Brings the visible bottom tab up to date with the current selection; the other
+    // tabs stay stale until they are shown. Cheap and idempotent.
+    private void LoadSelectedBottomTab()
+    {
+        if (_repoPath is not { Length: > 0 } repo || _lastSelectedHash is not { Length: > 0 } hash)
+        {
+            return;
+        }
+
+        object? tab = _bottom.SelectedItem;
+        if (ReferenceEquals(tab, _commitInfoTab) && _detailLoadedFor != hash)
+        {
+            _detailLoadedFor = hash;
+            _detail.ShowCommit(repo, hash);
+        }
+        else if (ReferenceEquals(tab, _diffTab) && _diffLoadedFor != hash)
+        {
+            _diffLoadedFor = hash;
+            _diff.ShowCommit(repo, hash);
+        }
+        else if (ReferenceEquals(tab, _fileTreeTab) && _fileTreeLoadedFor != hash)
+        {
+            _fileTreeLoadedFor = hash;
+            _fileTree.ShowCommit(repo, hash);
+        }
+        else if (ReferenceEquals(tab, _gpgTab) && _gpgLoadedFor != hash)
+        {
+            _gpgLoadedFor = hash;
+            _gpg.ShowCommit(repo, hash);
+        }
     }
 
     // Two commits selected in the grid: show the diff between them (baseHash is the
@@ -2141,6 +2190,23 @@ public sealed class MainWindow : Window
     // Ctrl+. — pick a local branch and check it out through the ordinary checkout
     // path (which asks what to do with local changes). Loading the refs is git work,
     // so it happens off the UI thread.
+    // Upstream's AppTitleGenerator: "<repo> (<branch>) - Git Extensions", so several
+    // open windows are told apart in the task bar. Cheap enough to call from the
+    // toolbar refresh, which already knows the branch.
+    private void UpdateWindowTitle(string? branch)
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            Title = DefaultTitle;
+            return;
+        }
+
+        string name = new DirectoryInfo(repo.TrimEnd('/')).Name;
+        Title = string.IsNullOrEmpty(branch)
+            ? $"{name} - {DefaultTitle}"
+            : $"{name} ({branch}) - {DefaultTitle}";
+    }
+
     // The worktree manager used to be reachable only from the left panel's tree;
     // the toolbar's split button needs it too.
     private async Task ShowWorktreesAsync()
@@ -2533,6 +2599,7 @@ public sealed class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _toolbar.UpdateState(ahead, behind, fStaged, fUnstaged, repoPath, branch, probed);
+                UpdateWindowTitle(branch);
                 // Feed the artificial "Working directory" / "Commit index" rows
                 // atop the revision grid the same pending-work counts.
                 _revisions.SetWorkingState(fUnstaged, fStaged);
