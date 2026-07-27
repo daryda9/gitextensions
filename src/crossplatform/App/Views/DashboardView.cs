@@ -3,79 +3,162 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
+using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using GitExtensions.Avalonia.Services;
+using GitExtensions.Avalonia.Theming;
 
 namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
-///  The "Dashboard" landing view for the Avalonia / Linux port, echoing the
-///  original GitExtensions start page. It is shown when no repository is open
-///  (or when the user chooses "Close (go to Dashboard)") and lists the
-///  favorite and recent repositories as clickable entries.
+///  The "Dashboard" landing view for the Avalonia / Linux port, shown when no
+///  repository is open (or after "Close (go to Dashboard)").
 ///
-///  <para>The view performs no persistence or git work itself: it renders the
-///  two lists it is handed via <see cref="Load"/> and raises
-///  <see cref="RepositorySelected"/> (and <see cref="OpenOtherRequested"/>) for
-///  the host window to act on — the same separation the toolbar and menu use.
-///  Colors come from the shared <c>App.*</c> palette.</para>
+///  <para>It merges the two upstream controls of
+///  <c>BrowseDialog/DashboardControl</c>: <c>Dashboard</c> supplies the branding
+///  strip and the "Start" links, <c>UserRepositoriesList</c> the search box, the
+///  repository tiles (name, path, current branch) and their context menu.</para>
+///
+///  <para>The view owns the little state it needs to stay useful on its own: it
+///  can reload itself (F5) and remove MRU entries without the host lifting a
+///  finger, because a landing page that cannot refresh after you delete a
+///  project from it is worse than no landing page. Opening a repository is still
+///  the host's business and travels through <see cref="RepositorySelected"/>,
+///  exactly as before.</para>
+///
+///  <para>Every git/filesystem touch — probing whether a path still exists,
+///  reading the checked-out branch — happens on a worker; the UI thread only
+///  ever receives the answers.</para>
 /// </summary>
 public sealed class DashboardView : UserControl
 {
-    private readonly StackPanel _favorites;
-    private readonly StackPanel _recent;
-    private readonly IBrush _text;
-    private readonly IBrush _dim;
-    private readonly IBrush _accent;
+    private const string FavoritesGroup = "favorites";
+    private const string RecentGroup = "recent";
 
-    /// <summary>Raised with a repository path when the user clicks an entry.</summary>
+    private readonly FavoritesService _favoritesService = new();
+    private readonly RecentRepositoriesService _recentService = new();
+    private readonly ExternalToolService _externalTools = new();
+
+    private readonly TextBox _search;
+    private readonly ListBox _list;
+    private readonly TextBlock _status;
+
+    private readonly MenuItem _showInFolderItem;
+    private readonly MenuItem _removeItem;
+    private readonly MenuItem _removeMissingItem;
+
+    // The full, unfiltered model. Rebuilt on Load/refresh, never mutated in place.
+    private readonly List<RepoEntry> _entries = [];
+
+    // Branch labels currently on screen, so the background warm-up can fill them
+    // in as answers arrive. Keyed by the row, not the path: the same repository
+    // can appear both as a favorite and as a recent entry.
+    private readonly Dictionary<RepoEntry, TextBlock> _branchLabels = [];
+
+    // Branch names already resolved, so switching the filter (which rebuilds
+    // every row) does not re-read HEAD for repositories we have already seen.
+    private readonly Dictionary<string, string?> _branchCache = new(StringComparer.Ordinal);
+
+    private RepoEntry? _menuTarget;
+    private int _generation;
+
+    /// <summary>Raised with a repository path when the user activates an entry.</summary>
     public event Action<string>? RepositorySelected;
 
-    /// <summary>Raised when the user clicks the "Open repository…" button.</summary>
+    /// <summary>Raised when the user picks "Open repository…".</summary>
     public event Action? OpenOtherRequested;
+
+    /// <summary>
+    ///  Raised when the user picks "Create new repository". When nothing is
+    ///  subscribed the view runs the flow itself (folder picker + <c>git init</c>)
+    ///  and reports the result through <see cref="RepositorySelected"/>, so the
+    ///  link is never a dead end.
+    /// </summary>
+    public event Action? CreateRepositoryRequested;
+
+    /// <summary>
+    ///  Raised when the user picks "Clone repository". Same fallback as
+    ///  <see cref="CreateRepositoryRequested"/>: unsubscribed, the view opens the
+    ///  port's own clone dialog.
+    /// </summary>
+    public event Action? CloneRepositoryRequested;
 
     public DashboardView()
     {
-        _text = Resource("App.Text", "#DCDCDC");
-        _dim = Resource("App.TextDim", "#9B9B9B");
-        _accent = Resource("App.Accent", "#007ACC");
+        Background = B("App.Window");
+        Focusable = true;
 
-        Background = Resource("App.Window", "#1E1E1E");
-
-        TextBlock title = new()
+        _search = new TextBox
         {
-            Text = "Git Extensions",
-            Foreground = _text,
-            FontSize = 26,
-            FontWeight = FontWeight.SemiBold,
-        };
-        TextBlock subtitle = new()
-        {
-            Text = "Open a repository to get started.",
-            Foreground = _dim,
-            FontSize = 13,
-            Margin = new Thickness(0, 2, 0, 0),
-        };
-
-        Button open = new()
-        {
-            Content = "Open repository…",
-            MinWidth = 160,
+            Watermark = T("Search repositories…"),
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 14, 0, 8),
+            MaxWidth = 460,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 16, 0, 0),
+            MinWidth = 320,
         };
-        open.Click += (_, _) => OpenOtherRequested?.Invoke();
+        _search.TextChanged += (_, _) => Rebuild();
+        _search.KeyDown += OnSearchKeyDown;
 
-        _favorites = new StackPanel { Spacing = 2 };
-        _recent = new StackPanel { Spacing = 2 };
+        _list = new ListBox
+        {
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+        };
+        _list.KeyDown += OnListKeyDown;
 
-        StackPanel content = new() { Margin = new Thickness(28), Spacing = 4 };
-        content.Children.Add(title);
-        content.Children.Add(subtitle);
-        content.Children.Add(open);
-        content.Children.Add(SectionHeader("Favorite repositories"));
-        content.Children.Add(_favorites);
-        content.Children.Add(SectionHeader("Recent repositories"));
-        content.Children.Add(_recent);
+        _showInFolderItem = new MenuItem { Header = T("UserRepositoriesList/tsmiOpenFolder.Text", "Show in folder") };
+        _showInFolderItem.Click += (_, _) => ShowTargetInFolder();
+        _removeItem = new MenuItem
+        {
+            Header = T("UserRepositoriesList/tsmiRemoveFromList.Text", "Remove project from the list"),
+        };
+        _removeItem.Click += (_, _) => _ = RemoveTargetAsync();
+        _removeMissingItem = new MenuItem
+        {
+            Header = T(
+                "UserRepositoriesList/tsmiRemoveMissingReposFromList.Text",
+                "Remove missing projects from the list"),
+        };
+        _removeMissingItem.Click += (_, _) => _ = RemoveMissingAsync();
+
+        // Built once and only toggled on opening: rebuilding Items from the
+        // Opening handler leaves the popup mis-measured.
+        ContextMenu menu = new()
+        {
+            ItemsSource = new Control[]
+            {
+                _showInFolderItem,
+                new Separator(),
+                _removeItem,
+                _removeMissingItem,
+            },
+        };
+        menu.Opening += (_, _) => UpdateMenuState();
+        _list.ContextMenu = menu;
+        _list.AddHandler(ContextRequestedEvent, OnListContextRequested, RoutingStrategies.Tunnel);
+
+        _status = new TextBlock
+        {
+            Foreground = B("App.TextDim"),
+            FontSize = 12,
+            Margin = new Thickness(0, 10, 0, 0),
+        };
+
+        StackPanel content = new() { Margin = new Thickness(28, 20, 28, 24), Spacing = 0 };
+        content.Children.Add(Branding());
+        content.Children.Add(StartLinks());
+        content.Children.Add(SectionHeader(T("Repositories")));
+        content.Children.Add(_search);
+        content.Children.Add(_list);
+        content.Children.Add(_status);
 
         Content = new ScrollViewer
         {
@@ -83,65 +166,591 @@ public sealed class DashboardView : UserControl
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
 
-        Load(Array.Empty<string>(), Array.Empty<string>());
+        // F5 must work wherever the focus sits, search box included.
+        AddHandler(KeyDownEvent, OnDashboardKeyDown, RoutingStrategies.Tunnel);
+
+        Rebuild();
     }
 
     /// <summary>
     ///  Repopulates the dashboard from the given favorite and recent lists
-    ///  (most-relevant first). Empty lists show a dim "(none)" placeholder.
+    ///  (most-relevant first). Existence and branch names are resolved afterwards,
+    ///  off the UI thread.
     /// </summary>
     public void Load(IReadOnlyList<string> favorites, IReadOnlyList<string> recent)
     {
-        Fill(_favorites, favorites);
-        Fill(_recent, recent);
+        _entries.Clear();
+
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (string path in favorites ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(path) && seen.Add(path))
+            {
+                _entries.Add(new RepoEntry(path, FavoritesGroup));
+            }
+        }
+
+        foreach (string path in recent ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(path) && seen.Add(path))
+            {
+                _entries.Add(new RepoEntry(path, RecentGroup));
+            }
+        }
+
+        Rebuild();
+        StartProbe();
     }
 
-    private void Fill(StackPanel panel, IReadOnlyList<string> repos)
+    /// <summary>
+    ///  Reloads favorites and recent repositories from their stores (upstream's
+    ///  F5 on the repository list) and re-resolves every branch name.
+    /// </summary>
+    public async Task RefreshAsync()
     {
-        panel.Children.Clear();
+        _branchCache.Clear();
 
-        if (repos is null || repos.Count == 0)
+        IReadOnlyList<string> favorites;
+        IReadOnlyList<RecentRepositoriesService.RecentRepositoryEntry> recent;
+        try
         {
-            panel.Children.Add(new TextBlock
-            {
-                Text = "(none)",
-                Foreground = _dim,
-                FontSize = 12,
-                Margin = new Thickness(4, 2, 0, 2),
-            });
+            // Both stores hit the disk (and the recent one probes every path):
+            // never on the UI thread.
+            favorites = await Task.Run(() => _favoritesService.Load());
+            recent = await _recentService.LoadEntriesAsync();
+        }
+        catch (Exception ex)
+        {
+            _status.Text = string.Format(T("Error: {0}"), ex.Message);
             return;
         }
 
-        foreach (string repo in repos)
+        Load(favorites, recent.Select(e => e.Path).ToList());
+    }
+
+    // ---- rendering -----------------------------------------------------------------
+
+    // Rebuilds the visible rows from _entries and the current search text.
+    // A brand-new list instance is assigned every time: handing the SAME
+    // IList back to ItemsSource does not recreate the containers, so the rows
+    // would keep their previous content.
+    private void Rebuild()
+    {
+        string filter = _search.Text?.Trim() ?? string.Empty;
+        List<RepoEntry> visible = _entries
+            .Where(e => Matches(e, filter))
+            .ToList();
+
+        _branchLabels.Clear();
+
+        List<Control> rows = new(visible.Count);
+        string? group = null;
+        foreach (RepoEntry entry in visible)
         {
-            string path = repo;
-            Button entry = new()
+            bool startsGroup = entry.Group != group;
+            group = entry.Group;
+            rows.Add(Row(entry, startsGroup));
+        }
+
+        _list.ItemsSource = rows;
+        _list.IsVisible = rows.Count > 0;
+
+        _status.Text = rows.Count > 0
+            ? string.Empty
+            : _entries.Count == 0
+                ? T("No repositories yet — open, create or clone one to get started.")
+                : T("No repository matches the search.");
+    }
+
+    private static bool Matches(RepoEntry entry, string filter)
+        => filter.Length == 0
+        || entry.Path.Contains(filter, StringComparison.OrdinalIgnoreCase);
+
+    // One repository tile: optional group heading, the folder name, the full
+    // path and (once known) the checked-out branch.
+    private Control Row(RepoEntry entry, bool startsGroup)
+    {
+        StackPanel outer = new() { Spacing = 0 };
+
+        if (startsGroup)
+        {
+            outer.Children.Add(new TextBlock
             {
-                Content = path,
-                Foreground = _accent,
-                Background = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(4, 3, 4, 3),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                Cursor = new Cursor(StandardCursorType.Hand),
-            };
-            entry.Click += (_, _) => RepositorySelected?.Invoke(path);
-            panel.Children.Add(entry);
+                Text = entry.Group == FavoritesGroup
+                    ? T("Dashboard/_favouriteRepositories.Text", "Favorite repositories")
+                    : T("Dashboard/_recentRepositories.Text", "Recent repositories"),
+                Foreground = B("App.TextDim"),
+                FontSize = 11,
+                FontWeight = FontWeight.SemiBold,
+                Margin = new Thickness(0, 10, 0, 4),
+            });
+        }
+
+        Grid grid = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
+            Background = Brushes.Transparent,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Margin = new Thickness(0, 1, 0, 1),
+        };
+
+        // Upstream marks a broken entry by swapping the tile icon
+        // (DashboardFolderGit → DashboardFolderError); both are already linked
+        // by the csproj icon glob, so the port can say the same thing.
+        Image? icon = IconLoader.Image(entry.Exists ? "DashboardFolderGit" : "DashboardFolderError", 16);
+        if (icon is not null)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            icon.Margin = new Thickness(0, 0, 8, 0);
+            Grid.SetColumn(icon, 0);
+            grid.Children.Add(icon);
+        }
+
+        StackPanel texts = new() { Spacing = 0 };
+        Grid.SetColumn(texts, 1);
+
+        texts.Children.Add(new TextBlock
+        {
+            Text = FolderName(entry.Path),
+            Foreground = entry.Exists ? B("App.Accent") : B("App.TextDim"),
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        texts.Children.Add(new TextBlock
+        {
+            Text = entry.Exists ? entry.Path : string.Format(T("{0} (missing)"), entry.Path),
+            Foreground = B("App.TextDim"),
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        grid.Children.Add(texts);
+
+        TextBlock branch = new()
+        {
+            Text = BranchText(entry),
+            Foreground = B("App.GraphGreen"),
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 4, 0),
+        };
+        Grid.SetColumn(branch, 2);
+        grid.Children.Add(branch);
+        _branchLabels[entry] = branch;
+
+        // Upstream opens on a single click; the right button belongs to the
+        // context menu, which the tunnelling handler has already dealt with.
+        grid.PointerReleased += (_, e) =>
+        {
+            if (e.InitialPressMouseButton == MouseButton.Left)
+            {
+                Open(entry);
+            }
+        };
+
+        grid.Tag = entry;
+        outer.Children.Add(grid);
+        outer.Tag = entry;
+        return outer;
+    }
+
+    private string BranchText(RepoEntry entry)
+        => _branchCache.TryGetValue(entry.Path, out string? branch) && !string.IsNullOrEmpty(branch)
+            ? branch
+            : string.Empty;
+
+    private static string FolderName(string path)
+    {
+        string name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar));
+        return string.IsNullOrEmpty(name) ? path : name;
+    }
+
+    // ---- background resolution -----------------------------------------------------
+
+    // Resolves "does it still exist" and "which branch is checked out" for every
+    // entry on a worker, then folds the answers back in on the UI thread.
+    // Upstream warms the same two values in parallel from a cache
+    // (RepositoryHistoryUIService); the port reads .git/HEAD instead of running
+    // a git process per row, so a single pass is cheap enough.
+    private void StartProbe()
+    {
+        int generation = ++_generation;
+        RepoEntry[] pending = _entries.Where(e => !_branchCache.ContainsKey(e.Path)).ToArray();
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            foreach (RepoEntry entry in pending)
+            {
+                bool exists = Directory.Exists(entry.Path);
+                string? branch = exists ? RecentRepositoriesService.ReadCurrentBranch(entry.Path) : null;
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (generation != _generation)
+                    {
+                        return;
+                    }
+
+                    _branchCache[entry.Path] = branch;
+                    if (entry.Exists != exists)
+                    {
+                        entry.Exists = exists;
+
+                        // The icon and the "(missing)" suffix live in the row, so
+                        // the row has to be rebuilt for this one.
+                        Rebuild();
+                        return;
+                    }
+
+                    if (_branchLabels.TryGetValue(entry, out TextBlock? label))
+                    {
+                        label.Text = branch ?? string.Empty;
+                    }
+                });
+            }
+        });
+    }
+
+    // ---- commands ------------------------------------------------------------------
+
+    private void Open(RepoEntry entry)
+    {
+        if (!entry.Exists)
+        {
+            _status.Text = string.Format(
+                T("{0} no longer exists. Use the context menu to remove it from the list."), entry.Path);
+            return;
+        }
+
+        RepositorySelected?.Invoke(entry.Path);
+    }
+
+    private void ShowTargetInFolder()
+    {
+        if (_menuTarget is not { } entry)
+        {
+            return;
+        }
+
+        string path = entry.Path;
+
+        // Shells out (D-Bus / xdg-open): keep it off the UI thread.
+        _ = Task.Run(() => _externalTools.ShowInFolder(path));
+    }
+
+    private async Task RemoveTargetAsync()
+    {
+        if (_menuTarget is not { } entry)
+        {
+            return;
+        }
+
+        if (entry.Group == FavoritesGroup)
+        {
+            _favoritesService.Remove(entry.Path);
+        }
+
+        await _recentService.RemoveAsync(entry.Path);
+        _status.Text = string.Format(T("Removed from the list: {0}"), entry.Path);
+        await RefreshAsync();
+    }
+
+    private async Task RemoveMissingAsync()
+    {
+        int removed = await _recentService.RemoveMissingAsync();
+        _status.Text = removed > 0
+            ? string.Format(T("Removed {0} missing project(s) from the list."), removed)
+            : T("No missing projects to remove.");
+        await RefreshAsync();
+    }
+
+    // ---- input ---------------------------------------------------------------------
+
+    private void OnDashboardKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F5)
+        {
+            e.Handled = true;
+            _ = RefreshAsync();
         }
     }
+
+    private void OnSearchKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            // Upstream opens the first entry of the filtered list.
+            if (FirstVisibleEntry() is { } first)
+            {
+                e.Handled = true;
+                Open(first);
+            }
+        }
+        else if (e.Key == Key.Down && _list.ItemCount > 0)
+        {
+            e.Handled = true;
+            _list.SelectedIndex = 0;
+            _list.Focus();
+        }
+    }
+
+    private void OnListKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Up && _list.SelectedIndex <= 0)
+        {
+            // At the very top the Up key hands the focus back to the search box.
+            e.Handled = true;
+            _search.Focus();
+        }
+        else if (e.Key == Key.Enter && EntryOf(_list.SelectedItem) is { } entry)
+        {
+            e.Handled = true;
+            Open(entry);
+        }
+    }
+
+    // Resolves the row the pointer is over before the popup appears, so the
+    // entries act on what was right-clicked rather than on the selection.
+    private void OnListContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        _menuTarget = null;
+        if (!e.TryGetPosition(_list, out Point position))
+        {
+            return;
+        }
+
+        Visual? hit = _list.InputHitTest(position) as Visual;
+        while (hit is not null)
+        {
+            if (hit is Control { Tag: RepoEntry entry })
+            {
+                _menuTarget = entry;
+                return;
+            }
+
+            hit = hit.GetVisualParent();
+        }
+    }
+
+    private void UpdateMenuState()
+    {
+        bool hasTarget = _menuTarget is not null;
+        _showInFolderItem.IsEnabled = hasTarget && _menuTarget!.Exists;
+        _removeItem.IsEnabled = hasTarget;
+
+        // Upstream only shows the bulk entry when there is something to clean up.
+        _removeMissingItem.IsVisible = _entries.Any(entry => !entry.Exists);
+    }
+
+    private RepoEntry? FirstVisibleEntry()
+        => _list.ItemsSource?.Cast<object>().Select(EntryOf).FirstOrDefault(e => e is not null);
+
+    private static RepoEntry? EntryOf(object? item)
+        => item switch
+        {
+            RepoEntry entry => entry,
+            Control { Tag: RepoEntry tagged } => tagged,
+            _ => null,
+        };
+
+    // ---- branding + start links ----------------------------------------------------
+
+    // Upstream draws the GitExtensionsLogoWide bitmap on a tinted strip
+    // (Dashboard.Designer.cs:94-113). That file lives in setup/assets/Logo and is
+    // NOT covered by the csproj's icon glob (src/app/GitUI/Resources/Icons/*.png),
+    // so it cannot be resolved as an avares: resource here. Rather than
+    // substituting some other artwork, the port keeps the wordmark as text; see
+    // the report for the one csproj line that would light the real logo up.
+    private Control Branding()
+    {
+        StackPanel panel = new() { Spacing = 2 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Git Extensions",
+            Foreground = B("App.Text"),
+            FontSize = 26,
+            FontWeight = FontWeight.SemiBold,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = T("Open a repository to get started."),
+            Foreground = B("App.TextDim"),
+            FontSize = 13,
+        });
+
+        return new Border
+        {
+            Background = B("App.PanelAlt"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(16, 14, 16, 14),
+            Child = panel,
+        };
+    }
+
+    // Upstream's "Start" group: open / create / clone (Dashboard.cs:115-126).
+    private Control StartLinks()
+    {
+        StackPanel links = new() { Spacing = 2, Margin = new Thickness(16, 12, 0, 0) };
+        links.Children.Add(StartLink(
+            T("FormBrowse/openToolStripMenuItem.Text", "Open repository…"),
+            "RepoOpen",
+            () => OpenOtherRequested?.Invoke()));
+        links.Children.Add(StartLink(
+            T("FormBrowse/initNewRepositoryToolStripMenuItem.Text", "Create new repository…"),
+            "RepoCreate",
+            () =>
+            {
+                if (CreateRepositoryRequested is { } handler)
+                {
+                    handler();
+                }
+                else
+                {
+                    _ = CreateRepositoryAsync();
+                }
+            }));
+        links.Children.Add(StartLink(
+            T("FormBrowse/cloneToolStripMenuItem.Text", "Clone repository…"),
+            "CloneRepoGit",
+            () =>
+            {
+                if (CloneRepositoryRequested is { } handler)
+                {
+                    handler();
+                }
+                else
+                {
+                    _ = CloneRepositoryAsync();
+                }
+            }));
+
+        StackPanel panel = new() { Spacing = 0 };
+        panel.Children.Add(SectionHeader(T("Dashboard/_develop.Text", "Start")));
+        panel.Children.Add(links);
+        return panel;
+    }
+
+    private Control StartLink(string text, string iconName, Action action)
+    {
+        StackPanel row = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Background = Brushes.Transparent,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Margin = new Thickness(0, 2, 0, 2),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        if (IconLoader.Image(iconName, 16) is { } icon)
+        {
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(icon);
+        }
+
+        row.Children.Add(new TextBlock
+        {
+            Text = text,
+            Foreground = B("App.Accent"),
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        row.PointerReleased += (_, e) =>
+        {
+            if (e.InitialPressMouseButton == MouseButton.Left)
+            {
+                action();
+            }
+        };
+
+        return row;
+    }
+
+    // Fallbacks used when the host has not claimed the two links. They mirror
+    // MainWindow's own flows and finish by handing the new repository to
+    // RepositorySelected, which is the only way this view knows to open one.
+    private async Task CreateRepositoryAsync()
+    {
+        if (TopLevel.GetTopLevel(this) is not { } top)
+        {
+            return;
+        }
+
+        IReadOnlyList<IStorageFolder> folders =
+            await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                AllowMultiple = false,
+                Title = T("Choose a directory for the new repository"),
+            });
+
+        if (folders.Count == 0 || folders[0].TryGetLocalPath() is not { Length: > 0 } dir)
+        {
+            return;
+        }
+
+        CloneInitResult result = await Task.Run(() => new CloneInitService().Init(dir));
+        if (!result.Success)
+        {
+            _status.Text = result.Output;
+            return;
+        }
+
+        RepositorySelected?.Invoke(result.RepoPath ?? dir);
+    }
+
+    private async Task CloneRepositoryAsync()
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return;
+        }
+
+        CloneDialog dialog = new();
+        await dialog.ShowDialog(owner);
+
+        if (dialog.ClonedRepoPath is { Length: > 0 } repo && Directory.Exists(repo))
+        {
+            RepositorySelected?.Invoke(repo);
+        }
+    }
+
+    // ---- helpers -------------------------------------------------------------------
 
     private Control SectionHeader(string text) => new TextBlock
     {
         Text = text,
-        Foreground = _text,
+        Foreground = B("App.Text"),
         FontSize = 15,
         FontWeight = FontWeight.SemiBold,
-        Margin = new Thickness(0, 20, 0, 6),
+        Margin = new Thickness(16, 18, 0, 2),
     };
 
-    private static IBrush Resource(string key, string fallback)
-        => Application.Current?.Resources.TryGetValue(key, out object? value) == true && value is IBrush b
-            ? b
-            : new SolidColorBrush(Color.Parse(fallback));
+    private static IBrush B(string key)
+        => Application.Current?.Resources.TryGetValue(key, out object? value) == true && value is IBrush brush
+            ? brush
+            : Brushes.Transparent;
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    /// <summary>A single dashboard tile: a repository path and which list it came from.</summary>
+    private sealed class RepoEntry(string path, string group)
+    {
+        public string Path { get; } = path;
+
+        public string Group { get; } = group;
+
+        /// <summary>
+        ///  Whether the directory is still there. Assumed true until the
+        ///  background probe says otherwise, so the list paints immediately.
+        /// </summary>
+        public bool Exists { get; set; } = true;
+    }
 }
