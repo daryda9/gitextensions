@@ -1155,7 +1155,7 @@ priorità massima)
 - [ ] 0.17 `RevisionsStar`/`BottomStar` vengono salvati come valori **simil-pixel** (es. 199 / 525)
       invece di rapporti star normalizzati: passano il `Clamp(0.1, 1000)` di `Sanitize` quindi non
       rompono nulla, ma il ripristino dipende dalla dimensione della finestra. *banale*
-- [ ] 0.18 Nel tab **File tree** il clic (singolo e doppio) su un file **non carica il Blame**
+- [x] 0.18 Nel tab **File tree** il clic (singolo e doppio) su un file **non carica il Blame**
       (resta "No file loaded"); il Blame si raggiunge solo dal tab Diff col tasto destro. Coerente
       con 2.1: il File tree è una lista piatta di stringhe. *si chiude con 2.1*
 
@@ -1225,7 +1225,7 @@ nel port, manca il punto d'accesso)
       stesso commit, `BlameControl.cs:402-405`; il port ripete l'hash su ogni riga) e la **data
       d'autore già calcolata e mai mostrata** (`BlameService.cs:86` la riempie, `BuildRow` la
       ignora). *banale entrambi*
-- [ ] 1.20 GPG: **icone di stato della firma** (`CommitSignatureOk/Warning/Error`) e il port
+- [x] 1.20 GPG: **icone di stato della firma** (`CommitSignatureOk/Warning/Error`) e il port
       **mostra troppo** — `--pretty=medium` stampa anche il corpo del commit, upstream solo il
       messaggio di verifica. Le 7 icone sono **già linkate** dal glob `Assets/Icons/`. *banale*
 - [ ] 1.21 Stash: checkbox **"Keep index"** (`StashOpsService.cs:65` cabla `keepIndex: false`) +
@@ -1236,7 +1236,7 @@ nel port, manca il punto d'accesso)
       alla lista) e i link **Clone / Create** oggi solo nel menu. *banale*
 - [ ] 1.24 Diff: **"Filter file in grid"** (`RevisionService.PathFilter` e il `_pathFilter` del
       dialogo esistono già: basta spingerci il path e refreshare). *banale*
-- [ ] 1.25 RepoObjectsTree — voci di menu su **servizi già esistenti**: **tag** (Merge, Rebase,
+- [x] 1.25 RepoObjectsTree — voci di menu su **servizi già esistenti**: **tag** (Merge, Rebase,
       Create branch, Reset current branch to here, doppio clic — oggi solo 3 voci), **remote
       branch** (Checkout è *esplicitamente escluso* a `:677`, più Create branch e Reset), **root
       Remotes** (Fetch all / Fetch and prune all: `FetchAllStreaming`/`FetchAndPruneAllStreaming`
@@ -1246,12 +1246,12 @@ nel port, manca il punto d'accesso)
 
 **BLOCCO 2 — residui M51: costo più basso della stima originale**
 
-- [ ] 2.1 **File tree** — oggi è una `ListBox` di stringhe da `ls-tree -r --name-only`, piatta,
+- [x] 2.1 **File tree** — oggi è una `ListBox` di stringhe da `ls-tree -r --name-only`, piatta,
       senza menu né anteprima. Due appigli abbattono il costo: `IGitModule.GetTreeFiles(oid,
       full: true)` (`IGitModule.cs:359`, **già linkato**, restituisce `GitItemStatus` mappabile
       1:1 su `DiffFileRow`) e `DiffTextService.GetFileBytesAsync` (`:279`, già fa `git show
       <rev>:<path>`) per l'anteprima del contenuto. Consumare `FileStatusListView`. *banale/media*
-- [ ] 2.2 **GPG firma del tag** — sezione separata + 4 icone `TagOk/Error/Many/Warning`, layout
+- [x] 2.2 **GPG firma del tag** — sezione separata + 4 icone `TagOk/Error/Many/Warning`, layout
       50/50 vs 100/0. `GitCommands.Git.Gpg.GitGpgController` **non dipende da GitUI** → il port
       può istanziarlo direttamente (`CommitStatus`, `TagStatus`, `GetTagVerifyMessage`). *banale/media*
 - [ ] 2.3 **Stash: lista file dello stash** → sblocca **"Stash selected changes"**. Serve un
@@ -1294,7 +1294,7 @@ nel port, manca il punto d'accesso)
 
 **BLOCCO 4 — media/alta, da valutare dopo i primi tre**
 
-- [ ] 4.1 **Checkout di rami remoti impossibile**: `CheckoutBranchDialog` è solo il gruppo "Local
+- [~] 4.1 **Checkout di rami remoti impossibile**: `CheckoutBranchDialog` è solo il gruppo "Local
       changes" e `RepoObjectsTree` omette Checkout sui remoti. **Non bloccato**:
       `Commands.CheckoutBranch(branch, isRemote, localChanges, newBranchMode, newBranchName)`
       esiste già nel core (`Commands.cs:10`), `BranchTagService.cs:166` usa solo `Commands.Checkout`.
@@ -1304,7 +1304,7 @@ nel port, manca il punto d'accesso)
       il retry sulle credenziali. Più il **force a 3 stati** (`bool force` → `ForcePushOptions`,
       che sblocca anche 0.8) e la risoluzione della destinazione via `push.default`/
       `remote.pushDefault`/`branch.<x>.merge`. *alta*
-- [ ] 4.3 **RepoObjectsTree perde stato expand/collapse e selezione a ogni refresh**: `BuildTree`
+- [x] 4.3 **RepoObjectsTree perde stato expand/collapse e selezione a ogni refresh**: `BuildTree`
       ricostruisce da zero e riassegna `ItemsSource`, quindi ogni checkout/merge/stash richiude
       tutto. Upstream salva/ripristina lo stato e ri-seleziona (`Tree.cs:163-183`). Più la
       **gerarchia a cartelle** per branch/tag (upstream `BranchPathNode`/`BasePathNode`, visibile
@@ -1525,6 +1525,53 @@ Iterazione 3, tre subagent in worktree su file disgiunti più il cablaggio del l
   "sconosciuto" invece di mentire**. *Verificato a schermo*, incluse due prove di controllo:
   "Fetch all" sparisce con un remote e **ricompare** aggiungendone un secondo, e a 1150px di
   larghezza i pulsanti nuovi finiscono nel menu di overflow `»` restando funzionanti.
+
+**M54** (2026-07-28) — **albero sinistro** e **residui M51 di File tree e GPG**. Due subagent
+ripresi dal transcript dopo l'interruzione (vedi sotto), quattro commit più due di cablaggio.
+
+- **RepoObjectsTree** (`3a610a7c6`, `2905f238d`, cablaggio `c670ad199`) — l'albero **non perde più
+  stato**: espansione e selezione sopravvivono a ogni rebuild (verificato su **tre** percorsi
+  diversi: stash creato dal menu, Refresh da toolbar, checkout remoto). Gerarchia a **cartelle
+  ricorsive** per branch locali, tag e sotto-path dentro il gruppo remoto (`feature/nested/deep`),
+  col menu del path node (Create branch prefissato, Delete All con conferma che elenca cosa
+  cancella). Menu contestuali completati per tag (Merge/Rebase/Create branch/Reset + doppio clic),
+  remote branch, root Remotes (Fetch all / Fetch and prune all), root Stashes (Stash / Stash staged
+  / Manage stashes… / Open stash), branch locale (Create branch / Reset current branch to here) e
+  worktree (Show in folder, tooltip upstream, gating), più Expand/Collapse nel menu e Del/F2.
+  **Gating fedele all'upstream**: sul branch corrente restano attivi solo Create branch e Rename;
+  su worktree aperto Open e Delete sono disabilitati. `Move Up/Down` spostati dalle foglie alle
+  **categorie** come upstream, con l'ordine persistito in `UiState.LeftPanelCategoryOrder`.
+  *Bonus necessario*: `git checkout origin/x` **detacha sempre la HEAD**, quindi il "Checkout" su
+  un ramo remoto non poteva funzionare → nuovo `BranchTagService.CheckoutRemoteBranch` che replica
+  `StartCheckoutRemoteBranch` (branch locale esistente → checkout normale, altrimenti
+  `checkout -b <branch> --track <remote>/<branch>`), con lo stash estratto in `StashLocalChanges`
+  condiviso. Verificato: HEAD finisce sul branch **locale** con upstream corretto. Chiude in
+  anticipo buona parte di 4.1.
+  *Rinviato con motivo*: le cinque combo "Fetch &&…" sul singolo ramo remoto — `RemoteService` sa
+  fare fetch solo per remote intero, e il fetch per singolo refspec con dialogo streaming e retry
+  credenziali è un'unità di servizio a sé. Nessuna voce morta al loro posto.
+- **File tree e GPG** (`7cbbe61c0`, `1259f8027`, cablaggio `84e6205cb`) — il File tree non è più
+  una lista piatta di stringhe: consuma `FileStatusListView` in modalità albero (toolbar nascosta e
+  glifi di stato spenti **come upstream in file-tree mode**, non per pigrizia) e mostra il
+  **contenuto** del blob al commit via `DiffTextService.GetFileBytesAsync`, evidenziato con
+  `DiffSyntaxHighlighter` e con i binari riconosciuti dal sniff del NUL e *dichiarati* invece che
+  riversati. Menu contestuale dell'albero upstream (Collapse all / Expand all / Collapse root
+  folders) più open/save as/copy path/file history/blame, doppio clic = File history.
+  `FileStatusListView` esteso (opzioni per istanza, `ShowToolbar`, `ShowStatusGlyphs`, comandi di
+  collasso) **senza cambiare** il comportamento dei suoi consumatori. Nuovo
+  `DiffService.GetTreeFiles` su `IGitModule.GetTreeFiles`. Chiusi tre difetti: il clic singolo ora
+  carica il file (0.18), il tasto destro sposta la selezione sotto il puntatore, e il tasto destro
+  su una cartella non la chiude più.
+  Il GPG istanzia direttamente `GitGpgController` (confermato: nessuna dipendenza da GitUI) →
+  stessi comandi di upstream, **niente più corpo del commit**, icone `CommitSignatureOk/Warning/
+  Error`, sezione tag separata con `TagOk/Error/Many/Warning` e layout 50/50 → 100/0 senza tag.
+  *Verificato con firme GPG **reali*** create nella sandbox (chiave EDDSA in un `GNUPGHOME`
+  dedicato, commit firmato + tag firmato + tag annotato non firmato): nessun ramo è "verificato
+  solo per costruzione". Verificata anche l'assenza di regressioni in Diff e commit dialog.
+  *Rinviato con motivo*: "Select all" del menu albero (la lista è a selezione singola e nessun
+  comando del port consuma una multiselezione → sarebbe un pulsante finto), la toolbar di
+  raggruppamento (upstream la nasconde in file-tree mode), le icone per estensione (manca la mappa)
+  e il toggle `ShowGpgInformation` (non esiste nel port).
 
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
