@@ -1098,6 +1098,28 @@ Menu + toolbar:
   rebase interattivo (serve un harness `GIT_SEQUENCE_EDITOR` che non esiste), apply/pop/drop
   stash (la grid non cammina i commit di stash, le voci non avrebbero bersaglio).
 
+**M49** (2026-07-27) — **bug segnalato dall'utente**: «scorrendo nella lista dei commit, a un
+certo punto la lista si refresha da sola e torna in cima». Corretto in `be80f3dec`
+(`RevisionGridView.cs`). Causa **principale**: `MainWindow.RefreshAll()` chiama
+`LoadRepository` sul repository *già aperto*, che eseguiva `Reload()` — bump di generazione,
+`_loaded = []`, `_scroll = null`, walk ripartito da pagina 1: quindi non solo perdeva la
+posizione, **buttava via tutte le pagine** caricate scorrendo. Da M47/F2 il watcher lo
+scatena a ogni modifica di file. Colpevole **secondario**: `ApplyFilterCore` ribindava
+`ItemsSource` senza preservare viewport e selezione (esce presto se i contatori non
+cambiano, quindi da solo non spiegava il sintomo). **Terzo, mai notato**: il timer di 5 s che
+pulisce il messaggio di stato ribindava anch'esso.
+Correzione: un `LoadRepository` sullo stesso repo è ora un **refresh a pari profondità**
+(niente unbind, niente pagine perse) e tutti i rebind passano da `RebindRows(preserveViewport)`.
+Rebind classificati: legittimi (cambio repo/scope/page size/filtro esplicito dell'utente →
+tornare in cima è corretto), non legittimi (`SetWorkingState`, cambio lingua, append,
+flash di stato, `RefreshView` per modalità data e colonne → preservano). Corretto anche un
+off-by-one esposto dal refresh a pari profondità: `HasMore` significa "la pagina è tornata
+piena", quindi chiedere esattamente la profondità caricata faceva riapparire un footer
+"Load 500 more" fantasma → si chiede profondità+1 e si taglia.
+Verificato headless riproducendo il bug **prima** (lista in cima, selezione persa, dettagli
+stantii) e mostrandolo risolto **dopo**, anche nel caso duro: due pagine caricate, selezione
+oltre il confine dei 500, e transizione pulito→sporco che *inserisce* la riga artificiale.
+
 **Difetti noti raccolti in questo blocco, non ancora chiusi**: un refresh in background
 (`SetWorkingState` → `ApplyFilterCore`) ribinda `ItemsSource` e **perde la selezione**
 dell'utente pochi secondi dopo l'avvio; `CheckoutBranchDialog` è misto italiano/inglese (le

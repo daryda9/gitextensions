@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M48,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M49,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `e23f859f7` = questo commit di documentazione (… + M45 + M46 + **feature e integrazione GUI / M47–M48**) |
+| HEAD al momento dell'handoff | `be80f3dec` + questo commit di documentazione (… + M45 + M46 + **feature e integrazione GUI / M47–M48**) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **origin NON allineato: 29 commit locali non pushati** (M45–M48). Il push lo esegue l'utente, mai il loop. Portachiavi **vuoto**: il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: 31 commit locali non pushati** (M45–M49). Il push lo esegue l'utente, mai il loop. Portachiavi **vuoto**: il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -248,8 +248,8 @@ LAVORARE su questo, in ordine di impatto/costo (dall'audit di parita' funzionale
    push del branch dal menu grid, edit commit e rebase interattivo (serve un harness
    GIT_SEQUENCE_EDITOR), SelectRefInLeftPanelRequested, e le gesture Ctrl+M merge /
    Ctrl+Shift+E rebase / Ctrl+Alt+W worktrees (i service esistono, manca l'entry point).
-2. Difetti noti aperti: la selezione della grid viene persa da un refresh in background
-   (SetWorkingState -> ApplyFilterCore ribinda ItemsSource); CheckoutBranchDialog e' misto
+2. Difetti noti aperti (la perdita di scroll/selezione al refresh e' RISOLTA in M49):
+   CheckoutBranchDialog e' misto
    italiano/inglese; Avalonia non espone WM_DELETE_WINDOW (finestra non chiudibile dal WM);
    il "salva come" del diff non e' verificabile headless (serve portal XDG).
 4. Minori: dialogo Pull con prune/autostash/tag policy (oggi solo remote+rebase), opzioni di
