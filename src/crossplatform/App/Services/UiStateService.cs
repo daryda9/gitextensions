@@ -84,6 +84,18 @@ public sealed class UiState
     ///  Appearance settings (<c>FormSettings</c> → Appearance → <c>Settings.Language</c>).
     /// </summary>
     public string Language { get; set; } = "English";
+
+    /// <summary>
+    ///  Which action the body of the toolbar's Pull split button performs, as the
+    ///  name of a <see cref="GitExtensions.Extensibility.Git.GitPullAction"/> member
+    ///  ("Merge", "Rebase", "Fetch", "FetchAll", "FetchPruneAll").
+    ///
+    ///  <para>The port's equivalent of upstream's <c>AppSettings.DefaultPullAction</c>
+    ///  (same default: merge). It is stored as the enum <i>name</i> rather than its
+    ///  numeric value so the JSON stays readable and survives a reordering of the
+    ///  enum; an unknown or non-actionable value falls back to "Merge".</para>
+    /// </summary>
+    public string DefaultPullAction { get; set; } = "Merge";
 }
 
 /// <summary>Reads/writes <see cref="UiState"/> to a JSON file, tolerating a
@@ -160,8 +172,22 @@ public sealed class UiStateService
         s.WindowX = SanePosition(s.WindowX);
         s.WindowY = SanePosition(s.WindowY);
         s.Language = string.IsNullOrWhiteSpace(s.Language) ? "English" : s.Language.Trim();
+        s.DefaultPullAction = SanePullAction(s.DefaultPullAction);
         return s;
     }
+
+    // Only the five actions the Pull split button can actually perform are accepted;
+    // None/Default (which upstream treats as "not a valid action") and anything
+    // unparseable collapse to Merge, upstream's default.
+    private static string SanePullAction(string? value)
+        => value?.Trim() switch
+        {
+            "Rebase" => "Rebase",
+            "Fetch" => "Fetch",
+            "FetchAll" => "FetchAll",
+            "FetchPruneAll" => "FetchPruneAll",
+            _ => "Merge",
+        };
 
     private static int? SanePosition(int? v)
         => v is null || v.Value < -100000 || v.Value > 100000 ? null : v;
