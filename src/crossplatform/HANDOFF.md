@@ -267,8 +267,13 @@ LAVORARE su questo, in quest'ordine. I punti 1 e 2 sono PRIORITARI: indicati dal
    Nel port: _drawNonRelativesGray esiste (RevisionGridView.cs:2705) ma calcola i parenti
    rispetto a HEAD invece che al commit selezionato, e ingrigisce SOLO il testo: le lane
    restano sempre colorate. Da fare: relatives dalla selezione + lane grigie + Alt+clic.
-   DA CHIEDERE ALL'UTENTE se non gia' deciso: se l'ingrigimento debba scattare anche sulla
-   selezione semplice (piu' comodo, diverso dall'originale) o solo su Alt+clic (fedele).
+   DECISO DALL'UTENTE (27/07/2026): FEDELE all'originale. Quindi:
+   - all'apertura il riferimento e' HEAD (upstream: ApplyFlags(isCheckedOut: HeadId == ...)
+     marca HEAD e AddParent propaga agli antenati; il setting
+     RevisionGraphDrawNonRelativesGray e' true di default, quindi il grigio si vede subito);
+   - ALT+CLIC su una riga sposta il riferimento a quel commit; il clic NORMALE non cambia
+     nulla e NON deve ri-ancorare l'ingrigimento;
+   - da ingrigire sono le LANE del grafo oltre al testo (oggi il port fa solo il testo).
 
 2. [PRIORITA' UTENTE] CHROME MANCANTE rispetto all'originale:
    a) COLONNA SINISTRA: l'originale ha una barra di 5 pulsanti icona sopra l'albero e una
