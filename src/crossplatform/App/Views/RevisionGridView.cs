@@ -48,7 +48,11 @@ public sealed class RevisionGridView : UserControl
     // squeeze Author/Date/Subject off the pane. Lanes past this cap are simply
     // clipped (every graph control has ClipToBounds set), which degrades the DAG
     // cleanly instead of destroying the row.
-    private const int MaxGraphLanes = 8;
+    //
+    // The value is the original's: RevisionGraph.MaxLanes = 40 (Graph/RevisionGraph.cs:20).
+    // The port used to cap at 8, above which the DAG simply stopped being drawn —
+    // any repository with more than eight concurrent branches lost its graph.
+    private const int MaxGraphLanes = 40;
 
     // Row metrics — kept tight for a dense, GitExtensions-like log.
     private const double RowFontSize = 12;
@@ -245,6 +249,19 @@ public sealed class RevisionGridView : UserControl
     // HighlightSelectedBranch -> RevisionGraph.HighlightBranch. A plain click
     // never re-anchors, and every refresh falls back to HEAD.
     private string? _highlightAnchor;
+
+    // The author of the currently selected revision, emphasised (bold + full text
+    // brush) on every row that shares it — upstream's AuthorRevisionHighlighting.
+    // Empty while nothing (or only an artificial row) is selected. Kept in step by
+    // UpdateAuthorHighlight, which is the only writer.
+    private string _highlightedAuthor = string.Empty;
+
+    // Set while RebindRows swaps ItemsSource and puts the selection back. That swap
+    // raises SelectionChanged synchronously (empty, then re-selected), which is NOT a
+    // user selection: the very same commits end up selected. Announcing it would
+    // re-raise RevisionSelected/RangeSelected on every refresh — and, since the
+    // author highlight now rebinds too, twice per click.
+    private bool _rebinding;
 
     // Reachability sets computed from the loaded rows whenever _allRows changes,
     // keyed by full hash. _headRelatives = the highlight anchor ∪ its ancestors,
@@ -506,6 +523,16 @@ public sealed class RevisionGridView : UserControl
 
         _list.SelectionChanged += (_, _) =>
         {
+            if (_rebinding)
+            {
+                // A rebind in progress: the selection is being put back, not changed.
+                return;
+            }
+
+            // The author of the selected revision is emphasised on every row that
+            // shares it; a change of author re-templates the rows (see D7).
+            UpdateAuthorHighlight();
+
             // An artificial row (working directory / commit index) is not a commit:
             // it never fires RevisionSelected and never takes part in a range diff.
             // Its own event is raised by an explicit click on the row (see
@@ -1376,13 +1403,27 @@ public sealed class RevisionGridView : UserControl
         // into view afterwards. A copy guarantees every visible row goes through
         // BuildRow again. The items are the same RevisionRow objects, so selection
         // and the index lookups against _rows are unaffected.
-        _list.ItemsSource = null;
-        _list.ItemsSource = new List<RevisionRow>(_rows);
+        _rebinding = true;
+        try
+        {
+            _list.ItemsSource = null;
+            _list.ItemsSource = new List<RevisionRow>(_rows);
 
-        bool autoScroll = _list.AutoScrollToSelectedItem;
-        _list.AutoScrollToSelectedItem = false;
-        RestoreSelection(selected);
-        _list.AutoScrollToSelectedItem = autoScroll;
+            bool autoScroll = _list.AutoScrollToSelectedItem;
+            _list.AutoScrollToSelectedItem = false;
+            RestoreSelection(selected);
+            _list.AutoScrollToSelectedItem = autoScroll;
+        }
+        finally
+        {
+            _rebinding = false;
+        }
+
+        // A rebind can change WHICH row is selected (a reload rebuilt the rows, a
+        // filter dropped the old selection), so the author highlight is re-evaluated
+        // here as well. When it actually changed this re-enters once and then settles,
+        // since the second pass finds the author unchanged.
+        UpdateAuthorHighlight();
 
         if (!preserveViewport && !hadFocus)
         {
@@ -1709,6 +1750,28 @@ public sealed class RevisionGridView : UserControl
 
         _highlightAnchor = hash;
         ComputeReachability();
+        RefreshView();
+    }
+
+    // Re-evaluates the author emphasis from the current selection (upstream's
+    // AuthorRevisionHighlighting): the author of the selected revision is drawn bold
+    // on EVERY row that shares it. Only an actual change costs a re-template, so
+    // arrowing through the commits of one person is free.
+    //
+    // An artificial row (working directory / commit index) has no author, so it
+    // clears the emphasis rather than blanking every row.
+    private void UpdateAuthorHighlight()
+    {
+        string author = _list.SelectedItem is RevisionRow row && !IsArtificial(row)
+            ? row.Author
+            : string.Empty;
+
+        if (string.Equals(author, _highlightedAuthor, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _highlightedAuthor = author;
         RefreshView();
     }
 
@@ -2824,11 +2887,19 @@ public sealed class RevisionGridView : UserControl
         double author = _showAuthor ? AuthorWidth : 0;
         double date = _showDate ? DateWidth : 0;
 
-        // Columns: 0 graph, 1 hash, 2 avatar, 3 author, 4 date, 5 subject.
+        // Columns: 0 graph, 1 subject (fills), 2 avatar, 3 author, 4 date, 5 hash.
+        //
+        // That is the ORIGINAL registration order (RevisionGridControl.cs:342-351):
+        // graph, then MessageColumnProvider — which is the column with
+        // AutoSizeMode = Fill (MessageColumnProvider.cs:78-86) — then the notes,
+        // avatar, author-name and date columns, and CommitIdColumnProvider LAST
+        // (CommitIdColumnProvider.cs:21-29). This port used to put the SHA-1 in
+        // second place and the subject last, which was the single most visible
+        // divergence from the Windows grid.
         return new Grid
         {
             ColumnDefinitions = new ColumnDefinitions(
-                $"{EffectiveGraphWidth},{hash},{avatar},{author},{date},*"),
+                $"{EffectiveGraphWidth},*,{avatar},{author},{date},{hash}"),
         };
     }
 
@@ -2838,10 +2909,9 @@ public sealed class RevisionGridView : UserControl
         grid.Margin = new Thickness(10, 0, 10, 0);
 
         AddCell(grid, 0, string.Empty, B("App.TextDim"), bold: true);
-        if (_showHash)
-        {
-            AddCell(grid, 1, T("Commit ID"), B("App.TextDim"), bold: true);
-        }
+
+        AddCell(grid, 1, T("PatchGrid/subjectDataGridViewTextBoxColumn.HeaderText", "Subject"),
+            B("App.TextDim"), bold: true);
 
         // Column 2 (avatar) has no textual header — the identicons speak for themselves.
         if (_showAuthor)
@@ -2856,8 +2926,10 @@ public sealed class RevisionGridView : UserControl
                 B("App.TextDim"), bold: true);
         }
 
-        AddCell(grid, 5, T("PatchGrid/subjectDataGridViewTextBoxColumn.HeaderText", "Subject"),
-            B("App.TextDim"), bold: true);
+        if (_showHash)
+        {
+            AddCell(grid, 5, T("Commit ID"), B("App.TextDim"), bold: true);
+        }
 
         return new Border
         {
@@ -2959,10 +3031,11 @@ public sealed class RevisionGridView : UserControl
         IBrush hashBrush = nonRelative ? B("App.TextDim") : B("App.Accent");
         IBrush subjectBrush = onBranch ? B("App.Accent") : nonRelative ? B("App.TextDim") : B("App.Text");
 
-        // Hash: monospace + accent so it reads as a code identifier.
+        // Hash: monospace + accent so it reads as a code identifier. Rightmost
+        // column, as in the original (CommitIdColumnProvider is registered last).
         if (_showHash)
         {
-            view.TrackText(AddCell(grid, 1, row.ShortHash, hashBrush, bold: onBranch, monospace: true));
+            view.TrackText(AddCell(grid, 5, row.ShortHash, hashBrush, bold: onBranch, monospace: true));
         }
 
         // Avatar (column 2): a deterministic offline identicon per author, cached.
@@ -2984,7 +3057,17 @@ public sealed class RevisionGridView : UserControl
 
         if (_showAuthor)
         {
-            view.TrackText(AddCell(grid, 3, row.Author, B("App.TextDim")), dim: true);
+            // The author of the SELECTED revision is emphasised on EVERY row that
+            // shares it, so all the commits of one person stand out at a glance —
+            // upstream's AuthorRevisionHighlighting, applied by
+            // AuthorNameColumnProvider.cs:38-40 (bold font for the highlighted
+            // author). The port drew every author in App.TextDim regardless.
+            bool sameAuthor = _highlightedAuthor.Length > 0
+                && string.Equals(row.Author, _highlightedAuthor, StringComparison.Ordinal);
+
+            view.TrackText(
+                AddCell(grid, 3, row.Author, sameAuthor ? B("App.Text") : B("App.TextDim"), bold: sameAuthor),
+                dim: !sameAuthor);
         }
 
         if (_showDate)
@@ -3035,7 +3118,7 @@ public sealed class RevisionGridView : UserControl
         view.TrackText(subjectText);
         subject.Children.Add(subjectText);
 
-        Grid.SetColumn(subject, 5);
+        Grid.SetColumn(subject, 1);
         grid.Children.Add(subject);
 
         view.ContextMenu = RowMenu();
@@ -3122,7 +3205,7 @@ public sealed class RevisionGridView : UserControl
         view.TrackText(countText, dim: true);
         subject.Children.Add(countText);
 
-        Grid.SetColumn(subject, 5);
+        Grid.SetColumn(subject, 1);
         grid.Children.Add(subject);
 
         // Clicking the row shows the pending work (the host opens the commit
