@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M44,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M46,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,10 +11,10 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `dfd0b9fdb` (round 4 + bugfix M43–M44 + follow-up 1 / M45) |
+| HEAD al momento dell'handoff | `56023619a` (round 4 + bugfix M43–M44 + follow-up 1 / M45 + follow-up residui / M46) |
 | Build | `Errori: 0` (24 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | 157/160 = **98,1%** (3 SKIP consapevoli) |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** chiusi |
+| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** chiusi |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
 | Push su remote | eseguito dall'utente (origin allineato). Portachiavi **vuoto**: il prossimo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M45**), tiene il contatore iterazione.
+  libera: **M47**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -89,7 +89,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON usare subagent Codex con worktree** (perde il lavoro).
 - **Regola anti-conflitto**: un solo subagent per iterazione tocca ciascun file *hub*:
   `MainWindow`, `MainMenu`, `MainToolbar`, `RepoObjectsTree`, `RevisionGridView`,
-  `DiffView`, `WorkingDirectoryView`, `StashPanel`, `CommitDialog`, `PushDialog`,
+  `DiffView`, `StashPanel`, `CommitDialog`, `PushDialog`,
   `GitProcessDialog`, `ConsoleView`.
 - Ogni subagent, come **primo step**: `git reset --hard <SHA_HEAD_corrente>` e verifica
   che `src/crossplatform/App/GitContext.cs` **esista** (se manca, il worktree è partito
@@ -175,18 +175,27 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
    nell'originale), acceleratori Enter/Space/Ctrl+Enter non replicati, e la guardia
    "Nothing staged to commit." che può rifiutare un merge commit legittimo (servirebbe
    rilevare `MERGE_HEAD`).
-2. **Traduzioni** — il port è **inglese per costruzione** (verificato in M42/D11): il motore
-   XLIFF del core funziona su Linux, ma nessun `.xlf` viene copiato in output/`.deb`, non
-   esiste un layer `ITranslate` (ogni stringa delle view è un letterale) e non c'è selettore
-   lingua. Servono: copia MSBuild di `src/app/GitUI/Translation/*.xlf`, layer `ITranslate`
-   su tutte le view Avalonia, chooser lingua persistito.
+2. **Traduzioni** — **infrastruttura FATTA in M46/T1**: `.xlf` copiati in output e nel
+   `.deb` (66 file), `App/Services/TranslationService.cs` (riusa il loader XLIFF del core,
+   sostituisce il matcher WinForms con lookup per id **e** per `<source>` inglese
+   normalizzato), selettore **View → Language** persistito in `UiState.Language`, cambio
+   lingua senza riavvio. **Resta**: applicare il layer a tutte le view oltre a `MainMenu`.
+   Convenzione: `T("<Categoria>/<Item>.<Prop>", "English literal")` con la categoria =
+   `<file original>` dell'XLIFF (la form upstream corrispondente: `FormCommit` per
+   `CommitDialog`, `FormPush` per `PushDialog`, `RepoObjectsTree`, `RevisionGrid`,
+   `FormBrowse` per la chrome); senza equivalente upstream, `T("English literal")`. Le view
+   devono ricostruirsi su `TranslationService.LanguageChanged` (pattern in `MainMenu`).
+   Minori: flash di ~1 s all'avvio con lingua non inglese; 19 MB di cataloghi filtrabili.
 3. ✅ **RISOLTO M44** — `HOME` riscritto dal core: `App/HomeDirectoryFix.cs` semina
    `AppSettings.CustomHomeDir` con la home vera da un `[ModuleInitializer]`. Diagnostica in
    `./run.sh --selftest`: riga `[11]` = HOME per i git figli, `[12]` = `credential.helper`
    risolto. Il difetto di fondo resta **nel core condiviso** (`GetDefaultHomeDir()` legge
    `HOME` dai target `User`/`Machine`, che su Unix sono sempre `null`): se un giorno si
    tocca il core, è lì che va corretto.
-4. **Header della revision grid** stampa ancora il path assoluto (non abbreviato con `~`).
+4. ✅ **RISOLTO M46/T2** — header della revision grid con path abbreviato `~/…` (più
+   ellissi e tooltip). Restano: i due `CollapseHome` duplicati (`MainToolbar.cs` e
+   `RevisionGridView.cs`) da unificare, e `PushDialog.cs:95` che stampa ancora il path
+   assoluto nel titolo.
 5. **Compat/** — restano no-op solo shim **irraggiungibili** dal port (censiti in M42/D12);
    i file picker richiedono un portal XDG, altrimenti servirebbe `UseManagedSystemDialogs()`.
 6. **Clipboard** — verificato solo fino al confine Avalonia: sotto Xvfb il clipboard X11 di
@@ -229,13 +238,11 @@ LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4: convenzioni Avalonia, tr
 ricetta di verifica GUI headless, follow-up aperti.
 
 LAVORARE sui follow-up della sezione 4, in quest'ordine:
-1. Traduzioni: copia MSBuild di src/app/GitUI/Translation/*.xlf in $(OutDir)Translation e
-   nel .deb, layer ITranslate + Translator.Translate sulle view Avalonia, selettore lingua
-   persistito. Verificare in GUI con una lingua non inglese.
-2. Header della revision grid: abbreviare il path con ~ come già fa la toolbar.
-3. Facoltativa: guardia "Nothing staged to commit." che rifiuta un merge commit legittimo
-   (rilevare MERGE_HEAD nel CommitDialog); discard multi-file (liste SelectionMode.Single);
-   acceleratori Enter/Space/Ctrl+Enter nel CommitDialog.
+1. Traduzioni: l'infrastruttura c'e' (M46/T1, TranslationService + selettore View -> Language
+   + .xlf copiati). Resta applicare il layer alle view oltre a MainMenu, poche per volta, un
+   file hub per subagent, con la convenzione di chiavi descritta nel follow-up 2.
+2. Unificare i due CollapseHome (MainToolbar.cs / RevisionGridView.cs) e abbreviare il path
+   nel titolo di PushDialog.cs:95.
 NON lavorare su repository-host GitHub né colonna build status: SKIP fuori scope.
 
 METODO: il loop NON scrive codice a mano — DELEGA a subagent CLAUDE in worktree isolati

@@ -973,6 +973,72 @@ Menu + toolbar:
   installa GCM) → configurato `git-credential-libsecret` (compilato dal contrib di git,
   in `~/.local/bin`) su gnome-keyring, testato con round-trip approve→fill.
 
+### Blocco FOLLOW-UP RESIDUI (round 6) — traduzioni, header grid, strascichi M45
+> **Iterazione: 1 / 15.** Tre unità in parallelo su file disgiunti (T1 traduzioni,
+> T2 header grid, T3 CommitDialog).
+
+**M46** (2026-07-27) — tre commit di feature:
+
+- **T1** (`56023619a`) — **infrastruttura di traduzione**, il pezzo che mancava da D11.
+  Scelta architetturale: del motore del core si riusa **solo la metà bassa**
+  (`Translator.GetTranslation`, `TranslationSerializer.Deserialize`, .NET puro, funziona
+  su Linux); la metà alta (`ITranslate.TranslateItems` → `TranslationUtil`) riflette su un
+  albero di `System.Windows.Forms.Control` e matcha i **nomi dei campi del designer**, cioè
+  è inservibile per view Avalonia fatte di letterali inline. Il nuovo
+  `App/Services/TranslationService.cs` sostituisce quindi solo il matcher: indicizza ogni
+  `trans-unit` **due volte** — per id (`FormBrowse/commitToolStripMenuItem.Text`) e per
+  `<source>` inglese normalizzato (acceleratori `&`↔`_`, `...`↔`…`, spazi, case) — ed
+  espone `T(key, english)` / `T(english)` con fallback all'inglese del chiamante.
+  Gli `.xlf` arrivano in output con un `<None Include="..\..\app\GitUI\Translation\*.xlf"
+  Link="Translation\…" CopyToOutputDirectory/CopyToPublishDirectory="PreserveNewest">`,
+  che soddisfa esattamente `Translator.GetTranslationDir()` (= directory di
+  `GitExtensions.Extensibility.dll` + `Translation`): **66 file, ~19 MB**; `build-deb.sh`
+  ora fallisce se mancano. Selettore in **View → Language** (radio, accanto a Light/Dark
+  perché è lì che il port espone le preferenze di aspetto), persistito come
+  `UiState.Language` in `ui-state.json`, **senza riavvio**. Dimostrazione su `MainMenu`:
+  tutte e nove le intestazioni + ~45 voci si traducono (in italiano: Avvia · Repository ·
+  Naviga · Visualizza · Comandi · Plugin · Strumenti · Aiuto; Comandi → Commit… · Annulla
+  ultimo commit… · Stash · Reset delle modifiche… · Pulisci cartella di lavoro… · Crea
+  ramo/tag/patch…). Le voci senza equivalente upstream restano inglesi per fallback.
+  **Bug latente scoperto e corretto**: il parser degli access-key di Avalonia mangiava gli
+  underscore negli header *di dati* (`fa_IR` → "faIR", e ogni path recente con `_` come
+  `git_ext_mod`) → ora sono escapati con `__`.
+  *Convenzione per le view rimanenti*: `T("<Categoria>/<Item>.<Prop>", "English literal")`
+  dove la categoria è il `<file original>` dell'XLIFF, cioè la form upstream di cui la view
+  è il corrispettivo (`FormCommit` per `CommitDialog`, `FormPush` per `PushDialog`,
+  `RepoObjectsTree`, `RevisionGrid`, `FormBrowse` per la chrome); dove non esiste un item
+  upstream, `T("English literal")`. Le view si ricostruiscono su
+  `TranslationService.LanguageChanged` (pattern in `MainMenu`).
+- **T2** (`5c956647f`) — header della revision grid con path abbreviato `~/…` come la
+  toolbar, più `TextTrimming.CharacterEllipsis` e tooltip col testo completo (prima un path
+  profondo spingeva conteggio e scope fuori vista senza ellissi). L'helper `CollapseHome` è
+  **duplicato** da `MainToolbar.cs` perché quel file era assegnato a un altro subagent
+  nella stessa iterazione: da unificare.
+- **T3** (`45d103fa0`) — chiusi i tre strascichi di M45 nel `CommitDialog`:
+  **(a)** il merge commit legittimo non viene più rifiutato — lo stato di merge è rilevato
+  cercando `MERGE_HEAD` nella git-dir **risolta** (`GitModule.WorkingDirGitDir`, che scioglie
+  l'indirezione `gitdir:` dei worktree collegati, con fallback a `git rev-parse --git-dir`),
+  la guardia `staged == 0` è saltata a merge pendente e `MERGE_MSG` pre-popola il messaggio
+  senza mai sovrascrivere quanto digitato; verificato end-to-end (commit con 0 file staged →
+  `Merge branch 'feature'` con `HEAD^2` esistente). **(b)** liste `SelectionMode.Multiple`:
+  stage/unstage/discard/copy-path agiscono su tutta la selezione con i conteggi nelle voci di
+  menu e nella conferma; le tre .gitignore e mergetool restano solo su selezione singola.
+  **(c)** acceleratori Enter/Space (stage/unstage) e Ctrl+Enter (commit), quest'ultimo
+  intercettato in fase di tunneling così funziona anche dalla casella messaggio, dove Enter
+  continua ad andare a capo. Corretto anche il diff stantio dopo un `Reload` che perde la
+  selezione.
+
+Verifica GUI del loop sull'albero integrato (screenshot guardati): menu bar e menu Comandi
+in italiano; header grid `~/tmp-gridtest-repo — 3 commits (all branches)`; CommitDialog con
+`MERGE_MSG` pre-popolato e status `merge in progress`.
+
+**Residui aperti dopo M46**: applicare il layer di traduzione a tutte le altre view (T1 copre
+solo `MainMenu`); unificare i due `CollapseHome`; `PushDialog.cs:95` stampa ancora il path
+assoluto nel titolo; flash di ~1 s all'avvio con lingua non inglese (il menu nasce in inglese
+e viene rietichettato, perché il parsing XLIFF sta fuori dall'UI thread e `_menu` è
+inizializzato prima della lettura di `UiState`); i 19 MB di cataloghi potrebbero essere
+filtrati alle sole lingue offerte.
+
 ### Blocco FOLLOW-UP 1 (round 5) — fine della ridondanza `WorkingDirectoryView`
 > **Iterazione: 1 / 15 — BLOCCO CHIUSO** in una sola iterazione (stop per condizione (a):
 > W1–W5 tutte integrate e verificate in GUI, `App/Views/WorkingDirectoryView.cs`
