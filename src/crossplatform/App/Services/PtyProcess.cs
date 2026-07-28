@@ -64,8 +64,15 @@ public sealed class PtyProcess : IDisposable
     [DllImport("libc", SetLastError = true, EntryPoint = "signal")]
     private static extern nint sys_signal(int signum, nint handler);
 
+    [DllImport("libc", SetLastError = true)]
+    private static extern int tcgetpgrp(int fd);
+
+    [DllImport("libc", SetLastError = true, EntryPoint = "kill")]
+    private static extern int sys_kill(int pid, int sig);
+
     private const int SIGINT = 2;
     private const int SIGQUIT = 3;
+    private const int SIGTERM = 15;
     private const int SIGPIPE = 13;
     private static readonly nint SIG_DFL = 0;
 
@@ -100,6 +107,50 @@ public sealed class PtyProcess : IDisposable
     /// </summary>
     public void Start(string workingDirectory, int cols, int rows)
     {
+        string shell = Environment.GetEnvironmentVariable("SHELL") is { Length: > 0 } s && File.Exists(s)
+            ? s
+            : "/bin/bash";
+
+        StartInternal(workingDirectory, $"exec {Quote(shell)} -i", env: null, cols, rows);
+    }
+
+    /// <summary>
+    ///  Starts an arbitrary program on a PTY instead of the user's login shell, so
+    ///  the child sees <c>isatty() == true</c> on all three descriptors. That is what
+    ///  makes <c>git</c> emit transfer progress by itself (with <c>\r</c> updates) and,
+    ///  crucially, what lets it — and the <c>ssh</c> it spawns — ASK on the terminal:
+    ///  key passphrases, host-key <c>yes/no</c>, HTTPS username/password. Feed the
+    ///  answers back with <see cref="Write(string)"/>.
+    ///  <para>Additive API: <see cref="Start"/> keeps its exact old behaviour, so the
+    ///  Console tab is unaffected.</para>
+    /// </summary>
+    /// <param name="fileName">Executable to run (resolved through PATH by <c>sh</c>).</param>
+    /// <param name="arguments">Already shell-quoted argument string, or empty.</param>
+    /// <param name="env">
+    ///  Extra environment for the child; a <see langword="null"/> value REMOVES the
+    ///  variable (useful to unset an inherited askpass helper).
+    /// </param>
+    public void StartCommand(
+        string workingDirectory,
+        string fileName,
+        string arguments,
+        IReadOnlyDictionary<string, string?>? env,
+        int cols,
+        int rows)
+    {
+        string payload = string.IsNullOrEmpty(arguments)
+            ? $"exec {Quote(fileName)}"
+            : $"exec {Quote(fileName)} {arguments}";
+        StartInternal(workingDirectory, payload, env, cols, rows);
+    }
+
+    private void StartInternal(
+        string workingDirectory,
+        string payload,
+        IReadOnlyDictionary<string, string?>? env,
+        int cols,
+        int rows)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         _master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
@@ -130,13 +181,9 @@ public sealed class PtyProcess : IDisposable
 
         Resize(cols, rows);
 
-        string shell = Environment.GetEnvironmentVariable("SHELL") is { Length: > 0 } s && File.Exists(s)
-            ? s
-            : "/bin/bash";
-
         // The child opens the slave itself, after setsid(), so the pts becomes its
         // controlling terminal. Quoting: SlavePath is always "/dev/pts/<n>".
-        string script = $"exec 0<{SlavePath} 1>{SlavePath} 2>&1; exec {Quote(shell)} -i";
+        string script = $"exec 0<{SlavePath} 1>{SlavePath} 2>&1; {payload}";
         bool haveSetsid = File.Exists("/usr/bin/setsid") || File.Exists("/bin/setsid");
 
         ProcessStartInfo psi = new()
@@ -169,6 +216,23 @@ public sealed class PtyProcess : IDisposable
         psi.Environment.Remove("GIT_ASKPASS");
         psi.Environment.Remove("SSH_ASKPASS");
         psi.Environment.Remove("GIT_TERMINAL_PROMPT");
+
+        // Caller-supplied environment wins over the defaults above; a null value
+        // means "unset it for the child".
+        if (env is not null)
+        {
+            foreach (KeyValuePair<string, string?> entry in env)
+            {
+                if (entry.Value is null)
+                {
+                    psi.Environment.Remove(entry.Key);
+                }
+                else
+                {
+                    psi.Environment[entry.Key] = entry.Value;
+                }
+            }
+        }
 
         // Signal *dispositions* survive execve when they are SIG_IGN, and a GUI process
         // very often has SIGINT/SIGQUIT ignored (that is what a shell does to background
@@ -306,6 +370,71 @@ public sealed class PtyProcess : IDisposable
             Cols = (ushort)Math.Clamp(cols, 1, 1000),
         };
         ioctl_winsize(_master, TIOCSWINSZ, ref ws);
+    }
+
+    /// <summary>
+    ///  The terminal's foreground process group, i.e. what a real Ctrl+C would hit
+    ///  (<c>tcgetpgrp</c> on the master side). Negative when there is none.
+    /// </summary>
+    public int ForegroundProcessGroup => _master < 0 ? -1 : tcgetpgrp(_master);
+
+    /// <summary>
+    ///  Sends <paramref name="signal"/> to the whole foreground process group of the
+    ///  terminal (<c>kill(-pgid, sig)</c>) — the correct way to interrupt a pipeline
+    ///  such as <c>git fetch</c> plus the <c>ssh</c>/<c>git-remote-https</c> helper it
+    ///  spawned, because they all share that group.
+    /// </summary>
+    /// <returns><see langword="true"/> when the signal was delivered.</returns>
+    public bool SignalForegroundGroup(int signal)
+    {
+        int pgid = ForegroundProcessGroup;
+        return pgid > 0 && sys_kill(-pgid, signal) == 0;
+    }
+
+    /// <summary>SIGINT to the foreground group: the polite Ctrl+C.</summary>
+    public bool Interrupt() => SignalForegroundGroup(SIGINT);
+
+    /// <summary>SIGTERM to the foreground group.</summary>
+    public bool Terminate() => SignalForegroundGroup(SIGTERM);
+
+    /// <summary>Waits for the child to exit; <see langword="false"/> on timeout.</summary>
+    public bool WaitForExit(int milliseconds)
+    {
+        Process? child = _child;
+        if (child is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            return child.WaitForExit(milliseconds);
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    ///  Exit code of the program run on the PTY, or <see langword="null"/> while it is
+    ///  still running. With <c>setsid -w</c> in the chain the status is propagated, so
+    ///  for <see cref="StartCommand"/> this is the program's own exit code.
+    /// </summary>
+    public int? ExitCode
+    {
+        get
+        {
+            Process? child = _child;
+            try
+            {
+                return child is { HasExited: true } ? child.ExitCode : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
     }
 
     /// <summary>Closes the PTY and terminates the shell (and its children).</summary>
