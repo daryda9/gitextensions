@@ -34,6 +34,33 @@ public sealed class AppPreferences
     ///  <c>null</c>/absent means "ask, pre-selecting Don't change".
     /// </summary>
     public string DefaultCheckoutLocalChangesAction { get; set; } = "DontChange";
+
+    /// <summary>
+    ///  Commit dialog: close it after EVERY commit
+    ///  (<c>AppSettings.CloseCommitDialogAfterCommit</c>).
+    /// </summary>
+    public bool CloseCommitDialogAfterCommit { get; set; }
+
+    /// <summary>
+    ///  Commit dialog: close it once the commit leaves NOTHING unstaged
+    ///  (<c>AppSettings.CloseCommitDialogAfterLastCommit</c>). Upstream defaults this
+    ///  one to on, and only consults it when the "after every commit" option is off.
+    /// </summary>
+    public bool CloseCommitDialogAfterLastCommit { get; set; } = true;
+
+    /// <summary>
+    ///  Commit dialog: reload the file lists whenever the window is activated
+    ///  (<c>AppSettings.RefreshArtificialCommitOnApplicationActivated</c>), so edits
+    ///  made in an editor while the dialog was in the background show up.
+    /// </summary>
+    public bool RefreshCommitDialogOnFocus { get; set; }
+
+    /// <summary>
+    ///  Commit dialog: selecting the message box also selects the staged list
+    ///  (<c>AppSettings.CommitDialogSelectStagedOnEnterMessage</c>), so the diff pane
+    ///  shows what is about to be committed while the message is typed.
+    /// </summary>
+    public bool CommitDialogSelectStagedOnEnterMessage { get; set; }
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or

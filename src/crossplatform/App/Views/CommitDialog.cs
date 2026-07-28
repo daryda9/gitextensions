@@ -220,10 +220,23 @@ public sealed class CommitDialog : Window
 
     // Options-menu state (mirrors the original commit form's Options dropdown).
     // Amend lives in _amendBox so the visible checkbox and the menu stay in sync.
+    // --signoff / --no-verify / --reset-author are per-commit choices: upstream does
+    // NOT persist them either (FormCommit's handlers only flip the check mark), and
+    // silently re-applying --no-verify in a later session would be a nasty surprise.
     private bool _signOff;
     private bool _noVerify;
     private bool _resetAuthor;
-    private bool _closeAfterCommit;
+
+    // These four ARE persisted, as upstream persists them in AppSettings. They live
+    // in app-settings.json rather than in UiState, which is a single shared instance
+    // owned elsewhere in the port.
+    private readonly SettingsService _settings = new();
+    private AppPreferences _prefs;
+
+    // One-shot: set when a commit succeeded and "close after all files committed" is
+    // on, consumed by the Reload that follows — only then is it known whether
+    // anything is left unstaged.
+    private bool _closeIfNothingLeft;
 
     /// <summary>Raised on each successful commit so the owner can refresh.</summary>
     public event Action? Committed;
@@ -231,6 +244,7 @@ public sealed class CommitDialog : Window
     public CommitDialog(string repoPath)
     {
         _repoPath = repoPath;
+        _prefs = _settings.Load();
 
         Width = 1000;
         Height = 680;
@@ -560,8 +574,54 @@ public sealed class CommitDialog : Window
         TranslationService.LanguageChanged += OnLanguageChanged;
         Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
 
+        // "Refresh dialog on form focus": the user typically alt-tabs out to edit a
+        // file and comes back, so the lists are re-read on activation. Off by default,
+        // as upstream has it — a reload steals the diff panel's scroll position.
+        Activated += (_, _) =>
+        {
+            if (_prefs.RefreshCommitDialogOnFocus)
+            {
+                Reload();
+            }
+        };
+
+        // "Select staged files on entering the commit message": entering the message
+        // brings the diff panel onto what is about to be committed. Only SELECTION
+        // moves — focus stays in the message box, which is where the user is typing.
+        _messageBox.GotFocus += (_, _) =>
+        {
+            if (_prefs.CommitDialogSelectStagedOnEnterMessage)
+            {
+                SelectStagedForMessage();
+            }
+        };
+
         Reload();
         RefreshBranchCaption();
+    }
+
+    // Persists one options-menu toggle. The whole record is rewritten, so a
+    // concurrently changed sibling setting would be overwritten — the file is only
+    // written from the UI thread, and only by an explicit user click.
+    private void SaveOption(Action<AppPreferences> change)
+    {
+        change(_prefs);
+        AppPreferences prefs = _prefs;
+        _ = Task.Run(() => _settings.Save(prefs));
+    }
+
+    // Upstream's SelectStaged(): if nothing is selected in the staged list, put the
+    // selection on its first row so the diff panel shows it. Does nothing when the
+    // user has already chosen a file, and never touches ItemsSource — reassigning it
+    // from a selection-driven handler is what crashed this dialog twice before.
+    private void SelectStagedForMessage()
+    {
+        if (_stagedList.SelectedItems?.Count > 0 || _stagedList.Items.Count == 0)
+        {
+            return;
+        }
+
+        _stagedList.SelectedItem = _stagedList.Items[0];
     }
 
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
@@ -2263,7 +2323,7 @@ public sealed class CommitDialog : Window
         SignOff: _signOff,
         NoVerify: _noVerify,
         ResetAuthor: _resetAuthor,
-        CloseAfterCommit: _closeAfterCommit);
+        CloseAfterCommit: _prefs.CloseCommitDialogAfterCommit);
 
     // async void: it is an event handler in all but name (three button/hotkey call
     // sites), and every await inside is a modal the user drives.
@@ -2341,6 +2401,12 @@ public sealed class CommitDialog : Window
                 _amendBox.IsChecked = false;
                 Committed?.Invoke();
                 SetStatus(string.Format(T("Committed ({0})."), CommitActionsService.DescribeCommit(options)));
+
+                // Upstream only consults "after all files committed" when "after each
+                // commit" is off, and closes on the state AFTER the reload.
+                _closeIfNothingLeft = !options.CloseAfterCommit
+                    && _prefs.CloseCommitDialogAfterLastCommit
+                    && !push;
                 Reload();
 
                 if (push)
@@ -2745,8 +2811,24 @@ public sealed class CommitDialog : Window
         flyout.Items.Add(new Separator());
         flyout.Items.Add(Toggle(
             T("FormCommit/closeDialogAfterEachCommitToolStripMenuItem.Text", "Close dialog after each commit"),
-            _closeAfterCommit,
-            v => _closeAfterCommit = v));
+            _prefs.CloseCommitDialogAfterCommit,
+            v => SaveOption(p => p.CloseCommitDialogAfterCommit = v)));
+        flyout.Items.Add(Toggle(
+            T("FormCommit/closeDialogAfterAllFilesCommittedToolStripMenuItem.Text",
+                "Close dialog after all files committed"),
+            _prefs.CloseCommitDialogAfterLastCommit,
+            v => SaveOption(p => p.CloseCommitDialogAfterLastCommit = v)));
+        flyout.Items.Add(new Separator());
+        flyout.Items.Add(Toggle(
+            T("FormCommit/refreshDialogOnFormFocusToolStripMenuItem.Text",
+                "Refresh dialog on form focus"),
+            _prefs.RefreshCommitDialogOnFocus,
+            v => SaveOption(p => p.RefreshCommitDialogOnFocus = v)));
+        flyout.Items.Add(Toggle(
+            T("FormCommit/tsmiSelectStagedOnEnterMessage.Text",
+                "Select staged files on entering the commit message"),
+            _prefs.CommitDialogSelectStagedOnEnterMessage,
+            v => SaveOption(p => p.CommitDialogSelectStagedOnEnterMessage = v)));
 
         flyout.ShowAt(anchor);
 
@@ -3078,6 +3160,17 @@ public sealed class CommitDialog : Window
             // COUNT is refreshed: re-selecting here would fight RestoreDiffSelection,
             // which has just put the user back on the file they were staging hunks of.
             RefreshSelectionFilterCount();
+
+            // "Close dialog after all files committed": only now, on the snapshot
+            // taken AFTER the commit, is it known whether anything is left to stage.
+            if (_closeIfNothingLeft)
+            {
+                _closeIfNothingLeft = false;
+                if (unstaged.Count == 0 && _stagedList.Items.Count == 0)
+                {
+                    Close();
+                }
+            }
         }), TaskScheduler.Default);
     }
 
