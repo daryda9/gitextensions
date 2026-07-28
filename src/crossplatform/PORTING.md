@@ -1159,7 +1159,7 @@ priorità massima)
       (resta "No file loaded"); il Blame si raggiunge solo dal tab Diff col tasto destro. Coerente
       con 2.1: il File tree è una lista piatta di stringhe. *si chiude con 2.1*
 
-- [ ] 0.19 **CRASH da re-entrancy nella griglia** (regressione introdotta in M53). Cablare
+- [x] 0.19 **CRASH da re-entrancy nella griglia** (regressione introdotta in M53). Cablare
       "Filter file in grid" a `ApplyRevisionFilter` fa esplodere
       `InvalidOperationException: Cannot change source while update is in progress`, con lo stack
       tutto interno: `ApplyRevisionFilter → Reload → ItemsSource → SelectionChanged →
@@ -1167,7 +1167,7 @@ priorità massima)
       reagisce a `SelectionChanged` e ri-assegna `ItemsSource` mentre l'assegnazione precedente è
       in corso; rinviare al dispatcher **non** basta. Serve una guardia di re-entrancy vera.
       *Finché non è chiuso, la voce 1.24 resta scablata.*
-- [ ] 0.20 **Sospetto**: un path filter applicato dal dialogo "Filter…" lascerebbe la griglia con
+- [x] 0.20 **Sospetto**: un path filter applicato dal dialogo "Filter…" lascerebbe la griglia con
       **tutti** i commit. Osservato di sfuggita mentre si indagava 0.19, non confermato: da
       verificare contro `git log` reale prima di trattarlo come difetto.
 - [ ] 0.21 Il logo `GitExtensionsLogoWide.png` esiste in `setup/assets/Logo/` ma è **fuori dal
@@ -1278,12 +1278,12 @@ nel port, manca il punto d'accesso)
 
 **BLOCCO 3 — persistenza e dashboard (media, alto valore d'uso)**
 
-- [ ] 3.1 **Toggle e colonne della griglia non persistiti**: visibilità colonne, ShowAuthorDate,
+- [x] 3.1 **Toggle e colonne della griglia non persistiti**: visibilità colonne, ShowAuthorDate,
       RelativeDate, topo order, remote branches, tags, stashes, hide merges, first parent, current
       branch only, non-relatives gray, page size — tutti session-local
       (`RevisionGridView.cs:210-238`). È il gruppo più visibile: l'utente ri-configura la griglia a
       ogni avvio. *media*
-- [ ] 3.2 **Posizione del commit-info** e **ultimo repo aperto** non persistiti (la feature a 3
+- [~] 3.2 **Posizione del commit-info** e **ultimo repo aperto** non persistiti (la feature a 3
       posizioni esiste, riparte sempre da `BelowGraph`); più le opzioni del **diff viewer**, gli
       **switch della file history**, i **filtri del left panel** e la **MRU dei filtri di
       revisione**. *banale ciascuno*
@@ -1297,10 +1297,10 @@ nel port, manca il punto d'accesso)
       sopra la griglia (`FormBrowse.Designer.cs:650-668`): oggi nessun indizio visivo che un
       bisect o un merge è in corso. Serve un rilevatore di `rebase-merge/`, `MERGE_HEAD`,
       `BISECT_LOG`, `CHERRY_PICK_HEAD`. *media*
-- [ ] 3.5 **UI delle hotkey**: il backend è **completo** (default, parse, `Save()`, `hotkeys.json`)
+- [x] 3.5 **UI delle hotkey**: il backend è **completo** (default, parse, `Save()`, `hotkeys.json`)
       e manca solo la finestra; oggi gli override si scrivono a mano e il duplicato vince "primo
       che scrive". *media*
-- [ ] 3.6 **Pagina Git config advanced**: 8 chiavi (`pull.rebase`, `fetch.prune`,
+- [x] 3.6 **Pagina Git config advanced**: 8 chiavi (`pull.rebase`, `fetch.prune`,
       `merge.autostash`, `rebase.autostash`/`autosquash`/`updaterefs`, `rerere.enabled`/
       `autoupdate`) — il consumatore è **git**, zero plumbing nel port. Più i 3 flag blame
       (`IgnoreWhitespaceOnBlame`, `DetectCopy*`) che cambiano davvero l'output di `git blame`
@@ -1640,6 +1640,51 @@ subagent più due voci fatte direttamente nel `MainWindow` (che nessun subagent 
   `<repo> (<branch>) - Git Extensions`, prima fisso.
 - **Da verificare a schermo** (integrati ma non ancora provati): titolo via `WM_NAME` e lazy load
   (una selezione deve produrre **una** catena di comandi nel tab Output, non quattro).
+
+**M56** (2026-07-28) — **la regressione di M53 chiusa** e **BLOCCO 3 quasi finito**. Due subagent.
+
+- **Griglia: crash da re-entrancy e persistenza** (`48c96ad98`, `ae7de82d4`, cablaggio
+  `558bf50fc`) — la causa era **più a monte** di quanto registrato in 0.19: non solo
+  `UpdateAuthorHighlight`, ma il fatto che `Reload()` sganciava `ItemsSource` **senza alzare la
+  guardia**, e Avalonia ripunta il suo `SelectionModel` *dentro* il setter, emettendo
+  `SelectionChanged` a metà del batch update. Ora `SetListItems` è l'**unico scrittore** di
+  `ItemsSource` e alza la guardia (le chiamate annidate ripristinano il flag che hanno trovato), e
+  `RebindRows` **coalesce** le richieste rientranti in una sola passata a
+  `DispatcherPriority.Background`. Verificato prima/dopo con una sonda temporanea che riproduce
+  esattamente il cablaggio di "Filter file in grid": prima il processo moriva, dopo la griglia si
+  restringe correttamente ai 6 commit del path.
+  **0.20 era lo STESSO difetto, non un secondo bug**: il path filter dal dialogo sembrava non
+  filtrare perché `ApplyRevisionFilter → Reload` lanciava la stessa eccezione *prima* che
+  `LoadPage` girasse, e sul percorso non-posted l'eccezione veniva **ingoiata** — così la funnel e
+  la "×" si aggiornavano mentre la griglia teneva tutti i commit. Riprodotto (12 commit) e
+  risolto (6). Nessun fix separato necessario.
+  Con la guardia in piedi **1.24 è cablata**. Verificato che non siano regrediti l'autore in
+  grassetto (M53) e l'Alt+clic sul grafo (M50).
+  **Persistenza (3.1)**: `UiState` guadagna `GridViewOptions` (mappa chiavata sugli stessi id con
+  cui griglia e menu si rispecchiano, tollerante allo skew di versione) e `GridPageSize`; la view
+  **non scrive mai il file** — espone stato ed evento e l'host li piega nella sua unica istanza,
+  stesso contratto di `RepoObjectsTree.CategoryOrder`. Verificato il giro completo: toggle →
+  `Start → Exit` → `ui-state.json` → riavvio, con le spunte del flyout coerenti.
+  *Lasciata fuori con motivo*: "Save current view settings as default" — nel port quel salvataggio
+  è già automatico all'uscita, quindi la voce sarebbe un **no-op**, cioè il pulsante finto che le
+  convenzioni vietano.
+- **Impostazioni con effetto reale** (`017a60cec`, `7247c13c5`, `a23263597`, `06f4144fa`,
+  `4751e73b8`, `1b3b4822a`, cablaggio `e0a1e5cf7`) — pagina **Git config advanced** tri-state per
+  le otto chiavi upstream: lo stato "non impostata" fa un **unset vero**, verificato con
+  `git config --local --list` (la chiave sparisce, non diventa `false`); livello **Global**
+  provato con un `GIT_CONFIG_GLOBAL` isolato, con l'md5 del `~/.gitconfig` reale **invariato**.
+  I **tre flag del blame** (`-w`, `-M`, `-C`) ora arrivano davvero a `git blame`: su un file
+  re-indentato la riga 1 passa da **B** ad **A** attivando "ignore whitespace", con re-blame
+  immediato dal menu contestuale. Esposti in Settings `AutoRefresh`,
+  `DefaultCheckoutLocalChangesAction` e i toggle del commit-info, che il port **già consumava**
+  senza offrirli. Nuova **pagina Hotkeys**: cattura del gesto, rilevamento dei duplicati con riga
+  rossa, Clear, Reset all, salvataggio via il `Save()` che esisteva già.
+  *Cablaggio in più fatto dal loop*: senza, cambiando una gesture la toolbar e il menu avrebbero
+  continuato ad annunciare quella vecchia fino al riavvio — cioè avrebbero mentito. Ora un cambio
+  li ricostruisce e **ri-applica lo stato che la ricostruzione azzera** (toggle, posizione del
+  commit-info, gating, view options).
+  *Escluse come pulsanti finti*: tutte le ~35 senza consumatore, più la metà *display* della
+  pagina blame upstream (autore/data/numeri di riga), che qui la griglia del blame rende comunque.
 
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
