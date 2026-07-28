@@ -556,7 +556,7 @@ public sealed class MainMenu : UserControl
         BuildPlugins();
 
         MenuItem help = new() { Header = T("FormBrowse/helpToolStripMenuItem.Text", "_Help") };
-        help.Items.Add(Item("FormBrowse/userManualToolStripMenuItem.Text", "User manual", "GitExtensionsHelp", () => UserManualRequested?.Invoke()));
+        help.Items.Add(Item("FormBrowse/userManualToolStripMenuItem.Text", "User manual", null, () => UserManualRequested?.Invoke()));
         help.Items.Add(Item("FormBrowse/reportAnIssueToolStripMenuItem.Text", "Report an issue", null, () => ReportIssueRequested?.Invoke()));
         help.Items.Add(Item("FormBrowse/changelogToolStripMenuItem.Text", "Changelog", null, () => ChangelogRequested?.Invoke()));
         help.Items.Add(Item("FormBrowse/donateToolStripMenuItem.Text", "Donate", null, () => DonateRequested?.Invoke()));
@@ -753,7 +753,7 @@ public sealed class MainMenu : UserControl
         {
             IGitPlugin captured = plugin;
             string name = plugin.Name ?? plugin.GetType().Name;
-            _plugins.Items.Add(Item(null, name, "Plugins", () => PluginRunRequested?.Invoke(captured), translate: false));
+            _plugins.Items.Add(Item(null, name, "plugin", () => PluginRunRequested?.Invoke(captured), translate: false));
 
             if (plugin.HasSettings)
             {

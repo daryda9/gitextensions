@@ -630,7 +630,7 @@ public sealed class MainToolbar : UserControl
         {
             Kind = OverflowKind.Filter,
             Label = T("FormBrowse/ToolStripFilters.Text", "Filter"),
-            Icon = "ViewFilter",
+            Icon = "FunnelPencil",
             FilterBox = filterBox,
         };
 

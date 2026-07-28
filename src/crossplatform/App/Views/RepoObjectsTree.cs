@@ -1213,7 +1213,7 @@ public sealed class RepoObjectsTree : UserControl
             return menu;
         }
 
-        MenuItem rename = MenuItem(T("MenuItemsStrings/Rename.Text", "Rename branch…"), "BranchRename", () => _ = DoRenameBranchAsync(row));
+        MenuItem rename = MenuItem(T("MenuItemsStrings/Rename.Text", "Rename branch…"), "Renamed", () => _ = DoRenameBranchAsync(row));
         menu.Items.Add(rename);
         MenuItem delete = MenuItem(T("BranchMenuItemsStrings/Delete.Text", "Delete branch…"), "BranchDelete", () => _ = DoDeleteBranchAsync(row));
         menu.Items.Add(delete);
@@ -1338,7 +1338,7 @@ public sealed class RepoObjectsTree : UserControl
 
         menu.Items.Add(new Separator());
 
-        MenuItem delete = MenuItem(T("RepoObjectsTree/mnubtnDeleteWorktree.Text", "Delete worktree…"), "Remove", () => _ = DoRemoveWorktreeAsync(row));
+        MenuItem delete = MenuItem(T("RepoObjectsTree/mnubtnDeleteWorktree.Text", "Delete worktree…"), "DeleteFile", () => _ = DoRemoveWorktreeAsync(row));
         delete.IsEnabled = canAct;
         ToolTip.SetTip(delete, T("RepoObjectsTree/mnubtnDeleteWorktree.ToolTipText", "Delete this worktree"));
         menu.Items.Add(delete);
@@ -1467,7 +1467,7 @@ public sealed class RepoObjectsTree : UserControl
         menu.Items.Add(MenuItem(T("Edit URL…"), "Remote", () => _ = DoEditRemoteUrlAsync(remote)));
         menu.Items.Add(MenuItem(T("TranslatedStrings/_actionRename.Text", "Rename…"), "Remote", () => _ = DoRenameRemoteAsync(remote)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem(T("FormSubmodules/RemoveSubmodule.Text", "Remove"), "Remove", () => _ = DoRemoveRemoteAsync(remote)));
+        menu.Items.Add(MenuItem(T("FormSubmodules/RemoveSubmodule.Text", "Remove"), "RemoteDelete", () => _ = DoRemoveRemoteAsync(remote)));
         return menu;
     }
 
