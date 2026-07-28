@@ -826,7 +826,9 @@ public sealed class MainMenu : UserControl
     /// <summary>
     ///  Pushes in the revision grid's selection, for the entries upstream re-evaluates
     ///  in <c>CommandsToolStripMenuItem_DropDownOpening</c> (FormBrowse.cs:2330-2366):
-    ///  creating a branch or a tag needs exactly one real commit to hang it on.
+    ///  creating a branch or a tag needs exactly one real commit to hang it on — or no
+    ///  selection at all, in which case the action falls back to HEAD (see
+    ///  <see cref="ApplyRepositoryState"/>).
     ///  <paramref name="allNonArtificial"/> is false as soon as the selection contains
     ///  a work-tree / index row.
     /// </summary>
@@ -868,8 +870,19 @@ public sealed class MainMenu : UserControl
         // additionally needs a work tree to check the branch out into; "New tag" does
         // not, and upstream indeed leaves tagToolStripMenuItem out of the bare block.
         bool singleNormalCommit = _selectedCount == 1 && _selectionIsNormal;
-        Enable("branch", singleNormalCommit && live);
-        Enable("tag", singleNormalCommit);
+
+        // ...with one deliberate departure: an *empty* selection still enables both.
+        // The strict count == 1 test left them dead after any refresh that dropped the
+        // selection, with nothing the user could do about it but click a row. Upstream's
+        // creation dialogs anchor to HEAD exactly for this case — FormCreateBranch.cs:46-49
+        // replaces a zero ObjectId with Module.GetCurrentCheckout(), and the hotkey path
+        // (GitUICommands.cs:1590) reaches StartCreateBranchDialog() with no revision at
+        // all on purpose — so an unselected grid means "branch/tag off HEAD", not "no".
+        // A selection containing an artificial (work-tree / index) row still disables
+        // them, which is upstream's rule and unchanged.
+        bool noSelection = _selectedCount == 0;
+        Enable("branch", (singleNormalCommit || noSelection) && live);
+        Enable("tag", singleNormalCommit || noSelection);
     }
 
     private void Enable(string name, bool enabled)
