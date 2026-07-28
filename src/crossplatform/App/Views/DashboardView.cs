@@ -112,7 +112,20 @@ public sealed class DashboardView : UserControl
             BorderThickness = new Thickness(0),
             Padding = new Thickness(0),
         };
-        _list.KeyDown += OnListKeyDown;
+        // Tunnelling: the ListBox's own arrow-key navigation is a class handler on
+        // the bubbling phase, and it would have moved the selection onto a group
+        // caption before this handler ever saw the key.
+        _list.AddHandler(KeyDownEvent, OnListKeyDown, RoutingStrategies.Tunnel);
+
+        // A group caption is a label, not a choice: its container must not take the
+        // pointer either, or a click on the caption would select it.
+        _list.ContainerPrepared += (_, e) =>
+        {
+            object? item = e.Container is ContentControl content ? content.Content : e.Container;
+            bool selectable = EntryOf(item) is not null;
+            e.Container.Focusable = selectable;
+            e.Container.IsHitTestVisible = selectable;
+        };
 
         _showInFolderItem = new MenuItem { Header = T("UserRepositoriesList/tsmiOpenFolder.Text", "Show in folder") };
         _showInFolderItem.Click += (_, _) => ShowTargetInFolder();
@@ -243,13 +256,23 @@ public sealed class DashboardView : UserControl
 
         _branchLabels.Clear();
 
+        // The group caption is its own row rather than the first child of the tile
+        // below it. Folded into the tile it became part of that tile's selection, so
+        // arrowing into the list highlighted "Recent repositories" together with the
+        // first repository — upstream's caption is a separate, unselectable label
+        // (UserRepositoriesList.cs:679-700). GroupHeader() marks it so the keyboard
+        // navigation and the container hook below can both recognise it.
         List<Control> rows = new(visible.Count);
         string? group = null;
         foreach (RepoEntry entry in visible)
         {
-            bool startsGroup = entry.Group != group;
-            group = entry.Group;
-            rows.Add(Row(entry, startsGroup));
+            if (entry.Group != group)
+            {
+                group = entry.Group;
+                rows.Add(GroupHeader(entry.Group));
+            }
+
+            rows.Add(Row(entry));
         }
 
         _list.ItemsSource = rows;
@@ -268,23 +291,20 @@ public sealed class DashboardView : UserControl
 
     // One repository tile: optional group heading, the folder name, the full
     // path and (once known) the checked-out branch.
-    private Control Row(RepoEntry entry, bool startsGroup)
+    private Control GroupHeader(string group) => new TextBlock
+    {
+        Text = group == FavoritesGroup
+            ? T("Dashboard/_favouriteRepositories.Text", "Favorite repositories")
+            : T("Dashboard/_recentRepositories.Text", "Recent repositories"),
+        Foreground = B("App.TextDim"),
+        FontSize = 11,
+        FontWeight = FontWeight.SemiBold,
+        Margin = new Thickness(0, 10, 0, 4),
+    };
+
+    private Control Row(RepoEntry entry)
     {
         StackPanel outer = new() { Spacing = 0 };
-
-        if (startsGroup)
-        {
-            outer.Children.Add(new TextBlock
-            {
-                Text = entry.Group == FavoritesGroup
-                    ? T("Dashboard/_favouriteRepositories.Text", "Favorite repositories")
-                    : T("Dashboard/_recentRepositories.Text", "Recent repositories"),
-                Foreground = B("App.TextDim"),
-                FontSize = 11,
-                FontWeight = FontWeight.SemiBold,
-                Margin = new Thickness(0, 10, 0, 4),
-            });
-        }
 
         Grid grid = new()
         {
@@ -492,27 +512,91 @@ public sealed class DashboardView : UserControl
                 Open(first);
             }
         }
-        else if (e.Key == Key.Down && _list.ItemCount > 0)
+        else if (e.Key == Key.Down && NextEntryIndex(-1, 1) is int first)
         {
+            // Down out of the search box enters the list at its first repository
+            // (upstream UserRepositoriesList.cs:721-734).
             e.Handled = true;
-            _list.SelectedIndex = 0;
-            _list.Focus();
+            SelectAndFocus(first);
         }
     }
 
     private void OnListKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Up && _list.SelectedIndex <= 0)
+        if (e.Handled)
         {
-            // At the very top the Up key hands the focus back to the search box.
-            e.Handled = true;
-            _search.Focus();
+            return;
         }
-        else if (e.Key == Key.Enter && EntryOf(_list.SelectedItem) is { } entry)
+
+        if (e.Key is Key.Down or Key.Up)
+        {
+            // Own the arrow keys outright. The built-in navigation walks the raw item
+            // list, group captions included, and stops on them; this walks repository
+            // rows only and moves the FOCUS with the selection, which is what was
+            // missing — the caret used to stay behind in the search box.
+            e.Handled = true;
+            int step = e.Key == Key.Down ? 1 : -1;
+            if (NextEntryIndex(_list.SelectedIndex, step) is int next)
+            {
+                SelectAndFocus(next);
+            }
+            else if (step < 0)
+            {
+                // Above the first row the focus goes back to the search box
+                // (upstream UserRepositoriesList.cs:679-700).
+                _list.SelectedIndex = -1;
+                _search.Focus();
+            }
+        }
+        else if (e.Key is Key.Enter or Key.Return && EntryOf(_list.SelectedItem) is { } entry)
         {
             e.Handled = true;
             Open(entry);
         }
+    }
+
+    // The next index in <paramref name="step"/> direction that holds a repository
+    // rather than a group caption, or null when there is none left that way.
+    private int? NextEntryIndex(int from, int step)
+    {
+        for (int i = from + step; i >= 0 && i < _list.ItemCount; i += step)
+        {
+            if (EntryOf(ItemAt(i)) is not null)
+            {
+                return i;
+            }
+        }
+
+        return null;
+    }
+
+    private object? ItemAt(int index)
+        => _list.ItemsSource?.Cast<object>().ElementAtOrDefault(index);
+
+    // Selects a row AND puts the keyboard focus on its container. Focusing the
+    // ListBox itself is not enough: the focus stayed in the search box, so every
+    // further arrow key went back to the text editor instead of the list.
+    private void SelectAndFocus(int index)
+    {
+        _list.SelectedIndex = index;
+        _list.ScrollIntoView(index);
+
+        if (_list.ContainerFromIndex(index) is { } container)
+        {
+            container.Focus(NavigationMethod.Directional);
+            return;
+        }
+
+        // The container may not be realised yet right after a rebuild.
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (_list.ContainerFromIndex(index) is { } late)
+                {
+                    late.Focus(NavigationMethod.Directional);
+                }
+            },
+            DispatcherPriority.Loaded);
     }
 
     // Resolves the row the pointer is over before the popup appears, so the
