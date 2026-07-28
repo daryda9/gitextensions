@@ -117,7 +117,7 @@ public sealed class OutputView : UserControl
             Background = Brush("App.Control", Brushes.DimGray),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
         };
-        _refresh.Click += (_, _) => Reload();
+        _refresh.Click += (_, _) => ManualRefresh();
 
         _wordWrap = new CheckBox
         {
@@ -367,15 +367,24 @@ public sealed class OutputView : UserControl
 
     private void ShowDetail()
     {
+        string text;
         try
         {
-            _detail.Text = _items.SelectedItem is CommandLogEntry entry
+            text = _items.SelectedItem is CommandLogEntry entry
                 ? entry.Detail
                 : string.Empty;
         }
         catch (Exception ex)
         {
-            _detail.Text = F(T("Could not read the command log: {0}"), ex.Message);
+            text = F(T("Could not read the command log: {0}"), ex.Message);
+        }
+
+        // Only write when it actually changed: Reload re-reads the detail of the
+        // selected command (its Detail grows while the process runs), and assigning
+        // the same string back would reset the pane's scroll offset on every refresh.
+        if (!string.Equals(_detail.Text, text, StringComparison.Ordinal))
+        {
+            _detail.Text = text;
         }
     }
 
@@ -399,7 +408,28 @@ public sealed class OutputView : UserControl
     // Snapshots the live core command log, newest-last. The queue is enumerated
     // oldest-first by the core, so no reordering is needed. Keeps the selected
     // command selected across a refresh, as upstream's RefreshListBox does.
-    private void Reload()
+    /// <summary>
+    ///  The Refresh button. The view is already live (CommandLog.CommandsChanged plus a
+    ///  300 ms throttle), so when nothing has run since the last reload a plain Reload
+    ///  changes not a single pixel and the button reads as broken — which is exactly
+    ///  what happens right after a selection made while this tab is visible: the
+    ///  throttle has already drawn those commands.
+    ///
+    ///  <para>So the button stays real (it drops any pending throttled reload, re-reads
+    ///  the live log from scratch and re-renders the rows and the selected command's
+    ///  detail) and additionally says <em>when</em> it did so. The timestamp is the
+    ///  truthful part: "the list you are looking at is the log as of HH:MM:SS".</para>
+    /// </summary>
+    private void ManualRefresh()
+    {
+        // A reload is happening now; a throttled one queued a moment ago is stale.
+        _throttle.Stop();
+        Reload(manual: true);
+    }
+
+    private void Reload() => Reload(manual: false);
+
+    private void Reload(bool manual)
     {
         ApplyTranslations();
 
@@ -428,13 +458,20 @@ public sealed class OutputView : UserControl
             _items.SelectedIndex = wasAtEnd || previous >= entries.Count
                 ? entries.Count - 1
                 : previous;
+
+            // Re-read the selected command's detail too: an entry that is still
+            // running keeps appending to its Detail, and re-assigning ItemsSource does
+            // not necessarily re-raise SelectionChanged for an unchanged index.
+            ShowDetail();
         }
         else
         {
             _detail.Text = T("(no git commands have been executed yet in this session)");
         }
 
-        _status.Text = F(T("{0} command(s) logged."), entries.Count);
+        _status.Text = manual
+            ? F(T("{0} command(s) logged — refreshed at {1}."), entries.Count, DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture))
+            : F(T("{0} command(s) logged."), entries.Count);
 
         Dispatcher.UIThread.Post(() => _items.ScrollIntoView(_items.SelectedIndex), DispatcherPriority.Background);
     }
