@@ -35,6 +35,7 @@ public sealed class RepoObjectsTree : UserControl
     private readonly SubmoduleService _submoduleService = new();
     private readonly RemoteService _remoteService = new();
     private readonly WorktreeService _worktreeService = new();
+    private readonly RepositoryStateService _repositoryStateService = new();
 
     private readonly TreeView _tree;
 
@@ -565,9 +566,19 @@ public sealed class RepoObjectsTree : UserControl
             string? error = null;
             try
             {
+                // A bare repository has no work tree, so `git stash list` and
+                // `git submodule status` both refuse to run ("this operation must be
+                // run in a work tree"). Asking anyway threw the whole panel away and
+                // replaced it with git's raw error; upstream simply has nothing to
+                // show in those two categories on a bare repo (FormBrowse greys out
+                // every work-tree command for the same reason, FormBrowse.cs:1014-1034).
+                // Refs, remotes, tags and worktrees are all perfectly readable on a
+                // bare repo and keep being listed.
+                bool bare = _repositoryStateService.IsBareRepository(repo);
+
                 BranchTagListing refs = _branchTagService.LoadRefs(repo);
-                IReadOnlyList<StashRow> stashes = _stashService.ListStashes(repo);
-                IReadOnlyList<SubmoduleRow> submodules = _submoduleService.ListSubmodules(repo);
+                IReadOnlyList<StashRow> stashes = bare ? [] : _stashService.ListStashes(repo);
+                IReadOnlyList<SubmoduleRow> submodules = bare ? [] : _submoduleService.ListSubmodules(repo);
                 IReadOnlyList<WorktreeRow> worktrees = _worktreeService.ListWorktrees(repo);
                 snapshot = new RepoSnapshot(refs, stashes, submodules, worktrees);
             }
