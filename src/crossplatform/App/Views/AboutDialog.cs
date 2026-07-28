@@ -151,6 +151,12 @@ public sealed class AboutDialog : Window
 
         Content = root;
 
+        // The Close button's IsCancel was the only Escape path here, and it never
+        // fired: this window is text plus one button and nothing ever took focus, so
+        // the key was never routed into the window at all. The helper focuses the
+        // window when nothing else has, then closes on Escape.
+        DialogKeys.InstallEscapeClose(this);
+
         _ = LoadGitVersionAsync();
     }
 
