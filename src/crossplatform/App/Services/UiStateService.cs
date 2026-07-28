@@ -125,6 +125,23 @@ public sealed class UiState
     public string DefaultPullAction { get; set; } = "Merge";
 
     /// <summary>
+    ///  What to do, without asking, when a push is rejected because the branch is
+    ///  behind its remote counterpart: the name of a
+    ///  <see cref="GitExtensions.Extensibility.Git.GitPullAction"/> member
+    ///  ("Default", "Merge", "Rebase") or <c>""</c> — the default — meaning "ask
+    ///  every time".
+    ///
+    ///  <para>The port's equivalent of upstream's nullable
+    ///  <c>AppSettings.AutoPullOnPushRejectedAction</c> (<c>AppSettings.cs:1093</c>),
+    ///  which the push-rejected dialog's "Don't show again" check box writes. Empty
+    ///  string stands in for upstream's <c>null</c>, since the JSON state has no
+    ///  nullable-enum convention. Like upstream, only a PULL choice is remembered:
+    ///  "Force push with lease" is never made automatic, because silently
+    ///  overwriting a remote branch is not something a check box should arm.</para>
+    /// </summary>
+    public string AutoPullOnPushRejected { get; set; } = string.Empty;
+
+    /// <summary>
     ///  Where the commit-info panel sits, as the name of a
     ///  <c>Views.CommitInfoPosition</c> member ("BelowGraph", "LeftOfGraph",
     ///  "RightOfGraph"). Upstream persists the same choice

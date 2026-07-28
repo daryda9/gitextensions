@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace GitExtensions.Avalonia.Services;
 
@@ -52,6 +53,18 @@ public enum PushForceMode
 }
 
 /// <summary>
+///  A push that the remote REJECTED — git printed a
+///  <c>! [rejected]  &lt;ref&gt; -&gt; …</c> line, normally because the local branch is
+///  behind its remote counterpart.
+/// </summary>
+/// <param name="CurrentBranch">
+///  Whether the rejected ref is the branch currently checked out. Only then can the
+///  situation be fixed by pulling, so only then are the pull options offered —
+///  upstream's <c>allOptions</c> flag, taken from the named group of its regex.
+/// </param>
+public sealed record PushRejection(bool CurrentBranch);
+
+/// <summary>
 ///  Push operations that go beyond the single-branch case handled by
 ///  <see cref="RemoteService.PushStreaming"/>: pushing an arbitrary set of
 ///  refspecs (several branches at once, individual tags, <c>--tags</c>) and
@@ -71,6 +84,86 @@ public sealed class PushRefsService
     // never part of the (logged) argument string.
     private const string UserEnvVar = "GE_AVALONIA_CRED_USER";
     private const string PassEnvVar = "GE_AVALONIA_CRED_PASS";
+
+    /// <summary>
+    ///  Recognises a rejected push in the output git produced, and reports whether
+    ///  the rejected ref is <paramref name="currentBranch"/>.
+    ///
+    ///  <para>Same shape as upstream's test (<c>FormPush.HandlePushOnExit</c>):
+    ///  <c>! [rejected]\s*((?&lt;currBranch&gt;branch)|.*) -&gt; </c>. The status table git
+    ///  writes for a refused ref is NOT localised — only the <c>hint:</c> lines
+    ///  underneath are — so matching the <c>! [rejected]</c> marker is safe under any
+    ///  locale, which a match on the explanatory text would not be.</para>
+    ///
+    ///  <para>Matched against the whole captured output rather than line by line
+    ///  because git decorates the table with colour escapes when it thinks it has a
+    ///  terminal, exactly the reason upstream matches loosely too.</para>
+    /// </summary>
+    /// <returns><see langword="null"/> when nothing was rejected.</returns>
+    public static PushRejection? DetectRejection(string? output, string? currentBranch)
+    {
+        if (string.IsNullOrEmpty(output) || !output.Contains("! [rejected]", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        string branch = currentBranch ?? string.Empty;
+        string pattern = branch.Length > 0
+            ? $@"! \[rejected\]\s*((?<currBranch>{Regex.Escape(branch)})|.*) -> "
+            : @"! \[rejected\]\s*(.*) -> ";
+
+        Match match = Regex.Match(output, pattern);
+        return match.Success ? new PushRejection(match.Groups["currBranch"].Success) : null;
+    }
+
+    /// <summary>
+    ///  Whether pulling with REBASE would rebase a merge commit — the case upstream
+    ///  refuses to automate (<c>FormPush.IsRebasingMergeCommit</c>), because
+    ///  flattening a merge behind the user's back loses history they did not agree
+    ///  to lose.
+    ///
+    ///  <para>Divergence from upstream, deliberate: upstream only arms this guard
+    ///  when the <i>configured default</i> pull action is Rebase, so explicitly
+    ///  choosing "Pull with rebase" while the default is Merge slips past it. Here it
+    ///  is evaluated for whichever action is actually about to run, which is what the
+    ///  guard was written to prevent.</para>
+    ///
+    ///  <para>Shells out to git — call off the UI thread. Any failure answers
+    ///  <see langword="false"/>: the guard must not be able to block a legitimate
+    ///  pull just because the probe broke.</para>
+    /// </summary>
+    public bool WouldRebaseMergeCommit(string repoPath, string remote, string remoteBranch, string localBranch)
+    {
+        if (string.IsNullOrEmpty(remote) || string.IsNullOrEmpty(remoteBranch) || string.IsNullOrEmpty(localBranch))
+        {
+            return false;
+        }
+
+        try
+        {
+            return GitContext.CreateModule(repoPath).ExistsMergeCommit($"{remote}/{remoteBranch}", localBranch);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///  Whether the repository is bare. A bare repository has no working branch to
+    ///  pull into, so upstream does not offer the push-rejected recovery there.
+    /// </summary>
+    public bool IsBareRepository(string repoPath)
+    {
+        try
+        {
+            return GitContext.CreateModule(repoPath).IsBareRepository();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     ///  Lists local tags and local branches (with tracking state) in a single pair
