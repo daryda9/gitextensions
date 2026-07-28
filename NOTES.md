@@ -55,9 +55,39 @@ Lette (23, via `grep -rhoE '"App\.[A-Za-z0-9_]+"'` su `App/**/*.cs`):
 | CleanupDialog `_confirmBar` + `_confirmText` | chiaro | #1E1E1E su #2A2A2E = **1,17:1** | #1E1E1E su #ECECEC = **14,11:1** |
 | SettingsWindow `_hotkeyWarning` / conflitti | chiaro | #CE5C5C su fondo chiaro = 3,95:1 | #B03A3A = **5,98:1** |
 
-## 2. Decisione su App.ConsoleBackground / App.ConsoleForeground
+## 2. Decisione su App.ConsoleBackground / App.ConsoleForeground → **REGISTRARE**
 
-TODO (misure in corso).
+Chi le legge davvero: **solo** `CleanupDialog._log` e `CloneDialog._output`. Da verificare in
+codice, i due presupposti di M62 non reggono:
+
+- **Il process dialog non legge queste chiavi.** `GitProcessDialog.cs:48-49` codifica a mano
+  `#ECE9D8` / `#101010`. Registrare le chiavi non lo tocca → l'argomento "coerenza col beige
+  fisso" non si applica.
+- **La console del tab Console è già theme-driven.** `ConsoleView.cs:33-34` usa
+  `App.Text` / `App.Panel`. Mostra lo stesso tipo di output git grezzo dei due log.
+- **La famiglia vera è theme-driven.** Delle nove superfici read-only monospace fissate da
+  `TextBoxSurface` (M62), **sette** leggono `App.Panel`/`App.PanelAlt` + `App.Text`
+  (`OutputView`, `SubmodulesDialog`, `WorktreesDialog`, `MaintenanceDialog`, `GpgView` ×2,
+  `PullDialog`), **una** è il beige fisso voluto (process dialog) e **due** — proprio queste — erano
+  `#111111` fisso. Erano le uniche fuori riga.
+
+Misure (il contrasto **non** discrimina: passano entrambe le opzioni, con margine):
+
+| Superficie | Tema | Fondo / inchiostro | Contrasto |
+|---|---|---|---|
+| Cleanup/Clone log, fallback | scuro **e** chiaro | #111111 / #D0D0D0 | 12,24:1 |
+| Process dialog (beige fisso) | scuro **e** chiaro | #ECE9D8 / #101010 | 15,60:1 |
+| Cleanup/Clone log, **dopo** | scuro | #2D2D30 / #DCDCDC | **10,01:1** |
+| Cleanup/Clone log, **dopo** | chiaro | #ECECEC / #1E1E1E | **14,11:1** |
+
+**Motivazione.** Poiché il contrasto testo-su-fondo passa in ogni caso, decide il resto:
+il beige del process dialog dista **1,10:1** dalla finestra chiara `#F3F3F3` → in tema chiaro si
+fonde col dialogo, ed è per questo che il fisso lì non stona; `#111111` invece dista **17,02:1**
+dalla finestra chiara → in tema chiaro era esattamente la "superficie che diventa nera a sproposito"
+che questa unità deve cacciare. Registrate come alias di `App.PanelAlt`/`App.Text`. L'identità
+"terminale" resta portata da font monospace + bordo, come già per `OutputView`.
+I fallback ai due punti di lettura (ormai irraggiungibili) sono allineati ai valori dark registrati
+così non possono divergere.
 
 ## 3. Passata a schermo in tema chiaro
 

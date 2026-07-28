@@ -49,9 +49,23 @@ public sealed class DiffView : UserControl
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
-    // Diff line colours tuned for the dark palette; hunk/meta pull from app resources.
-    private static readonly IBrush AddedBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
-    private static readonly IBrush RemovedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+    // Diff line colours. These used to be literals "tuned for the dark palette",
+    // which made them 1.88:1 (added) and 2.90:1 (removed) against the light theme's
+    // #F3F3F3 — measurably unreadable. They now come from App.DiffAdded /
+    // App.DiffRemoved, whose dark values are exactly the two literals that were
+    // here, so the dark theme is unchanged and the light theme gets the darkened
+    // pair (4.58:1 and 5.39:1).
+    //
+    // Resolved lazily and cached: the identity of these two instances is load
+    // bearing (the render pass compares with ReferenceEquals), and ThemeManager
+    // mutates the resource brush in place, so a hot theme switch repaints without
+    // invalidating the cache.
+    private static IBrush? _addedBrush;
+    private static IBrush? _removedBrush;
+
+    private static IBrush AddedBrush => _addedBrush ??= B("App.DiffAdded");
+
+    private static IBrush RemovedBrush => _removedBrush ??= B("App.DiffRemoved");
 
     // Syntax highlighting repaints the content of a +/- line with the token
     // colours, so the line's identity moves to a background tint (which is how
