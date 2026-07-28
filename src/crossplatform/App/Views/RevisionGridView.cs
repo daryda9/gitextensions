@@ -220,8 +220,40 @@ public sealed class RevisionGridView : UserControl
     private bool _relativeDates = true; // default to relative ("2 hours ago"), matching original GitExtensions
 
     // Which refs the log walks (All branches / current branch only / filtered).
-    // Session-local; changing it re-runs the log via the existing load path.
+    // Changing it re-runs the log via the existing load path; the choice is carried
+    // across sessions through PersistedViewOptions.
     private BranchScope _branchScope = BranchScope.AllBranches;
+
+    // --- "Filtered branches": the explicitly chosen ref set ---------------------
+    //
+    // Under BranchScope.Filtered the walk is handed exactly these refs (see
+    // RevisionService.LoadRevisionPage), so "filtered" finally means what it says
+    // instead of quietly walking HEAD. An empty selection still falls back to HEAD,
+    // and the flyout says so rather than pretending a filter is in effect.
+    //
+    // The names are ref names as `git for-each-ref` reports them ("main",
+    // "origin/main", "v1.0"), which is what git log accepts as revision arguments.
+    private IReadOnlyList<string> _filteredRefs = [];
+
+    // Every ref of the repository with its kind ('b' local branch, 'r' remote
+    // branch, 't' tag), refreshed alongside the walk by RefreshRefContext. The
+    // picker is built from this, never from a git call of its own.
+    private IReadOnlyList<(string Name, char Kind)> _refCatalogue = [];
+
+    // The picker's live controls. Held so the check marks can be synced IN PLACE:
+    // rebuilding the flyout content while it is open would pull the visual tree out
+    // from under the pointer (same rule as OptionsChanged).
+    private StackPanel? _refPickerHost;
+    private TextBlock? _refPickerSummary;
+    private readonly Dictionary<string, CheckBox> _refPickerChecks = new(StringComparer.Ordinal);
+
+    // The picker's own narrowing box and kind toggles — this port's stand-in for
+    // upstream's autocompleting branch combo plus its Local/Remote/Tag selector
+    // (FilterToolBar.Designer.cs:174-215).
+    private string _refPickerQuery = string.Empty;
+    private bool _refKindLocal = true;
+    private bool _refKindRemote = true;
+    private bool _refKindTags = true;
 
     // Path of the repository last asked to load, so a scope change can re-run the
     // log without the caller re-supplying it (LoadRepository stores it here).
@@ -1277,6 +1309,7 @@ public sealed class RevisionGridView : UserControl
     {
         string repoPath = _repoPath;
         BranchScope scope = _branchScope;
+        IReadOnlyList<string> filteredRefs = _filteredRefs;
         bool showRemotes = _showRemotes;
         bool showTags = _showTags;
         bool showStashes = _showStashes;
@@ -1328,6 +1361,7 @@ public sealed class RevisionGridView : UserControl
                     skip: skip,
                     maxCount: pageSize,
                     scope: scope,
+                    filteredRefs: filteredRefs,
                     showRemotes: showRemotes,
                     showTags: showTags,
                     showStashes: showStashes,
@@ -1461,7 +1495,9 @@ public sealed class RevisionGridView : UserControl
     {
         BranchScope.AllBranches => T("all branches"),
         BranchScope.CurrentBranch => T("current branch"),
-        BranchScope.Filtered => T("filtered (current branch)"),
+        BranchScope.Filtered => _filteredRefs.Count == 0
+            ? T("filtered (no ref selected → HEAD)")
+            : string.Format(T("filtered ({0})"), string.Join(", ", _filteredRefs)),
         _ => T("all branches"),
     };
 
@@ -2320,15 +2356,68 @@ public sealed class RevisionGridView : UserControl
             "revBranchScope",
             ShowFilteredBranches));
 
-        // "Filtered" has no selection UI yet, so it walks the current branch.
-        panel.Children.Add(new TextBlock
+        // --- the ref picker that gives "Filtered" its meaning --------------------
+        panel.Children.Add(new Separator { Margin = new Thickness(0, 4, 0, 2) });
+        panel.Children.Add(SectionLabel(T("Refs walked when filtered")));
+
+        TextBox query = new()
         {
-            Text = T("Filtered walks the current branch until a ref picker is added."),
+            Text = _refPickerQuery,
+            Watermark = T("Find a ref…"),
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            FontSize = 12,
+            Padding = new Thickness(5, 2, 4, 2),
+        };
+        query.TextChanged += (_, _) =>
+        {
+            _refPickerQuery = query.Text ?? string.Empty;
+
+            // Only the LIST is rebuilt, and only from the box's own handler — the
+            // flyout's other controls (and the pointer) stay where they are.
+            PopulateRefPicker();
+        };
+        panel.Children.Add(query);
+
+        // Kind toggles: which families of ref the list offers, mirroring upstream's
+        // Local / Remote / Tag selector next to its branch combo.
+        StackPanel kinds = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(0, 2, 0, 2),
+        };
+        kinds.Children.Add(RefKindCheck(T("Local"), _refKindLocal, v => _refKindLocal = v));
+        kinds.Children.Add(RefKindCheck(T("Remote"), _refKindRemote, v => _refKindRemote = v));
+        kinds.Children.Add(RefKindCheck(T("TranslatedStrings/_tags.Text", "Tags"), _refKindTags, v => _refKindTags = v));
+        panel.Children.Add(kinds);
+
+        _refPickerHost = new StackPanel { Spacing = 2 };
+        panel.Children.Add(new ScrollViewer
+        {
+            MaxHeight = 240,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = _refPickerHost,
+        });
+
+        _refPickerSummary = new TextBlock
+        {
             Foreground = B("App.TextDim"),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 2, 0, 0),
-        });
+            Margin = new Thickness(0, 3, 0, 0),
+        };
+        panel.Children.Add(_refPickerSummary);
+
+        Button clear = MakeBarButton(T("Clear ref selection"));
+        clear.Margin = new Thickness(0, 3, 0, 0);
+        clear.Click += (_, _) => SetFilteredRefs([]);
+        panel.Children.Add(clear);
+
+        PopulateRefPicker();
 
         return new Flyout
         {
@@ -2339,6 +2428,224 @@ public sealed class RevisionGridView : UserControl
                 Child = panel,
             },
         };
+    }
+
+    // One of the picker's three kind toggles. Flipping it only re-lists the refs;
+    // the walked set (and therefore the log) is untouched.
+    private CheckBox RefKindCheck(string text, bool value, Action<bool> assign)
+    {
+        CheckBox box = MakeCheck(text, value);
+        box.FontSize = 11;
+        box.IsCheckedChanged += (_, _) =>
+        {
+            assign(box.IsChecked == true);
+            PopulateRefPicker();
+        };
+
+        return box;
+    }
+
+    /// <summary>
+    ///  The refs the "Filtered" scope walks. Empty means "none chosen", in which
+    ///  case the walk falls back to HEAD (and the picker says so).
+    /// </summary>
+    public IReadOnlyList<string> FilteredRefs => _filteredRefs;
+
+    /// <summary>
+    ///  Replaces the set of refs walked under <see cref="BranchScope.Filtered"/>.
+    ///
+    ///  <para>Choosing refs IS choosing the filtered scope, as upstream's branch
+    ///  combo does: a non-empty selection made while another scope is active
+    ///  switches to <see cref="BranchScope.Filtered"/>, so the choice takes effect
+    ///  where the user made it instead of silently waiting for a second click.</para>
+    /// </summary>
+    public void SetFilteredRefs(IReadOnlyList<string>? refs)
+    {
+        List<string> wanted = refs is null
+            ? []
+            : refs.Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => r.Trim()).Distinct(StringComparer.Ordinal).ToList();
+
+        if (wanted.SequenceEqual(_filteredRefs, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        _filteredRefs = wanted;
+        SyncRefPickerChecks();
+
+        if (wanted.Count > 0 && _branchScope != BranchScope.Filtered)
+        {
+            // SetBranchScope reloads and notifies; nothing further to do here.
+            SetBranchScope(BranchScope.Filtered);
+            return;
+        }
+
+        // The walked set changed under the scope that uses it.
+        if (_branchScope == BranchScope.Filtered)
+        {
+            Reload();
+        }
+
+        OptionsChanged();
+    }
+
+    // Adds/removes one ref from the walked set.
+    private void ToggleFilteredRef(string name, bool wanted)
+    {
+        bool has = _filteredRefs.Contains(name, StringComparer.Ordinal);
+        if (has == wanted)
+        {
+            return;
+        }
+
+        List<string> next = [.. _filteredRefs];
+        if (wanted)
+        {
+            next.Add(name);
+        }
+        else
+        {
+            next.RemoveAll(r => string.Equals(r, name, StringComparison.Ordinal));
+        }
+
+        SetFilteredRefs(next);
+    }
+
+    // Feeds the picker the repository's refs (from RefreshRefContext, off the UI
+    // thread originally). Rebuilds the list only when the ref SET actually changed —
+    // a mere selection change must not rebuild a flyout that may be open.
+    private void SetRefCatalogue(IReadOnlyList<(string Name, char Kind)> catalogue)
+    {
+        if (catalogue.Count == _refCatalogue.Count
+            && catalogue.Select(r => $"{r.Kind}{r.Name}")
+                .SequenceEqual(_refCatalogue.Select(r => $"{r.Kind}{r.Name}"), StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        _refCatalogue = catalogue;
+
+        // A ref that no longer exists cannot be walked; dropping it here keeps the
+        // status line honest about what the filter actually is.
+        List<string> alive = _filteredRefs
+            .Where(r => catalogue.Any(c => string.Equals(c.Name, r, StringComparison.Ordinal)))
+            .ToList();
+        if (!alive.SequenceEqual(_filteredRefs, StringComparer.Ordinal))
+        {
+            _filteredRefs = alive;
+        }
+
+        PopulateRefPicker();
+    }
+
+    // (Re)builds the checkbox list from the catalogue, honouring the narrowing box
+    // and the kind toggles. Grouped by kind, in the order local / remote / tags.
+    private void PopulateRefPicker()
+    {
+        if (_refPickerHost is null)
+        {
+            return;
+        }
+
+        _refPickerChecks.Clear();
+        _refPickerHost.Children.Clear();
+
+        string query = _refPickerQuery.Trim();
+        int shown = 0;
+
+        foreach ((char kind, string heading, bool enabled) in new[]
+        {
+            ('b', T("Local branches"), _refKindLocal),
+            ('r', T("Remote branches"), _refKindRemote),
+            ('t', T("TranslatedStrings/_tags.Text", "Tags"), _refKindTags),
+        })
+        {
+            if (!enabled)
+            {
+                continue;
+            }
+
+            List<string> group = _refCatalogue
+                .Where(r => r.Kind == kind
+                    && (query.Length == 0 || r.Name.Contains(query, StringComparison.OrdinalIgnoreCase)))
+                .Select(r => r.Name)
+                .ToList();
+            if (group.Count == 0)
+            {
+                continue;
+            }
+
+            _refPickerHost.Children.Add(SectionLabel(heading));
+            foreach (string name in group)
+            {
+                CheckBox box = MakeCheck(name, _filteredRefs.Contains(name, StringComparer.Ordinal));
+                box.FontSize = 11;
+                box.IsCheckedChanged += (_, _) =>
+                {
+                    if (_syncingOptions)
+                    {
+                        return;
+                    }
+
+                    ToggleFilteredRef(name, box.IsChecked == true);
+                };
+
+                _refPickerChecks[name] = box;
+                _refPickerHost.Children.Add(box);
+                shown++;
+            }
+        }
+
+        if (shown == 0)
+        {
+            _refPickerHost.Children.Add(new TextBlock
+            {
+                Text = _refCatalogue.Count == 0
+                    ? T("No refs loaded yet.")
+                    : T("No ref matches the current narrowing."),
+                Foreground = B("App.TextDim"),
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        UpdateRefPickerSummary();
+    }
+
+    // Brings the picker's check marks back in line with _filteredRefs without
+    // rebuilding anything (so it is safe while the flyout is open).
+    private void SyncRefPickerChecks()
+    {
+        _syncingOptions = true;
+        try
+        {
+            foreach ((string name, CheckBox box) in _refPickerChecks)
+            {
+                bool wanted = _filteredRefs.Contains(name, StringComparer.Ordinal);
+                if (box.IsChecked != wanted)
+                {
+                    box.IsChecked = wanted;
+                }
+            }
+        }
+        finally
+        {
+            _syncingOptions = false;
+        }
+
+        UpdateRefPickerSummary();
+    }
+
+    private void UpdateRefPickerSummary()
+    {
+        if (_refPickerSummary is null)
+        {
+            return;
+        }
+
+        _refPickerSummary.Text = _filteredRefs.Count == 0
+            ? T("No ref selected — \"Filtered branches\" walks HEAD.")
+            : string.Format(T("Walking {0}"), string.Join(", ", _filteredRefs));
     }
 
     /// <summary>
@@ -2526,9 +2833,25 @@ public sealed class RevisionGridView : UserControl
                 }
             }
 
+            // The refs chosen for the "Filtered branches" scope ride the same bag,
+            // one key per ref. UiState documents this dictionary as an open,
+            // id-keyed store whose unknown keys are ignored on load, so a ref set
+            // survives a restart without a schema of its own — and without this
+            // view writing ui-state.json behind the host's back.
+            foreach (string name in _filteredRefs)
+            {
+                snapshot[FilteredRefKeyPrefix + name] = true;
+            }
+
             return snapshot;
         }
     }
+
+    /// <summary>
+    ///  Key prefix under which <see cref="PersistedViewOptions"/> stores one entry
+    ///  per ref of the "Filtered branches" selection.
+    /// </summary>
+    public const string FilteredRefKeyPrefix = "filteredRef:";
 
     /// <summary>How many commits one page of the walk loads (see <see cref="SetPageSize"/>).</summary>
     public int PageSize => _pageSize;
@@ -2562,6 +2885,15 @@ public sealed class RevisionGridView : UserControl
             _branchScope = Get(OptShowCurrentBranchOnly, false) ? BranchScope.CurrentBranch
                 : Get(OptShowFilteredBranches, false) ? BranchScope.Filtered
                 : BranchScope.AllBranches;
+
+            // The ref set that gives the "filtered" scope its meaning. Refs that no
+            // longer exist are dropped as soon as the catalogue arrives
+            // (SetRefCatalogue), so a stale file cannot make the walk fail.
+            _filteredRefs = options
+                .Where(kv => kv.Value && kv.Key.StartsWith(FilteredRefKeyPrefix, StringComparison.Ordinal))
+                .Select(kv => kv.Key[FilteredRefKeyPrefix.Length..])
+                .Where(name => name.Length > 0)
+                .ToList();
 
             _showRemotes = Get(OptShowRemoteBranches, _showRemotes);
             _showTags = Get(OptShowTags, _showTags);
@@ -5221,20 +5553,28 @@ public sealed class RevisionGridView : UserControl
                 BranchTagListing listing = _branchTags.LoadRefs(repo);
 
                 Dictionary<string, char> kinds = new(StringComparer.Ordinal);
+                List<(string Name, char Kind)> catalogue = [];
                 foreach (BranchTagRow branch in listing.Branches)
                 {
-                    kinds[branch.Name] = branch.IsRemote ? 'r' : 'b';
+                    char kind = branch.IsRemote ? 'r' : 'b';
+                    kinds[branch.Name] = kind;
+                    catalogue.Add((branch.Name, kind));
                 }
 
                 foreach (BranchTagRow tag in listing.Tags)
                 {
                     kinds[tag.Name] = 't';
+                    catalogue.Add((tag.Name, 't'));
                 }
 
                 Dispatcher.UIThread.Post(() =>
                 {
                     _currentBranch = current;
                     _refKinds = kinds;
+
+                    // The same listing feeds the "Filtered branches" ref picker, so
+                    // it never runs a git call of its own.
+                    SetRefCatalogue(catalogue);
                 });
             }
             catch (Exception)

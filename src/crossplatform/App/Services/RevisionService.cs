@@ -19,8 +19,10 @@ public enum BranchScope
     CurrentBranch,
 
     /// <summary>
-    ///  Walk an explicitly provided set of refs (plus HEAD when none is given).
-    ///  With no selection UI wired yet this behaves as <see cref="CurrentBranch"/>.
+    ///  Walk an explicitly provided set of refs — the grid's "Filtered branches"
+    ///  picker fills it. An EMPTY set falls back to HEAD, i.e. to
+    ///  <see cref="CurrentBranch"/>; that is the "nothing chosen yet" case, and the
+    ///  picker says so rather than implying a filter is in effect.
     /// </summary>
     Filtered,
 }
