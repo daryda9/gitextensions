@@ -57,13 +57,20 @@ public enum CommitInfoPosition
 /// <param name="IsChecked">Show a check mark (the current worktree).</param>
 /// <param name="IsEnabled">False leaves the entry visible but inert.</param>
 /// <param name="IsDim">Paint the label in the dim/disabled colour (a deleted worktree).</param>
+/// <param name="Category">
+///  The category a favorite repository is filed under, or <c>null</c> when it has
+///  none. Only the favorites drop-down reads it (upstream groups that menu by
+///  <c>Repository.Category</c>); every other provider leaves it null, which is why
+///  it is last and optional.
+/// </param>
 public readonly record struct RepoLink(
     string Label,
     string Path,
     string Icon,
     bool IsChecked = false,
     bool IsEnabled = true,
-    bool IsDim = false);
+    bool IsDim = false,
+    string? Category = null);
 
 public sealed class MainToolbar : UserControl
 {
@@ -2596,9 +2603,11 @@ public sealed class MainToolbar : UserControl
         flyout.Items.Add(new MenuItem { Header = filterBox, StaysOpenOnClick = true });
         flyout.Items.Add(new MenuSeparator());
 
-        // Favorites. FavoritesService is a flat list in this port — repository
-        // categories are a separate piece of work — so they all land in one group
-        // under a non-clickable header instead of upstream's per-category submenus.
+        // Favorites, grouped by category into one submenu, as upstream does
+        // (RepositoryHistoryUIService.PopulateFavouriteRepositoriesMenu groups by
+        // Repository.Category and gives each category its own submenu; the split
+        // button then adds that single root item only when it has children —
+        // WorkingDirectoryToolStripSplitButton.FillDropDown).
         //
         // The caption is deliberately the *same* key and English text as the Start
         // menu entry (MainMenu.cs): upstream builds this group by reusing
@@ -2609,16 +2618,7 @@ public sealed class MainToolbar : UserControl
         // "Favourite" here while the menu and the dashboard read "Favorite".
         if (favorites.Count > 0)
         {
-            flyout.Items.Add(new MenuItem
-            {
-                Header = T("FormBrowse/tsmiFavouriteRepositories.Text", "Favorite repositories"),
-                IsEnabled = false,
-            });
-            foreach (RepoLink link in favorites)
-            {
-                filterable.Add(AddRepoEntry(flyout, link, "RepoOpen"));
-            }
-
+            flyout.Items.Add(BuildFavoritesGroup(favorites));
             flyout.Items.Add(new MenuSeparator());
         }
 
@@ -2645,44 +2645,141 @@ public sealed class MainToolbar : UserControl
         open.Click += (_, _) => OpenRepoRequested?.Invoke();
         flyout.Items.Add(open);
 
-        MenuItem close = new()
+        // Both remaining commands are omitted outright when no host has wired them,
+        // instead of being shown permanently greyed. A row that can never do anything
+        // is worse than an absent one: it advertises a feature and then refuses it.
+        if (CloseRepositoryRequested is not null)
         {
-            Header = T("FormBrowse/closeToolStripMenuItem.Text", "Close (go to Dashboard)"),
-            Icon = IconLoader.Image("DashboardFolderGit", 16),
-            InputGesture = GestureFor(BrowseCommand.CloseRepository),
-            // Shown but inert until a host wires it, rather than pretending to work.
-            IsEnabled = CloseRepositoryRequested is not null,
-        };
-        close.Click += (_, _) => CloseRepositoryRequested?.Invoke();
-        flyout.Items.Add(close);
+            MenuItem close = new()
+            {
+                Header = T("FormBrowse/closeToolStripMenuItem.Text", "Close (go to Dashboard)"),
+                Icon = IconLoader.Image("DashboardFolderGit", 16),
+                InputGesture = GestureFor(BrowseCommand.CloseRepository),
+            };
+            close.Click += (_, _) => CloseRepositoryRequested.Invoke();
+            flyout.Items.Add(close);
+        }
 
-        flyout.Items.Add(new MenuSeparator());
-
-        MenuItem configure = new()
+        // Upstream's "Configure this menu..." opens FormRecentReposSettings, which is
+        // entirely about the *recent* list (shortening strategy, how many top/recent
+        // entries, sorting) and touches neither favorites nor categories. The port has
+        // no such settings page, so unless a host claims the event there is nothing
+        // behind the row and it is not offered.
+        if (ConfigureRecentReposRequested is not null)
         {
-            Header = T("Configure this menu..."),
-            // Upstream opens FormRecentReposSettings; the port has no equivalent
-            // dialog yet, so the entry is present but disabled until one is wired.
-            IsEnabled = ConfigureRecentReposRequested is not null,
-        };
-        configure.Click += (_, _) => ConfigureRecentReposRequested?.Invoke();
-        flyout.Items.Add(configure);
+            flyout.Items.Add(new MenuSeparator());
+
+            MenuItem configure = new()
+            {
+                Header = T("Configure this menu..."),
+            };
+            configure.Click += (_, _) => ConfigureRecentReposRequested.Invoke();
+            flyout.Items.Add(configure);
+        }
 
         // Give the search box the keyboard as soon as the popup is up, so typing
         // filters straight away instead of going to the menu's own type-ahead.
         Dispatcher.UIThread.Post(() => filterBox.Focus(), DispatcherPriority.Input);
     }
 
+    // The "Favorite repositories" root for the working-directory drop-down: one
+    // submenu per category, in upstream's order.
+    //
+    // Two deliberate departures from upstream, both forced by the data:
+    //
+    //  * Upstream groups *every* favorite, so an uncategorised one lands in a submenu
+    //    whose Text is null — a blank, unlabelled parent row. Upstream can afford
+    //    that because assigning a blank category un-favorites the repository, so the
+    //    case only arises from legacy-migrated data. In this port the pre-category
+    //    favorites.json is a plain list of paths, so *every* existing favorite is
+    //    uncategorised: hiding them all behind a nameless submenu would be a
+    //    regression for every current user. Uncategorised favorites therefore sit
+    //    directly under the root, ahead of the category submenus — which also keeps
+    //    upstream's "null category sorts first" ordering.
+    //
+    //  * The favorites are not registered for filtering. That matches upstream, which
+    //    marks this whole subtree with _excludeFromFilterMarker and only filters the
+    //    top-level recent entries; it is also the only sane behaviour once the rows
+    //    live inside submenus, where toggling IsVisible would leave empty categories
+    //    behind.
+    private MenuItem BuildFavoritesGroup(IReadOnlyList<RepoLink> favorites)
+    {
+        MenuItem root = new()
+        {
+            Header = T("FormBrowse/tsmiFavouriteRepositories.Text", "Favorite repositories"),
+            Icon = IconLoader.Image("star", 16),
+        };
+
+        List<Control> items = [];
+
+        // Uncategorised first, keeping the stored order.
+        int number = 0;
+        foreach (RepoLink link in favorites)
+        {
+            if (string.IsNullOrWhiteSpace(link.Category))
+            {
+                AddRepoEntry(items, link, "RepoOpen", NumberPrefix(++number));
+            }
+        }
+
+        // Then a submenu per category, categories ordered by name and the
+        // repositories inside each keeping the stored order. The numbering restarts
+        // inside every category, as upstream's does.
+        foreach (IGrouping<string, RepoLink> group in favorites
+            .Where(l => !string.IsNullOrWhiteSpace(l.Category))
+            .GroupBy(l => l.Category!, StringComparer.CurrentCulture)
+            .OrderBy(g => g.Key, StringComparer.CurrentCulture))
+        {
+            MenuItem category = new()
+            {
+                // A category name is user data, so its underscores need escaping too.
+                Header = group.Key.Replace("_", "__"),
+                Icon = IconLoader.Image("star", 16),
+            };
+
+            List<Control> children = [];
+            int inCategory = 0;
+            foreach (RepoLink link in group)
+            {
+                AddRepoEntry(children, link, "RepoOpen", NumberPrefix(++inCategory));
+            }
+
+            category.ItemsSource = children;
+            items.Add(category);
+        }
+
+        root.ItemsSource = items;
+        return root;
+    }
+
+    // Upstream's accelerator scheme for repository rows: "&1:" … "&9:", "1&0:" for the
+    // tenth, and no accelerator past that (RepositoryHistoryUIService.AddRecentRepositories).
+    // "_" is Avalonia's access-key marker where WinForms uses "&".
+    private static string NumberPrefix(int number) => number switch
+    {
+        < 10 => $"_{number}: ",
+        10 => "1_0: ",
+        _ => $"{number}: ",
+    };
+
     // One repository row: caption + full path as the tooltip, Ctrl-aware activation.
     // Returns the item so the caller can register it for filtering; Tag carries the
     // text the filter matches against (label and path, as upstream matches on Text).
     private MenuItem AddRepoEntry(MenuFlyout flyout, RepoLink link, string iconName)
+        => AddRepoEntry(flyout.Items, link, iconName);
+
+    // Same row, but appended to an arbitrary item list, so a category submenu can
+    // hold repositories too (the favorites group builds one list per category).
+    private MenuItem AddRepoEntry(System.Collections.IList target, RepoLink link, string iconName,
+        string? numberPrefix = null)
     {
         MenuItem item = new()
         {
             // A string header goes through Avalonia's access-key parser, so an
             // underscore in the data ("git_ext_mod") has to be escaped to survive.
-            Header = link.Label.Replace("_", "__"),
+            // The number prefix is added afterwards precisely so its own single
+            // underscore survives as an access key, exactly as upstream's "&1:" is.
+            Header = (numberPrefix ?? string.Empty) + link.Label.Replace("_", "__"),
             Icon = IconLoader.Image(link.Icon is { Length: > 0 } i ? i : iconName, 16),
             Tag = link.Label + " " + link.Path,
         };
@@ -2703,7 +2800,7 @@ public sealed class MainToolbar : UserControl
             OpenRepoLink(path, newInstance);
         };
 
-        flyout.Items.Add(item);
+        target.Add(item);
         return item;
     }
 
@@ -2757,8 +2854,13 @@ public sealed class MainToolbar : UserControl
         }
 
         return SafeLinksAsync(() => Task.Run<IReadOnlyList<RepoLink>>(() =>
-            new FavoritesService().Load().Select(ToRepoLink).ToList()));
+            new FavoritesService().LoadEntries().Select(ToRepoLink).ToList()));
     }
+
+    // A favorite carries its category through to the menu; the label is the same
+    // tilde/basename treatment every other repo link gets.
+    private static RepoLink ToRepoLink(FavoriteRepo favorite)
+        => ToRepoLink(favorite.Path) with { Category = favorite.Category };
 
     private Task<IReadOnlyList<RepoLink>> LoadRecentReposAsync()
         => RecentReposProvider is { } provider
