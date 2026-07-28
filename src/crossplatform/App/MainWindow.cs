@@ -126,6 +126,15 @@ public sealed class MainWindow : Window
     // needs a start point must fall back to HEAD instead of using a stale hash.
     private bool _artificialRowSelected;
 
+    // The sentinel hash of the artificial row currently selected (worktree or index),
+    // used as the lazy-load key for the bottom tabs. Kept apart from
+    // _lastSelectedHash, which must stay a real commit for every other consumer.
+    private string? _artificialHash;
+
+    // Which artificial side the selected row is (worktree or index), taken from the
+    // grid event's kind rather than re-derived from the hash.
+    private ArtificialDiff _artificialWhich;
+
     private const string DefaultTitle = "Git Extensions (Avalonia / Linux)";
 
     // Which commit each lazily-loaded bottom tab is currently showing; null = stale.
@@ -992,20 +1001,28 @@ public sealed class MainWindow : Window
         _revisions.RevisionActivated += _ => Dispatcher.UIThread.Post(() => _bottom.SelectedItem = _commitInfoTab);
 
         // The two artificial rows are not commits, so RevisionSelected is not raised
-        // for them. Without this the bottom tabs kept showing the PREVIOUS commit —
-        // stale content, which is worse than empty. We clear what can be cleared;
-        // Diff and Commit details still lack a placeholder API and the index/worktree
-        // modes in DiffService (queue item 1.14b), so they are marked stale and left
-        // to be re-filled by the next real selection rather than lying.
-        _revisions.ArtificialRevisionSelected += (_, _) =>
+        // for them. Since M64 the four tabs have real content for those rows: Diff and
+        // File tree from the worktree/index modes of DiffService, Commit details and GPG
+        // from a placeholder that names the row (they have no commit object). The
+        // sentinel hash is the lazy-load key, so only the visible tab loads (item 1.13).
+        _revisions.ArtificialRevisionSelected += (kind, hash) =>
         {
             _artificialRowSelected = true;
+            // Which side comes from the event's KIND, never from the sentinel hash:
+            // the grid's own WorkTreeHash/IndexHash constants are swapped with respect
+            // to the core's ObjectId.WorkTreeId/IndexId, which is what DiffService
+            // derives from, so mapping by hash showed the staged diff for the
+            // working-directory row (seen on screen).
+            _artificialWhich = kind == RevisionGridView.ArtificialRevision.Index
+                ? ArtificialDiff.Index
+                : ArtificialDiff.WorkTree;
+            _artificialHash = hash;
+            _diffShowsRange = false;
             _detailLoadedFor = null;
             _diffLoadedFor = null;
             _fileTreeLoadedFor = null;
             _gpgLoadedFor = null;
-            _fileTree.Clear();
-            _gpg.Clear();
+            LoadSelectedBottomTab();
         };
         _fileHistory.RevisionSelected += OnRevisionSelected;
         // Double click on a history row behaves like the grid's own activation: select
@@ -1761,6 +1778,7 @@ public sealed class MainWindow : Window
 
         _lastSelectedHash = commitHash;
         _artificialRowSelected = false;
+        _artificialHash = null;
         _diffShowsRange = false;
         _statusBar.SetText(string.Empty);
 
@@ -1784,7 +1802,18 @@ public sealed class MainWindow : Window
     // tabs stay stale until they are shown. Cheap and idempotent.
     private void LoadSelectedBottomTab()
     {
-        if (_repoPath is not { Length: > 0 } repo || _lastSelectedHash is not { Length: > 0 } hash)
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        if (_artificialRowSelected)
+        {
+            LoadSelectedBottomTabForArtificial(repo);
+            return;
+        }
+
+        if (_lastSelectedHash is not { Length: > 0 } hash)
         {
             return;
         }
@@ -1809,6 +1838,40 @@ public sealed class MainWindow : Window
         {
             _gpgLoadedFor = hash;
             _gpg.ShowCommit(repo, hash);
+        }
+    }
+
+    // Same lazy dispatch for the artificial rows: the sentinel hash is the key, and
+    // "which" is recovered from it so a stale event can never load the wrong side.
+    private void LoadSelectedBottomTabForArtificial(string repo)
+    {
+        if (_artificialHash is not { Length: > 0 } hash)
+        {
+            return;
+        }
+
+        ArtificialDiff which = _artificialWhich;
+
+        object? tab = _bottom.SelectedItem;
+        if (ReferenceEquals(tab, _commitInfoTab) && _detailLoadedFor != hash)
+        {
+            _detailLoadedFor = hash;
+            _detail.ShowArtificial(repo, which);
+        }
+        else if (ReferenceEquals(tab, _diffTab) && _diffLoadedFor != hash)
+        {
+            _diffLoadedFor = hash;
+            _diff.ShowArtificial(repo, which);
+        }
+        else if (ReferenceEquals(tab, _fileTreeTab) && _fileTreeLoadedFor != hash)
+        {
+            _fileTreeLoadedFor = hash;
+            _fileTree.ShowArtificial(repo, which);
+        }
+        else if (ReferenceEquals(tab, _gpgTab) && _gpgLoadedFor != hash)
+        {
+            _gpgLoadedFor = hash;
+            _gpg.ShowArtificial(which);
         }
     }
 
