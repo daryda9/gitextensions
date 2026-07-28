@@ -123,6 +123,11 @@ public sealed class CommitDialog : Window
     private readonly Button _createBranchBtn;
     private readonly Button _optionsBtn;
 
+    // Upstream's Cancel button (FormCommit.Designer.cs:142-151), which is also the
+    // form's CancelButton — so it doubles as the Escape handler. It only closes:
+    // upstream asks nothing back, not even with a message typed.
+    private readonly Button _cancelBtn;
+
     // The branch shown in the title bar, remembered so the title can be rebuilt
     // (translated format string) without asking git again.
     private string _titleBranch = string.Empty;
@@ -458,6 +463,8 @@ public sealed class CommitDialog : Window
         _optionsBtn = new Button();
         _optionsBtn.Click += (_, _) => ShowOptionsMenu(_optionsBtn);
 
+        _cancelBtn = MakeButton(Close);
+
         WrapPanel buttonRow = new()
         {
             Orientation = Orientation.Horizontal,
@@ -465,6 +472,7 @@ public sealed class CommitDialog : Window
             {
                 _commitBtn, _commitPushBtn, _amendBox, _stashBtn,
                 _resetAllBtn, _resetUnstagedBtn, _templatesBtn, _createBranchBtn, _optionsBtn,
+                _cancelBtn,
             },
         };
         foreach (Control c in buttonRow.Children)
@@ -575,6 +583,7 @@ public sealed class CommitDialog : Window
         _templatesBtn.Content = T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾";
         _createBranchBtn.Content = T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch");
         _optionsBtn.Content = T("FormCommit/tsmiOptions.Text", "Options") + " ▾";
+        _cancelBtn.Content = T("FormCommit/Cancel.Text", "Cancel");
 
         UpdateTitle();
         RenderStatus();
@@ -639,6 +648,19 @@ public sealed class CommitDialog : Window
                 }
             },
             RoutingStrategies.Tunnel);
+
+        // Escape = Cancel, the way upstream's CancelButton (FormCommit.Designer.cs:921)
+        // wires it. Deliberately on the BUBBLING phase: an open context menu or
+        // completion popup gets first refusal and swallows its own Escape, so the
+        // dialog only closes when nothing inside it wanted the key.
+        KeyDown += (_, e) =>
+        {
+            if (!e.Handled && e.Key == Key.Escape && e.KeyModifiers == KeyModifiers.None)
+            {
+                e.Handled = true;
+                Close();
+            }
+        };
 
         _unstagedList.KeyDown += (_, e) =>
         {
