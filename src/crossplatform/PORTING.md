@@ -1829,6 +1829,40 @@ subagent più due voci fatte direttamente nel `MainWindow` (che nessun subagent 
   esibire un pulsante morto. Serve un `ConflictOpsService`; si lega a `FormResolveConflicts`, che
   resta non portato (`AvaloniaGitUICommands.cs:137` lancia `NotSupported`).
 
+**M59** (2026-07-28) — **il filtro della toolbar diventa un filtro git**, ref picker vero, righe
+artificiali segnalate, e il crash della dashboard chiuso.
+
+- **Box "Filter:" → filtro git** (`3120052ac`) — era un **setaccio in memoria** sulle sole righe
+  già caricate; ora applica a **git su Invio**, con dropdown del tipo di filtro (message /
+  committer / author / diff contains) e **MRU di 30 voci persistita**. *Confronto con `git log`
+  reale su un repo di 79 commit con page size 50 e i termini messi apposta nei 4 commit più
+  vecchi, cioè **fuori da ciò che la griglia aveva caricato***: message `ZEBRAWORD` → 1 =
+  `--grep`; author `Bob` → 1 = `--author`; diff `PICKAXETOKEN` → 1 = `-S`; committer `alice` → 78
+  = `--committer` (dopo il paging). **Il caso decisivo, catturato in due screenshot**: prima di
+  premere Invio la griglia dice `0 of 50+ commits` — il vecchio setaccio non poteva vederlo —
+  e dopo diventa `1 commits — git filter: message: ZEBRAWORD`.
+  *Rinviato con motivo*: il filtro **multi-campo** di upstream (più caselle spuntabili) — git le
+  mette in AND, quindi lo stesso testo in message AND author è quasi sempre vuoto e **si legge
+  come un filtro rotto**; qui è un gruppo radio, e combinare criteri resta possibile ed esplicito
+  nel dialogo dei filtri.
+- **Ref picker per "Filtered branches"** (`c95323979`) — non è più uno stub che si dichiarava
+  tale nella UI: casella che restringe + toggle Local/Remote/Tags + lista a checkbox, con
+  **multi-ref**, che upstream (combo singola) non ha. Verificato: `wtbranch` → 4 commit =
+  `git log wtbranch`; aggiungendo `origin/master` → 5 = `git log wtbranch origin/master`.
+  La scelta sopravvive al riavvio (`filteredRef:` in `ui-state.json`).
+- **Righe artificiali** (`2eb3bd700`, cablaggio `096466647`) — la griglia alza ora
+  `ArtificialRevisionSelected` con un **contratto scritto nel doc comment** (Diff = `git diff` /
+  `git diff --cached`; File tree = worktree / index; Commit details e GPG **non hanno un oggetto
+  commit**, quindi vogliono un placeholder, mai il contenuto del commit precedente). L'host pulisce
+  File tree e GPG e marca stantii tutti i tab: **il contenuto del commit precedente non resta più
+  lì**, che era il difetto vero. Il resto è registrato come **1.14b**, non spacciato per fatto.
+- **Crash aprendo un repo dalla Dashboard** (`033bc81f9`) — chiuso: item `null` nel template di
+  riga (la trappola del riciclo disabilitato, la stessa di `BlameView` in M51). Verificato su
+  **10 aperture** (5 col clic, 5 con ↓+Invio), zero eccezioni, stesso PID.
+- *Segnalato invece di lasciarlo rotto in silenzio* (voce **0.32**): con la finestra stretta il box
+  "Filter:" finisce nel menu di overflow `»` e lì **non riceve i caratteri digitati** — il
+  `MenuItem` li mangia. Preesistente, indipendente dall'Invio.
+
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
 diff sono state salvate in `/tmp/loop-salvage/*.patch` e gli agent sono stati **ripresi dal loro
