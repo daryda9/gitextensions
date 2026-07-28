@@ -64,7 +64,7 @@ public sealed class CleanupDialog : Window
     private readonly TextBox _excludePaths;
 
     private readonly TextBox _log;
-    private readonly ScrollViewer _logScroll;
+    private readonly Border _logFrame;
     private readonly TextBlock _status;
 
     private readonly Button _preview;
@@ -157,11 +157,15 @@ public sealed class CleanupDialog : Window
             BorderThickness = new Thickness(0),
             MinHeight = 140,
         };
-        _logScroll = new ScrollViewer
+
+        // The TextBox scrolls itself; wrapping it in a ScrollViewer would give the
+        // log two nested scrollers, and scrolling the outer one to the end left the
+        // caller staring at blank space below the text.
+        ScrollViewer.SetHorizontalScrollBarVisibility(_log, ScrollBarVisibility.Auto);
+        ScrollViewer.SetVerticalScrollBarVisibility(_log, ScrollBarVisibility.Auto);
+        _logFrame = new Border
         {
-            Content = _log,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Child = _log,
             BorderBrush = border,
             BorderThickness = new Thickness(1),
         };
@@ -279,7 +283,7 @@ public sealed class CleanupDialog : Window
         };
         DockPanel.SetDock(logLabel, Dock.Top);
         logDock.Children.Add(logLabel);
-        logDock.Children.Add(_logScroll);
+        logDock.Children.Add(_logFrame);
         logDock.Margin = new Thickness(0, 14, 0, 0);
         Grid.SetRow(logDock, 2);
         root.Children.Add(logDock);
@@ -483,16 +487,28 @@ public sealed class CleanupDialog : Window
         return failed ? -1 : entries;
     }
 
-    // git clean prints "Would remove <path>" / "Would skip <path>" for a dry run and
-    // "Removing <path>" for the real thing; anything else is noise or an error.
+    // git clean prints exactly one line per entry ("Would remove <path>" for a dry
+    // run, "Removing <path>" for the real thing) and nothing else. Those prefixes are
+    // TRANSLATED by git — an Italian git says "Eliminerei <path>" — so matching them
+    // would report zero on most non-English machines. Count lines instead, skipping
+    // only the diagnostics git tags with an untranslated prefix.
     private static bool CountsAsEntry(string line)
-        => line.StartsWith("Would remove ", StringComparison.Ordinal)
-        || line.StartsWith("Removing ", StringComparison.Ordinal);
+    {
+        string trimmed = line.Trim();
+        return trimmed.Length > 0
+            && !trimmed.StartsWith("warning:", StringComparison.OrdinalIgnoreCase)
+            && !trimmed.StartsWith("error:", StringComparison.OrdinalIgnoreCase)
+            && !trimmed.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase)
+            && !trimmed.StartsWith("Entering '", StringComparison.Ordinal);
+    }
 
     private void Append(string line)
     {
         _log.Text = string.IsNullOrEmpty(_log.Text) ? line : _log.Text + Environment.NewLine + line;
-        _logScroll.ScrollToEnd();
+
+        // Keep the newest line in view: moving the caret is what actually scrolls a
+        // TextBox, and the log is read-only so the caret has no other job.
+        _log.CaretIndex = _log.Text.Length;
     }
 
     private void SyncFilterBoxes()
