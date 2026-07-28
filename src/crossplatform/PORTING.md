@@ -1165,7 +1165,7 @@ priorità massima)
       > clipboard ha misurato un ambiente storpio**, non il comportamento su un desktop vero.
       > Corollario: su un desktop reale, dove altri client hanno già creato quegli atomi, la "X"
       > molto probabilmente **funzionava già**.
-- [ ] 0.17 `RevisionsStar`/`BottomStar` vengono salvati come valori **simil-pixel** (es. 199 / 525)
+- [x] 0.17 `RevisionsStar`/`BottomStar` vengono salvati come valori **simil-pixel** (es. 199 / 525)
       invece di rapporti star normalizzati: passano il `Clamp(0.1, 1000)` di `Sanitize` quindi non
       rompono nulla, ma il ripristino dipende dalla dimensione della finestra. *banale*
 - [x] 0.18 Nel tab **File tree** il clic (singolo e doppio) su un file **non carica il Blame**
@@ -1253,21 +1253,21 @@ moltiplicazione ×4; i toggle della griglia tornano come lasciati dopo un riavvi
 
 *Difetti minori registrati e NON corretti* (costo basso, nessuno bloccante):
 
-- [ ] 0.33 Il nodo **"Remotes (n)"** dell'albero conta i **branch remoti**, non i remote: con un
+- [x] 0.33 Il nodo **"Remotes (n)"** dell'albero conta i **branch remoti**, non i remote: con un
       solo `origin` mostra `Remotes (4)` mentre il figlio è `origin (4)`. *banale*
-- [ ] 0.34 Dopo un **clone**, il repo clonato **non entra nei recenti** della dashboard (finisce
+- [x] 0.34 Dopo un **clone**, il repo clonato **non entra nei recenti** della dashboard (finisce
       solo in `LastRepoPath`). *banale*
-- [ ] 0.35 **Ctrl+W** viene inghiottito quando il fuoco è nel terminale del tab Console: funziona
+- [x] 0.35 **Ctrl+W** viene inghiottito quando il fuoco è nel terminale del tab Console: funziona
       solo dopo aver dato il fuoco alla griglia. Coerente con la regola "la console riceve tutto",
       ma Ctrl+W non è un carattere di controllo utile lì. *banale*
-- [ ] 0.36 Incoerenza lessicale **"Favourite" / "Favorite"** fra dropdown WorkingDir, menu Start e
+- [x] 0.36 Incoerenza lessicale **"Favourite" / "Favorite"** fra dropdown WorkingDir, menu Start e
       dashboard. *banale*
-- [ ] 0.37 In About l'URL dell'attribuzione icone è reso **monco** (`p.yusukekamiyamane.com`).
+- [x] 0.37 In About l'URL dell'attribuzione icone è reso **monco** (`p.yusukekamiyamane.com`).
       *banale*
-- [ ] 0.38 Il bottone **Refresh del tab Output** sembra inerte subito dopo una selezione fatta
+- [x] 0.38 Il bottone **Refresh del tab Output** sembra inerte subito dopo una selezione fatta
       mentre Output è visibile — conseguenza del caricamento pigro, ma dà l'impressione di un
       pulsante rotto. *banale*
-- [ ] 0.39 `Commands → New branch… / New tag…` risultano disabilitati quando **nessuna riga è
+- [x] 0.39 `Commands → New branch… / New tag…` risultano disabilitati quando **nessuna riga è
       selezionata** (es. dopo un refresh che perde la selezione): upstream li àncora a HEAD.
       *banale*
 
@@ -1354,7 +1354,7 @@ nel port, manca il punto d'accesso)
       richiama mai `ShowHistory`); **doppio clic** su una riga (idem in Blame). *banale*
 - [x] 1.23 Dashboard: **casella di ricerca** con filtro incrementale (Enter apre il primo, ↓ passa
       alla lista) e i link **Clone / Create** oggi solo nel menu. *banale*
-- [ ] 1.24 Diff: **"Filter file in grid"** (`RevisionService.PathFilter` e il `_pathFilter` del
+- [x] 1.24 Diff: **"Filter file in grid"** (`RevisionService.PathFilter` e il `_pathFilter` del
       dialogo esistono già: basta spingerci il path e refreshare). *banale*
 - [x] 1.25 RepoObjectsTree — voci di menu su **servizi già esistenti**: **tag** (Merge, Rebase,
       Create branch, Reset current branch to here, doppio clic — oggi solo 3 voci), **remote
@@ -2044,6 +2044,100 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   (`a3aae6d0b`) e **non era cherry-pickabile** — i file erano cambiati troppo nel frattempo. È stato
   riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
   vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
+
+## ROUND 10 — chiusura della coda
+
+> **Iterazione 1 / 20.** Tre subagent Claude in worktree isolati su file disgiunti (A layout +
+> path filter, B albero/menu/toolbar, C clone/console/About/Output), più il cablaggio in
+> `MainWindow` fatto dal loop. Base `f01142202`, build Errori: 0 dopo ogni cherry-pick.
+
+**M63** (2026-07-28) — **le nove voci banali della coda round 9 chiuse in una iterazione**: 0.17,
+0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39, 1.24. Undici commit
+(`22ba751b0`…`55832a7cf`).
+
+- **0.17 — star del layout come proporzioni** (`00938b9c5`). La causa non era il salvataggio in sé:
+  il `GridSplitter` di Avalonia **riscrive una star trascinata con la sua estensione in pixel**
+  (`3*`/`2*` → `199*`/`525*`), e il rapporto restava corretto. Il danno era il `Clamp(0.1, 1000)`
+  **per singolo valore** di `Sanitize`: superati i 1000 su una finestra grande, **un solo lato**
+  tornava al default mentre il partner conservava il pixel (`1100`/`400` → `3`/`400`, cioè un
+  pannello invisibile). Ora ogni split è una coppia di proporzioni che somma a 1, normalizzata
+  **a coppie** in load e save. Migrazione senza stamp di versione e senza euristica "valore > 10 =
+  pixel": normalizzare una coppia recupera lo split esatto sia dalle proporzioni (no-op), sia dai
+  pesi in pixel legacy, sia dai letterali `3`/`2` originali. *Verificato*: coppia legacy
+  `1100`/`400` → `0.7333`/`0.2667` con la griglia al 73% (438 px su 600); drag + chiusura via
+  `WM_DELETE_WINDOW` → somma esattamente `1.0`; lo stesso file riaperto a **1350x860** invece di
+  1000x700 restituisce il 40,5% (306 px su 756), cioè **indipendenza dalla dimensione**, e
+  round-trip byte-identico senza drag. Non verificata a schermo la coppia `DetailStar`/`DiffStar`
+  (split view del tab Commit, mai attivata): stesso codice di migrazione.
+- **1.24 — "Filter file in grid": era GIÀ cablata** (`6e6e40ac2`). Contrariamente alla voce di coda,
+  la voce di menu, `FilterSelectedFileInGrid`, l'evento `FilterFileInGridRequested` **e** la
+  sottoscrizione in `MainWindow.cs:1091-1092` esistono da M56, e la guardia di re-entrancy chiusa
+  con 0.19 (`_rebinding`/`_rebindQueued`, `SetListItems` unico writer di `ItemsSource`) copre
+  questo path **senza estensioni**. Rimossi i commenti che dicevano ancora "scablata perché
+  crasha". *Verificato* su un repo costruito ad hoc (6 commit con tocchi per-file noti): il filtro
+  su `alpha.txt` riduce la griglia a c5/c3/c1 = esattamente `git log -- alpha.txt`, su
+  `sub/gamma.txt` al solo c4, e la ✕ ripristina tutti e 6 senza alcuna
+  `InvalidOperationException` nel log.
+- **0.33 — "Remotes (n)" conta i remote** (`22ba751b0`): il nodo radice passava `remote.Count`,
+  cioè i **branch** remoti. Auditati anche gli altri nodi radice (Branches/Tags/Stashes/Submodules/
+  Worktrees): contano già la propria specie, lasciati intatti. *Verificato* su un repo con un solo
+  `origin` e 4 branch remoti: `Remotes (1)` con figlio `origin (4)`.
+- **0.36 — "Favourite"/"Favorite"** (`cf7cc5107`): upstream è **diviso di proposito** — gli
+  identificatori e la chiave persistita sono britannici (`KeyFavouriteHistory = "history-favourite"`,
+  173 occorrenze britanniche contro 6 americane), ma l'**unica stringa visibile** è americana
+  (`tsmiFavouriteRepositories.Text = "&Favorite repositories"`,
+  `StartToolStripMenuItem.Designer.cs:71`), riusata verbatim dallo split-button WorkingDir
+  (`WorkingDirectoryToolStripSplitButton.cs:131`). Allineato il testo su **Favorite**; identificatori
+  e `favorites.json` **non** rinominati, quindi la compatibilità di lettura è intatta per
+  costruzione.
+- **0.39 — New branch/New tag senza selezione** (`4c1243005`, `6d04d4b10`): il menu li gatava su
+  `_selectedCount == 1`, e lo stato a **zero selezioni** è quello subito dopo l'apertura di un repo.
+  Ora una selezione vuota li abilita (una riga **artificiale** li disabilita ancora, e la regola
+  bare-repo resta). *Secondo difetto, trovato dal subagent e chiuso dal loop*: `MainWindow` passava
+  `"HEAD"` **anche con una revisione selezionata**, quindi "New branch…" su un commit vecchio
+  ramificava in silenzio dal tip; upstream usa l'`ObjectId` selezionato
+  (`GitUICommands.cs:562`). Nuovo `StartPointForRefCreation()` + flag `_artificialRowSelected`
+  (sulle righe artificiali `_lastSelectedHash` conserva il commit reale precedente, che sarebbe
+  stantio). *Verificato a schermo*: con `commit two` selezionato il dialogo mostra
+  `24bfaafde0b31c8…` e `git log` dopo la creazione dà `24bfaaf (HEAD -> frombtwo)`; senza selezione
+  il dialogo di New tag mostra `HEAD`.
+- **0.34 — clone nei recenti** (`95d799044`): `CloneDialog.CloneAsync` registra la destinazione
+  nella MRU come già fa `InitDialog`. *Verificato con un clone vero* da un bare locale: il repo
+  compare in testa a "Recent repositories" e nel file di history; con la hunk rimossa e ricompilato
+  (**baseline**) il path era assente sia a runtime sia dopo Start → Exit. ⚠️ Difetto sotto:
+  `MainWindow.OpenRepository` chiama `RecordRecentAsync` e **non** basta a far attecchire un repo
+  appena clonato — meccanismo dentro il `RepositoryHistoryManager` del core, non inseguito; la
+  registrazione lato dialogo lo copre, la scrittura sottostante resta lossy.
+- **0.35 — Ctrl+W nel terminale** (`55832a7cf`): la causa **non era il terminale** ma
+  `MainWindow.IsGestureOwnedByFocusedView`, che riserva *ogni* gesture alla console mentre
+  `_console.IsKeyboardFocusWithin`, e `HotkeyService` installa il proprio handler in **tunnel**:
+  il dispatcher vede Ctrl+W per primo, lo declina, e solo dopo arriva al PTY. Aggiunto
+  `BrowseCommand.CloseRepository` all'allowlist globale. Il subagent aveva anche provato la strada
+  sbagliata (lasciar passare Ctrl+W da `TerminalControl`) e l'ha **revertata**: da sola rendeva
+  Ctrl+W un tasto morto (né werase né azione host). *Verificato a schermo*: col caret nella shell
+  viva Ctrl+W chiude il repo e riporta alla dashboard (toolbar neutralizzata, menu Dashboard),
+  mentre Ctrl+U cancella la riga digitata e Ctrl+C resta al PTY. Zero eccezioni nel log.
+- **0.37 — URL in About** (`6f440380d`, `da0e59c38`): nessun troncamento né bug di linkificazione,
+  il letterale **mancava lo schema**. Ora `http://p.yusukekamiyamane.com/` (stringa upstream), su
+  riga separata dal credito e con `NoWrap`, perché su una sola riga Avalonia mandava a capo subito
+  dopo `http://`.
+- **0.38 — Refresh del tab Output** (`5109c9951`): scarta il reload throttled pendente, rilegge
+  `CommandLog`, ri-renderizza le righe, **rilegge il `Detail` della voce selezionata** (cresce
+  mentre il processo gira) e riporta l'ora. *Verificato*: `32 command(s) logged.` →
+  `32 command(s) logged — refreshed at 12:49:22.`; il path live resta intatto (32 → 61 comandi
+  senza toccare il pulsante) e `_detail.Text` è assegnato solo se cambia, quindi il pannello non
+  perde più lo scroll.
+
+*Difetti registrati e non corretti in M63*: la scrittura MRU del core sopra descritta; il singolo
+clic su una riga artificiale apre l'intero Commit dialog (upstream vuole il doppio clic) — da
+decidere se è una scelta del port; "1 commits" nella status line della griglia (`CommitsNoun` è di
+proposito **una sola** chiave di catalogo per non litigare con le traduzioni: servirebbe una chiave
+singolare separata); nessun clear **specifico** del path filter (ogni affordance azzera tutti i
+filtri, upstream lo tiene dismissibile a parte).
+
+*Non verificato*: la creazione effettiva di un tag; un repository **bare** (la metà bare del gating
+di New branch resta verificata solo per ispezione); il flusso Init → recenti (solo letto);
+`Ctrl+W` con la sola modifica del subagent (mai spedita).
 
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 

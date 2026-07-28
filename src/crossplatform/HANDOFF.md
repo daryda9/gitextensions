@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M63**), tiene il contatore iterazione.
+  libera: **M64**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -207,6 +207,16 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
+> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M64**
+> **M63** ha chiuso le **nove voci banali** della coda (0.17, 0.33–0.39, 1.24). Di `- [ ]` restano
+> solo le tre leve — **1.14b**, **4.8**, **4.9** — più i `[~]` parziali (4.10 residuo toolbar, 3.2,
+> 3.3, 4.1, 4.11). Due scoperte di M63 da non riscoprire: **1.24 era già cablata** da M56 (la voce
+> di coda era stantia), e **Ctrl+W** non era un problema del PTY ma dell'allowlist di
+> `IsGestureOwnedByFocusedView` in `MainWindow` (il dispatcher hotkey **tunnela**, quindi vede la
+> gesture prima del terminale). Resta aperto un difetto del core: `MainWindow.OpenRepository` →
+> `RecordRecentAsync` non fa attecchire un repo appena clonato nella MRU (coperto lato
+> `CloneDialog`).
+>
 > ### ► ROUND 9 (2026-07-27/28) — la lista buona è in `PORTING.md` → **"Coda round 9"**
 > Otto subagent READ-ONLY hanno auditato tutta la GUI area per area contro l'upstream. La coda che
 > ne è uscita (blocchi 0–4 + **rinviati con motivo**) è la fonte di verità di cosa manca: usarla,
