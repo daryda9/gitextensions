@@ -103,17 +103,21 @@ public sealed class GpgView : UserControl
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
-    private static TextBox MessageBox() => new()
-    {
-        AcceptsReturn = true,
-        IsReadOnly = true,
-        TextWrapping = TextWrapping.NoWrap,
-        FontFamily = Monospace,
-        Background = B("App.Panel"),
-        Foreground = B("App.Text"),
-        BorderThickness = new Thickness(0),
-        VerticalContentAlignment = VerticalAlignment.Top,
-    };
+    // TextBoxSurface: see OutputView — the Fluent per-state repaint beats the local
+    // Background, so clicking this read-only pane flipped its surface to pure
+    // black (dark) / pure white (light).
+    private static TextBox MessageBox() => Theming.TextBoxSurface.Apply(
+        new TextBox
+        {
+            AcceptsReturn = true,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.NoWrap,
+            FontFamily = Monospace,
+            BorderThickness = new Thickness(0),
+            VerticalContentAlignment = VerticalAlignment.Top,
+        },
+        B("App.Panel"),
+        B("App.Text"));
 
     // One row of the upstream table layout: the status icon, then the message.
     private static Border Section(Image icon, TextBox text)

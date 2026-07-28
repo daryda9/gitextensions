@@ -87,18 +87,22 @@ public sealed class MaintenanceDialog : Window
         actions.Children.Add(_unlock);
         actions.Children.Add(_config);
 
-        _output = new TextBox
-        {
-            IsReadOnly = true,
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("monospace"),
-            Foreground = text,
-            Background = Resource("App.Panel", "#252526"),
-            Text = "Choose a maintenance action above.",
-            [ScrollViewer.HorizontalScrollBarVisibilityProperty] = ScrollBarVisibility.Auto,
-            [ScrollViewer.VerticalScrollBarVisibilityProperty] = ScrollBarVisibility.Auto,
-        };
+        // TextBoxSurface: see OutputView — the Fluent per-state repaint beats the local
+        // Background, so clicking this read-only log flipped its surface to pure
+        // black (dark) / pure white (light).
+        _output = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = new FontFamily("monospace"),
+                Text = "Choose a maintenance action above.",
+                [ScrollViewer.HorizontalScrollBarVisibilityProperty] = ScrollBarVisibility.Auto,
+                [ScrollViewer.VerticalScrollBarVisibilityProperty] = ScrollBarVisibility.Auto,
+            },
+            Resource("App.Panel", "#252526"),
+            text);
 
         Button close = new()
         {

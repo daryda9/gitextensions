@@ -109,17 +109,21 @@ public sealed class SubmodulesDialog : Window
             Text = string.Empty,
         };
 
-        _output = new TextBox
-        {
-            IsReadOnly = true,
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            Height = 120,
-            FontFamily = new FontFamily("monospace"),
-            Background = Brush("App.PanelAlt", Brushes.Black),
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
-            VerticalContentAlignment = VerticalAlignment.Top,
-        };
+        // TextBoxSurface: see OutputView — the Fluent per-state repaint beats the local
+        // Background, so clicking this read-only log flipped its surface to pure
+        // black (dark) / pure white (light).
+        _output = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.NoWrap,
+                Height = 120,
+                FontFamily = new FontFamily("monospace"),
+                VerticalContentAlignment = VerticalAlignment.Top,
+            },
+            Brush("App.PanelAlt", Brushes.Black),
+            Brush("App.Text", Brushes.Gainsboro));
 
         Grid body = new()
         {

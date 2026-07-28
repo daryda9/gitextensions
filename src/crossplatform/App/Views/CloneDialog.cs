@@ -171,18 +171,25 @@ public sealed class CloneDialog : Window
             Foreground = text,
         };
 
-        _output = new TextBox
-        {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = Monospace,
-            FontSize = 12,
-            Background = Brush("App.ConsoleBackground", "#111111"),
-            Foreground = Brush("App.ConsoleForeground", "#D0D0D0"),
-            BorderThickness = new Thickness(0),
-            MinHeight = 110,
-        };
+        // TextBoxSurface, not plain Background/Foreground: the Fluent theme repaints
+        // the template's border element per state, and a style setter beats a local
+        // value — so on the light theme focusing this console turned it white while
+        // the console foreground stayed light grey, i.e. unreadable.
+        _output = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                AcceptsReturn = true,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = Monospace,
+                FontSize = 12,
+                BorderThickness = new Thickness(0),
+                MinHeight = 110,
+            },
+            Brush("App.ConsoleBackground", "#111111"),
+            Brush("App.ConsoleForeground", "#D0D0D0"),
+            border: Brush("App.ConsoleBackground", "#111111"),
+            placeholderForeground: Brush("App.ConsoleForeground", "#D0D0D0"));
         ScrollViewer.SetHorizontalScrollBarVisibility(_output, ScrollBarVisibility.Auto);
         ScrollViewer.SetVerticalScrollBarVisibility(_output, ScrollBarVisibility.Auto);
 

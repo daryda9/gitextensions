@@ -87,15 +87,20 @@ public sealed class OutputView : UserControl
         _items.SelectionChanged += (_, _) => ShowDetail();
         _items.ContextMenu = BuildContextMenu();
 
-        _detail = new TextBox
-        {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = Monospace,
-            Background = Brush("App.PanelAlt", Brushes.Black),
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
-        };
+        // TextBoxSurface: the Fluent theme repaints the box per state and a style
+        // setter beats the local value, so clicking this read-only log flipped it to
+        // pure black (dark) / pure white (light). A focus fill is an affordance for an
+        // editable field; on a log pane it is just the surface jumping.
+        _detail = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                AcceptsReturn = true,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = Monospace,
+            },
+            Brush("App.PanelAlt", Brushes.Black),
+            Brush("App.Text", Brushes.Gainsboro));
 
         _detailScroll = new ScrollViewer
         {

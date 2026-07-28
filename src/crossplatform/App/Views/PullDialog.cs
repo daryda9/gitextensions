@@ -174,17 +174,21 @@ public sealed class PullDialog : Window
 
         // ---- Branch -------------------------------------------------------
         _localBranchLabel = Label(string.Empty);
-        _localBranchBox = new TextBox
-        {
-            Text = _currentBranch,
-            IsReadOnly = true,
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Background = Brush("App.PanelAlt", Brushes.DimGray),
-            Foreground = Brush("App.TextDim", Brushes.Gray),
-            BorderBrush = Brush("App.Border", Brushes.Gray),
-            BorderThickness = new Thickness(1),
-        };
+        // TextBoxSurface: see OutputView — the Fluent per-state repaint beats the local
+        // Background, so clicking this read-only field flipped its surface to pure
+        // black (dark) / pure white (light).
+        _localBranchBox = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                Text = _currentBranch,
+                IsReadOnly = true,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                BorderBrush = Brush("App.Border", Brushes.Gray),
+                BorderThickness = new Thickness(1),
+            },
+            Brush("App.PanelAlt", Brushes.DimGray),
+            Brush("App.TextDim", Brushes.Gray));
 
         _remoteBranchLabel = Label(string.Empty);
         _remoteBranchCombo = new ComboBox

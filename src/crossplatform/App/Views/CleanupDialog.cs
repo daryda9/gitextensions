@@ -145,18 +145,25 @@ public sealed class CleanupDialog : Window
         _useExcludeFilter.IsCheckedChanged += (_, _) => SyncFilterBoxes();
         SyncFilterBoxes();
 
-        _log = new TextBox
-        {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = Monospace,
-            FontSize = 12,
-            Background = Brush("App.ConsoleBackground", "#111111"),
-            Foreground = Brush("App.ConsoleForeground", "#D0D0D0"),
-            BorderThickness = new Thickness(0),
-            MinHeight = 140,
-        };
+        // TextBoxSurface, not plain Background/Foreground: the Fluent theme repaints
+        // the template's border element per state, and a style setter beats a local
+        // value — so on the light theme focusing this console turned it white while
+        // the console foreground stayed light grey, i.e. unreadable.
+        _log = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                AcceptsReturn = true,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = Monospace,
+                FontSize = 12,
+                BorderThickness = new Thickness(0),
+                MinHeight = 140,
+            },
+            Brush("App.ConsoleBackground", "#111111"),
+            Brush("App.ConsoleForeground", "#D0D0D0"),
+            border: Brush("App.ConsoleBackground", "#111111"),
+            placeholderForeground: Brush("App.ConsoleForeground", "#D0D0D0"));
 
         // The TextBox scrolls itself; wrapping it in a ScrollViewer would give the
         // log two nested scrollers, and scrolling the outer one to the end left the
