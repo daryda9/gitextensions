@@ -136,13 +136,14 @@ public sealed partial class CommitDetailService
         string message = revision.Body ?? subject;
 
         IReadOnlyList<string> children = LoadChildren(module, fullHash, cancellationToken);
-        IReadOnlyList<string> branches = LoadRefs(module, new GitArgumentBuilder("branch")
-        {
-            "--contains", fullHash, "--format=%(refname:short)",
-        }, cancellationToken);
+        IReadOnlyList<string> branches = LoadBranches(module, fullHash, cancellationToken);
+
+        // Upstream's TagsComparer orders tags by tagger date, newest first
+        // (CommitInfo.cs:848-1002); git can do that itself. Lightweight tags have no
+        // tagger date and sort last, which is also where upstream leaves them.
         IReadOnlyList<string> tags = LoadRefs(module, new GitArgumentBuilder("tag")
         {
-            "--contains", fullHash,
+            "--contains", fullHash, "--sort=-taggerdate",
         }, cancellationToken);
         DescribeInfo describe = LoadDescribe(module, revision.ObjectId, cancellationToken);
         IReadOnlyList<CommitMessageLink> messageLinks = FindMessageLinks(module, message, fullHash, cancellationToken);
@@ -265,6 +266,61 @@ public sealed partial class CommitDetailService
         }
 
         return map;
+    }
+
+    /// <summary>
+    ///  The local branches containing <paramref name="fullHash"/>, with the checked-out
+    ///  one first.
+    ///
+    ///  <para>Upstream's <c>BranchComparer</c> (<c>CommitInfo.cs:848-1002</c>) puts the
+    ///  current branch first, then applies the configured ordering criteria, then
+    ///  locals before remotes. Only the first and the last of those are reproduced
+    ///  here: the current branch is what a reader looks for, and locals already precede
+    ///  remotes because the two lists are concatenated in that order
+    ///  (<c>CommitDetailView.VisibleBranches</c>). The configurable middle rank is left
+    ///  for whoever ports <c>AppSettings.BranchOrderingCriteria</c> along with the
+    ///  setting that drives it — ordering by a criterion the user cannot see or change
+    ///  would be worse than git's own order, not better.</para>
+    /// </summary>
+    private static IReadOnlyList<string> LoadBranches(GitModule module, string fullHash, CancellationToken token)
+    {
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            ExecutionResult result = module.GitExecutable.Execute(
+                new GitArgumentBuilder("branch")
+                {
+                    "--contains", fullHash, "--format=%(HEAD)\t%(refname:short)",
+                },
+                throwOnErrorExit: false);
+            if (!result.ExitedSuccessfully)
+            {
+                return [];
+            }
+
+            List<string> current = [];
+            List<string> others = [];
+            foreach (string raw in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] parts = raw.TrimEnd('\r').Split('\t');
+                if (parts.Length < 2 || parts[1].Length == 0)
+                {
+                    continue;
+                }
+
+                (parts[0] == "*" ? current : others).Add(parts[1]);
+            }
+
+            return [.. current, .. others.Distinct()];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private static IReadOnlyList<string> LoadRefs(GitModule module, GitArgumentBuilder args, CancellationToken token)

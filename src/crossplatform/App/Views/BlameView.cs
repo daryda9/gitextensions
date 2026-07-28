@@ -1131,7 +1131,13 @@ public sealed class BlameView : UserControl
         string repo = _repoPath;
         string file = FileOf(row);
         string hash = row.CommitHash;
-        int line = row.LineNumber;
+
+        // The diff about to be walked is parent(hash) → hash, so the line handed to it
+        // has to be numbered as of `hash`, not as of the revision on screen. The
+        // porcelain already reports it. (Upstream passes the on-screen line here,
+        // which only coincides when the line was last touched by the revision being
+        // blamed — BlameControl.cs:566.)
+        int line = row.OriginLineNumber > 0 ? row.OriginLineNumber : row.LineNumber;
         string? parent = _selectedParent;
 
         // Both the parent lookup (when it has not landed yet) and the line mapping
