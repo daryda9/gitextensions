@@ -24,6 +24,8 @@ public static class ThemeManager
         "App.Control", "App.Foreground", "App.PanelBackground",
         "App.DiffAdded", "App.DiffRemoved",
         "App.ConsoleBackground", "App.ConsoleForeground",
+        "App.RepoStateClean", "App.RepoStateDirty", "App.RepoStateDirtySubmodules",
+        "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
     ];
 
     private static readonly Dictionary<string, Color> Dark = new()
@@ -63,6 +65,15 @@ public static class ThemeManager
         // stops drifting to LimeGreen/OrangeRed and matches the real diff view.
         ["App.DiffAdded"] = Color.Parse("#6AC776"),
         ["App.DiffRemoved"] = Color.Parse("#E06C6C"),
+
+        // Commit-button accents, one per upstream RepoState (RepoStateVisualiser). The
+        // dark values ARE the upstream ones: on the dark toolbar they already read.
+        ["App.RepoStateClean"] = Color.Parse("#8A8A8A"),
+        ["App.RepoStateDirty"] = Color.Parse("#FFA07A"),
+        ["App.RepoStateDirtySubmodules"] = Color.Parse("#FFA500"),
+        ["App.RepoStateMixed"] = Color.Parse("#E6A700"),
+        ["App.RepoStateStaged"] = Color.Parse("#87CEFA"),
+        ["App.RepoStateUntrackedOnly"] = Color.Parse("#8A63D2"),
 
         // The transcript boxes of CleanupDialog and CloneDialog. M62 left these two
         // unregistered on the grounds that a theme-invariant dark terminal matched the
@@ -104,6 +115,18 @@ public static class ThemeManager
         ["App.DiffRemoved"] = Color.Parse("#B03A3A"),
         ["App.ConsoleBackground"] = Color.Parse("#ECECEC"),
         ["App.ConsoleForeground"] = Color.Parse("#1E1E1E"),
+
+        // The upstream RepoState colours were picked for the light WinForms toolbar of
+        // Windows, yet MainToolbar paints them as the Commit CAPTION's foreground, where
+        // they are normal text and need 4.5:1. Measured on the light toolbar (#E4E4E4)
+        // they ranged from 1.35:1 (Staged) to 3.44:1 (UntrackedOnly) — four of six below
+        // even 3:1. These keep each hue and darken it to just over 4.6:1 there.
+        ["App.RepoStateClean"] = Color.Parse("#636363"),
+        ["App.RepoStateDirty"] = Color.Parse("#994F31"),
+        ["App.RepoStateDirtySubmodules"] = Color.Parse("#8A5900"),
+        ["App.RepoStateMixed"] = Color.Parse("#825E00"),
+        ["App.RepoStateStaged"] = Color.Parse("#366887"),
+        ["App.RepoStateUntrackedOnly"] = Color.Parse("#7743D6"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
