@@ -2042,6 +2042,13 @@ public sealed class MainWindow : Window
                 or BrowseCommand.FocusFilter);
         }
 
+        // BlameView now has its own find bar and go-to-line; without this the window
+        // swallows the gestures and switches to the Diff tab instead.
+        if (_blame.IsKeyboardFocusWithin)
+        {
+            return (ctrl && gesture.Key is Key.F or Key.G) || gesture.Key == Key.F3;
+        }
+
         // DiffView.OnKeyDown: Ctrl+F / Ctrl+G (find + go-to-line), F3 (next match),
         // Ctrl+C (copy path or diff).
         if (_diff.IsKeyboardFocusWithin)
