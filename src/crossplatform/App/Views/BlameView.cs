@@ -300,10 +300,19 @@ public sealed class BlameView : UserControl
 
         // ---- find bar (Ctrl+F / Ctrl+G), hidden until asked for -------------
         _findBox = FindTextBox(220);
-        _findBox.TextChanged += (_, _) =>
+
+        // Through a method, not a lambda closing over _findDebounce: the field is
+        // assigned further down, and the compiler cannot see that the timer exists
+        // long before the first keystroke.
+        _findBox.TextChanged += (_, _) => RestartFindDebounce();
+
+        // Walking the matches re-renders the text cells, so an incremental search must
+        // not do it on every keystroke.
+        _findDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        _findDebounce.Tick += (_, _) =>
         {
             _findDebounce.Stop();
-            _findDebounce.Start();
+            ApplySearchTerm(_findBox.Text ?? string.Empty);
         };
 
         _gotoBox = FindTextBox(110);
@@ -343,15 +352,6 @@ public sealed class BlameView : UserControl
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = findPanel,
             IsVisible = false,
-        };
-
-        // Walking the matches re-renders the text cells, so an incremental search
-        // must not do it on every keystroke.
-        _findDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
-        _findDebounce.Tick += (_, _) =>
-        {
-            _findDebounce.Stop();
-            ApplySearchTerm(_findBox.Text ?? string.Empty);
         };
 
         // Tunnelling, like DiffView's: the ListBox consumes the arrow keys and the
@@ -818,6 +818,12 @@ public sealed class BlameView : UserControl
         };
         button.Click += (_, _) => action();
         return button;
+    }
+
+    private void RestartFindDebounce()
+    {
+        _findDebounce.Stop();
+        _findDebounce.Start();
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
