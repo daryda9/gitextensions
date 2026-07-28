@@ -2337,6 +2337,80 @@ la disciplina del NOTES incrementale ha pagato). Nove commit (`e09a4c5b3`…`cbe
   restituisce **null in silenzio** → un nome con la capitalizzazione sbagliata non mostra nulla e non
   segnala niente.
 
+**M66** (2026-07-28) — **i due buchi lasciati aperti perché cadevano fra i file di due subagent**:
+la parità di "Copy file path" e la UI di assegnazione categoria; più l'audit `IconLoader` e il
+residuo di tema chiaro su dashboard e dialoghi minori. Iterazione 4, due subagent in worktree.
+Dieci commit (`25ff86f68`…`9ba0a368a`).
+
+- **Copy file path in parità** (`25ff86f68`, `116960ac4`, `68920b030`). Il port copiava il path
+  **relativo**; upstream copia il **path assoluto nativo** da un **sottomenu** con il default in
+  grassetto (`CopyPathsToolStripMenuItem.cs:44-50`, e `GetFilePaths` unisce le selezioni multiple con
+  `Environment.NewLine`). Nuovo `App/Views/CopyPathsMenuItem.cs`: **Copy full path(s) - native**
+  (grassetto, `Ctrl+C`, default), *Copy relative path(s) - native*, *Copy file name(s)*.
+  *Escluse con motivo*: **WSL/Cygwin**, perché `PathUtil.ToMountPath` riscrive solo una lettera di
+  drive Windows e su Linux tornerebbero il path invariato, duplicando il default; e la coppia
+  upstream *relative native* / *relative POSIX*, che su Linux è **byte-identica** (il separatore
+  nativo *è* `/`) → collassate in una. Correzione alla richiesta del loop: upstream **non ha** la
+  variante "solo nome file"; è un'aggiunta, dichiarata come tale.
+  *Verificato col round-trip vero* (`xclip -selection clipboard -o`, azzerato prima di ogni prova),
+  su un file in sottocartella e su un path **con spazi**: `/tmp/cp1repo/sub/two.txt`,
+  `sub/two.txt`, `two.txt`, `/tmp/cp1repo/dir with spaces/three four.txt`, e `Ctrl+C` sulla lista.
+  Riverificato dal loop dopo l'integrazione: `/tmp/r10loop/three.txt`.
+  - ⚠️ **Trappola nuova, trovata solo guardando lo screenshot**: la voce era **sparita** dal menu
+    lasciando uno spazio più alto. Avalonia risolve il `ControlTheme` **per tipo esatto**, quindi una
+    **sottoclasse di `MenuItem`** non trova template e si dispone ad **altezza zero**. Serve
+    `StyleKeyOverride => typeof(MenuItem)`. La build era verde e il codice sembrava giusto.
+- **`IconLoader` non è più silenzioso** (`116960ac4`) e l'audit ha trovato **7 chiamate rotte**
+  (`6055d7d63` ne corregge cinque): `Plugins` → `plugin`, `BranchRename` → `Renamed`, il Remove del
+  worktree → `DeleteFile`, il Remove del remote → `RemoteDelete`, `ViewFilter` → `FunnelPencil`; la
+  voce "User manual" perde l'icona (non esiste alcun asset di help) e si allinea a "Report an issue",
+  che già non l'aveva. `GitExtensions` (il logo in About) resta non risolvibile: dipende dalla voce
+  0.21, il codice degrada già di proposito. Cambiato anche il comparer della cache da
+  `OrdinalIgnoreCase` a `Ordinal`: con ignore-case `"star"` e `"Star"` condividevano una entry
+  mentre l'URI li distingue, quindi un futuro errore di maiuscole si sarebbe risolto **o no** a
+  seconda dell'ordine di caricamento.
+  *La diagnostica si è ripagata subito*: il primo giro di correzioni del loop usava nomi minuscoli
+  presi da un listing ripiegato con `tr A-Z a-z`, e il log li ha respinti tutti e tre all'avvio
+  (`renamed`, `remotedelete`, `deletefile` → i file veri sono `Renamed.png`, `RemoteDelete.png`,
+  `DeleteFile.png`). Senza il log sarebbero state tre icone invisibili in silenzio.
+- **Categorie dei preferiti dalla dashboard** (`2e89a1db5`, cablaggio `9ba0a368a`). Sottomenu
+  `Categories ▸` nell'ordine upstream (Show in folder / — / Categories / — / Remove / Remove
+  missing): le categorie in uso (quella corrente **disabilitata**, non spuntata — upstream non usa
+  `Checked` in quel file), `Add new…` con rifiuto inline di nomi vuoti e duplicati, e la voce di
+  rimozione. Aggiunto anche il **raggruppamento per categoria nella dashboard**, altrimenti
+  assegnare una categoria non produceva alcun feedback sulla pagina stessa che la assegna.
+  - **La trappola di upstream è stata rinominata invece che riprodotta**: `AssignCategory(path, null)`
+    **cancella il preferito** (`FavoritesService.cs:191-194`), come
+    `LocalRepositoryManager.AssignCategoryAsync`, perché la categoria *è* il flag di preferito.
+    Upstream lo espone come `(none)`, che non dice cosa fa. Qui la voce è **"Remove from favorites"**,
+    ultima e dietro un separatore, e appare solo se la riga è davvero un preferito: stessa
+    chiamata, nome che descrive l'effetto.
+  - *Escluse*: Rename/Delete category e Clear all recent, che upstream appende al menu contestuale
+    dell'**header di gruppo** — qui gli header sono `TextBlock` non selezionabili senza menu, quindi
+    è un'unità a sé, non costo zero. Le tre voci `[~]` della 3.3 (Show in folder / Remove project /
+    Remove missing) **erano già in base** (`DashboardView.cs:130-143`).
+  - *Verificato a schermo dal loop*, tema chiaro: menu e sottomenu leggibili, `Work` disabilitata
+    perché corrente, clic su `Experiments` → la riga **si sposta** nel gruppo Experiments,
+    `favorites.json` riscritto, status "Filed under …", e la voce Favorite del menu Start non è più
+    stantia (il cablaggio `FavoritesChanged`, che il subagent non poteva scrivere).
+- **Tema chiaro, residuo** (`26a3a3644`, `f22dfd5ce`, più `bad114ef1`): il **wordmark della
+  dashboard** era `#FFFFFF` su `#ECECEC` = **1,18:1** (invisibile) → 14,11:1; la **riga selezionata**
+  aveva nome `#007ACC` su `#92C2E8` = **2,39:1** e path 2,86:1 → **8,82:1** entrambi; le ultime due
+  superfici read-only (`CommandLogWindow`, `SparseDialog`) non erano fissate e al clic andavano a
+  `#000000` → ora stabili. Misurati **sani** e non toccati: Clone, Init, Archive, Sparse, Reflog,
+  CommandLog, Maintenance, PluginSettings, RepositoryPicker (testo abilitato 4,87–18,93:1). Trovato
+  di passaggio e corretto un difetto non di contrasto: il **quarto pulsante** del
+  `MaintenanceDialog` ("Edit .git/config") era **tagliato oltre il bordo e non cliccabile**.
+  - *Misurati e non corretti*: placeholder/watermark 3,23–3,93:1 (è
+    `TextControlPlaceholderForeground` di Fluent, non una chiave `App.*`, su input **editabili** dove
+    M62 ha deliberatamente lasciato le affordance di focus); controlli **disabilitati** (WCAG 1.4.3
+    li esenta); l'antialiasing del testo a 11px (pixel più scuro reale 3,95:1 contro i 4,58:1
+    nominali: artefatto di rasterizzazione, il brush nominale passa).
+- **`AddNotesDialog` è irraggiungibile, e non solo headless**: il suo unico punto di costruzione è
+  `CommitDetailView.EditNotes()`, che è `public` ma ha **zero chiamanti** (il commento in loco dice
+  "unwired is harmless"). Dichiarato, non dedotto: la finestra non è mai stata vista renderizzata.
+  Va cablata (la voce 1.10 dava `AddNotes` Ctrl+Shift+N per fatta: da riverificare).
+
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 
 > **Iterazione 2.** Nata da un'osservazione dell'utente ("mancano i tasti delle sezioni inferiori,

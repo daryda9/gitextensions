@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M66**), tiene il contatore iterazione.
+  libera: **M67**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -181,6 +181,15 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
   chiavi nelle `Resources` dell'istanza tenendo i brush **per riferimento**, così il cambio tema a
   caldo continua a funzionare. Non applicarlo agli **input editabili**: lì il riempimento al focus è
   un'affordance voluta.
+- **Sottoclassi di `MenuItem` (e di ogni control con `ControlTheme`)**: Avalonia risolve il tema
+  **per tipo esatto**, quindi una sottoclasse non trova template e si dispone ad **altezza zero** —
+  la voce *scompare* dal menu lasciando solo uno spazio, con la build verde. Serve
+  `protected override Type StyleKeyOverride => typeof(MenuItem);` (M66, `CopyPathsMenuItem`).
+- **`IconLoader`**: il nome dell'asset è **case-sensitive** (`avares://…/Assets/Icons/<Name>.png`) e
+  i file veri sono in maggioranza PascalCase (`Renamed.png`, `RemoteDelete.png`, `DeleteFile.png`),
+  con qualche eccezione minuscola (`plugin.png`, `star.png`). Da M66 un nome che non risolve **si
+  logga** una volta per nome all'avvio: **leggere quel log** dopo aver aggiunto un'icona. La cache usa
+  un comparer `Ordinal` di proposito.
 - **Chiavi `App.*` non registrate**: `Brush("App.X", fallback)` restituisce silenziosamente il
   fallback (che non segue il tema) e `B("App.X")` restituisce **null**. Prima di usare una chiave,
   verificare che sia in `ThemeManager.Keys` + `Dark` + `Light` (M62: `App.Control` era letta in ~20
@@ -207,7 +216,7 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M66**
+> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M67**
 > **M63** ha chiuso le nove voci banali (0.17, 0.33–0.39, 1.24); **M64** le **tre leve**: 1.14b
 > (modalità worktree/index in `DiffService` + contenuto nei quattro tab per le righe artificiali),
 > 4.8 (`GitProcessDialog` su **PTY**: progress dai `\r`, prompt interattivi rispondibili, Abort che
