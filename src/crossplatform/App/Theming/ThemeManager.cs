@@ -21,6 +21,7 @@ public static class ThemeManager
     [
         "App.Window", "App.Panel", "App.PanelAlt", "App.Toolbar", "App.Border",
         "App.Text", "App.TextDim", "App.Accent", "App.Selection", "App.GraphGreen",
+        "App.Control",
     ];
 
     private static readonly Dictionary<string, Color> Dark = new()
@@ -35,6 +36,12 @@ public static class ThemeManager
         ["App.Accent"] = Color.Parse("#007ACC"),
         ["App.Selection"] = Color.Parse("#094771"),
         ["App.GraphGreen"] = Color.Parse("#4EC9B0"),
+
+        // Input surfaces (text boxes, pickers). Same value as App.Panel: the key was
+        // used by ~20 call sites without ever being registered, so Brush("App.Control",
+        // Brushes.Black) silently pinned a black surface that never followed the theme —
+        // unreadable in the light theme, where the text stays App.Text.
+        ["App.Control"] = Color.Parse("#252526"),
     };
 
     private static readonly Dictionary<string, Color> Light = new()
@@ -49,6 +56,7 @@ public static class ThemeManager
         ["App.Accent"] = Color.Parse("#007ACC"),
         ["App.Selection"] = Color.Parse("#CBE3F7"),
         ["App.GraphGreen"] = Color.Parse("#1E7D5A"),
+        ["App.Control"] = Color.Parse("#FFFFFF"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
