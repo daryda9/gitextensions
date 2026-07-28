@@ -526,6 +526,7 @@ public sealed class RemoteService
     private RemoteOpResult RunStreaming(GitModule module, string remote, ArgumentString args, Action<string> onOutput, GitCredentials? credentials, bool forPush, bool remoteIsUrl = false)
     {
         string argString = args.Arguments ?? string.Empty;
+        string echoArgs = argString;
         IReadOnlyDictionary<string, string?>? env = null;
 
         if (credentials is not null && IsHttpTarget(module, remote, forPush, remoteIsUrl))
@@ -542,12 +543,19 @@ public sealed class RemoteService
             };
         }
 
+        // Language-independent second opinion on "did this fail on authentication":
+        // the credential-helper verbs git uses (get/store/erase) are protocol tokens,
+        // not translated messages. See GitAuthProbe.
+        using GitAuthProbe probe = GitAuthProbe.Create();
+        argString = probe.Decorate(argString);
+        env = probe.WithMarker(env);
+
         StringBuilder sb = new();
         int exit = GitStreamRunner.Run(repoPath: module.WorkingDir, arguments: argString, onLine: line =>
         {
             sb.AppendLine(line);
             onOutput(line);
-        }, env: env);
+        }, env: env, echoArguments: echoArgs);
 
         string output = sb.ToString();
 
@@ -560,7 +568,10 @@ public sealed class RemoteService
             ApproveCredentials(module, remote, forPush, credentials, onOutput, remoteIsUrl);
         }
 
-        return new RemoteOpResult(exit == 0, output, LooksLikeAuthFailure(output));
+        return new RemoteOpResult(
+            exit == 0,
+            output,
+            LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(exit));
     }
 
     // Persists working credentials in git's configured credential helper by piping a
@@ -601,6 +612,7 @@ public sealed class RemoteService
                 RedirectStandardError = true,
             };
             psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            GitEnvironment.ApplyDiagnosticLocale(psi.Environment);
 
             using Process proc = new() { StartInfo = psi };
             proc.Start();
@@ -640,9 +652,22 @@ public sealed class RemoteService
 
     private static RemoteOpResult Run(GitModule module, ArgumentString args)
     {
-        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        // This path goes through the SHARED core executable, which starts git with the
+        // inherited environment and takes no per-command environment: the locale
+        // pinning and the probe's marker path therefore have to be published
+        // process-wide for the duration of the command (the same technique
+        // RunWithCredentials uses for the transient secret).
+        using GitAuthProbe probe = GitAuthProbe.Create();
+        using IDisposable locale = GitEnvironment.DiagnosticLocaleScope();
+        using IDisposable probeEnv = probe.EnterProcessEnvironment();
+
+        ArgumentString probed = probe.Decorate(args.Arguments ?? string.Empty);
+        ExecutionResult result = module.GitExecutable.Execute(probed, throwOnErrorExit: false);
         string output = result.AllOutput;
-        return new RemoteOpResult(result.ExitedSuccessfully, output, LooksLikeAuthFailure(output));
+        return new RemoteOpResult(
+            result.ExitedSuccessfully,
+            output,
+            LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(result.ExitCode ?? -1));
     }
 
     // Environment variable names the transient credential helper reads. Only these

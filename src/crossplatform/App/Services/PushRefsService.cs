@@ -483,6 +483,7 @@ public sealed class PushRefsService
         }
 
         string argString = args.ToString();
+        string echoArgs = argString;
         IReadOnlyDictionary<string, string?>? env = null;
 
         if (credentials is not null && IsHttpTarget(repoPath, target))
@@ -496,6 +497,13 @@ public sealed class PushRefsService
             };
         }
 
+        // Language-independent second opinion on an auth failure (see GitAuthProbe):
+        // the English markers alone missed a localised git, which is what kept the
+        // CredentialsDialog from ever opening on an Italian system.
+        using GitAuthProbe probe = GitAuthProbe.Create();
+        argString = probe.Decorate(argString);
+        env = probe.WithMarker(env);
+
         StringBuilder sb = new();
         int exit;
         try
@@ -504,7 +512,7 @@ public sealed class PushRefsService
             {
                 sb.AppendLine(line);
                 onOutput(line);
-            }, env);
+            }, env, echoArgs);
         }
         catch (Exception ex)
         {
@@ -518,7 +526,10 @@ public sealed class PushRefsService
         }
 
         string output = sb.ToString();
-        return new RemoteOpResult(exit == 0, output, LooksLikeAuthFailure(output));
+        return new RemoteOpResult(
+            exit == 0,
+            output,
+            LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(exit));
     }
 
     /// <summary>
@@ -635,6 +646,7 @@ public sealed class PushRefsService
                 StandardOutputEncoding = Encoding.UTF8,
             };
             psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            GitEnvironment.ApplyDiagnosticLocale(psi.Environment);
 
             using Process proc = new() { StartInfo = psi };
             proc.Start();
