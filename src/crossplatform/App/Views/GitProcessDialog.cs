@@ -70,6 +70,16 @@ public sealed class GitProcessDialog : Window
     private bool _aborted;
     private bool _finished;
 
+    // The streaming operation currently bound to this dialog. Kept in a field (not
+    // just captured in the Opened handler) so <see cref="Retry"/> can run it again —
+    // or run a REPLACEMENT operation — inside the same window.
+    private Func<Action<string>, GitProcessOutcome>? _operation;
+
+    // Optional "the operation just finished" hook. It may inspect the outcome, ask
+    // the user something (owning its modal on this dialog) and call Retry(); when it
+    // returns true the dialog does NOT settle, because another run is under way.
+    private Func<GitProcessDialog, GitProcessOutcome, Task<bool>>? _onExit;
+
     public GitProcessDialog(string label)
     {
         _label = label ?? string.Empty;
@@ -198,10 +208,53 @@ public sealed class GitProcessDialog : Window
     ///  <see cref="RunAsync"/>, no CommandLog poll timer runs — the operation (via
     ///  <see cref="Services.GitStreamRunner"/>) emits the command header itself.
     /// </summary>
-    public static Task<GitProcessOutcome> RunStreamingAsync(Window owner, string label, Func<Action<string>, GitProcessOutcome> operation, bool closeOnAuthFailure = false)
+    /// <param name="onExit">
+    ///  Optional hook invoked on the UI thread each time the operation finishes
+    ///  (never after an Abort). It receives this dialog — use it as the owner of any
+    ///  question it asks — and the outcome. Returning <see langword="true"/> means it
+    ///  took over (typically by calling <see cref="Retry"/>), so the dialog keeps
+    ///  running instead of reporting the result and closing.
+    /// </param>
+    public static Task<GitProcessOutcome> RunStreamingAsync(
+        Window owner,
+        string label,
+        Func<Action<string>, GitProcessOutcome> operation,
+        bool closeOnAuthFailure = false,
+        Func<GitProcessDialog, GitProcessOutcome, Task<bool>>? onExit = null)
     {
-        GitProcessDialog dialog = new(label) { _closeOnAuthFailure = closeOnAuthFailure };
+        GitProcessDialog dialog = new(label) { _closeOnAuthFailure = closeOnAuthFailure, _onExit = onExit };
         return dialog.RunStreamingInternalAsync(owner, operation);
+    }
+
+    /// <summary>
+    ///  Runs the operation again <em>inside this same window</em>, the way
+    ///  <c>FormStatus.Retry()</c> does: the console keeps the previous attempt's
+    ///  output, the OK button goes back to disabled and Abort becomes live again for
+    ///  the new git process. This is what lets a recoverable failure (a rejected
+    ///  push) be fixed and re-attempted without the user starting from scratch.
+    /// </summary>
+    /// <param name="operation">
+    ///  Replacement operation for this attempt onwards — e.g. "pull, then push
+    ///  again", or the same push with a force flag. <see langword="null"/> repeats
+    ///  the operation the dialog already had.
+    /// </param>
+    /// <param name="note">Line written to the console to introduce the new attempt.</param>
+    public void Retry(Func<Action<string>, GitProcessOutcome>? operation = null, string? note = null)
+    {
+        if (operation is not null)
+        {
+            _operation = operation;
+        }
+
+        if (_operation is null)
+        {
+            return;
+        }
+
+        Append(string.Empty);
+        Append(note ?? "Retrying…");
+        Append(string.Empty);
+        StartStreamingRun();
     }
 
     // When set, a failure whose output looks like an authentication failure
@@ -240,36 +293,64 @@ public sealed class GitProcessDialog : Window
     {
         // Streaming ops go through GitStreamRunner, which owns a real Process: Abort
         // can kill it, so the button is offered here (and only here).
-        Services.GitProcessScope scope = new();
-        _scope = scope;
+        _operation = operation;
         _abort.IsVisible = true;
 
-        Opened += (_, _) =>
-        {
-            _ = Task.Run(() =>
-            {
-                // Bind the scope to this logical flow so every git process the
-                // operation starts registers itself and becomes killable.
-                Services.GitStreamRunner.EnterScope(scope);
-
-                GitProcessOutcome outcome;
-                try
-                {
-                    // Marshal every emitted line to the UI thread; the runner calls
-                    // this from threadpool threads (OutputDataReceived/ErrorDataReceived).
-                    outcome = operation(line => Dispatcher.UIThread.Post(() => AppendLine(line)));
-                }
-                catch (Exception ex)
-                {
-                    outcome = new GitProcessOutcome(false, ex.GetBaseException().Message ?? "Operation failed.");
-                }
-
-                Dispatcher.UIThread.Post(() => Complete(outcome, streaming: true));
-            });
-        };
+        Opened += (_, _) => StartStreamingRun();
 
         await ShowDialog(owner);
         return FinalOutcome();
+    }
+
+    /// <summary>
+    ///  Starts (or restarts) the bound streaming operation on a background thread.
+    ///  Each run gets a FRESH <see cref="Services.GitProcessScope"/>: a scope that
+    ///  has already been aborted kills every process registered afterwards, so
+    ///  reusing one would make the retry die on arrival.
+    /// </summary>
+    private void StartStreamingRun()
+    {
+        Func<Action<string>, GitProcessOutcome>? operation = _operation;
+        if (operation is null)
+        {
+            return;
+        }
+
+        Services.GitProcessScope scope = new();
+        _scope = scope;
+
+        // Reset the per-run state so a retry is a genuinely fresh attempt: OK locked
+        // again until it finishes, Abort live, and no stale success/failure chrome.
+        _outcome = null;
+        _aborted = false;
+        _finished = false;
+        _ok.IsEnabled = false;
+        _abort.IsEnabled = true;
+        _check.IsVisible = false;
+        _header.Text = $"Process — {_label}";
+        _status.Text = "Running…";
+        _status.Foreground = Brush("App.TextDim", Brushes.Gray);
+
+        _ = Task.Run(() =>
+        {
+            // Bind the scope to this logical flow so every git process the
+            // operation starts registers itself and becomes killable.
+            Services.GitStreamRunner.EnterScope(scope);
+
+            GitProcessOutcome outcome;
+            try
+            {
+                // Marshal every emitted line to the UI thread; the runner calls
+                // this from threadpool threads (OutputDataReceived/ErrorDataReceived).
+                outcome = operation(line => Dispatcher.UIThread.Post(() => AppendLine(line)));
+            }
+            catch (Exception ex)
+            {
+                outcome = new GitProcessOutcome(false, ex.GetBaseException().Message ?? "Operation failed.");
+            }
+
+            Dispatcher.UIThread.Post(() => Complete(outcome, streaming: true));
+        });
     }
 
     // The outcome handed back to the caller. When the dialog was closed before the
@@ -440,6 +521,47 @@ public sealed class GitProcessDialog : Window
             }
         }
 
+        // Give the exit hook the first word: it may recognise a recoverable failure
+        // (a rejected push), ask the user and start another attempt in this window —
+        // in which case the dialog must NOT report a result or close. Mirrors
+        // FormProcess.OnExit, which skips Done() when HandleOnExit returns true.
+        if (_onExit is not null)
+        {
+            _ = HandleExitAsync(outcome);
+            return;
+        }
+
+        Settle(outcome);
+    }
+
+    // Runs the exit hook, then settles unless it took over with a retry. Exceptions
+    // from the hook are swallowed and treated as "not handled": a broken hook must
+    // never leave the dialog stuck with no way to finish (upstream does the same,
+    // forcing isError = true).
+    private async Task HandleExitAsync(GitProcessOutcome outcome)
+    {
+        bool handled;
+        try
+        {
+            handled = await _onExit!(this, outcome);
+        }
+        catch (Exception)
+        {
+            handled = false;
+        }
+
+        // A retry started by the hook (or an Abort during the question) means this
+        // outcome is stale — the run in flight will call Complete again.
+        if (!handled && !_aborted && _finished)
+        {
+            Settle(outcome);
+        }
+    }
+
+    // Reports the final result of a run: closing hint, success/failure chrome and
+    // the auto-close rules. Split out of Complete so the exit hook can suppress it.
+    private void Settle(GitProcessOutcome outcome)
+    {
         // Cosmetic closing hint, echoing the original console.
         Append(string.Empty);
         Append("Press Enter or Esc to exit…");
