@@ -315,80 +315,94 @@ infine A/B con e senza fix.
 
 ## 5. Prompt pronto per riprendere
 
-M45–M51 sono chiusi. Il prossimo blocco (round 9) **non parte da una lista scritta a mano**: parte
-da un **audit sistematico area per area** contro l'originale Windows, che produce lui la coda di
-lavoro. Prompt riutilizzabile (incollabile in `/loop`):
+Round 9 (M52–M61) e M62 sono chiusi. Quello che resta è **scritto e spuntabile** in `PORTING.md` →
+"Coda round 9": dieci difetti *banali* ancora aperti, tre leve architetturali "media/alta" che da
+sole chiudono molte voci, e il residuo di toolbar 4.10. Prompt riutilizzabile (incollabile in
+`/loop`):
 
 ```
-Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 9: AUDIT COMPLETO
-DI PARITA' + CHIUSURA DELLE DIFFERENZE. Branch: linux-avalonia-port (verificare HEAD all'avvio).
-NON push. NON firmare i commit (git -c commit.gpgsign=false). NON refactor multi-target. NON
-toccare la build Windows: lavorare SOLO in src/crossplatform/.
+Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 10: CHIUSURA DELLA
+CODA. Branch: linux-avalonia-port (verificare HEAD all'avvio: il branch puo' essere molto piu'
+avanti di quanto sembri). NON push. NON firmare i commit (git -c commit.gpgsign=false). NON
+refactor multi-target. NON toccare la build Windows: lavorare SOLO in src/crossplatform/.
 
-LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 (convenzioni Avalonia, trappole, classe di
-bug del core condiviso, ricetta GUI headless, cosa resta) e in PORTING.md i blocchi dei round 8
-("Blocco PRIORITA' P1-P3", "Blocco PANNELLO INFERIORE") per non riaprire lavoro gia' fatto.
+LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 (convenzioni, trappole, classe di bug del
+core condiviso, ricetta GUI headless) e in PORTING.md la sezione "Coda round 9 — audit completo di
+parita', 8 aree": e' la fonte di verita' della coda, con file:riga e costi. Le voci `- [ ]` sono
+quelle aperte; NON riaprire le `- [x]`. Leggere anche il cappello della coda, che elenca **dove gli
+audit hanno stabilito che NON c'e' lavoro** e le ~35 impostazioni che sarebbero pulsanti finti: non
+spenderci iterazioni.
 
-DIREZIONE DELL'UTENTE: le LINGUE non interessano oltre inglese e italiano (blocco traduzioni
-CHIUSO, non aprirne unita'). Contano FEATURE, FEDELTA' all'originale e INTEGRAZIONE nella GUI.
+DIREZIONE DELL'UTENTE: lingue solo inglese e italiano (traduzioni CHIUSE). Contano feature, fedelta'
+all'originale e integrazione nella GUI. NIENTE pulsanti finti: se dietro una voce non c'e' il dato,
+non metterla e registrare perche'. Fuori scope: repository-host GitHub, colonna build status.
 
-## FASE 1 — AUDIT (prime iterazioni, subagent READ-ONLY in parallelo, NIENTE worktree)
-Obiettivo: l'elenco COMPLETO di cio' che ancora differenzia il port dall'originale, area per area.
-Un subagent per area, sola lettura, nessun commit. Aree DISGIUNTE:
-  A. Barra menu (tutte le voci di FormBrowse.Designer.cs + i menu di FormBrowse.InitMenus*)
-  B. Toolbar in alto (pulsanti, split-button, combo, overflow) vs FormBrowse.Designer.cs
-  C. Pannello sinistro RepoObjectsTree: nodi, menu contestuali per tipo di nodo, drag&drop
-  D. Revision grid: colonne, menu contestuale, filtri, quick search, tastiera, grafo
-  E. Pannello inferiore: residui di M51 (Stash, File tree, GPG) + verifica del resto
-  F. Dialoghi (Commit, Push, Pull, Checkout, Remotes, Clone, Archive, Patch, Submodules,
-     Worktrees, Sparse, Maintenance, Reflog, Bisect, About) vs le Form* corrispondenti
-  G. Impostazioni/Settings: pagine di FormSettings vs SettingsWindow del port
-  H. Chrome globale: status bar, dashboard/start page, hotkey, persistenza dello stato
-Ogni audit consegna: per ogni mancanza -> nome dell'item upstream + file:riga, cosa fa il port
-oggi, cosa manca, COSTO (banale/media/alta), se serve un dato/servizio che il port non ha, e se
-l'originale NON ha nulla in piu' DIRLO ESPLICITAMENTE (per non inventare lavoro).
-Riferimenti visivi: gli screenshot dell'originale in ~/Documents/process dialog with terminal
-command/ (GUI.png, commit dialog.png, push dialog.png, diff view between two commits.png,
-process dialog with terminal command.png) e ~/Documents/pullu'/ — GUARDARLI col tool Read.
-Il loop CONSOLIDA gli audit in una coda unica in PORTING.md ("Coda round 9"), ordinata per
-rapporto valore/costo, marcando cosa e' rinviato e perche'.
+## PRIORITA', in quest'ordine
 
-## FASE 2 — CHIUSURA (iterazioni successive, fino a 20 in totale)
-Si lavora la coda dall'alto. Ogni iterazione: 2-3 subagent CLAUDE in worktree isolati
-(isolation: worktree), un'unita' per subagent, file DISGIUNTI; mai subagent Codex con worktree.
-Il loop: cherry-pick dei tip UNO ALLA VOLTA + build check dopo ognuno, integrazione minima
-(il cablaggio in MainWindow lo fa il loop), verifica GUI con screenshot GUARDATI davvero,
-commit, cleanup worktree+branch, aggiornamento di PORTING.md.
-REGOLA: nessun pulsante finto. Se dietro una voce non c'e' il dato, NON metterla e registrare
-perche'. Riusare i componenti che esistono gia' (App/Views/FileStatusListView.cs per le liste
-file, lo split-button di MainToolbar.cs, CommitDetailView per i dettagli commit).
-NON lavorare su repository-host GitHub ne' colonna build status: SKIP fuori scope.
+1. [BANALI, tutte insieme in una o due iterazioni] 0.17 star del layout salvate come pixel invece
+   che come proporzioni; 0.33 "Remotes (n)" conta i branch remoti invece dei remote; 0.34 il repo
+   clonato non entra nei recenti; 0.35 Ctrl+W inghiottito dal terminale; 0.36 "Favourite"/"Favorite"
+   incoerente; 0.37 URL monco in About; 0.38 Refresh del tab Output apparentemente inerte; 0.39 New
+   branch/New tag disabilitati senza selezione (upstream li ancora a HEAD); 1.24 "Filter file in
+   grid" dal diff (PathFilter e _pathFilter esistono gia').
+2. [LEVA] 4.9 dare a RevisionGridView un entry point CON PATH FILTER: chiude in un colpo grafo,
+   decorazioni ref, righe artificiali e multi-selezione nel tab File history, che oggi reimplementa
+   una lista nuda. *media/alta*
+3. [LEVA] 1.14b righe artificiali, seconda metà: servono le modalita' **index** e **worktree** in
+   DiffService (git diff / git diff --cached) piu' un placeholder in Commit details e GPG che nomini
+   la riga. Oggi l'host pulisce i tab ma il contenuto vero manca. *media*
+4. [LEVA] 4.8 portare GitProcessDialog su PtyProcess/TerminalEmulator (esistono gia', alimentano
+   ConsoleView): sblocca output live, barra di progresso dalle righe \r e **prompt interattivi** —
+   oggi stdin e' chiuso e GIT_TERMINAL_PROMPT=0, quindi passphrase e host-key yes/no non sono
+   rispondibili. *media/alta*
+5. [4.10, residuo toolbar] shell-picker come split-button che elenca le shell disponibili, dropdown
+   WorkingDir ricco (ricerca, preferiti categorizzati, Open/Close repository, "Configure this
+   menu…"), voce "Checkout branch…" in testa al dropdown branch, corpo cliccabile di
+   CommitInfoPosition che cicla le 3 posizioni, icona di Commit dai 7 stati upstream del repo.
+6. [TEMA] Dopo M62: fare una passata di **leggibilita' in tema CHIARO** su tutte le view (la classe
+   di bug era: chiave App.* non registrata -> fallback nero + testo App.Text = illeggibile a riposo).
+   Verificare che ogni chiave usata sia in ThemeManager.Keys + Dark + Light; decidere se registrare
+   App.ConsoleBackground/App.ConsoleForeground o lasciarle fallback invarianti al tema (oggi:
+   fallback voluto). Misurare i colori con python/PIL, non a occhio.
+7. [DA FARE SU DISPLAY REALE, non headless] le tre cose che l'attrezzatura non copre: clipboard
+   (Copy hash / Copy file path), i file picker Browse… di Open/Clone/Init/Archive (serve un portal
+   XDG) e 0.16 WM_DELETE_WINDOW (con un WM vero la "X" non chiude l'app e PersistLayout non gira,
+   quindi TUTTO lo stato UI si perde: valutare un intercettatore X11 come si e' fatto per XDND).
+   Se non si puo' verificare, DICHIARARLO invece di dedurlo dal codice.
 
-METODO: il loop NON scrive codice a mano tranne il cablaggio minimo in MainWindow.
-REGOLA ANTI-CONFLITTO: un solo subagent per iterazione tocca ciascun file hub (MainWindow,
-MainMenu, MainToolbar, RepoObjectsTree, RevisionGridView, DiffView, FileStatusListView,
-CommitDetailView, StashPanel, CommitDialog, PushDialog, PullDialog, GitProcessDialog,
-ConsoleView, SettingsWindow).
-REGOLA subagent: primo step `git reset --hard <SHA_HEAD_corrente>`; verificare che
-src/crossplatform/App/GitContext.cs ESISTA (se manca, base sbagliata -> fermarsi);
-VIETATO git checkout/switch/branch -f nel repo principale; commit Conventional senza firma.
+METODO: il loop NON scrive codice a mano tranne il cablaggio minimo in MainWindow. Delega a subagent
+CLAUDE in worktree isolati (isolation: worktree), 2-3 in parallelo, un'unita' per subagent, file
+DISGIUNTI; mai subagent Codex con worktree. Ogni iterazione: cherry-pick dei tip UNO ALLA VOLTA +
+build check dopo ognuno, integrazione minima, verifica GUI con screenshot GUARDATI davvero, commit,
+cleanup worktree+branch, spunta della voce in PORTING.md.
+REGOLA ANTI-CONFLITTO: un solo subagent per iterazione tocca ciascun file hub (MainWindow, MainMenu,
+MainToolbar, RepoObjectsTree, RevisionGridView, DiffView, FileStatusListView, CommitDetailView,
+StashPanel, CommitDialog, PushDialog, PullDialog, GitProcessDialog, ConsoleView, SettingsWindow,
+DashboardView, ThemeManager).
+REGOLA subagent: primo step `git reset --hard <SHA HEAD CORRENTE>` — passargli l'HEAD vero, non uno
+vecchio, altrimenti il suo commit non sara' cherry-pickabile; verificare che App/GitContext.cs
+ESISTA; VIETATO git checkout/switch/branch -f nel repo principale; **committare presto e spesso**,
+non solo a fine unita' (due worktree hanno rischiato ~1100 righe non committate); commit Conventional
+senza firma.
 REGOLA loop: la cwd di Bash PERSISTE fra le chiamate — usare percorsi assoluti e verificare
-`git branch --show-current` == linux-avalonia-port e `git rev-parse HEAD^` == commit atteso
-PRIMA di ogni commit (un cd in un worktree di subagent ha gia' fatto partire un cherry-pick
-sul branch sbagliato).
+`git branch --show-current` == linux-avalonia-port e `git rev-parse HEAD^` == commit atteso PRIMA di
+ogni commit.
 Ambiente: export PATH="$HOME/.dotnet:$PATH"; da src/crossplatform:
 dotnet build App/GitExtensions.Avalonia.csproj -v q -> Errori: 0.
 Verifica GUI headless: xvfb-run -n <display privato> --server-args="-screen 0 1400x900x24
-+extension XINPUTEXTENSION", XDG_CONFIG_HOME isolato (la dimensione finestra persistita eccede
-lo schermo; per forzare stati scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/ui-state.json),
-mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero l'immagine.
-Niente xdotool: python-Xlib fake_input (XTEST). Script pronti in /tmp/loop-verify/ (session.sh,
-click.py, rclick.py, esc.py, miniwm.py, g2_type.py e in r8/: altclick.py, ctrlkey.py).
-Le sleep di shell vengono UCCISE dall'harness (exit 144): usare
-python3 -c "import time;time.sleep(N)". Controllare l'mtime dello screenshot prima di leggerlo.
-Repo di prova /tmp/loop-testrepo; operazioni distruttive SOLO su repo in /tmp, mai su git_ext_mod.
-Aggiornare PORTING.md (prossima milestone libera: M63) e HANDOFF.md a ogni iterazione, e la
-memoria avalonia-port-state.md a fine blocco.
-STOP quando la coda e' chiusa, oppure a 20 iterazioni, oppure se una strada si rivela
++extension XINPUTEXTENSION", XDG_CONFIG_HOME isolato (per forzare stati scrivere
+$XDG_CONFIG_HOME/GitExtensions.Avalonia/ui-state.json, chiavi Theme/Language), mini-WM python-Xlib
+per i MODALI, import -window root, e GUARDARE davvero l'immagine col tool Read. Niente xdotool:
+python-Xlib fake_input (XTEST). Script pronti in /tmp/loop-verify/ (click.py, rclick.py, esc.py,
+miniwm.py, g2_type.py; in r8/: altclick.py, ctrlkey.py).
+Le sleep di shell vengono UCCISE dall'harness (exit 144): usare python3 -c "import time;time.sleep(N)".
+`pkill -f "<pattern>"` uccide la shell che lo lancia se il pattern compare nella propria riga di
+comando: usare un pattern auto-escluso (Xvf[b] :151) o kill <PID>. Controllare l'mtime dello
+screenshot prima di leggerlo.
+Repo di prova /tmp/loop-testrepo; per il grafo costruire una topologia nota in /tmp; operazioni
+distruttive SOLO su repo in /tmp, mai su git_ext_mod (in sola lettura va bene).
+Aggiornare PORTING.md (prossima milestone libera: M63) e HANDOFF.md a ogni iterazione, e la memoria
+avalonia-port-state.md a fine blocco.
+STOP quando la coda `- [ ]` e' chiusa, oppure a 20 iterazioni, oppure se una strada si rivela
 impraticabile (documentare il vicolo cieco invece di forzare).
 ```
