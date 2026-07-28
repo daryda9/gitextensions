@@ -114,18 +114,23 @@ public sealed class GitProcessDialog : Window
             Children = { _check, _header },
         };
 
-        _output = new TextBox
-        {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("monospace"),
-            Background = ConsoleBackground,
-            Foreground = ConsoleForeground,
-            CaretBrush = ConsoleForeground,
-            BorderThickness = new Thickness(0),
-            Text = "Command to be executed:",
-        };
+        // TextBoxSurface, not plain Background/Foreground: the Fluent theme repaints
+        // the box from theme resources on hover/focus, which turned this console
+        // black-on-black the moment it was clicked (see TextBoxSurface docs).
+        _output = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                AcceptsReturn = true,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = new FontFamily("monospace"),
+                BorderThickness = new Thickness(0),
+                Text = "Command to be executed:",
+            },
+            ConsoleBackground,
+            ConsoleForeground,
+            border: ConsoleBackground,
+            placeholderForeground: ConsoleForeground);
         _scroll = new ScrollViewer
         {
             Content = _output,
