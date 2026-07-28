@@ -2090,7 +2090,11 @@ public sealed class MainWindow : Window
         // keyboard.
         if (_console.IsKeyboardFocusWithin)
         {
+            // Ctrl+W (close repository) joins them: it is not a control character a
+            // shell does anything useful with, and reserving it for the PTY made the
+            // gesture dead until the grid got the focus back (queue item 0.35).
             return command is not (BrowseCommand.Refresh
+                or BrowseCommand.CloseRepository
                 or BrowseCommand.FocusLeftPanel or BrowseCommand.FocusRevisionGrid
                 or BrowseCommand.FocusCommitInfo or BrowseCommand.FocusDiff
                 or BrowseCommand.FocusFileTree or BrowseCommand.FocusGpgInfo
