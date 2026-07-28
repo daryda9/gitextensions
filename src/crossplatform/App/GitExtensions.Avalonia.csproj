@@ -8,6 +8,51 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
 
+  <!-- Product version shown in the About dialog. Single source of truth is
+       packaging/VERSION, the same file build-deb.sh stamps into the .deb, so the
+       version the user sees in the UI can never disagree with the package. -->
+  <PropertyGroup>
+    <_PackagingVersionFile>$(MSBuildThisFileDirectory)..\packaging\VERSION</_PackagingVersionFile>
+    <Version>5.0.0</Version>
+    <!-- The SDK otherwise appends "+<full sha>" to the informational version; the
+         About dialog shows the (short) commit on its own "Build" line. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="Exists('$(_PackagingVersionFile)')">
+    <_RawPackagingVersion>$([System.IO.File]::ReadAllText('$(_PackagingVersionFile)'))</_RawPackagingVersion>
+    <InformationalVersion>$(_RawPackagingVersion.Trim())</InformationalVersion>
+  </PropertyGroup>
+
+  <!-- Build provenance: the commit the binary was built from, and whether the
+       tree was dirty at the time. Upstream gets this from the GitInfo package
+       (ThisAssembly.Git.Sha / IsDirty), which is not restorable in this offline
+       tree, so ask git directly and stash the answer in assembly metadata —
+       AboutDialog reads it back through AssemblyMetadataAttribute. A missing git,
+       or a source drop with no .git, just leaves the metadata absent. -->
+  <Target Name="StampBuildProvenance" BeforeTargets="GetAssemblyAttributes">
+    <Exec Command="git rev-parse --short=10 HEAD"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          ConsoleToMSBuild="true" StandardOutputImportance="low"
+          ContinueOnError="true" EchoOff="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_BuildGitSha" />
+      <Output TaskParameter="ExitCode" PropertyName="_BuildGitShaExit" />
+    </Exec>
+    <Exec Command="git status --porcelain --untracked-files=no"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          ConsoleToMSBuild="true" StandardOutputImportance="low"
+          ContinueOnError="true" EchoOff="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_BuildGitStatus" />
+    </Exec>
+    <PropertyGroup>
+      <_BuildGitIsDirty>false</_BuildGitIsDirty>
+      <_BuildGitIsDirty Condition="'$(_BuildGitStatus.Trim())' != ''">true</_BuildGitIsDirty>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(_BuildGitShaExit)' == '0' AND '$(_BuildGitSha)' != ''">
+      <AssemblyMetadata Include="BuildGitSha" Value="$(_BuildGitSha.Trim())" />
+      <AssemblyMetadata Include="BuildGitIsDirty" Value="$(_BuildGitIsDirty)" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <!-- Reuse the original Git Extensions icon set (WinForms resources) as
          Avalonia resources, exposed under avares://…/Assets/Icons/<name>.png. -->
