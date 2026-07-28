@@ -120,8 +120,13 @@ public sealed class RevisionGridView : UserControl
     // They are synthesised by the view (never by the git walk), appear only when
     // there is something to show (dirty working dir / non-empty index), and are
     // hidden while a text filter is active (the graph column is collapsed then).
-    private const string WorkTreeHash = "2222222222222222222222222222222222222222";
-    private const string IndexHash = "1111111111111111111111111111111111111111";
+    //
+    // PUBLIC because they are also the identity the host needs when it routes the
+    // bottom tabs for an artificial selection (see ArtificialRevisionSelected):
+    // they are byte-for-byte the core's ObjectId.WorkTreeId / ObjectId.IndexId, so
+    // a tab that understands those ids can be handed this hash unchanged.
+    public const string WorkTreeHash = "2222222222222222222222222222222222222222";
+    public const string IndexHash = "1111111111111111111111111111111111111111";
 
     // Pending-work counts, pushed in by MainWindow via SetWorkingState; this view
     // never queries git for them itself.
@@ -366,6 +371,55 @@ public sealed class RevisionGridView : UserControl
     public event Action? CommitIndexSelected;
 
     /// <summary>
+    ///  Which of the two artificial rows a selection landed on, as reported by
+    ///  <see cref="RevisionGridView.ArtificialRevisionSelected"/>.
+    /// </summary>
+    public enum ArtificialRevision
+    {
+        /// <summary>The "Working directory" row: unstaged changes (worktree vs index).</summary>
+        WorkingDirectory,
+
+        /// <summary>The "Commit index" row: staged changes (index vs HEAD).</summary>
+        Index,
+    }
+
+    /// <summary>
+    ///  Raised whenever the SELECTION lands on one of the two artificial rows, by
+    ///  mouse or by keyboard. Like <see cref="RevisionSelected"/> it is NOT raised
+    ///  for the cosmetic re-selection a rebind performs. Carries which row it is,
+    ///  plus the sentinel hash that identifies it
+    ///  (<see cref="WorkTreeHash"/> / <see cref="IndexHash"/>, i.e. the core's
+    ///  <c>ObjectId.WorkTreeId</c> / <c>ObjectId.IndexId</c>).
+    ///
+    ///  <para>WHY IT EXISTS. <see cref="RevisionSelected"/> is deliberately NOT
+    ///  raised for these rows (they are not commits, and a tab that ran
+    ///  <c>git show &lt;sentinel&gt;</c> would simply fail). Without a signal of
+    ///  their own the host had no way to know the selection moved at all, so the
+    ///  bottom tabs kept showing the PREVIOUS commit: stale content, which is
+    ///  worse than empty. Upstream populates Commit, Diff and File tree for the
+    ///  artificial revisions too (<c>CommitInfo.cs:328-343</c>, and the explicit
+    ///  comment at <c>FormBrowse.cs:1223</c>).</para>
+    ///
+    ///  <para>CONTRACT FOR THE HOST. On this event the host owns the tabs and must,
+    ///  for each one, either show the artificial content or show it as unavailable —
+    ///  never leave the previous commit's content in place:</para>
+    ///  <list type="bullet">
+    ///   <item><b>Diff</b>: <see cref="ArtificialRevision.WorkingDirectory"/> is
+    ///    <c>git diff</c> (worktree vs index), <see cref="ArtificialRevision.Index"/>
+    ///    is <c>git diff --cached</c> (index vs HEAD).</item>
+    ///   <item><b>File tree</b>: the worktree as it is on disk; the index for the
+    ///    staged row.</item>
+    ///   <item><b>Commit details / GPG</b>: there IS no commit object, so there is
+    ///    nothing to show — the honest rendering is a placeholder naming the row,
+    ///    not the previous commit's message.</item>
+    ///  </list>
+    ///
+    ///  <para>The grid raises this on every artificial selection, including repeats,
+    ///  because a host that reloaded a tab in between still needs to be told.</para>
+    /// </summary>
+    public event Action<ArtificialRevision, string>? ArtificialRevisionSelected;
+
+    /// <summary>
     ///  Raised when a commit row is ACTIVATED (double-clicked, or Enter on the row),
     ///  as opposed to merely selected; the argument is the full commit hash. Mirrors
     ///  the original grid, where a double click opens the commit's details. The view
@@ -596,10 +650,16 @@ public sealed class RevisionGridView : UserControl
 
             // An artificial row (working directory / commit index) is not a commit:
             // it never fires RevisionSelected and never takes part in a range diff.
-            // Its own event is raised by an explicit click on the row (see
-            // BuildArtificialRow), so merely arrowing past it does not open a dialog.
+            // WorkingDirectorySelected / CommitIndexSelected stay bound to an explicit
+            // click on the row (see BuildArtificialRow), so merely arrowing past it
+            // does not open the commit dialog — but the SELECTION did move, and the
+            // bottom tabs must not keep showing the commit that was selected before.
+            // That is what ArtificialRevisionSelected is for; see its contract.
             if (_list.SelectedItems is { Count: 1 } one && one[0] is RevisionRow art && IsArtificial(art))
             {
+                ArtificialRevisionSelected?.Invoke(
+                    art.Hash == IndexHash ? ArtificialRevision.Index : ArtificialRevision.WorkingDirectory,
+                    art.Hash);
                 return;
             }
 
