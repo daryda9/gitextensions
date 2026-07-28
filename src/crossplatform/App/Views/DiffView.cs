@@ -129,7 +129,7 @@ public sealed class DiffView : UserControl
     private readonly ComboBox _encodingBox;
 
     // Kept so a language switch can re-label them in place (see ApplyTranslations).
-    private readonly MenuItem _copyPathItem;
+    private readonly CopyPathsMenuItem _copyPathItem;
     private readonly MenuItem _blameItem;
     private readonly MenuItem _historyItem;
     private readonly MenuItem _difftoolItem;
@@ -216,8 +216,10 @@ public sealed class DiffView : UserControl
         _files.SelectedFileChanged += _ => OnFileSelected();
         _files.RefreshRequested += ReloadFileList;
 
-        _copyPathItem = new MenuItem();
-        _copyPathItem.Click += (_, _) => CopySelectedFilePath();
+        _copyPathItem = new CopyPathsMenuItem(
+            () => _files.SelectedFiles.Select(r => r.Name),
+            () => _repoPath,
+            CopyToClipboard);
         _blameItem = new MenuItem();
         _blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
         _historyItem = new MenuItem();
@@ -581,7 +583,7 @@ public sealed class DiffView : UserControl
     // costs nothing and loses nothing.
     private void ApplyTranslations()
     {
-        _copyPathItem.Header = T("FileStatusList/tsmiCopyPaths.Text", "Copy file path");
+        _copyPathItem.ApplyTranslations();
         _blameItem.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
         _historyItem.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
         _difftoolItem.Header = T("FileStatusList/tsmiOpenWithDifftool.Text", "Open in external difftool");
@@ -835,13 +837,11 @@ public sealed class DiffView : UserControl
         LoadSelectedFileDiff();
     }
 
+    // Ctrl+C over the file list copies the absolute native path — the flavour the
+    // context menu shows in bold, and the one upstream binds the same key to
+    // (copyFullPathsNativeToolStripMenuItem.ShortcutKeys).
     private void CopySelectedFilePath()
-    {
-        if (_files.SelectedFile is DiffFileRow row)
-        {
-            CopyToClipboard(row.Name);
-        }
-    }
+        => _copyPathItem.Copy(CopyPathsMenuItem.PathFlavour.FullNative);
 
     private void CopyDiffText() => CopyToClipboard(_currentDiffText);
 

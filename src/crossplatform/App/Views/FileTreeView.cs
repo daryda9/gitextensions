@@ -88,7 +88,7 @@ public sealed class FileTreeView : UserControl
     private readonly MenuItem _openRevisionFileItem;
     private readonly MenuItem _showInFolderItem;
     private readonly MenuItem _saveAsItem;
-    private readonly MenuItem _copyPathItem;
+    private readonly CopyPathsMenuItem _copyPathItem;
     private readonly MenuItem _historyItem;
     private readonly MenuItem _blameItem;
 
@@ -145,8 +145,10 @@ public sealed class FileTreeView : UserControl
         _showInFolderItem.Click += (_, _) => ShowSelectedInFolder();
         _saveAsItem = new MenuItem();
         _saveAsItem.Click += (_, _) => SaveSelectedAs();
-        _copyPathItem = new MenuItem();
-        _copyPathItem.Click += (_, _) => CopySelectedPath();
+        _copyPathItem = new CopyPathsMenuItem(
+            () => _files.SelectedFiles.Select(r => r.Name),
+            () => _repoPath,
+            CopyToClipboard);
         _historyItem = new MenuItem();
         _historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
         _blameItem = new MenuItem();
@@ -282,7 +284,7 @@ public sealed class FileTreeView : UserControl
             "FileStatusList/tsmiOpenRevisionFile.Text", "Open this revision (temp file)");
         _showInFolderItem.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
         _saveAsItem.Header = T("FileStatusList/tsmiSaveAs.Text", "Save selected as...");
-        _copyPathItem.Header = T("FileStatusList/tsmiCopyPaths.Text", "Copy file path");
+        _copyPathItem.ApplyTranslations();
         _historyItem.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
         _blameItem.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
 
@@ -704,13 +706,8 @@ public sealed class FileTreeView : UserControl
             ? Path.GetFullPath(Path.Combine(_repoPath, row.Name))
             : null;
 
-    private void CopySelectedPath()
-    {
-        if (_files.SelectedFile is DiffFileRow row)
-        {
-            _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(row.Name);
-        }
-    }
+    private void CopyToClipboard(string text)
+        => _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
 
     private void OpenSelectedWorkingFile()
     {

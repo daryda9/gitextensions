@@ -298,6 +298,17 @@ public sealed class FileStatusListView : UserControl
     /// <summary>The selected file, or <see langword="null"/> (no selection, or a group header).</summary>
     public DiffFileRow? SelectedFile => (_list.SelectedItem as FileListFileNode)?.Row;
 
+    /// <summary>
+    ///  Every selected file, in list order, with group headers skipped. The list is
+    ///  single-selection today, so this yields at most one row; commands that operate
+    ///  on "the selection" read it through here so they keep working unchanged if the
+    ///  list is ever switched to <see cref="SelectionMode.Multiple"/>.
+    /// </summary>
+    public IReadOnlyList<DiffFileRow> SelectedFiles =>
+        _list.SelectedItems is null
+            ? []
+            : [.. _list.SelectedItems.OfType<FileListFileNode>().Select(n => n.Row)];
+
     /// <summary>Raised when the selected file changes (never for a group header).</summary>
     public event Action<DiffFileRow?>? SelectedFileChanged;
 
