@@ -638,7 +638,7 @@ public sealed class RevisionGridView : UserControl
             // Multiple allows ctrl/shift extend while a plain click still replaces the
             // selection with a single row (so single-select behaviour is preserved).
             SelectionMode = SelectionMode.Multiple,
-            ItemTemplate = new FuncDataTemplate<RevisionRow>((row, _) => BuildRow(row), supportsRecycling: true),
+            ItemTemplate = new FuncDataTemplate<RevisionRow?>((row, _) => BuildRow(row), supportsRecycling: true),
         };
 
         // Dense rows, transparent containers, and an App.Selection highlight for
@@ -1072,8 +1072,8 @@ public sealed class RevisionGridView : UserControl
     ///  row but are not commits: no range diff, no parent/child navigation, no
     ///  commit context menu.
     /// </summary>
-    private static bool IsArtificial(RevisionRow row)
-        => row.Hash is WorkTreeHash or IndexHash;
+    private static bool IsArtificial(RevisionRow? row)
+        => row?.Hash is WorkTreeHash or IndexHash;
 
     /// <summary>
     ///  Feeds the artificial DAG rows their pending-work counts. A row exists only
@@ -4260,8 +4260,20 @@ public sealed class RevisionGridView : UserControl
         return segments;
     }
 
-    private Control BuildRow(RevisionRow row)
+    private Control BuildRow(RevisionRow? row)
     {
+        // A container being CLEARED re-invokes the template with an unset (null)
+        // item; the previous build then ran straight into IsArtificial(row.Hash) and
+        // took the process down with a NullReferenceException — reproducible by
+        // opening any repository from the dashboard. Same defect that BlameView's
+        // template already guards against (BlameView.BuildRow). Note this is a
+        // separate concern from the ItemsSource re-entrancy guard: that one is about
+        // WHO may assign the source, this one about what the template is handed.
+        if (row is null)
+        {
+            return MakeColumns();
+        }
+
         if (IsArtificial(row))
         {
             return BuildArtificialRow(row);
