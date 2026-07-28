@@ -5050,9 +5050,12 @@ public sealed class RevisionGridView : UserControl
         Grid.SetColumn(subject, 1);
         grid.Children.Add(subject);
 
-        // Clicking the row shows the pending work (the host opens the commit
-        // dialog), exactly as the old fixed top panel did. Bound to the click and
-        // not to selection, so keyboard navigation can pass over the row freely.
+        // A DOUBLE click opens the commit dialog; a single click only selects, so the
+        // bottom tabs can show the row's own content (worktree/index diff, file tree,
+        // placeholders — M64). Until then a single click popped the dialog over that
+        // content, which upstream never does: FormBrowse just fills the tabs for the
+        // artificial rows and reaches the dialog from the Commit button. Bound to the
+        // click and not to selection, so keyboard navigation passes over freely.
         void Raise()
         {
             if (isWorkTree)
@@ -5067,14 +5070,8 @@ public sealed class RevisionGridView : UserControl
 
         view.Cursor = new Cursor(StandardCursorType.Hand);
         view.AddHandler(
-            InputElement.PointerReleasedEvent,
-            (_, e) =>
-            {
-                if (e.InitialPressMouseButton == MouseButton.Left)
-                {
-                    Raise();
-                }
-            },
+            InputElement.DoubleTappedEvent,
+            (_, _) => Raise(),
             RoutingStrategies.Bubble);
 
         // The SAME shared menu as a commit row: on an artificial row its rules hide
