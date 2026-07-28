@@ -1175,6 +1175,36 @@ priorità massima)
       `avares:`. Servono due cose insieme: la riga nel csproj **e** il codice che lo carica; oggi
       la dashboard tiene il wordmark testuale invece di sostituire artwork a caso. *banale*
 
+**Difetti trovati dalla verifica GUI di M53–M56** (sessioni :281–:287, tutti visti a schermo)
+
+- [ ] 0.22 **Il `CommitDialog` non ha alcun pulsante di chiusura**, ignora Esc e ignora
+      `WM_DELETE_WINDOW`: una volta aperto non è dismissibile in alcun modo sintetico. Upstream ha
+      `Cancel` (`FormCommit.Designer.cs:142-151`). *grave, banale*
+- [ ] 0.23 **Nessuno dei tre dialoghi del menu Repository si chiude con Esc** (Remotes,
+      Submodules, Worktrees): solo il loro pulsante `Close`. Anche il `WM_DELETE_WINDOW`
+      sintetico è ignorato (stessa radice di 0.16). *banale*
+- [ ] 0.24 **Selezionare una riga della griglia riporta a forza il pannello inferiore sul tab
+      Commit**: non si può tenere aperto Output, Diff o File tree mentre si naviga la storia.
+      Upstream aggiorna il tab visibile senza cambiarlo. Il colpevole è la riga
+      `_bottom.SelectedItem = _commitInfoTab;` in `OnRevisionSelected`. *banale, alta seccatura*
+- [ ] 0.25 **Titolo stantio dopo `Close (go to Dashboard)`**: resta `<repo> (<branch>)` mentre a
+      schermo c'è la dashboard (`RefreshToolbarState` non gira più). E in dashboard mode la
+      **toolbar non viene neutralizzata**: mostra ancora path, branch e i pulsanti Fetch/Pull/
+      Push/Commit di un repo che non è più aperto. *banale*
+- [ ] 0.26 **Navigazione da tastiera della dashboard rotta**: dalla casella di ricerca il primo ↓
+      evidenzia il *contenitore del gruppo* ("Recent repositories" + prima riga) invece della
+      prima voce, e i ↓ successivi non avanzano; il caret resta nella casella, quindi il fuoco non
+      si sposta mai davvero. *media*
+- [ ] 0.27 **Etichette di menu troncate senza ellissi**: "Toggle between artificial and HEAD
+      commi", "Highlight selected branch (until refresh", "Arrange commits by topo order (ances".
+      *banale, cosmetico*
+- [ ] 0.28 Su un repo **bare** il pannello sinistro mostra l'errore git grezzo
+      (`Error: fatal: quest'operazione deve …`) invece di un albero vuoto. *banale*
+- [ ] 0.29 Da confermare: lo stack del crash 0.19 è stato visto anche sul percorso
+      `OpenRepository → LoadRepository → Reload` (doppio clic su un worktree nell'albero con una
+      riga selezionata), intermittente 1 volta su 5. Le prove successive alla build con la guardia
+      non l'hanno più riprodotto: **verificare che la guardia copra anche questo stack**.
+
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
 
