@@ -26,6 +26,7 @@ public static class ThemeManager
         "App.ConsoleBackground", "App.ConsoleForeground",
         "App.RepoStateClean", "App.RepoStateDirty", "App.RepoStateDirtySubmodules",
         "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
+        "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag",
     ];
 
     private static readonly Dictionary<string, Color> Dark = new()
@@ -87,6 +88,26 @@ public static class ThemeManager
         // Contrast stays far above threshold: 12.24:1 before, 10.01:1 dark / 14.11:1 light.
         ["App.ConsoleBackground"] = Color.Parse("#2D2D30"),
         ["App.ConsoleForeground"] = Color.Parse("#DCDCDC"),
+
+        // The revision grid's three ref pills (RevisionGridView.BuildRefBadge): local
+        // branch, remote-tracking branch, tag. Each value is the OUTLINE and the GLYPH
+        // colour at once, on App.RefPillBg.
+        //
+        // They were hard-coded (#2E7D32 / #C0392B / #B8860B, "tuned toward the original
+        // GitExtensions palette") and therefore theme-blind: those three values were
+        // picked against a white pill and, measured on a real screenshot, scored
+        // 5.13 / 5.44 / 3.25:1 in the light theme but 2.99 / 2.82 / 4.71:1 in the dark
+        // one — so the dark theme actually failed WCAG AA on TWO of the three, not one.
+        // Registering them per theme is the whole point: a single triple cannot serve
+        // both backgrounds.
+        //
+        // The dark trio is a light tint of each hue, measured on #252526 at
+        // 6.67 / 6.56 / 6.67:1 — deliberately one narrow band, so no pill reads as the
+        // weak one of the family.
+        ["App.RefPillBg"] = Color.Parse("#252526"),
+        ["App.RefBranch"] = Color.Parse("#5FBF6B"),
+        ["App.RefRemote"] = Color.Parse("#EE908A"),
+        ["App.RefTag"] = Color.Parse("#D9A226"),
     };
 
     private static readonly Dictionary<string, Color> Light = new()
@@ -127,6 +148,17 @@ public static class ThemeManager
         ["App.RepoStateMixed"] = Color.Parse("#825E00"),
         ["App.RepoStateStaged"] = Color.Parse("#366887"),
         ["App.RepoStateUntrackedOnly"] = Color.Parse("#7743D6"),
+
+        // Ref pills, light theme (see the dark block for the whole story). Each hue is
+        // kept and darkened until it clears AA on the white pill: measured on a real
+        // screenshot at 6.53 / 6.67 / 6.40:1, the same narrow band as the dark trio, so
+        // the terna reads as one family in both themes. The tag is the one that moved
+        // most (#B8860B was 3.25:1) because amber is the hue that fights a white
+        // background hardest — at AA it necessarily lands on a dark olive.
+        ["App.RefPillBg"] = Color.Parse("#FFFFFF"),
+        ["App.RefBranch"] = Color.Parse("#256B29"),
+        ["App.RefRemote"] = Color.Parse("#A83226"),
+        ["App.RefTag"] = Color.Parse("#7E5800"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();

@@ -4927,7 +4927,7 @@ public sealed class RevisionGridView : UserControl
             // Respect the remote/tag "View" toggles: hide remote-tracking or tag
             // badges when the corresponding toggle is off, so badge display stays
             // consistent with what the walk includes. (Kind is the same '/'/version
-            // heuristic used by RefColors, so it is best-effort.)
+            // heuristic used by RefBrush, so it is best-effort.)
             if ((!_showRemotes && IsRemoteRef(refName)) || (!_showTags && IsTagRef(refName)))
             {
                 continue;
@@ -5100,12 +5100,19 @@ public sealed class RevisionGridView : UserControl
     // pill is bold and prefixed by a small green ▶ marker for the checked-out branch.
     private static Control BuildRefBadge(string refName, bool isCurrent = false, RevisionRowView? view = null)
     {
-        Color kind = RefColor(refName);
+        // Both the outline and the glyphs, by REFERENCE, so a live theme switch
+        // repaints the pill without rebuilding the row (ThemeManager mutates the
+        // brushes in place).
+        IBrush kind = RefBrush(refName);
 
         Border pill = new()
         {
-            Background = B("App.Panel"), // light/adaptive tint, readable in both themes
-            BorderBrush = new SolidColorBrush(kind),
+            // App.RefPillBg is the pill's own surface, not App.Panel: it is the
+            // background the three App.Ref* values are measured against, so it must not
+            // be able to drift when App.Panel is retuned. It is opaque in both themes
+            // and therefore also covers the selection fill (see below).
+            Background = B("App.RefPillBg"),
+            BorderBrush = kind,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(9),
             Padding = new Thickness(7, 0, 7, 1),
@@ -5113,17 +5120,21 @@ public sealed class RevisionGridView : UserControl
             Child = new TextBlock
             {
                 Text = refName,
-                Foreground = new SolidColorBrush(kind),
+                Foreground = kind,
                 FontSize = 11,
                 FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
                 VerticalAlignment = VerticalAlignment.Center,
             },
         };
 
-        // On a selected (solid blue) row the pill keeps its kind colour but swaps its
-        // backdrop to opaque white, so branch/remote/tag pills stay readable instead
-        // of drowning in the fill. The row view restores App.Panel when deselected.
-        view?.TrackPill(pill);
+        // NOTE: the pill used to swap its backdrop to hard-coded opaque WHITE while its
+        // row was selected. That was only ever right in the light theme, where the pill
+        // surface IS white; in the dark theme it turned every pill into a white chip
+        // carrying ink chosen for a #252526 background, and the arithmetic says no
+        // single ink can serve both — a colour clearing 4.5:1 on #252526 needs
+        // relative luminance >= 0.254, one clearing 4.5:1 on white needs <= 0.183.
+        // Since App.RefPillBg is opaque and themed, the pill covers the selection fill
+        // on its own and the swap is gone rather than merely themed.
 
         if (!isCurrent)
         {
@@ -5159,24 +5170,28 @@ public sealed class RevisionGridView : UserControl
     private static bool IsTagRef(string refName)
         => !IsRemoteRef(refName) && Regex.IsMatch(refName, @"^v?\d");
 
-    // Kind colour used for BOTH the outline border and the text of a ref pill.
+    // Kind brush used for BOTH the outline border and the text of a ref pill.
     // Remote-tracking refs contain a "/" (e.g. origin/main); simple version-like
     // names (v1.2, 2.0) are treated as tags; everything else is a local branch.
-    // Tuned toward the original GitExtensions palette and readable on the light
-    // App.Panel background in both light and dark themes.
-    private static Color RefColor(string refName)
+    //
+    // The three values live in ThemeManager (App.RefBranch/Remote/Tag), per theme,
+    // because they are small text and have to clear WCAG AA on App.RefPillBg — which
+    // is white in one theme and #252526 in the other, so one hard-coded triple cannot
+    // be right for both. The previous hard-coded trio was tuned on white and measured
+    // 2.82–2.99:1 in the dark theme; see ThemeManager for the six numbers.
+    private static IBrush RefBrush(string refName)
     {
         if (refName.Contains('/'))
         {
-            return Color.FromRgb(0xC0, 0x39, 0x2B); // remote-tracking: red/pink
+            return B("App.RefRemote"); // remote-tracking
         }
 
         if (Regex.IsMatch(refName, @"^v?\d"))
         {
-            return Color.FromRgb(0xB8, 0x86, 0x0B); // tag: amber/olive
+            return B("App.RefTag"); // tag
         }
 
-        return Color.FromRgb(0x2E, 0x7D, 0x32); // local branch: green
+        return B("App.RefBranch"); // local branch
     }
 
     // --- Row context menu -----------------------------------------------------
@@ -6360,7 +6375,8 @@ public sealed class RevisionGridView : UserControl
     /// <summary>
     ///  Root visual of one revision row. It owns the row background so the fill can
     ///  span the full grid width (all columns, no margin) and repaints itself — and
-    ///  the cells, ref pills and DAG lanes it tracks — whenever its
+    ///  the cells and DAG lanes it tracks (ref pills paint themselves: their surface
+    ///  is the themed, opaque App.RefPillBg) — whenever its
     ///  <see cref="ListBoxItem"/> becomes selected / focused / hovered.
     ///  <para>
     ///  Selected rows are filled with solid <c>App.Accent</c> blue and their text is
@@ -6375,7 +6391,6 @@ public sealed class RevisionGridView : UserControl
     {
         private static readonly IBrush SelectedText = new SolidColorBrush(Colors.White);
         private static readonly IBrush SelectedTextDim = new SolidColorBrush(Color.FromRgb(0xDF, 0xEC, 0xFA));
-        private static readonly IBrush SelectedPillBg = new SolidColorBrush(Colors.White);
         private static readonly IBrush SelectedMarker = new SolidColorBrush(Color.FromRgb(0x9C, 0xF0, 0xB8));
         private static readonly IBrush FocusRect = new SolidColorBrush(Color.FromArgb(0xB0, 0xFF, 0xFF, 0xFF));
 
@@ -6386,7 +6401,6 @@ public sealed class RevisionGridView : UserControl
         private readonly IBrush _normalBg;
         private readonly Border _focusRect;
         private readonly List<(TextBlock Block, IBrush Normal, IBrush Selected)> _texts = [];
-        private readonly List<(Border Pill, IBrush Normal)> _pills = [];
         private readonly List<(TextBlock Marker, IBrush Normal)> _markers = [];
         private readonly List<RevisionGraphControl> _graphs = [];
 
@@ -6410,9 +6424,6 @@ public sealed class RevisionGridView : UserControl
 
         public void TrackText(TextBlock block, bool dim = false)
             => _texts.Add((block, block.Foreground ?? B("App.Text"), dim ? SelectedTextDim : SelectedText));
-
-        public void TrackPill(Border pill)
-            => _pills.Add((pill, pill.Background ?? B("App.Panel")));
 
         public void TrackMarker(TextBlock marker)
             => _markers.Add((marker, marker.Foreground ?? B("App.Text")));
@@ -6509,11 +6520,6 @@ public sealed class RevisionGridView : UserControl
             foreach ((TextBlock block, IBrush normal, IBrush sel) in _texts)
             {
                 block.Foreground = selected ? sel : normal;
-            }
-
-            foreach ((Border pill, IBrush normal) in _pills)
-            {
-                pill.Background = selected ? SelectedPillBg : normal;
             }
 
             foreach ((TextBlock marker, IBrush normal) in _markers)
