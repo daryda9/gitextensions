@@ -23,6 +23,7 @@ public static class ThemeManager
         "App.Text", "App.TextDim", "App.Accent", "App.Selection", "App.GraphGreen",
         "App.Control", "App.Foreground", "App.PanelBackground",
         "App.DiffAdded", "App.DiffRemoved",
+        "App.ConsoleBackground", "App.ConsoleForeground",
     ];
 
     private static readonly Dictionary<string, Color> Dark = new()
@@ -62,6 +63,19 @@ public static class ThemeManager
         // stops drifting to LimeGreen/OrangeRed and matches the real diff view.
         ["App.DiffAdded"] = Color.Parse("#6AC776"),
         ["App.DiffRemoved"] = Color.Parse("#E06C6C"),
+
+        // The transcript boxes of CleanupDialog and CloneDialog. M62 left these two
+        // unregistered on the grounds that a theme-invariant dark terminal matched the
+        // process dialog's fixed beige. Measuring the family says otherwise: of the nine
+        // read-only monospace output surfaces pinned by TextBoxSurface, seven already
+        // read App.Panel/App.PanelAlt + App.Text, and only the process dialog is
+        // deliberately fixed — and its beige (#ECE9D8) sits 1.10:1 from the light
+        // window, so it blends there, whereas #111111 was a black slab in a light
+        // dialog. Aliased to App.PanelAlt/App.Text, matching OutputView and
+        // SubmodulesDialog, the closest siblings (raw git output in a monospace box).
+        // Contrast stays far above threshold: 12.24:1 before, 10.01:1 dark / 14.11:1 light.
+        ["App.ConsoleBackground"] = Color.Parse("#2D2D30"),
+        ["App.ConsoleForeground"] = Color.Parse("#DCDCDC"),
     };
 
     private static readonly Dictionary<string, Color> Light = new()
@@ -88,6 +102,8 @@ public static class ThemeManager
         // Measured on #FFFFFF: 5.08:1 and 5.98:1.
         ["App.DiffAdded"] = Color.Parse("#1E7D5A"),
         ["App.DiffRemoved"] = Color.Parse("#B03A3A"),
+        ["App.ConsoleBackground"] = Color.Parse("#ECECEC"),
+        ["App.ConsoleForeground"] = Color.Parse("#1E1E1E"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();

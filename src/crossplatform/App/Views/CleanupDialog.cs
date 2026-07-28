@@ -160,10 +160,10 @@ public sealed class CleanupDialog : Window
                 BorderThickness = new Thickness(0),
                 MinHeight = 140,
             },
-            Brush("App.ConsoleBackground", "#111111"),
-            Brush("App.ConsoleForeground", "#D0D0D0"),
-            border: Brush("App.ConsoleBackground", "#111111"),
-            placeholderForeground: Brush("App.ConsoleForeground", "#D0D0D0"));
+            Brush("App.ConsoleBackground", "#2D2D30"),
+            Brush("App.ConsoleForeground", "#DCDCDC"),
+            border: Brush("App.ConsoleBackground", "#2D2D30"),
+            placeholderForeground: Brush("App.ConsoleForeground", "#DCDCDC"));
 
         // The TextBox scrolls itself; wrapping it in a ScrollViewer would give the
         // log two nested scrollers, and scrolling the outer one to the end left the
