@@ -745,13 +745,13 @@ public sealed class DiffView : UserControl
         // grid, and that is not work to start while the context menu's pointer
         // event is still unwinding.
         //
-        // NOTE for whoever wires this up: routing the path straight into
-        // RevisionGridView.ApplyRevisionFilter currently kills the app with
-        // "Cannot change source while update is in progress". The whole inner
-        // stack is the grid's own (Reload → ItemsSource → its SelectionChanged
-        // handler → RefreshView → RebindRows → ItemsSource again); deferring the
-        // call, as here, does not help. The grid needs a re-entrancy guard
-        // before this entry can do its job end to end.
+        // This used to be the entry that killed the app with "Cannot change source
+        // while update is in progress" (the whole inner stack was the grid's own:
+        // Reload → ItemsSource → its SelectionChanged handler → RefreshView →
+        // RebindRows → ItemsSource again, and posting did NOT help). The grid now
+        // owns a real re-entrancy guard — SetListItems is its only ItemsSource
+        // writer and raises it, RebindRows coalesces re-entrant requests — so the
+        // whole path is exercised end to end and verified against `git log -- <path>`.
         Dispatcher.UIThread.Post(() => FilterFileInGridRequested?.Invoke(filter));
     }
 
