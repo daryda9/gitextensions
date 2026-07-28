@@ -14,6 +14,15 @@
     <AvaloniaResource Include="..\..\app\GitUI\Resources\Icons\*.png">
       <Link>Assets/Icons/%(Filename)%(Extension)</Link>
     </AvaloniaResource>
+
+    <!-- The wide product wordmark drawn on the dashboard's branding strip
+         (upstream Dashboard.Designer.cs). It lives in setup/assets/Logo, outside
+         the icon glob above, so it needs its own item to become resolvable as
+         avares://…/Assets/Icons/GitExtensionsLogoWide.png — the name
+         DashboardView.Branding() asks IconLoader for. -->
+    <AvaloniaResource Include="..\..\..\setup\assets\Logo\GitExtensionsLogoWide.png">
+      <Link>Assets/Icons/%(Filename)%(Extension)</Link>
+    </AvaloniaResource>
   </ItemGroup>
 
   <ItemGroup>

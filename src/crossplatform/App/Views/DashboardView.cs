@@ -368,6 +368,10 @@ public sealed class DashboardView : UserControl
             }
         };
 
+        // The path line is ellipsised to fit the tile, so the only way to read a
+        // long path is the tooltip — upstream's UserRepositoriesList does the same.
+        ToolTip.SetTip(grid, entry.Path);
+
         grid.Tag = entry;
         outer.Children.Add(grid);
         outer.Tag = entry;
@@ -646,21 +650,40 @@ public sealed class DashboardView : UserControl
     // ---- branding + start links ----------------------------------------------------
 
     // Upstream draws the GitExtensionsLogoWide bitmap on a tinted strip
-    // (Dashboard.Designer.cs:94-113). That file lives in setup/assets/Logo and is
-    // NOT covered by the csproj's icon glob (src/app/GitUI/Resources/Icons/*.png),
-    // so it cannot be resolved as an avares: resource here. Rather than
-    // substituting some other artwork, the port keeps the wordmark as text; see
-    // the report for the one csproj line that would light the real logo up.
+    // (Dashboard.Designer.cs:94-113). That file lives in setup/assets/Logo, outside
+    // the csproj's icon glob, so it used to be unresolvable as an avares: resource
+    // and the wordmark was drawn as text. The csproj now links it explicitly to
+    // Assets/Icons/GitExtensionsLogoWide.png, so IconLoader finds it under its base
+    // name like any other icon — and, because IconLoader returns null for a missing
+    // asset, the text wordmark stays as the fallback for builds where the setup
+    // assets are not present (source packages that ship only src/).
     private Control Branding()
     {
         StackPanel panel = new() { Spacing = 2 };
-        panel.Children.Add(new TextBlock
+
+        // The bitmap is 381x100; drawn at half height it matches the text wordmark's
+        // optical weight on the strip. Stretch.Uniform keeps its aspect ratio.
+        if (IconLoader.Load("GitExtensionsLogoWide") is { } logo)
         {
-            Text = "Git Extensions",
-            Foreground = B("App.Text"),
-            FontSize = 26,
-            FontWeight = FontWeight.SemiBold,
-        });
+            panel.Children.Add(new Image
+            {
+                Source = logo,
+                Height = 50,
+                Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            });
+        }
+        else
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Git Extensions",
+                Foreground = B("App.Text"),
+                FontSize = 26,
+                FontWeight = FontWeight.SemiBold,
+            });
+        }
+
         panel.Children.Add(new TextBlock
         {
             Text = T("Open a repository to get started."),
