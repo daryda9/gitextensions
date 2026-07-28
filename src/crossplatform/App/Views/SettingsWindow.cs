@@ -112,7 +112,7 @@ public sealed class SettingsWindow : Window
     // go, so Cancel really discards and a half-finished remapping never reaches the
     // running window.
     private readonly Dictionary<BrowseCommand, HotkeyGesture?> _hotkeyDraft = [];
-    private readonly List<(BrowseCommand Command, Button Gesture)> _hotkeyRows = [];
+    private readonly List<(BrowseCommand Command, TextBlock Name, Button Gesture)> _hotkeyRows = [];
 
     // The command whose next keystroke is being captured, if any.
     private BrowseCommand? _capturing;
@@ -1066,7 +1066,7 @@ public sealed class SettingsWindow : Window
             row.Children.Add(clear);
             rows.Children.Add(row);
 
-            _hotkeyRows.Add((captured, gesture));
+            _hotkeyRows.Add((captured, name, gesture));
         }
 
         // Recording listens on the window in the tunnelling phase, for the same reason
@@ -1165,14 +1165,20 @@ public sealed class SettingsWindow : Window
         IBrush conflict = Resource("App.DiffRemoved", "#CE5C5C");
         IBrush normal = Resource("App.Text", "#DCDCDC");
 
-        foreach ((BrowseCommand command, Button button) in _hotkeyRows)
+        foreach ((BrowseCommand command, TextBlock name, Button button) in _hotkeyRows)
         {
             HotkeyGesture? gesture = _hotkeyDraft.GetValueOrDefault(command);
             bool recording = _capturing == command;
             button.Content = recording
                 ? TranslationService.T("HotkeysSettingsPage/lblPressKey.Text", "Press a key…")
                 : gesture?.ToString() ?? TranslationService.T("HotkeysSettingsPage/lblNone.Text", "None");
-            button.Foreground = gesture is { } g2 && duplicates.Contains(g2) ? conflict : normal;
+
+            // The command name carries the colour as well as the gesture button: a
+            // focused or hovered button takes its foreground from the theme's own
+            // template, which was swallowing the mark on the row just edited.
+            IBrush rowBrush = gesture is { } g2 && duplicates.Contains(g2) ? conflict : normal;
+            button.Foreground = rowBrush;
+            name.Foreground = rowBrush;
         }
 
         if (duplicates.Count == 0)
