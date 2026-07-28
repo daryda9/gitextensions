@@ -324,6 +324,10 @@ public static class DiffTextService
     ///  Returns the raw bytes of <paramref name="path"/> as of
     ///  <paramref name="rev"/> (<c>git show &lt;rev&gt;:&lt;path&gt;</c>), or the
     ///  working-tree bytes when <paramref name="rev"/> is <c>null</c>/empty.
+    ///  <paramref name="rev"/> may already end in <c>':'</c> — <c>":"</c> alone is
+    ///  git's own name for the <b>index</b> copy of a path (<c>git show :file</c>),
+    ///  which is what the two artificial rows need — and then no second colon is
+    ///  inserted.
     ///  Bytes, not text: the file may be binary, and "save as" must round-trip it
     ///  unchanged. Throws <see cref="InvalidOperationException"/> with git's own
     ///  message when the object does not exist — the callers turn that into a
@@ -355,7 +359,7 @@ public static class DiffTextService
         psi.ArgumentList.Add("-c");
         psi.ArgumentList.Add("core.quotepath=false");
         psi.ArgumentList.Add("show");
-        psi.ArgumentList.Add(rev + ":" + path);
+        psi.ArgumentList.Add(rev.EndsWith(':') ? rev + path : rev + ":" + path);
 
         psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
         psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";

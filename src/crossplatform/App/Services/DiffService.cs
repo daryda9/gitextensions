@@ -60,6 +60,22 @@ public enum ArtificialDiff
 }
 
 /// <summary>
+///  The user-visible name of each artificial row, in one place so the Diff, File
+///  tree, Commit details and GPG tabs cannot drift apart. The wording and the
+///  translation ids are upstream's own
+///  (<c>ResourceManager/TranslatedStrings.cs</c>: <c>_workspaceText</c> =
+///  "Working directory", <c>_indexText</c> = "Commit index" — the same strings the
+///  revision grid puts in the two rows' Subject).
+/// </summary>
+public static class ArtificialRevisionName
+{
+    /// <summary>The row's name in the active language.</summary>
+    public static string Of(ArtificialDiff which) => which == ArtificialDiff.Index
+        ? TranslationService.T("TranslatedStrings/_indexText.Text", "Commit index")
+        : TranslationService.T("TranslatedStrings/_workspaceText.Text", "Working directory");
+}
+
+/// <summary>
 ///  Reads diff data for a commit by reusing the Git Extensions core module
 ///  (<see cref="GitModule"/>) obtained from <see cref="GitContext.CreateModule"/>.
 ///  All calls are blocking and meant to run off the UI thread.

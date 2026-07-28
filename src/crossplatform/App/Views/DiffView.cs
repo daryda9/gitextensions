@@ -30,6 +30,18 @@ namespace GitExtensions.Avalonia.Views;
 ///  no match. The view re-labels itself in place on
 ///  <see cref="TranslationService.LanguageChanged"/>; it is never rebuilt, so
 ///  the loaded diff and the scroll position survive a language switch.</para>
+///
+///  <para>Besides a commit the view can show a range (<see cref="ShowRange"/>), a
+///  commit against the working tree (<see cref="ShowAgainstWorkingDirectory"/>) and
+///  the two artificial revision rows (<see cref="ShowArtificial"/>).</para>
+///
+///  <para><b>Read-only by design.</b> Nothing here writes to the repository: there
+///  is no stage/unstage/reset from the diff, not even for the artificial rows where
+///  upstream offers it, because those commands belong to the staging UI the port
+///  already has (<c>CommitDialog</c>, and <c>Commands ▸ Reset changes…</c>). Menu
+///  entries for what the view cannot do are not created at all, and the commands
+///  that need a real commit object are disabled while an artificial row is shown
+///  (see <c>UpdateFileMenuState</c>).</para>
 /// </summary>
 public sealed class DiffView : UserControl
 {
@@ -79,6 +91,8 @@ public sealed class DiffView : UserControl
         Commit,       // a single commit vs its first parent
         Range,        // BASE..other (two commits)
         WorkingTree,  // a commit vs the current working tree
+        WorkTree,     // the "Working directory" row: worktree vs index (git diff)
+        Index,        // the "Commit index" row: index vs HEAD (git diff --cached)
     }
 
     private readonly FileStatusListView _files;
@@ -835,7 +849,18 @@ public sealed class DiffView : UserControl
         string? rev;
         string path;
 
-        if (newVersion)
+        // The artificial rows have real sides, they are just not commits:
+        // "Working directory" is (index -> disk), "Commit index" is (HEAD -> index).
+        // ":" is git's own name for the index copy of a path (":<path>").
+        if (!_forceWorkingTreeCompare && IsArtificialMode)
+        {
+            bool index = _mode == CompareMode.Index;
+            rev = newVersion
+                ? (index ? ":" : null)
+                : (index ? "HEAD" : ":");
+            path = newVersion ? row.Name : row.OldName ?? row.Name;
+        }
+        else if (newVersion)
         {
             rev = workingTree ? null : _commitHash;
             path = row.Name;
@@ -870,7 +895,7 @@ public sealed class DiffView : UserControl
                     CopyToClipboard(text);
                     _status.Text = F(
                         T("Copied {0} ({1} characters)"),
-                        rev is null ? path : rev + ":" + path,
+                        rev is null ? path : rev.EndsWith(':') ? rev + path : rev + ":" + path,
                         text.Length);
                 });
             }
@@ -967,6 +992,44 @@ public sealed class DiffView : UserControl
             () => DiffService.GetChangedFilesAgainstWorkingTree(repoPath, commitHash),
             count => F(ChangedFilesFormat(), range, count),
             F(LoadingFilesFormat(), range));
+    }
+
+    /// <summary>
+    ///  Loads the changed-files list of one of the two <b>artificial</b> revision
+    ///  rows — <see cref="ArtificialDiff.WorkTree"/> ("Working directory":
+    ///  <c>git diff</c>, worktree vs index, untracked files included) or
+    ///  <see cref="ArtificialDiff.Index"/> ("Commit index": <c>git diff --cached</c>,
+    ///  index vs HEAD). Selecting a file shows its patch, exactly as for a commit.
+    ///
+    ///  <para>This is the Diff half of the
+    ///  <c>RevisionGridView.ArtificialRevisionSelected</c> contract; the host calls
+    ///  it instead of <see cref="ShowCommit"/> when the selection lands on one of
+    ///  those rows.</para>
+    ///
+    ///  <para>The comparison has no commit object, so the file commands that only
+    ///  make sense for one ("Open this revision", "Save selected as", the external
+    ///  difftool, "Compare with working directory") are <b>disabled</b> rather than
+    ///  offered and left to fail; stage/unstage from here is deliberately absent
+    ///  (see the class remarks).</para>
+    /// </summary>
+    public void ShowArtificial(string repoPath, ArtificialDiff which)
+    {
+        _repoPath = repoPath;
+
+        // The sentinel hash is carried so the "is something loaded" guards keep
+        // working; nothing ever passes it to git as a revision (see the CompareMode
+        // switches — the artificial modes emit options, not revisions).
+        _commitHash = which == ArtificialDiff.Index ? DiffService.IndexHash : DiffService.WorkTreeHash;
+        _baseHash = null;
+        _mode = which == ArtificialDiff.Index ? CompareMode.Index : CompareMode.WorkTree;
+        _forceWorkingTreeCompare = false;
+
+        string name = ArtificialRevisionName.Of(which);
+
+        LoadFileList(
+            () => DiffService.GetArtificialChangedFiles(repoPath, which),
+            count => F(ChangedFilesFormat(), name, count),
+            F(LoadingFilesFormat(), name));
     }
 
     // Composed status texts are single formats with placeholders, never
@@ -1529,10 +1592,16 @@ public sealed class DiffView : UserControl
         bool hasFile = _files.SelectedFile is DiffFileRow && _repoPath is not null;
         bool onDisk = hasFile && File.Exists(SelectedWorkingPath());
 
+        // An artificial row is not a commit: the four commands below all resolve a
+        // path "at a revision", so they are disabled rather than offered and left to
+        // fail on the sentinel hash. Copy old/new version stays available — it knows
+        // the artificial sides (index, HEAD, the file on disk); see CopyFileVersion.
+        bool hasCommitObject = hasFile && !IsArtificialMode;
+
         _openWorkingFileItem.IsEnabled = onDisk;
-        _openRevisionFileItem.IsEnabled = hasFile && _commitHash is not null;
+        _openRevisionFileItem.IsEnabled = hasCommitObject;
         _showInFolderItem.IsEnabled = onDisk;
-        _saveAsItem.IsEnabled = hasFile && _commitHash is not null;
+        _saveAsItem.IsEnabled = hasCommitObject;
         _copyPatchItem.IsEnabled = _currentDiffText.Length > 0;
         _copyPathItem.IsEnabled = hasFile;
         _blameItem.IsEnabled = hasFile;
@@ -1543,9 +1612,12 @@ public sealed class DiffView : UserControl
         // listening; here the host decides by subscribing or not.
         _filterFileInGridItem.IsVisible = FilterFileInGridRequested is not null;
         _filterFileInGridItem.IsEnabled = hasFile;
-        _difftoolItem.IsEnabled = hasFile && _commitHash is not null;
-        _compareWorkingDirItem.IsEnabled = hasFile && _commitHash is not null;
+        _difftoolItem.IsEnabled = hasCommitObject;
+        _compareWorkingDirItem.IsEnabled = hasCommitObject;
     }
+
+    /// <summary>Whether the loaded comparison is one of the two artificial rows.</summary>
+    private bool IsArtificialMode => _mode is CompareMode.WorkTree or CompareMode.Index;
 
     // Absolute path of the selected file in the working tree (it may not exist:
     // the file can have been deleted, or belong to an old revision).
@@ -1714,11 +1786,18 @@ public sealed class DiffView : UserControl
 
         DiffTextKind kind = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree
             ? DiffTextKind.WorkingTree
-            : _mode == CompareMode.Range
-                ? DiffTextKind.Range
-                : DiffTextKind.Commit;
+            : _mode switch
+            {
+                CompareMode.Range => DiffTextKind.Range,
+                CompareMode.WorkTree => DiffTextKind.WorkTree,
+                CompareMode.Index => DiffTextKind.Index,
+                _ => DiffTextKind.Commit,
+            };
 
-        DiffTextRequest request = new(kind, _repoPath, _commitHash, _baseHash, row.Name, row.OldName);
+        // IsTracked only ever matters for the working-directory row, where a brand
+        // new file has no other side to be compared against.
+        DiffTextRequest request = new(
+            kind, _repoPath, _commitHash, _baseHash, row.Name, row.OldName, row.IsTracked);
 
         // Snapshot the options: they live on the UI thread and the git run does not.
         DiffDisplayOptions options = new()
