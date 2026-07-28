@@ -1078,6 +1078,24 @@ public sealed class MainWindow : Window
         // hotkeys.json is reflected in its tooltips.
         _toolbar.Hotkeys = _hotkeys;
         _menu.Hotkeys = _hotkeys;
+
+        // Editing a binding in Settings must re-label the toolbar and the menu, or they
+        // keep advertising the old gesture. Both setters rebuild only when the reference
+        // changes, so bounce it — then push back the state a rebuild resets.
+        _hotkeys.Changed += () => Dispatcher.UIThread.Post(() =>
+        {
+            _toolbar.Hotkeys = null;
+            _toolbar.Hotkeys = _hotkeys;
+            _menu.Hotkeys = null;
+            _menu.Hotkeys = _hotkeys;
+
+            _toolbar.SetLeftPanelVisible(_tree.IsVisible);
+            _toolbar.SetCommitInfoPosition(_commitInfoPosition);
+            _toolbar.SetSplitView(_splitHorizontal);
+            _menu.SetViewOptions(_revisions.ViewOptions);
+            UpdateMenuRepositoryState();
+            RefreshToolbarState();
+        });
         _toolbar.ManageStashesRequested +=
             () => ShowInBottom(_stashTab, () => _stash.LoadRepository(_repoPath!));
         _toolbar.CreateStashRequested += () =>
@@ -3470,14 +3488,28 @@ public sealed class MainWindow : Window
     // the user made in the dialog.
     private async Task OpenSettingsAsync()
     {
-        await SettingsWindow.ShowAsync(this, _repoPath, _toolbar.DefaultPullAction.ToString(), action =>
-        {
-            _uiState.DefaultPullAction = action;
-            if (Enum.TryParse(action, out GitPullAction chosen))
+        await SettingsWindow.ShowAsync(
+            this,
+            _repoPath,
+            _toolbar.DefaultPullAction.ToString(),
+            action =>
             {
-                _toolbar.DefaultPullAction = chosen;
-            }
-        });
+                _uiState.DefaultPullAction = action;
+                if (Enum.TryParse(action, out GitPullAction chosen))
+                {
+                    _toolbar.DefaultPullAction = chosen;
+                }
+            },
+            blameOptionsChanged: () => _blame.ReloadBlameOptions(),
+            currentAutoRefresh: _uiState.AutoRefresh,
+            // Required: the single UiState instance is re-serialised in full on exit,
+            // so a write from the dialog alone would be undone.
+            autoRefreshChanged: on =>
+            {
+                _uiState.AutoRefresh = on;
+                _watcher.Watch(on ? _repoPath : null);
+            },
+            hotkeys: _hotkeys);
         _uiState.Theme = _uiStateService.Load().Theme;
     }
 
