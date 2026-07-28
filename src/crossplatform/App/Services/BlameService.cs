@@ -1,3 +1,4 @@
+using System.Text;
 using GitCommands;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
@@ -122,7 +123,8 @@ public sealed class BlameService
         string filePath,
         string? commitOrHead = null,
         CancellationToken cancellationToken = default,
-        BlameOptions? options = null)
+        BlameOptions? options = null,
+        Encoding? encoding = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -138,7 +140,12 @@ public sealed class BlameService
         GitBlame blame = module.Blame(
             fileName: filePath,
             from: from,
-            encoding: GitModule.SystemEncoding,
+            // Upstream hands the blame the encoding the file viewer is using and
+            // re-runs it whenever that changes (BlameControl.cs:117-135); pinning
+            // SystemEncoding here made a Latin-1 or Shift-JIS source unreadable with
+            // no way to say so. Null keeps the old behaviour for callers that have no
+            // selector of their own.
+            encoding: encoding ?? GitModule.SystemEncoding,
             lines: null,
             cancellationToken: cancellationToken);
 

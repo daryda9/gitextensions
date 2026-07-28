@@ -1,5 +1,7 @@
+using System.Text;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
@@ -63,6 +65,14 @@ public sealed class BlameView : UserControl
     // "App.Panel", which the list is painted with; the brush instance is mutated in
     // place on a theme switch, so capturing it once still follows the theme.
     private static readonly IBrush CommitHighlightBrush = B("App.PanelAlt");
+
+    // Background of a search hit inside a source line. "App.Selection" is the
+    // palette's "this text is picked out" colour and is legible under both themes.
+    private static readonly IBrush SearchMatchBrush = B("App.Selection");
+
+    // Index of the source-text cell inside a row grid; the cells are added in
+    // column order, so this is also its position in Grid.Children.
+    private const int TextColumn = 4;
 
     private static string T(string? key, string english) => TranslationService.T(key, english);
 
@@ -138,6 +148,33 @@ public sealed class BlameView : UserControl
     // and the selection is what the view falls back to.
     private string? _highlightedCommit;
     private string? _hoverCommit;
+
+    // ---- find / go to line (upstream gets these for free: both blame panels are
+    // FileViewers, BlameControl.cs:126,347). The bar is modelled on DiffView's.
+    private readonly Border _findBar;
+    private readonly TextBox _findBox;
+    private readonly TextBox _gotoBox;
+    private readonly TextBlock _matchCounter;
+    private readonly Button _findPrevButton;
+    private readonly Button _findNextButton;
+    private readonly Button _findCloseButton;
+    private readonly DispatcherTimer _findDebounce;
+
+    private string _searchTerm = string.Empty;
+
+    // Indices into _rows of the lines whose text contains the term, and which of
+    // them is the current one (-1 before the first step).
+    private readonly List<int> _matches = [];
+    private int _matchIndex = -1;
+
+    // The rows on screen, kept so search and go-to-line can work on them without
+    // reading back through ItemsSource.
+    private IReadOnlyList<BlameLineRow> _rows = [];
+
+    // The encoding the file's bytes are decoded with. Upstream passes the diff
+    // viewer's encoding into LoadBlameAsync and re-blames when it changes
+    // (BlameControl.cs:117-135); this is the same selector DiffView carries.
+    private readonly ComboBox _encodingBox;
 
     /// <summary>
     ///  Raised with a full commit hash when the user picks "Show changes" for a
@@ -261,6 +298,97 @@ public sealed class BlameView : UserControl
 
         _detail.CommitNavigated += hash => CommitNavigated?.Invoke(hash);
 
+        // ---- find bar (Ctrl+F / Ctrl+G), hidden until asked for -------------
+        _findBox = FindTextBox(220);
+        _findBox.TextChanged += (_, _) =>
+        {
+            _findDebounce.Stop();
+            _findDebounce.Start();
+        };
+
+        _gotoBox = FindTextBox(110);
+        _gotoBox.Margin = new Thickness(12, 0, 0, 0);
+
+        _matchCounter = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = B("App.TextDim"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+            MinWidth = 70,
+        };
+
+        _findPrevButton = FindButton("▲", () => StepMatch(-1));
+        _findNextButton = FindButton("▼", () => StepMatch(+1));
+        _findCloseButton = FindButton("✕", CloseFindBar);
+
+        // A WrapPanel, as in DiffView: the go-to-line watermark and the "n of m"
+        // counter are translated and grow noticeably in some languages.
+        WrapPanel findPanel = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(6, 3, 6, 3),
+        };
+        findPanel.Children.Add(_findBox);
+        findPanel.Children.Add(_findPrevButton);
+        findPanel.Children.Add(_findNextButton);
+        findPanel.Children.Add(_matchCounter);
+        findPanel.Children.Add(_gotoBox);
+        findPanel.Children.Add(_findCloseButton);
+
+        _findBar = new Border
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = findPanel,
+            IsVisible = false,
+        };
+
+        // Walking the matches re-renders the text cells, so an incremental search
+        // must not do it on every keystroke.
+        _findDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        _findDebounce.Tick += (_, _) =>
+        {
+            _findDebounce.Stop();
+            ApplySearchTerm(_findBox.Text ?? string.Empty);
+        };
+
+        // Tunnelling, like DiffView's: the ListBox consumes the arrow keys and the
+        // text boxes consume the rest.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+
+        _encodingBox = new ComboBox
+        {
+            ItemsSource = DiffTextService.EncodingNames,
+            SelectedItem = DiffTextService.DefaultEncodingName,
+            Width = 190,
+            FontSize = 12,
+            Padding = new Thickness(6, 1, 4, 1),
+            MinHeight = 0,
+            Margin = new Thickness(8, 4, 8, 4),
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _encodingBox.SelectionChanged += (_, _) =>
+        {
+            // Only the decoding changes, so the file on screen is blamed again with
+            // the same revision — and on the same line, which is what makes trying
+            // one encoding after another usable at all.
+            if (_repoPath is not null && _shownFile is not null)
+            {
+                ShowBlame(_repoPath, _shownFile, _shownCommit == "HEAD" ? null : _shownCommit, SelectedLineNumber);
+            }
+        };
+
+        DockPanel topBar = new();
+        DockPanel.SetDock(_encodingBox, Dock.Right);
+        topBar.Children.Add(_encodingBox);
+        topBar.Children.Add(_status);
+
         ScrollViewer scroll = new()
         {
             Content = _list,
@@ -286,16 +414,18 @@ public sealed class BlameView : UserControl
         Grid root = new()
         {
             Background = B("App.Window"),
-            RowDefinitions = new RowDefinitions($"Auto,{DetailHeight},Auto,Auto,*"),
+            RowDefinitions = new RowDefinitions($"Auto,{DetailHeight},Auto,Auto,Auto,*"),
         };
-        Grid.SetRow(_status, 0);
+        Grid.SetRow(topBar, 0);
         Grid.SetRow(_detail, 1);
         Grid.SetRow(splitter, 2);
-        Grid.SetRow(_headerHost, 3);
-        Grid.SetRow(scroll, 4);
-        root.Children.Add(_status);
+        Grid.SetRow(_findBar, 3);
+        Grid.SetRow(_headerHost, 4);
+        Grid.SetRow(scroll, 5);
+        root.Children.Add(topBar);
         root.Children.Add(_detail);
         root.Children.Add(splitter);
+        root.Children.Add(_findBar);
         root.Children.Add(_headerHost);
         root.Children.Add(scroll);
 
@@ -330,6 +460,15 @@ public sealed class BlameView : UserControl
             T("FormFileHistory/detectMoveAndCopyInThisFileToolStripMenuItem.Text", "Detect move and copy in this file");
         _detectCopyInAllItem.Header =
             T("FormFileHistory/detectMoveAndCopyInAllFilesToolStripMenuItem.Text", "Detect move and copy in all files");
+
+        // Same upstream ids DiffView uses: both panels are FileViewers there.
+        _findBox.Watermark = T("FileViewer/findToolStripMenuItem.Text", "Find...");
+        _gotoBox.Watermark = T("FileViewer/goToLineToolStripMenuItem.Text", "Go to line");
+        ToolTip.SetTip(_findPrevButton, T("Previous match (Shift+F3)"));
+        ToolTip.SetTip(_findNextButton, T("Next match (F3)"));
+        ToolTip.SetTip(_findCloseButton, T("Close (Esc)"));
+        ToolTip.SetTip(_encodingBox, T("Encoding used to decode the file"));
+        UpdateMatchCounter();
     }
 
     /// <summary>
@@ -351,7 +490,9 @@ public sealed class BlameView : UserControl
 
         if (reblame && _repoPath is not null && _shownFile is not null)
         {
-            ShowBlame(_repoPath, _shownFile, _shownCommit == "HEAD" ? null : _shownCommit);
+            // Keep the reader where they were: a switch flipped mid-file must not
+            // send the view back to line 1 (upstream BlameControl.cs:117-135).
+            ShowBlame(_repoPath, _shownFile, _shownCommit == "HEAD" ? null : _shownCommit, SelectedLineNumber);
         }
     }
 
@@ -383,9 +524,18 @@ public sealed class BlameView : UserControl
     ///  repository at <paramref name="repoPath"/> at <paramref name="commit"/>
     ///  (defaults to <c>HEAD</c> when null). Heavy git work runs off the UI thread.
     /// </summary>
-    public void ShowBlame(string repoPath, string filePath, string? commit = null)
+    /// <param name="initialLine">
+    ///  The 1-based line to select and scroll to once the blame is on screen.
+    ///  Upstream opens the blame on the line the caller was reading and keeps it
+    ///  across refreshes (<c>BlameControl.cs:117-135</c>); a null means line 1, which
+    ///  is only right the first time a file is opened.
+    /// </param>
+    public void ShowBlame(string repoPath, string filePath, string? commit = null, int? initialLine = null)
     {
         _list.ItemsSource = null;
+        _rows = [];
+        _matches.Clear();
+        _matchIndex = -1;
         _bandStarts = [];
         _shownFile = null;
         _repoPath = repoPath;
@@ -413,11 +563,15 @@ public sealed class BlameView : UserControl
 
         CancellationToken token = cts.Token;
 
+        // Read on the UI thread: the combo must not be touched from the worker.
+        Encoding encoding = DiffTextService.ResolveEncoding(_encodingBox.SelectedItem as string);
+
         _ = Task.Run(() =>
         {
             try
             {
-                BlameResult result = _service.GetBlameResult(repoPath, filePath, commit, token);
+                BlameResult result = _service.GetBlameResult(
+                    repoPath, filePath, commit, token, options: null, encoding: encoding);
                 Dispatcher.UIThread.Post(() =>
                 {
                     // Staleness guard: a newer request may have started (and even
@@ -430,6 +584,7 @@ public sealed class BlameView : UserControl
                     }
 
                     _bandStarts = ComputeBandStarts(result.Lines);
+                    _rows = result.Lines;
                     _list.ItemsSource = result.Lines;
                     _resolvedCommit = result.ResolvedCommit;
                     _shownFile = filePath;
@@ -443,6 +598,18 @@ public sealed class BlameView : UserControl
                     {
                         _detailHash = result.ResolvedCommit;
                         _detail.ShowCommit(repoPath, result.ResolvedCommit);
+                    }
+
+                    // A term left in the find box keeps meaning something after a
+                    // re-blame, so the match set is recomputed against the new lines.
+                    if (_searchTerm.Length > 0)
+                    {
+                        RecomputeMatches();
+                    }
+
+                    if (initialLine is { } line)
+                    {
+                        GoToLine(line, report: false);
                     }
                 });
             }
@@ -612,6 +779,295 @@ public sealed class BlameView : UserControl
                     }
                 });
             });
+        }
+    }
+
+    // ---- find / go to line --------------------------------------------------
+
+    /// <summary>The 1-based line currently selected, or null when nothing is.</summary>
+    private int? SelectedLineNumber => Selected?.LineNumber;
+
+    private TextBox FindTextBox(double width) => new()
+    {
+        Width = width,
+        FontSize = 12,
+        MinHeight = 0,
+        Padding = new Thickness(6, 2, 6, 2),
+        Background = B("App.Panel"),
+        Foreground = B("App.Text"),
+        BorderBrush = B("App.Border"),
+        BorderThickness = new Thickness(1),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    private Button FindButton(string glyph, Action action)
+    {
+        Button button = new()
+        {
+            Content = glyph,
+            FontSize = 12,
+            MinWidth = 0,
+            MinHeight = 0,
+            Padding = new Thickness(7, 2, 7, 2),
+            Margin = new Thickness(2, 0, 2, 0),
+            Background = B("App.Control"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        bool control = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+        if (control && e.Key is Key.F or Key.G)
+        {
+            OpenFindBar(focusGoto: e.Key == Key.G);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.F3)
+        {
+            StepMatch(shift ? -1 : +1);
+            e.Handled = true;
+            return;
+        }
+
+        if (!_findBar.IsVisible)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Escape)
+        {
+            CloseFindBar();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key is Key.Enter or Key.Return)
+        {
+            if (_gotoBox.IsKeyboardFocusWithin)
+            {
+                GoToLineFromBox();
+                e.Handled = true;
+            }
+            else if (_findBox.IsKeyboardFocusWithin)
+            {
+                // The debounce may still be pending on the very first Enter.
+                if (_findDebounce.IsEnabled)
+                {
+                    _findDebounce.Stop();
+                    ApplySearchTerm(_findBox.Text ?? string.Empty);
+                }
+                else
+                {
+                    StepMatch(shift ? -1 : +1);
+                }
+
+                e.Handled = true;
+            }
+        }
+    }
+
+    private void OpenFindBar(bool focusGoto)
+    {
+        _findBar.IsVisible = true;
+
+        // Closing the bar drops the highlighting but keeps the term, so re-opening
+        // must put the highlighting back rather than show a term matching nothing.
+        string pending = _findBox.Text ?? string.Empty;
+        if (pending.Length > 0 && !string.Equals(pending, _searchTerm, StringComparison.Ordinal))
+        {
+            ApplySearchTerm(pending);
+        }
+
+        TextBox target = focusGoto ? _gotoBox : _findBox;
+        target.Focus();
+        target.SelectAll();
+    }
+
+    private void CloseFindBar()
+    {
+        _findBar.IsVisible = false;
+        _findDebounce.Stop();
+
+        if (_searchTerm.Length > 0)
+        {
+            ApplySearchTerm(string.Empty);
+        }
+
+        _list.Focus();
+    }
+
+    private void ApplySearchTerm(string term)
+    {
+        if (string.Equals(term, _searchTerm, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _searchTerm = term;
+        RecomputeMatches();
+
+        if (_matches.Count > 0)
+        {
+            SelectMatch(0);
+        }
+    }
+
+    // Rebuilds the match set from the rows on screen and repaints the text cells.
+    private void RecomputeMatches()
+    {
+        _matches.Clear();
+        _matchIndex = -1;
+
+        if (_searchTerm.Length > 0)
+        {
+            for (int i = 0; i < _rows.Count; i++)
+            {
+                if (_rows[i].Text.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase))
+                {
+                    _matches.Add(i);
+                }
+            }
+        }
+
+        RefreshMatchHighlight();
+        UpdateMatchCounter();
+    }
+
+    private void StepMatch(int step)
+    {
+        if (_matches.Count == 0)
+        {
+            UpdateMatchCounter();
+            return;
+        }
+
+        int next = _matchIndex < 0
+            ? (step > 0 ? 0 : _matches.Count - 1)
+            : _matchIndex + step;
+
+        // Wrap around both ends, as the diff viewer's search does.
+        SelectMatch(((next % _matches.Count) + _matches.Count) % _matches.Count);
+    }
+
+    private void SelectMatch(int index)
+    {
+        _matchIndex = index;
+        int row = _matches[index];
+        if (row < _rows.Count)
+        {
+            _list.SelectedItem = _rows[row];
+            _list.ScrollIntoView(row);
+        }
+
+        UpdateMatchCounter();
+    }
+
+    private void UpdateMatchCounter()
+    {
+        _matchCounter.Text = _searchTerm.Length == 0
+            ? string.Empty
+            : _matches.Count == 0
+                ? T("No matches")
+                : string.Format(T("{0} of {1}"), _matchIndex + 1, _matches.Count);
+    }
+
+    private void GoToLineFromBox()
+    {
+        if (int.TryParse((_gotoBox.Text ?? string.Empty).Trim(), out int line))
+        {
+            GoToLine(line, report: true);
+        }
+        else
+        {
+            _status.Text = T("Enter a line number.");
+        }
+    }
+
+    /// <summary>
+    ///  Selects and scrolls to the 1-based <paramref name="line"/>, clamped to the
+    ///  file (upstream <c>FileViewer.GoToLine</c>, used at <c>BlameControl.cs:347</c>).
+    /// </summary>
+    private void GoToLine(int line, bool report)
+    {
+        if (_rows.Count == 0)
+        {
+            return;
+        }
+
+        // The blame's final line numbers are 1..N in order, so the row index is the
+        // line minus one; the clamp keeps a stale "go to 9999" on the last line.
+        int index = Math.Clamp(line, 1, _rows.Count) - 1;
+        _list.SelectedItem = _rows[index];
+        _list.ScrollIntoView(index);
+
+        if (report)
+        {
+            _status.Text = string.Format(T("Line {0} of {1}"), index + 1, _rows.Count);
+        }
+    }
+
+    // Repaints the text cell of every realized row so the search term stands out.
+    // ItemsSource is left alone, for the reason spelled out in RefreshHighlight.
+    private void RefreshMatchHighlight()
+    {
+        foreach (Control container in _list.GetRealizedContainers())
+        {
+            if (container.GetVisualDescendants().OfType<Grid>().FirstOrDefault(g => g.Tag is BlameLineRow) is { Tag: BlameLineRow row } grid
+                && grid.Children.Count > TextColumn
+                && grid.Children[TextColumn] is TextBlock cell)
+            {
+                FillLineText(cell, row.Text);
+            }
+        }
+    }
+
+    /// <summary>
+    ///  Writes a source line into its cell, marking the occurrences of the current
+    ///  search term. Plain text when nothing is being searched, so the common case
+    ///  costs no inline runs.
+    /// </summary>
+    private void FillLineText(TextBlock cell, string text)
+    {
+        cell.Inlines?.Clear();
+
+        int at = _searchTerm.Length == 0
+            ? -1
+            : text.IndexOf(_searchTerm, StringComparison.OrdinalIgnoreCase);
+        if (at < 0)
+        {
+            cell.Text = text;
+            return;
+        }
+
+        cell.Text = null;
+        InlineCollection inlines = cell.Inlines ??= [];
+
+        int cursor = 0;
+        while (at >= 0)
+        {
+            if (at > cursor)
+            {
+                inlines.Add(new Run(text[cursor..at]));
+            }
+
+            inlines.Add(new Run(text.Substring(at, _searchTerm.Length)) { Background = SearchMatchBrush });
+            cursor = at + _searchTerm.Length;
+            at = text.IndexOf(_searchTerm, cursor, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (cursor < text.Length)
+        {
+            inlines.Add(new Run(text[cursor..]));
         }
     }
 
@@ -789,7 +1245,10 @@ public sealed class BlameView : UserControl
         // Date), so showing it costs nothing.
         AddCell(grid, 2, bandStart ? row.Date : string.Empty, foreground: MetaBrush);
         AddCell(grid, 3, row.LineNumber.ToString(), foreground: MetaBrush);
-        AddCell(grid, 4, row.Text, trim: false);
+
+        // The text cell carries the search highlighting, so it is filled through
+        // FillLineText rather than with a bare string.
+        FillLineText(AddCell(grid, TextColumn, string.Empty, trim: false), row.Text);
 
         // Upstream's blameTooltip shows the commit of the line under the pointer,
         // formatted by GitBlameCommit.ToString() — the same text BlameService
@@ -803,7 +1262,7 @@ public sealed class BlameView : UserControl
         return grid;
     }
 
-    private static void AddCell(Grid grid, int column, string text, bool bold = false, bool trim = true, IBrush? foreground = null)
+    private static TextBlock AddCell(Grid grid, int column, string text, bool bold = false, bool trim = true, IBrush? foreground = null)
     {
         TextBlock block = new()
         {
@@ -821,5 +1280,6 @@ public sealed class BlameView : UserControl
 
         Grid.SetColumn(block, column);
         grid.Children.Add(block);
+        return block;
     }
 }
