@@ -539,6 +539,20 @@ public sealed class CloneDialog : Window
         }
 
         ClonedRepoPath = destination;
+
+        // Record the clone in the MRU right here, the way InitDialog does for a fresh
+        // `git init`: a successful clone is a repository the user just created and it
+        // must be reachable from the dashboard / "Open recent" afterwards, whichever
+        // caller opened the dialog and whether or not that caller goes on to open it.
+        try
+        {
+            await new RecentRepositoriesService().AddAsync(destination);
+        }
+        catch (Exception)
+        {
+            // A failed history write must never fail the clone.
+        }
+
         Close();
     }
 
