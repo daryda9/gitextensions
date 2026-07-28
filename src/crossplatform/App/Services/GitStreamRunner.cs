@@ -59,12 +59,23 @@ public static class GitStreamRunner
     /// <param name="arguments">The git argument string (without the leading "git").</param>
     /// <param name="onLine">Called once per output line; also used to echo the command header.</param>
     /// <param name="env">Optional extra environment variables applied to the child process.</param>
-    public static int Run(string repoPath, string arguments, Action<string> onLine, IReadOnlyDictionary<string, string?>? env = null)
+    /// <param name="echoArguments">
+    ///  What to SHOW in the console header instead of <paramref name="arguments"/>.
+    ///  Used where the real invocation carries machinery the user did not ask for and
+    ///  cannot act on — the transient credential helper, the auth probe — so the
+    ///  console keeps showing the command the user recognises.
+    /// </param>
+    public static int Run(
+        string repoPath,
+        string arguments,
+        Action<string> onLine,
+        IReadOnlyDictionary<string, string?>? env = null,
+        string? echoArguments = null)
     {
         // Echo the command being run: git launched this way does NOT flow through
         // the core CommandLog, so the console would otherwise show no command line.
         onLine("Command to be executed:");
-        onLine($"git {arguments}");
+        onLine($"git {echoArguments ?? arguments}");
         onLine(string.Empty);
 
         IGitPtyHost? ptyHost = _currentPtyHost.Value;
@@ -111,6 +122,10 @@ public static class GitStreamRunner
             psi.Environment["GIT_ASKPASS"] = "";
             psi.Environment["SSH_ASKPASS"] = "";
             psi.Environment["SSH_ASKPASS_REQUIRE"] = "never";
+            // Pin git's DIAGNOSTICS to English: the recovery flows (credential
+            // prompt, rejected-push offer) read them, and a localised git made the
+            // credentials fallback silently unreachable. See GitEnvironment.
+            GitEnvironment.ApplyDiagnosticLocale(psi.Environment);
 
             if (env is not null)
             {
@@ -206,6 +221,11 @@ public static class GitStreamRunner
             // output of a command that happens to produce a lot of it.
             ["GIT_PAGER"] = "cat",
         };
+
+        // Same reason as the piped path: this git is the PORT's, not the user's
+        // shell, so its diagnostics are pinned to English. A null value in this
+        // dictionary means "unset for the child" (PtyProcess convention).
+        GitEnvironment.ApplyDiagnosticLocale(ptyEnv, nullRemoves: true);
 
         if (env is not null)
         {

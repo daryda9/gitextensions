@@ -111,7 +111,14 @@ public sealed class PtyProcess : IDisposable
             ? s
             : "/bin/bash";
 
-        StartInternal(workingDirectory, $"exec {Quote(shell)} -i", env: null, cols, rows);
+        // The Console tab is the USER's shell: it must speak the user's language.
+        // The port pins its OWN git children to English diagnostics (GitEnvironment),
+        // partly process-wide for commands that go through the shared core, so the
+        // pristine locale is restored here explicitly instead of being inherited.
+        Dictionary<string, string?> env = new(StringComparer.Ordinal);
+        GitEnvironment.RestoreUserLocale(env, nullRemoves: true);
+
+        StartInternal(workingDirectory, $"exec {Quote(shell)} -i", env, cols, rows);
     }
 
     /// <summary>
