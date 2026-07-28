@@ -115,10 +115,13 @@ public sealed class AboutDialog : Window
             TextWrapping = TextWrapping.Wrap,
         });
 
-        // Attribution required by the licence of the reused icon set.
+        // Attribution required by the licence of the reused icon set. The URL is
+        // upstream's verbatim string (FormAbout.cs:27, README.md:124): written without
+        // its scheme it reads as a mangled address ("p.yusukekamiyamane.com" looks
+        // truncated) and cannot be copy-pasted into a browser as-is.
         credits.Children.Add(new TextBlock
         {
-            Text = "Some icons by Yusuke Kamiyamane (CCA3) — p.yusukekamiyamane.com",
+            Text = "Some icons by Yusuke Kamiyamane (CCA3) — http://p.yusukekamiyamane.com/",
             Foreground = dim,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
