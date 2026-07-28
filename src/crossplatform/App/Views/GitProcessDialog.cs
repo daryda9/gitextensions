@@ -107,10 +107,16 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
+        // The success/failure inks sit on App.Window (this dialog's background), not
+        // on the fixed beige console, so they have to follow the theme. They used to
+        // be Brushes.LimeGreen / Brushes.OrangeRed, which measured 1.91:1 and 3.10:1
+        // against the light theme's #F3F3F3 — the "Success" label was verified washed
+        // out on screen. App.DiffAdded/App.DiffRemoved already carry a green and a red
+        // per theme, so no App.Success/App.Error pair is invented here.
         _check = new TextBlock
         {
             Text = "✔",
-            Foreground = Brushes.LimeGreen,
+            Foreground = Brush("App.DiffAdded", Brushes.LimeGreen),
             FontWeight = FontWeight.Bold,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 6, 0),
@@ -507,7 +513,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         _aborted = true;
         _abort.IsEnabled = false;
         _status.Text = "Aborting…";
-        _status.Foreground = Brushes.OrangeRed;
+        _status.Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed);
         Append(string.Empty);
         Append("Aborted");
 
@@ -641,7 +647,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             _outcome = new GitProcessOutcome(false, outcome.Output ?? string.Empty, Aborted: true);
             _header.Text = $"Process — {_label} (Aborted)";
             _status.Text = "Aborted";
-            _status.Foreground = Brushes.OrangeRed;
+            _status.Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed);
             _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
             _closeTimer.Tick += (_, _) =>
             {
@@ -717,7 +723,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             _header.Text = $"Process — {_label} (Done)";
             _check.IsVisible = true;
             _status.Text = "Success";
-            _status.Foreground = Brushes.LimeGreen;
+            _status.Foreground = Brush("App.DiffAdded", Brushes.LimeGreen);
 
             // Keep-open semantics: auto-close only when the box is UNCHECKED.
             if (_keepOpen.IsChecked != true)
@@ -736,7 +742,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         {
             _header.Text = $"Process — {_label} (Failed)";
             _status.Text = "Failed";
-            _status.Foreground = Brushes.OrangeRed;
+            _status.Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed);
 
             // On an authentication failure, when the caller opted in, auto-close so
             // it can immediately show the in-app credentials prompt and retry —

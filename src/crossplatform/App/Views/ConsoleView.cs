@@ -190,7 +190,7 @@ public sealed class ConsoleView : UserControl
         {
             _started = false;
             _status.Text = $"cannot open a pseudo-terminal: {ex.Message} — use “Open terminal here”";
-            _status.Foreground = Brushes.IndianRed;
+            _status.Foreground = Brush("App.DiffRemoved", Brushes.IndianRed);
         }
     }
 

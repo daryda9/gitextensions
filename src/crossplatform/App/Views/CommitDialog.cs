@@ -1991,7 +1991,7 @@ public sealed class CommitDialog : Window
         catch (ArgumentException ex)
         {
             _selectionFilter = string.Empty;
-            _selectionFilterCount.BorderBrush = Brushes.OrangeRed;
+            _selectionFilterCount.BorderBrush = Brush("App.DiffRemoved", Brushes.OrangeRed);
             _selectionFilterCountText.Text = "!";
             ToolTip.SetTip(
                 _selectionFilterBox,
@@ -2692,7 +2692,7 @@ public sealed class CommitDialog : Window
         };
         TextBlock error = new()
         {
-            Foreground = Brushes.OrangeRed,
+            Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed),
             TextWrapping = TextWrapping.Wrap,
         };
 
