@@ -47,8 +47,15 @@ public sealed class DashboardView : UserControl
     private readonly TextBlock _status;
 
     private readonly MenuItem _showInFolderItem;
+    private readonly MenuItem _categoriesItem;
     private readonly MenuItem _removeItem;
     private readonly MenuItem _removeMissingItem;
+
+    // Category of each favorite, by normalised path. Read together with the list so
+    // the rows can be grouped by category and the context menu can grey out the
+    // category a repository is already filed under.
+    private readonly Dictionary<string, string?> _categoryMap =
+        new(StringComparer.OrdinalIgnoreCase);
 
     // The full, unfiltered model. Rebuilt on Load/refresh, never mutated in place.
     private readonly List<RepoEntry> _entries = [];
@@ -70,6 +77,14 @@ public sealed class DashboardView : UserControl
 
     /// <summary>Raised when the user picks "Open repository…".</summary>
     public event Action? OpenOtherRequested;
+
+    /// <summary>
+    ///  Raised after the favorites list has been changed from this view (a category
+    ///  assigned, or a favorite removed), so a host showing the same list elsewhere —
+    ///  the toolbar's working-directory dropdown groups favorites by category — can
+    ///  reload it. The view has already persisted and redrawn itself when this fires.
+    /// </summary>
+    public event Action? FavoritesChanged;
 
     /// <summary>
     ///  Raised when the user picks "Create new repository". When nothing is
@@ -129,6 +144,10 @@ public sealed class DashboardView : UserControl
 
         _showInFolderItem = new MenuItem { Header = T("UserRepositoriesList/tsmiOpenFolder.Text", "Show in folder") };
         _showInFolderItem.Click += (_, _) => ShowTargetInFolder();
+        _categoriesItem = new MenuItem
+        {
+            Header = T("UserRepositoriesList/tsmiCategories.Text", "Categories"),
+        };
         _removeItem = new MenuItem
         {
             Header = T("UserRepositoriesList/tsmiRemoveFromList.Text", "Remove project from the list"),
@@ -143,12 +162,20 @@ public sealed class DashboardView : UserControl
         _removeMissingItem.Click += (_, _) => _ = RemoveMissingAsync();
 
         // Built once and only toggled on opening: rebuilding Items from the
-        // Opening handler leaves the popup mis-measured.
+        // Opening handler leaves the popup mis-measured. Same order as upstream's
+        // contextMenuStripRepository (UserRepositoriesList.Designer.cs:162-168):
+        // Show in folder / — / Categories / — / Remove / Remove missing.
+        // The Categories SUBMENU is the one exception: its content is the set of
+        // categories in use, which changes, so it is refilled from the root menu's
+        // Opening handler — before the root popup is shown, and long before the
+        // submenu's own popup measures itself.
         ContextMenu menu = new()
         {
             ItemsSource = new Control[]
             {
                 _showInFolderItem,
+                new Separator(),
+                _categoriesItem,
                 new Separator(),
                 _removeItem,
                 _removeMissingItem,
@@ -193,15 +220,30 @@ public sealed class DashboardView : UserControl
     public void Load(IReadOnlyList<string> favorites, IReadOnlyList<string> recent)
     {
         _entries.Clear();
+        ReloadCategoryMap();
 
         HashSet<string> seen = new(StringComparer.Ordinal);
+
+        // Favorites are grouped by category, the way upstream's list does it, so
+        // that filing a repository is actually visible on the page that files it.
+        // Uncategorised ones keep the plain "Favorite repositories" caption and come
+        // first; the categories follow in name order. Within a group the stored
+        // order (most recently favorited first) is preserved.
+        List<RepoEntry> favoriteEntries = new();
         foreach (string path in favorites ?? [])
         {
             if (!string.IsNullOrWhiteSpace(path) && seen.Add(path))
             {
-                _entries.Add(new RepoEntry(path, FavoritesGroup));
+                favoriteEntries.Add(new RepoEntry(path, FavoritesGroup)
+                {
+                    Category = CategoryFor(path),
+                });
             }
         }
+
+        _entries.AddRange(favoriteEntries
+            .OrderBy(e => e.Category is { Length: > 0 } ? 1 : 0)
+            .ThenBy(e => e.Category ?? string.Empty, StringComparer.CurrentCulture));
 
         foreach (string path in recent ?? [])
         {
@@ -266,10 +308,10 @@ public sealed class DashboardView : UserControl
         string? group = null;
         foreach (RepoEntry entry in visible)
         {
-            if (entry.Group != group)
+            if (GroupKeyOf(entry) != group)
             {
-                group = entry.Group;
-                rows.Add(GroupHeader(entry.Group));
+                group = GroupKeyOf(entry);
+                rows.Add(GroupHeader(entry));
             }
 
             rows.Add(Row(entry));
@@ -291,11 +333,21 @@ public sealed class DashboardView : UserControl
 
     // One repository tile: optional group heading, the folder name, the full
     // path and (once known) the checked-out branch.
-    private Control GroupHeader(string group) => new TextBlock
+    // One caption per group: the two fixed ones, plus one per category in use. A
+    // category caption shows the category's own name, which is how the user sees
+    // that "Categories ▸ …" did something.
+    private static string GroupKeyOf(RepoEntry entry)
+        => entry.Group == FavoritesGroup && entry.Category is { Length: > 0 } category
+            ? FavoritesGroup + ":" + category
+            : entry.Group;
+
+    private Control GroupHeader(RepoEntry entry) => new TextBlock
     {
-        Text = group == FavoritesGroup
-            ? T("Dashboard/_favouriteRepositories.Text", "Favorite repositories")
-            : T("Dashboard/_recentRepositories.Text", "Recent repositories"),
+        Text = entry.Group == RecentGroup
+            ? T("Dashboard/_recentRepositories.Text", "Recent repositories")
+            : entry.Category is { Length: > 0 } category
+                ? category
+                : T("Dashboard/_favouriteRepositories.Text", "Favorite repositories"),
         Foreground = B("App.TextDim"),
         FontSize = 11,
         FontWeight = FontWeight.SemiBold,
@@ -485,6 +537,236 @@ public sealed class DashboardView : UserControl
         _status.Text = string.Format(T("Removed from the list: {0}"), entry.Path);
     }
 
+    // ---- categories ----------------------------------------------------------------
+
+    // Refills "Categories ▸" for the row that was right-clicked.
+    //
+    // Upstream's submenu is "(none)", the categories in use, a separator, then
+    // "Add new..." (UserRepositoriesList.cs:762-802), and it marks the category the
+    // repository is already in by DISABLING it rather than ticking it — there is no
+    // checkmark anywhere in that file. Both of those are kept.
+    //
+    // The one deliberate departure is "(none)". Upstream wires it to
+    // AssignCategoryAsync(repo, null), and there — exactly as in this port's
+    // FavoritesService.AssignCategory — a blank category does not merely un-file the
+    // repository, it DELETES the favorite, because the category *is* the favorite
+    // flag (LocalRepositoryManager.cs:126-167, verified). A menu entry reading
+    // "(none)" that silently drops the repository out of the favorites list is a
+    // trap, so this port spells the consequence out instead: the item says "Remove
+    // from favorites", sits last behind its own separator (away from the category
+    // names, so a mis-click costs nothing), and is only offered when the row really
+    // is a favorite. The underlying call is the same one.
+    private void RebuildCategoryMenu()
+    {
+        List<Control> items = new();
+
+        if (_menuTarget is { } target)
+        {
+            string? current = CategoryFor(target.Path);
+            bool isFavorite = target.Group == FavoritesGroup;
+
+            foreach (string category in CategoriesInUse())
+            {
+                MenuItem item = new()
+                {
+                    Header = category,
+
+                    // Already filed here: nothing to do, so it is greyed out.
+                    IsEnabled = !string.Equals(category, current, StringComparison.CurrentCulture),
+                };
+                item.Click += (_, _) => _ = AssignCategoryAsync(target, category);
+                items.Add(item);
+            }
+
+            if (items.Count > 0)
+            {
+                items.Add(new Separator());
+            }
+
+            MenuItem add = new()
+            {
+                Header = T("UserRepositoriesList/tsmiCategoryAdd.Text", "Add new…"),
+            };
+            add.Click += (_, _) => _ = AddCategoryAsync(target);
+            items.Add(add);
+
+            if (isFavorite)
+            {
+                items.Add(new Separator());
+                MenuItem remove = new()
+                {
+                    Header = T("Remove from favorites"),
+                };
+                remove.Click += (_, _) => _ = RemoveFavoriteAsync(target);
+                items.Add(remove);
+            }
+        }
+
+        // A brand-new list every time: handing back the same instance would leave the
+        // already-realised menu containers showing the previous categories.
+        _categoriesItem.ItemsSource = items;
+    }
+
+    // Files the row under an existing category. On a row that is only "recent" this
+    // also makes it a favorite, which is upstream's behaviour: assigning a real
+    // category to a non-favorite adds it to the favorites.
+    private async Task AssignCategoryAsync(RepoEntry entry, string category)
+    {
+        _favoritesService.AssignCategory(entry.Path, category);
+        FavoritesChanged?.Invoke();
+        await RefreshAsync();
+        _status.Text = string.Format(T("Filed under “{0}”: {1}"), category, entry.Path);
+    }
+
+    private async Task AddCategoryAsync(RepoEntry entry)
+    {
+        string? category = await PromptCategoryNameAsync(CategoriesInUse());
+        if (string.IsNullOrWhiteSpace(category))
+        {
+            return;
+        }
+
+        await AssignCategoryAsync(entry, category.Trim());
+    }
+
+    // The honest form of upstream's "(none)": same call, name that matches the effect.
+    private async Task RemoveFavoriteAsync(RepoEntry entry)
+    {
+        _favoritesService.Remove(entry.Path);
+        FavoritesChanged?.Invoke();
+        await RefreshAsync();
+        _status.Text = string.Format(T("Removed from favorites: {0}"), entry.Path);
+    }
+
+    // Upstream's FormDashboardCategoryTitle: a caption prompt that rejects an empty
+    // name and a duplicate one. It reports both with a blocking message box; this
+    // shows the message inline and keeps the dialog open, which needs no second
+    // modal on top of a modal.
+    private async Task<string?> PromptCategoryNameAsync(IReadOnlyList<string> existing)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return null;
+        }
+
+        TaskCompletionSource<string?> tcs = new();
+
+        TextBox input = new()
+        {
+            Background = B("App.Control"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+        };
+
+        TextBlock error = new()
+        {
+            Foreground = B("App.DiffRemoved"),
+            FontSize = 12,
+            IsVisible = false,
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        Window dialog = new()
+        {
+            Title = T("FormDashboardCategoryTitle/$this.Text", "Enter Caption"),
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Background = B("App.Window"),
+        };
+
+        void Accept()
+        {
+            string name = input.Text?.Trim() ?? string.Empty;
+            if (name.Length == 0)
+            {
+                error.Text = T("Category name is required");
+                error.IsVisible = true;
+                return;
+            }
+
+            if (existing.Any(e => string.Equals(e, name, StringComparison.CurrentCulture)))
+            {
+                error.Text = T("Category name already exists");
+                error.IsVisible = true;
+                return;
+            }
+
+            tcs.TrySetResult(name);
+            dialog.Close();
+        }
+
+        Button ok = new() { Content = T("OK"), IsDefault = true, MinWidth = 84 };
+        Button cancel = new() { Content = T("Cancel"), IsCancel = true, MinWidth = 84 };
+        ok.Click += (_, _) => Accept();
+        cancel.Click += (_, _) =>
+        {
+            tcs.TrySetResult(null);
+            dialog.Close();
+        };
+        input.KeyDown += (_, e) =>
+        {
+            if (e.Key is Key.Enter or Key.Return)
+            {
+                e.Handled = true;
+                Accept();
+            }
+        };
+
+        // Closing by the window button / Escape must resolve the wait, not hang it.
+        dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+        StackPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { ok, cancel },
+        };
+
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 8 };
+        content.Children.Add(new TextBlock
+        {
+            Text = T("FormDashboardCategoryTitle/lblCategoryName.Text", "Category name"),
+            Foreground = B("App.Text"),
+        });
+        content.Children.Add(input);
+        content.Children.Add(error);
+        content.Children.Add(buttons);
+        dialog.Content = content;
+
+        input.AttachedToVisualTree += (_, _) => input.Focus();
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    // The categories currently in use, name-ordered, straight from the store.
+    //
+    // Read synchronously, on purpose: the menu must show the set that exists at the
+    // moment it opens, and a cache warmed in the background would occasionally paint
+    // a stale submenu. It is one small JSON file, and this view (RemoveTargetAsync)
+    // and MainWindow (LoadDashboardAsync) already read it the same way.
+    private IReadOnlyList<string> CategoriesInUse() => _favoritesService.Categories();
+
+    private void ReloadCategoryMap()
+    {
+        _categoryMap.Clear();
+        foreach (FavoriteRepo entry in _favoritesService.LoadEntries())
+        {
+            _categoryMap[entry.Path] = entry.HasCategory ? entry.Category : null;
+        }
+    }
+
+    private string? CategoryFor(string path)
+        => _categoryMap.TryGetValue(
+            path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            out string? category)
+            ? category
+            : null;
+
     private async Task RemoveMissingAsync()
     {
         int removed = await _recentService.RemoveMissingAsync();
@@ -631,6 +913,11 @@ public sealed class DashboardView : UserControl
         bool hasTarget = _menuTarget is not null;
         _showInFolderItem.IsEnabled = hasTarget && _menuTarget!.Exists;
         _removeItem.IsEnabled = hasTarget;
+
+        // Upstream hides the submenu outright when nothing is selected
+        // (UserRepositoriesList.cs:566-575).
+        _categoriesItem.IsVisible = hasTarget;
+        RebuildCategoryMenu();
 
         // Upstream only shows the bulk entry when there is something to clean up.
         _removeMissingItem.IsVisible = _entries.Any(entry => !entry.Exists);
@@ -861,5 +1148,11 @@ public sealed class DashboardView : UserControl
         ///  background probe says otherwise, so the list paints immediately.
         /// </summary>
         public bool Exists { get; set; } = true;
+
+        /// <summary>
+        ///  The category this favorite is filed under, or <c>null</c> for an
+        ///  uncategorised favorite / a merely recent entry. Drives the group caption.
+        /// </summary>
+        public string? Category { get; set; }
     }
 }
