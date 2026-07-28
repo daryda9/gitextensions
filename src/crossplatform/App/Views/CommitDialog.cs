@@ -1841,15 +1841,63 @@ public sealed class CommitDialog : Window
         }
     }
 
+    /// <summary>
+    ///  "Commit &amp; push". The commit form has no remote/branch pickers, so both are
+    ///  probed from the repository (<see cref="PushTrackingService"/>) instead of
+    ///  being guessed: the branch goes to its OWN configured remote, and <c>-u</c> is
+    ///  only ever passed after the same question the push dialog asks
+    ///  (<c>PushDialog.ResolveTrackingAsync</c>).
+    ///
+    ///  <para>This used to call the two-state <c>PushStreaming</c> overload, which
+    ///  hard-codes <c>track: true</c>: every push from here re-pointed the branch's
+    ///  upstream at whatever remote happened to be listed first.</para>
+    /// </summary>
     private async Task PushAsync()
     {
         string repo = _repoPath;
+        PushTracking tracking = await Task.Run(() => new PushTrackingService().Probe(repo));
+
+        if (tracking.Branch.Length == 0)
+        {
+            SetStatus(T("FormPush/_selectRemote.Text", "No branch to push (detached HEAD?)."));
+            return;
+        }
+
+        if (tracking.Remote.Length == 0)
+        {
+            SetStatus(T("FormPush/_selectRemote.Text", "Please select a remote repository"));
+            return;
+        }
+
+        // Only a branch with no upstream can be offered one, and cancelling the
+        // question abandons the push — exactly as the push dialog behaves.
+        bool track = false;
+        if (tracking.MayOfferTracking)
+        {
+            int answer = await ChooseAsync(
+                string.Format(
+                    T("FormPush/_updateTrackingReference.Text",
+                        "The branch {0} does not have a tracking reference. Do you want to add a tracking reference to {1}?"),
+                    tracking.Branch,
+                    $"{tracking.Remote}/{tracking.Branch}"),
+                T("FormPush/_pushCaption.Text", "Push"),
+                [T("Yes"), T("No")]);
+            if (answer < 0)
+            {
+                SetStatus(T("Push cancelled."));
+                return;
+            }
+
+            track = answer == 0;
+        }
+
+        string remote = tracking.Remote;
+        string branch = tracking.Branch;
+        bool setUpstream = track;
         await GitProcessDialog.RunStreamingAsync(this, T("FormPush/_pushCaption.Text", "Push"), emit =>
         {
-            var remotes = new RemoteService().ListRemotes(repo);
-            string remote = remotes.Count > 0 ? remotes[0].Name : "origin";
-            string branch = new RemoteService().GetCurrentBranch(repo);
-            var r = new RemoteService().PushStreaming(repo, remote, branch, false, emit, null);
+            RemoteOpResult r = new RemoteService().PushStreaming(
+                repo, remote, branch, PushForceMode.None, setUpstream, emit, null);
             return new GitProcessOutcome(r.Success, r.Output);
         });
     }
