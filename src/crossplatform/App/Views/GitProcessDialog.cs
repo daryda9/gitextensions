@@ -41,7 +41,7 @@ public sealed record GitProcessOutcome(bool Success, string Output, bool Aborted
 ///  supplied <paramref name="operation"/> runs on a background thread; all UI
 ///  mutation happens on the UI thread.
 /// </summary>
-public sealed class GitProcessDialog : Window
+public sealed class GitProcessDialog : Window, Services.IGitPtyHost
 {
     // Fixed console look, matching the original Windows dialog (intentionally
     // not theme-driven): warm beige background, near-black text.
@@ -57,10 +57,27 @@ public sealed class GitProcessDialog : Window
     private readonly CheckBox _keepOpen;
     private readonly Button _ok;
     private readonly Button _abort;
+    private readonly ProgressBar _progress;
+    private readonly TextBox _input;
+    private readonly Button _send;
+    private readonly TextBlock _inputLabel;
+    private readonly Grid _inputRow;
+
+    // The console content. Held in a terminal-aware buffer (not in the TextBox) so a
+    // \r progress update REWRITES the current line instead of appending another one,
+    // and so appending is not an O(n²) string concatenation.
+    private readonly Services.PtyTextBuffer _console = new();
+    private DispatcherTimer? _renderTimer;
+    private long _renderedVersion = -1;
 
     private DispatcherTimer? _pollTimer;
     private DispatcherTimer? _closeTimer;
     private int _consumed;
+
+    // PTY mode: the live terminal the git command runs on, so the input box can
+    // answer whatever git asks. null while nothing is running.
+    private Services.PtyProcess? _pty;
+    private bool _interactive;
 
     // Set for the streaming path: the scope holding the live git process, so Abort
     // can really kill it. null on the non-streaming path (the core Executable gives
@@ -125,7 +142,6 @@ public sealed class GitProcessDialog : Window
                 TextWrapping = TextWrapping.NoWrap,
                 FontFamily = new FontFamily("monospace"),
                 BorderThickness = new Thickness(0),
-                Text = "Command to be executed:",
             },
             ConsoleBackground,
             ConsoleForeground,
@@ -169,6 +185,61 @@ public sealed class GitProcessDialog : Window
         _abort.IsVisible = false;
         _abort.Click += (_, _) => AbortOperation();
 
+        // Progress reflects what git itself reports on its \r line: a real percentage
+        // when there is one, indeterminate otherwise. It is never advanced on a guess.
+        _progress = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Height = 6,
+            IsIndeterminate = true,
+            IsVisible = false,
+            Margin = new Thickness(0, 8, 0, 0),
+        };
+
+        // Answers to whatever git asks on the terminal: an SSH key passphrase, the
+        // host-key yes/no, an HTTPS username/password. Only shown on the PTY path,
+        // where there is a terminal to write to.
+        _inputLabel = new TextBlock
+        {
+            Text = "Reply:",
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        };
+
+        _input = new TextBox
+        {
+            Watermark = "type here to answer git (Enter sends)",
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _input.KeyDown += (_, e) =>
+        {
+            if (e.Key == global::Avalonia.Input.Key.Enter)
+            {
+                SendInput();
+                e.Handled = true;
+            }
+        };
+
+        _send = MakeButton("Send");
+        _send.MinWidth = 70;
+        _send.Margin = new Thickness(8, 0, 0, 0);
+        _send.Click += (_, _) => SendInput();
+
+        _inputRow = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
+            Margin = new Thickness(0, 8, 0, 0),
+            IsVisible = false,
+        };
+        Grid.SetColumn(_inputLabel, 0);
+        Grid.SetColumn(_input, 1);
+        Grid.SetColumn(_send, 2);
+        _inputRow.Children.Add(_inputLabel);
+        _inputRow.Children.Add(_input);
+        _inputRow.Children.Add(_send);
+
         StackPanel footRight = new()
         {
             Orientation = Orientation.Horizontal,
@@ -185,11 +256,25 @@ public sealed class GitProcessDialog : Window
 
         DockPanel body = new() { Margin = new Thickness(12) };
         DockPanel.SetDock(headerRow, Dock.Top);
+        DockPanel.SetDock(_progress, Dock.Bottom);
+        DockPanel.SetDock(_inputRow, Dock.Bottom);
         DockPanel.SetDock(footer, Dock.Bottom);
         body.Children.Add(headerRow);
         body.Children.Add(footer);
+        body.Children.Add(_inputRow);
+        body.Children.Add(_progress);
         body.Children.Add(_scroll);
         Content = body;
+
+        // One renderer for the whole dialog lifetime: it copies the console buffer into
+        // the TextBox only when it changed, which keeps a flood of progress updates
+        // (hundreds per second on a fast clone) from saturating the UI thread.
+        Opened += (_, _) => StartRenderer();
+        Closed += (_, _) =>
+        {
+            _renderTimer?.Stop();
+            _renderTimer = null;
+        };
 
         // Escape must not abandon a git process that is still running: it only
         // closes the dialog once the process has finished.
@@ -216,7 +301,19 @@ public sealed class GitProcessDialog : Window
     ///  it (stdout AND stderr, including fetch/push transfer progress). Unlike
     ///  <see cref="RunAsync"/>, no CommandLog poll timer runs — the operation (via
     ///  <see cref="Services.GitStreamRunner"/>) emits the command header itself.
+    ///  <para>By default the command runs on a PSEUDO-TERMINAL
+    ///  (<paramref name="interactive"/>), which is what makes git print its own
+    ///  transfer progress (the <c>\r</c>-updated "Receiving objects:  37%" line, shown
+    ///  here as one self-updating line plus a real progress bar) and what makes its
+    ///  questions answerable in the input box at the bottom: SSH key passphrase,
+    ///  host-key <c>yes/no</c>, HTTPS username/password. On that path — and only there
+    ///  — <c>GIT_TERMINAL_PROMPT</c> is 1; on pipes it stays 0, because a question
+    ///  nobody can see is a silent hang.</para>
     /// </summary>
+    /// <param name="interactive">
+    ///  <see langword="false"/> keeps the old piped, strictly non-interactive
+    ///  behaviour for operations that must never wait for a human.
+    /// </param>
     /// <param name="onExit">
     ///  Optional hook invoked on the UI thread each time the operation finishes
     ///  (never after an Abort). It receives this dialog — use it as the owner of any
@@ -229,9 +326,15 @@ public sealed class GitProcessDialog : Window
         string label,
         Func<Action<string>, GitProcessOutcome> operation,
         bool closeOnAuthFailure = false,
-        Func<GitProcessDialog, GitProcessOutcome, Task<bool>>? onExit = null)
+        Func<GitProcessDialog, GitProcessOutcome, Task<bool>>? onExit = null,
+        bool interactive = true)
     {
-        GitProcessDialog dialog = new(label) { _closeOnAuthFailure = closeOnAuthFailure, _onExit = onExit };
+        GitProcessDialog dialog = new(label)
+        {
+            _closeOnAuthFailure = closeOnAuthFailure,
+            _onExit = onExit,
+            _interactive = interactive,
+        };
         return dialog.RunStreamingInternalAsync(owner, operation);
     }
 
@@ -346,6 +449,13 @@ public sealed class GitProcessDialog : Window
             // operation starts registers itself and becomes killable.
             Services.GitStreamRunner.EnterScope(scope);
 
+            // …and, when interactive, bind this dialog as the terminal host: git then
+            // runs on a PTY, so it prints its own transfer progress and can ASK.
+            if (_interactive)
+            {
+                Services.GitStreamRunner.EnterPtyHost(this);
+            }
+
             GitProcessOutcome outcome;
             try
             {
@@ -434,10 +544,25 @@ public sealed class GitProcessDialog : Window
     // the end. Used by the streaming path (called on the UI thread).
     private void AppendLine(string line) => Append(line ?? string.Empty);
 
+    // ---- IGitPtyHost: the git command running on a pseudo-terminal ---------------
+    // Called from the operation's thread and from the PTY reader thread. Nothing here
+    // touches Avalonia state: the buffer is thread-safe and the renderer (UI thread)
+    // picks the changes up on its next tick.
+
+    void Services.IGitPtyHost.Started(Services.PtyProcess pty) => _pty = pty;
+
+    void Services.IGitPtyHost.Output(byte[] buffer, int count) => _console.Feed(buffer, count);
+
+    void Services.IGitPtyHost.Ended(int exitCode) => _pty = null;
+
     private async Task<GitProcessOutcome> RunInternalAsync(Window owner, Func<GitProcessOutcome> operation)
     {
         // Snapshot the log length so we only stream entries produced by this op.
         _consumed = SafeCommandCount();
+
+        // Header for the non-streaming path only: the streaming path gets it from
+        // GitStreamRunner, which echoes the exact command line it runs.
+        Append("Command to be executed:");
 
         Opened += (_, _) =>
         {
@@ -491,6 +616,9 @@ public sealed class GitProcessDialog : Window
         _finished = true;
         _ok.IsEnabled = true;
         _abort.IsEnabled = false;
+        _pty = null;
+        _input.Text = string.Empty;
+        Render();
 
         if (_aborted)
         {
@@ -619,12 +747,120 @@ public sealed class GitProcessDialog : Window
         }
     }
 
+    // Appends to the console buffer; the renderer copies it into the TextBox on its
+    // next tick (or immediately when the dialog is not open yet).
     private void Append(string text)
     {
-        _output.Text = string.IsNullOrEmpty(_output.Text)
-            ? text
-            : _output.Text + Environment.NewLine + text;
-        Dispatcher.UIThread.Post(() => _scroll.ScrollToEnd(), DispatcherPriority.Background);
+        _console.AppendLine(text ?? string.Empty);
+        if (_renderTimer is null)
+        {
+            Render();
+        }
+    }
+
+    private void StartRenderer()
+    {
+        if (_renderTimer is not null)
+        {
+            return;
+        }
+
+        _renderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+        _renderTimer.Tick += (_, _) => Render();
+        _renderTimer.Start();
+        Render();
+    }
+
+    // Copies the console buffer into the TextBox and derives the progress bar and the
+    // input affordances from the live (uncommitted) terminal line.
+    private void Render()
+    {
+        (string text, string currentLine, int? percent, long version) = _console.Snapshot();
+        bool running = !_finished && !_aborted;
+
+        if (version != _renderedVersion)
+        {
+            _renderedVersion = version;
+            _output.Text = text;
+            _scroll.ScrollToEnd();
+        }
+
+        if (running)
+        {
+            _progress.IsVisible = true;
+            if (percent is int p)
+            {
+                _progress.IsIndeterminate = false;
+                _progress.Value = p;
+            }
+            else
+            {
+                // No percentage in git's output: an indeterminate bar, never a
+                // fabricated one.
+                _progress.IsIndeterminate = true;
+            }
+        }
+        else
+        {
+            _progress.IsVisible = false;
+        }
+
+        if (!_interactive)
+        {
+            return;
+        }
+
+        _inputRow.IsVisible = true;
+        _input.IsEnabled = running && _pty is not null;
+        _send.IsEnabled = _input.IsEnabled;
+
+        // A terminal prompt is a line git left WITHOUT a newline, normally ending in
+        // ':' or '?'. Mask the box when what it asks for is a secret: ssh writes the
+        // passphrase prompt with echo off, so the answer is never echoed back into the
+        // console either.
+        bool prompting = running && LooksLikePrompt(currentLine);
+        bool secret = prompting && IsSecretPrompt(currentLine);
+        _input.PasswordChar = secret ? '•' : '\0';
+        _inputLabel.Text = prompting ? "git asks:" : "Reply:";
+        _inputLabel.Foreground = prompting ? Brushes.Goldenrod : Brush("App.TextDim", Brushes.Gray);
+        if (prompting && running)
+        {
+            _status.Text = currentLine.Trim();
+            _status.Foreground = Brushes.Goldenrod;
+        }
+    }
+
+    private static bool LooksLikePrompt(string line)
+    {
+        string trimmed = line.TrimEnd();
+        return trimmed.Length > 0 && (trimmed.EndsWith(':') || trimmed.EndsWith('?') || trimmed.EndsWith(']'));
+    }
+
+    private static bool IsSecretPrompt(string line)
+        => line.Contains("passphrase", StringComparison.OrdinalIgnoreCase)
+           || line.Contains("password", StringComparison.OrdinalIgnoreCase)
+           || line.Contains("PIN", StringComparison.Ordinal);
+
+    // Writes the typed answer to the terminal, followed by the newline the reading
+    // program is waiting for, and clears the box (so a passphrase does not linger).
+    private void SendInput()
+    {
+        Services.PtyProcess? pty = _pty;
+        string text = _input.Text ?? string.Empty;
+        _input.Text = string.Empty;
+        if (pty is null || !pty.IsRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            pty.Write(text + "\n");
+        }
+        catch (Exception ex)
+        {
+            Append("<could not send input: " + ex.Message + ">");
+        }
     }
 
     private static int SafeCommandCount()
