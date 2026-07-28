@@ -55,6 +55,41 @@ public sealed record WorkingTreeState(bool IsDirty, int ChangedCount)
 }
 
 /// <summary>
+///  How a remote branch name splits up, and which local branch tracks it:
+///  <c>origin/feature/x</c> → remote <c>origin</c>, short name <c>feature/x</c>,
+///  tracking branch whatever <c>branch.&lt;x&gt;.merge</c> points at (upstream
+///  <c>GitModule.GetLocalTrackingBranchName</c>, which falls back to the short name).
+/// </summary>
+public sealed record RemoteBranchNaming(string Remote, string ShortName, string TrackingBranch);
+
+/// <summary>
+///  Everything the checkout-branch form needs, loaded in one go off the UI thread.
+/// </summary>
+public sealed record CheckoutBranchData(
+    IReadOnlyList<string> LocalBranches,
+    IReadOnlyList<string> RemoteBranches,
+    IReadOnlyDictionary<string, RemoteBranchNaming> RemoteNaming,
+    WorkingTreeState WorkingTree,
+    LocalChangesAction DefaultLocalChanges)
+{
+    public static readonly CheckoutBranchData Empty =
+        new([], [], new Dictionary<string, RemoteBranchNaming>(), WorkingTreeState.Clean, LocalChangesAction.DontChange);
+
+    /// <summary>Whether a local branch of that exact name exists (case-insensitive, as upstream).</summary>
+    public bool LocalBranchExists(string name)
+        => name.Length > 0 && LocalBranches.Any(b => b.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    public RemoteBranchNaming NamingFor(string remoteBranch)
+        => RemoteNaming.TryGetValue(remoteBranch, out RemoteBranchNaming? n) ? n : new RemoteBranchNaming(string.Empty, remoteBranch, remoteBranch);
+}
+
+/// <summary>
+///  Result of the pre-flight check run before a <c>checkout -B</c>: whether the reset
+///  is a fast-forward and the merge base to name in the warning.
+/// </summary>
+public sealed record ResetFastForwardInfo(bool IsFastForward, string MergeBaseDisplay);
+
+/// <summary>
 ///  Branch/tag operations (list, checkout, create/delete branch, create/delete
 ///  tag, merge, rebase) implemented by reusing the Git Extensions core
 ///  (<see cref="GitModule"/>) via <see cref="GitContext.CreateModule"/>. All
@@ -229,6 +264,161 @@ public sealed class BranchTagService
 
         BranchTagResult result = Run(module, args);
         return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
+    }
+
+    /// <summary>
+    ///  The full upstream checkout, i.e. the one behind <c>FormCheckoutBranch</c>'s OK
+    ///  button: <see cref="Commands.CheckoutBranch"/> with the remote flag, the
+    ///  local-changes action and — for a remote branch — the new-branch mode.
+    ///  <para>Mapping done by the core argument builder
+    ///  (<c>src/app/GitCommands/Git/Commands.cs:10</c>):</para>
+    ///  <list type="bullet">
+    ///   <item><see cref="CheckoutNewBranchMode.Create"/> → <c>-b &lt;new&gt; --track</c>,
+    ///    a brand new local branch tracking the remote one;</item>
+    ///   <item><see cref="CheckoutNewBranchMode.Reset"/> → <c>-B &lt;new&gt;</c>, which
+    ///    <b>moves</b> an existing local branch onto the remote one (and creates it when
+    ///    it does not exist yet);</item>
+    ///   <item><see cref="CheckoutNewBranchMode.DontCreate"/> → nothing, so a remote ref
+    ///    lands on a <b>detached HEAD</b> — upstream's "Checkout the commit (in detached
+    ///    head)".</item>
+    ///  </list>
+    ///  <para>Both are ignored by the builder unless <paramref name="isRemote"/> is set,
+    ///  which is why a local checkout simply falls through to a plain checkout.</para>
+    ///  <para><see cref="LocalChangesAction.Stash"/> has no flag in the builder, so — as
+    ///  in <see cref="Checkout"/> and in upstream — the stash push happens first and the
+    ///  checkout then runs with <see cref="LocalChangesAction.DontChange"/>.</para>
+    ///  <para>Existing callers of <see cref="Checkout"/> and
+    ///  <see cref="CheckoutRemoteBranch"/> are untouched: this is an additional entry
+    ///  point, not a replacement.</para>
+    /// </summary>
+    public BranchTagResult CheckoutBranch(
+        string repoPath,
+        string branchName,
+        bool isRemote,
+        LocalChangesAction changesAction = LocalChangesAction.DontChange,
+        CheckoutNewBranchMode newBranchMode = CheckoutNewBranchMode.DontCreate,
+        string? newBranchName = null,
+        bool includeUntrackedInStash = true)
+    {
+        string branch = branchName?.Trim() ?? string.Empty;
+        if (branch.Length == 0)
+        {
+            return new BranchTagResult(false, "Branch name cannot be empty.");
+        }
+
+        string? newName = newBranchName?.Trim();
+        if (isRemote && newBranchMode != CheckoutNewBranchMode.DontCreate && string.IsNullOrEmpty(newName))
+        {
+            return new BranchTagResult(false, "Custom branch name is empty.");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string prefix = string.Empty;
+        if (changesAction == LocalChangesAction.Stash)
+        {
+            BranchTagResult stashed = StashLocalChanges(module, branch, includeUntrackedInStash);
+            if (!stashed.Success)
+            {
+                return stashed;
+            }
+
+            prefix = stashed.Output.TrimEnd() + Environment.NewLine;
+            changesAction = LocalChangesAction.DontChange;
+        }
+
+        IGitCommand command = Commands.CheckoutBranch(branch, isRemote, changesAction, newBranchMode, newName);
+        BranchTagResult result = Run(module, command.Arguments);
+        return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
+    }
+
+    /// <summary>
+    ///  Everything <see cref="Views.CheckoutBranchForm"/> needs to be built without
+    ///  touching git from the UI thread: the two branch lists, the local branch that
+    ///  tracks each remote one, the working-tree state and the stored default action.
+    /// </summary>
+    public CheckoutBranchData LoadCheckoutBranchData(string repoPath, LocalChangesAction defaultAction)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        List<string> local = [];
+        List<string> remote = [];
+        foreach (IGitRef gitRef in module.GetRefs(RefsFilter.Heads | RefsFilter.Remotes))
+        {
+            // "origin/HEAD" is a symbolic alias, never a checkout target — upstream
+            // filters it out of the contains-commit list for the same reason.
+            if (gitRef.IsRemote)
+            {
+                if (!gitRef.Name.EndsWith("/HEAD", StringComparison.Ordinal))
+                {
+                    remote.Add(gitRef.Name);
+                }
+            }
+            else
+            {
+                local.Add(gitRef.Name);
+            }
+        }
+
+        local.Sort(StringComparer.OrdinalIgnoreCase);
+        remote.Sort(StringComparer.OrdinalIgnoreCase);
+
+        IReadOnlyList<string> remotes = module.GetRemoteNames();
+
+        // remote branch -> (remote name, local tracking branch name). Computed here
+        // because GetLocalTrackingBranchName reads the local git config.
+        Dictionary<string, RemoteBranchNaming> naming = new(StringComparer.Ordinal);
+        foreach (string name in remote)
+        {
+            string remoteName = GitRefName.GetRemoteName(name, remotes);
+            string tracking = module.GetLocalTrackingBranchName(remoteName, name) ?? string.Empty;
+            string shortName = remoteName.Length > 0 && name.Length > remoteName.Length + 1
+                ? name[(remoteName.Length + 1)..]
+                : name;
+            naming[name] = new RemoteBranchNaming(remoteName, shortName, tracking);
+        }
+
+        return new CheckoutBranchData(local, remote, naming, LoadWorkingTreeState(repoPath), defaultAction);
+    }
+
+    /// <summary>
+    ///  Upstream's <c>lbChanges</c>: the ahead/behind string between the current
+    ///  checkout and <paramref name="branch"/>. Empty when there is no checkout yet.
+    /// </summary>
+    public string GetAheadBehindInfo(string repoPath, string branch)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId current = module.GetCurrentCheckout();
+        return current.IsZero ? string.Empty : module.GetCommitCountString(current, branch);
+    }
+
+    /// <summary>
+    ///  Whether moving <paramref name="localBranch"/> onto <paramref name="remoteBranch"/>
+    ///  with <c>checkout -B</c> is a fast-forward. Upstream warns before a non-fast-forward
+    ///  reset because it throws away commits (<c>FormCheckoutBranch.cs:293-317</c>): the
+    ///  reset is fast-forward exactly when the local tip <b>is</b> the merge base.
+    ///  Unknown refs count as fast-forward, so a missing local branch never warns.
+    /// </summary>
+    public ResetFastForwardInfo GetResetFastForwardInfo(string repoPath, string localBranch, string remoteBranch)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        if (string.IsNullOrWhiteSpace(localBranch) || string.IsNullOrWhiteSpace(remoteBranch))
+        {
+            return new ResetFastForwardInfo(true, string.Empty);
+        }
+
+        ObjectId localId = module.RevParse(localBranch);
+        ObjectId remoteId = module.RevParse(remoteBranch);
+        if (localId.IsZero || remoteId.IsZero)
+        {
+            return new ResetFastForwardInfo(true, string.Empty);
+        }
+
+        ObjectId mergeBase = module.GetMergeBase(localId, remoteId);
+        bool fastForward = localId == mergeBase;
+        string display = mergeBase.IsZero ? "merge base" : mergeBase.ToShortString();
+        return new ResetFastForwardInfo(fastForward, display);
     }
 
     /// <summary>
