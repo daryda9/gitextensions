@@ -121,11 +121,21 @@ public sealed class AboutDialog : Window
         // truncated) and cannot be copy-pasted into a browser as-is.
         credits.Children.Add(new TextBlock
         {
-            Text = "Some icons by Yusuke Kamiyamane (CCA3) — http://p.yusukekamiyamane.com/",
+            Text = "Some icons by Yusuke Kamiyamane (CCA3):",
             Foreground = dim,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 0),
+        });
+
+        // On its own line and NoWrap: on one line with the credit it wrapped straight
+        // after "http://", which is exactly the mangled look this was fixing.
+        credits.Children.Add(new TextBlock
+        {
+            Text = "http://p.yusukekamiyamane.com/",
+            Foreground = dim,
+            FontSize = 12,
+            TextWrapping = TextWrapping.NoWrap,
         });
 
         Button close = new()
