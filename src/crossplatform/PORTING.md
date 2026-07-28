@@ -1205,6 +1205,10 @@ priorità massima)
       riga selezionata), intermittente 1 volta su 5. Le prove successive alla build con la guardia
       non l'hanno più riprodotto: **verificare che la guardia copra anche questo stack**.
 
+- [ ] 0.30 `CommitDialog.cs:1830` — "Commit & push" chiama ancora la `PushStreaming` a due stati
+      e quindi passa **`-u` cablato**, ri-puntando l'upstream del ramo. Va instradato sullo stesso
+      probe `ResolveTrackingAsync` introdotto per il push dialog. *banale*
+
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
 
@@ -1345,7 +1349,7 @@ nel port, manca il punto d'accesso)
       `Commands.CheckoutBranch(branch, isRemote, localChanges, newBranchMode, newBranchName)`
       esiste già nel core (`Commands.cs:10`), `BranchTagService.cs:166` usa solo `Commands.Checkout`.
       Con esso arrivano reset-local-branch, create-with-custom-name e detached. *media/alta*
-- [ ] 4.2 **Flusso "push rejected"**: upstream rileva `! [rejected]`, offre pull default/rebase/
+- [x] 4.2 **Flusso "push rejected"**: upstream rileva `! [rejected]`, offre pull default/rebase/
       merge/force-with-lease e fa `Retry()` **in place** (`FormPush.cs:509-693`); il port ha solo
       il retry sulle credenziali. Più il **force a 3 stati** (`bool force` → `ForcePushOptions`,
       che sblocca anche 0.8) e la risoluzione della destinazione via `push.default`/
