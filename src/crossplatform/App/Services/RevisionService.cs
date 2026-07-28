@@ -109,6 +109,106 @@ public sealed record RevisionFilter
     /// <summary>Keep only commits referenced by a branch/tag → <c>--simplify-by-decoration</c>.</summary>
     public bool SimplifyByDecoration { get; init; }
 
+    /// <summary>
+    ///  Trace the single path in <see cref="PathFilter"/> across renames →
+    ///  <c>--follow --find-renames --find-copies</c>. This is what the file history
+    ///  needs: without it the walk stops dead at the commit that renamed the file.
+    ///
+    ///  <para>Only honoured when the path filter names EXACTLY ONE path (see
+    ///  <see cref="FollowsSinglePath"/>) — git rejects <c>--follow</c> with several
+    ///  pathspecs. It also constrains the walk itself, which
+    ///  <see cref="RevisionService.LoadRevisionPage"/> enforces; see the notes there.</para>
+    /// </summary>
+    public bool FollowRenames { get; init; }
+
+    /// <summary>
+    ///  Restrict rename/copy detection to identical content →
+    ///  <c>--find-renames="100%" --find-copies="100%"</c> instead of the default
+    ///  similarity heuristics. Inert unless <see cref="FollowRenames"/> applies.
+    ///  Upstream: <c>FormFileHistory</c>'s "Detect and follow - exact renames and
+    ///  copies only".
+    /// </summary>
+    public bool ExactRenamesAndCopiesOnly { get; init; }
+
+    /// <summary>
+    ///  Do not simplify the history to the commits that changed the path →
+    ///  <c>--full-history</c>. Upstream: the file history's "Show full history".
+    /// </summary>
+    public bool FullHistory { get; init; }
+
+    /// <summary>
+    ///  Prune the merges that <see cref="FullHistory"/> brings back to the ones that
+    ///  actually matter for the path → <c>--simplify-merges</c>. Emitted only
+    ///  together with <see cref="FullHistory"/>, exactly as upstream only enables the
+    ///  entry while "Show full history" is on.
+    /// </summary>
+    public bool SimplifyMerges { get; init; }
+
+    /// <summary>
+    ///  True when <see cref="FollowRenames"/> can actually be handed to git: it is
+    ///  asked for AND the path filter resolves to exactly one path.
+    /// </summary>
+    public bool FollowsSinglePath => FollowRenames && PathCount == 1;
+
+    /// <summary>
+    ///  How many paths <see cref="PathFilter"/> names. Whitespace separates paths
+    ///  (as upstream does), but not inside a quoted value — a single path containing
+    ///  spaces is one path, not several.
+    /// </summary>
+    public int PathCount => SplitPaths(PathFilter).Count;
+
+    // Splits the path filter into its paths, honouring single/double quotes so that
+    // "my dir/a b.txt" counts as ONE path.
+    private static List<string> SplitPaths(string value)
+    {
+        List<string> paths = [];
+        System.Text.StringBuilder current = new();
+        char quote = '\0';
+
+        foreach (char c in value)
+        {
+            if (quote != '\0')
+            {
+                if (c == quote)
+                {
+                    quote = '\0';
+                }
+                else
+                {
+                    current.Append(c);
+                }
+
+                continue;
+            }
+
+            if (c is '"' or '\'')
+            {
+                quote = c;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c))
+            {
+                if (current.Length > 0)
+                {
+                    paths.Add(current.ToString());
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(c);
+        }
+
+        if (current.Length > 0)
+        {
+            paths.Add(current.ToString());
+        }
+
+        return paths;
+    }
+
     /// <summary>True when at least one text pattern is set (author/committer/message/diff).</summary>
     public bool HasTextCriteria
         => Has(Author) || Has(Committer) || Has(Message) || Has(DiffContent);
@@ -157,6 +257,28 @@ public sealed record RevisionFilter
         if (SimplifyByDecoration)
         {
             args.Add("--simplify-by-decoration");
+        }
+
+        // Rename following, for the file history. Emitted only when the path filter
+        // names ONE path: git refuses --follow with several pathspecs, and passing it
+        // anyway would fail the whole walk.
+        if (FollowsSinglePath)
+        {
+            args.Add("--follow");
+            args.Add(ExactRenamesAndCopiesOnly
+                ? "--find-renames=\"100%\" --find-copies=\"100%\""
+                : "--find-renames --find-copies");
+        }
+
+        if (FullHistory)
+        {
+            args.Add("--full-history");
+
+            // Upstream only enables "Simplify merges" while "Show full history" is on.
+            if (SimplifyMerges)
+            {
+                args.Add("--simplify-merges");
+            }
         }
 
         if (Has(DateFrom))
@@ -523,8 +645,27 @@ public sealed class RevisionService
         //                    remote/tag/stash inclusion can be switched off).
         //   CurrentBranch -> ""             (git log defaults to HEAD)
         //   Filtered      -> the given refs (or HEAD when none supplied)
+        // --follow is measurably fragile (git 2.43): it needs a SINGLE starting commit
+        // and the default date order, or it silently stops at the commit that renamed
+        // the file instead of failing. Measured on a repo with one rename:
+        //   git log --follow -- sub/new.txt                       -> 6 commits (correct)
+        //   git log --follow HEAD --branches --remotes --tags -- … -> 3 commits (truncated)
+        //   git log --follow --topo-order HEAD -- …                -> 3 commits (truncated)
+        //   git log --follow --author-date-order HEAD -- …         -> 6 commits (fine)
+        // A truncated history looks exactly like a complete one, so the walk is forced
+        // into the shape that works rather than trusting the caller's toggles: the
+        // scope/remotes/tags/stashes and the topological order are IGNORED while
+        // following. The caller (RevisionGridView's file-history mode) hides the
+        // controls that would suggest otherwise.
+        bool following = criteria.FollowsSinglePath;
+
         string scopeArgs;
-        if (scope == BranchScope.AllBranches)
+        if (following)
+        {
+            // Empty: `git log` then walks HEAD, its single-starting-commit default.
+            scopeArgs = string.Empty;
+        }
+        else if (scope == BranchScope.AllBranches)
         {
             List<string> parts = ["HEAD", "--branches"];
             if (showRemotes)
@@ -561,16 +702,28 @@ public sealed class RevisionService
         // Walk order, mirroring the original's RevisionSortOrder (GitDefault /
         // AuthorDate / Topology): topological order wins when both are asked for,
         // since it is the stronger constraint.
-        string orderArg = topoOrder
+        string orderArg = topoOrder && !following
             ? " --topo-order"
             : authorDateOrder ? " --author-date-order" : string.Empty;
 
         // --skip selects the page. git applies it BEFORE --max-count, and the walk is
         // deterministic for a fixed ref set + order, so consecutive pages line up into
         // exactly the list a single big --max-count would have produced.
-        string skipArg = skip > 0 ? $" --skip={skip}" : string.Empty;
+        //
+        // …EXCEPT while following renames: --skip and --follow do not compose. Measured
+        // on the same repo (rename at position 3 of 6):
+        //   --follow --skip=1 -> 5 commits, --skip=2 -> 4 commits (both correct)
+        //   --follow --skip=3 -> EMPTY, --skip=4 -> EMPTY (should be 3 and 2)
+        // git drops the whole tail once the skip walks past the rename, so a page
+        // beyond it would report "end of history". The page is therefore taken by
+        // walking from the top with a wider window and dropping the first `skip` rows
+        // HERE — one file's history is short enough for that to be cheap, and it keeps
+        // the caller's paging contract identical.
+        int localSkip = following ? Math.Max(0, skip) : 0;
+        int windowCount = following ? maxCount + localSkip : maxCount;
+        string skipArg = skip > 0 && !following ? $" --skip={skip}" : string.Empty;
 
-        string countArgs = $"--max-count={maxCount}{skipArg}{orderArg}";
+        string countArgs = $"--max-count={windowCount}{skipArg}{orderArg}";
 
         // Order matters: options first (paging, then the filter criteria), then the
         // revisions to walk. The path filter is NOT part of this string — it must go
@@ -593,8 +746,12 @@ public sealed class RevisionService
             autostashLabel: string.Empty,
             cancellationToken: cancellationToken);
 
-        List<RevisionRow> rows = new(collector.Revisions.Count);
-        foreach (GitRevision revision in collector.Revisions)
+        // localSkip is 0 unless renames are being followed, where the page window was
+        // widened above instead of using --skip; dropping the head here yields exactly
+        // the page the caller asked for, so `rows.Count >= maxCount` below still means
+        // "the page came back full".
+        List<RevisionRow> rows = new(Math.Max(0, collector.Revisions.Count - localSkip));
+        foreach (GitRevision revision in collector.Revisions.Skip(localSkip))
         {
             string hash = revision.ObjectId.ToString();
             string[] parents = revision.ParentIds is { Count: > 0 } parentIds
