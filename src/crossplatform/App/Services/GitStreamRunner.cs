@@ -326,6 +326,262 @@ public static class GitStreamRunner
 }
 
 /// <summary>
+///  Turns the raw byte stream of a PTY into the text of an append-only console,
+///  honouring the two control characters git relies on for progress:
+///  <list type="bullet">
+///   <item><c>\n</c> commits the current line;</item>
+///   <item><c>\r</c> rewinds to column 0, so the next write OVERWRITES the line.</item>
+///  </list>
+///  That is what makes <c>Receiving objects:  37% (…)</c> a single line that keeps
+///  updating instead of one line per refresh. ANSI escape sequences (CSI/OSC) are
+///  stripped, <c>CSI K</c> / <c>CSI 2K</c> erase the line, backspace and tabs behave.
+///  <para>A full terminal grid (<see cref="TerminalEmulator"/>) is deliberately NOT
+///  used here: this console is an unbounded scrollback of arbitrarily long lines, not
+///  a fixed cols×rows screen, and a grid would wrap/truncate git's output at the
+///  emulator width.</para>
+///  <para>Thread-safe: <see cref="Feed"/> runs on the PTY reader thread while the UI
+///  thread polls <see cref="Snapshot"/>.</para>
+/// </summary>
+public sealed class PtyTextBuffer
+{
+    private const int MaxCommitted = 2_000_000;
+
+    private readonly object _sync = new();
+    private readonly System.Text.Decoder _decoder = Encoding.UTF8.GetDecoder();
+    private readonly StringBuilder _committed = new();
+    private readonly StringBuilder _line = new();
+    private char[] _chars = new char[8192];
+    private int _col;
+    private long _version;
+
+    // Escape-sequence state machine: 0 = ground, 1 = saw ESC, 2 = in CSI, 3 = in OSC.
+    private int _escState;
+
+    /// <summary>Incremented on every change, so a poller can skip identical frames.</summary>
+    public long Version
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _version;
+            }
+        }
+    }
+
+    /// <summary>Feeds raw terminal bytes. <paramref name="buffer"/> may be reused afterwards.</summary>
+    public void Feed(byte[] buffer, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            int needed = _decoder.GetCharCount(buffer, 0, count, flush: false);
+            if (_chars.Length < needed)
+            {
+                _chars = new char[Math.Max(needed, _chars.Length * 2)];
+            }
+
+            int produced = _decoder.GetChars(buffer, 0, count, _chars, 0, flush: false);
+            for (int i = 0; i < produced; i++)
+            {
+                Consume(_chars[i]);
+            }
+
+            _version++;
+        }
+    }
+
+    /// <summary>Appends a line produced outside the PTY (command echo, notes).</summary>
+    public void AppendLine(string text)
+    {
+        lock (_sync)
+        {
+            if (_line.Length > 0)
+            {
+                CommitLine();
+            }
+
+            _committed.Append(text).Append('\n');
+            Trim();
+            _version++;
+        }
+    }
+
+    /// <summary>
+    ///  The console text, the live (uncommitted) last line and the percentage found on
+    ///  it, all consistent with each other.
+    /// </summary>
+    public (string Text, string CurrentLine, int? Percent, long Version) Snapshot()
+    {
+        lock (_sync)
+        {
+            string current = _line.ToString();
+            string text = _committed.Length == 0
+                ? current
+                : (current.Length == 0 ? _committed.ToString() : _committed + current);
+            return (text, current, ParsePercent(current), _version);
+        }
+    }
+
+    private void Consume(char c)
+    {
+        switch (_escState)
+        {
+            case 1:
+                _escState = c switch
+                {
+                    '[' => 2,
+                    ']' => 3,
+                    // Two-character sequences (ESC =, ESC >, ESC M, …) end here; a
+                    // charset selector (ESC ( B) leaves one stray byte, harmless.
+                    _ => 0,
+                };
+                return;
+
+            case 2:
+                // CSI ends at the first final byte in 0x40..0x7E.
+                if (c is >= (char)0x40 and <= (char)0x7E)
+                {
+                    if (c == 'K')
+                    {
+                        // Erase in line: git uses it to clear leftovers of a longer
+                        // previous progress line.
+                        _line.Length = Math.Min(_line.Length, _col);
+                    }
+
+                    _escState = 0;
+                }
+
+                return;
+
+            case 3:
+                // OSC ends at BEL or at ST (ESC \); treating ESC as a terminator is
+                // enough for the title strings git/ssh emit.
+                if (c is '\a' or (char)0x1b)
+                {
+                    _escState = 0;
+                }
+
+                return;
+        }
+
+        switch (c)
+        {
+            case (char)0x1b:
+                _escState = 1;
+                return;
+
+            case '\n':
+                CommitLine();
+                return;
+
+            case '\r':
+                _col = 0;
+                return;
+
+            case '\b':
+                _col = Math.Max(0, _col - 1);
+                return;
+
+            case '\t':
+                int target = ((_col / 8) + 1) * 8;
+                while (_col < target)
+                {
+                    Put(' ');
+                }
+
+                return;
+
+            case '\a':
+                return;
+
+            default:
+                if (c >= ' ')
+                {
+                    Put(c);
+                }
+
+                return;
+        }
+    }
+
+    private void Put(char c)
+    {
+        while (_line.Length < _col)
+        {
+            _line.Append(' ');
+        }
+
+        if (_col < _line.Length)
+        {
+            _line[_col] = c;
+        }
+        else
+        {
+            _line.Append(c);
+        }
+
+        _col++;
+    }
+
+    private void CommitLine()
+    {
+        _committed.Append(_line).Append('\n');
+        _line.Clear();
+        _col = 0;
+        Trim();
+    }
+
+    private void Trim()
+    {
+        if (_committed.Length > MaxCommitted)
+        {
+            _committed.Remove(0, _committed.Length - (MaxCommitted / 2));
+        }
+    }
+
+    /// <summary>
+    ///  The last <c>NN%</c> on the line, which is where git puts the share of the
+    ///  current phase ("Receiving objects:  37% (…)"). <see langword="null"/> when the
+    ///  line carries no percentage — the dialog then shows an indeterminate bar rather
+    ///  than inventing a value.
+    /// </summary>
+    internal static int? ParsePercent(string line)
+    {
+        for (int i = line.Length - 1; i >= 0; i--)
+        {
+            if (line[i] != '%')
+            {
+                continue;
+            }
+
+            int end = i;
+            int start = i;
+            while (start > 0 && char.IsAsciiDigit(line[start - 1]))
+            {
+                start--;
+            }
+
+            if (start == end)
+            {
+                continue;
+            }
+
+            if (int.TryParse(line.AsSpan(start, end - start), out int value) && value is >= 0 and <= 100)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+}
+
+/// <summary>
 ///  Consumer of a git command running on a pseudo-terminal: it receives the raw
 ///  terminal byte stream (which contains <c>\r</c> progress updates and ANSI escapes)
 ///  and the live <see cref="PtyProcess"/>, so it can write answers to prompts.
