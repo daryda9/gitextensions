@@ -972,6 +972,22 @@ public sealed class MainWindow : Window
         // the original opens the commit-diff window. The artificial rows already
         // open the commit dialog on single click, so they are not re-raised here.
         _revisions.RevisionActivated += _ => Dispatcher.UIThread.Post(() => _bottom.SelectedItem = _commitInfoTab);
+
+        // The two artificial rows are not commits, so RevisionSelected is not raised
+        // for them. Without this the bottom tabs kept showing the PREVIOUS commit —
+        // stale content, which is worse than empty. We clear what can be cleared;
+        // Diff and Commit details still lack a placeholder API and the index/worktree
+        // modes in DiffService (queue item 1.14b), so they are marked stale and left
+        // to be re-filled by the next real selection rather than lying.
+        _revisions.ArtificialRevisionSelected += (_, _) =>
+        {
+            _detailLoadedFor = null;
+            _diffLoadedFor = null;
+            _fileTreeLoadedFor = null;
+            _gpgLoadedFor = null;
+            _fileTree.Clear();
+            _gpg.Clear();
+        };
         _fileHistory.RevisionSelected += OnRevisionSelected;
         // Double click on a history row behaves like the grid's own activation: select
         // that commit and bring the bottom panel onto it.

@@ -1222,13 +1222,25 @@ priorità massima)
       e quindi passa **`-u` cablato**, ri-puntando l'upstream del ramo. Va instradato sullo stesso
       probe `ResolveTrackingAsync` introdotto per il push dialog. *banale*
 
-- [ ] 0.31 **CRASH aprendo un repository dalla Dashboard** (clic su una tile o Invio):
+- [x] 0.31 **CRASH aprendo un repository dalla Dashboard** (clic su una tile o Invio):
       `NullReferenceException` in `RevisionGridView.IsArtificial` (`:984`, `row` è **null**) da
       `BuildRow` (`:3873`) via `FuncDataTemplate`. È la trappola già nota: col **riciclo dei
       container disabilitato** Avalonia re-invoca il template con item `null` quando svuota un
       container (stesso difetto che causò il crash di `BlameView` in M51). Verificato
       **preesistente** ricompilando con la baseline: non introdotto dalle correzioni della
       dashboard. Assegnato al proprietario di `RevisionGridView.cs`. *grave, banale*
+
+- [ ] 1.14b **Righe artificiali, seconda metà.** La griglia ora alza
+      `ArtificialRevisionSelected` con un contratto scritto, e l'host pulisce File tree e GPG e
+      marca stantii tutti i tab — quindi **il contenuto del commit precedente non resta più lì**.
+      Manca il contenuto vero: **Diff** (`git diff` per Working directory, `git diff --cached` per
+      Commit index) e **File tree** su worktree/index richiedono le modalità index/worktree in
+      `DiffService`, che non esistono (già censite come "alta" nell'audit E/D1); **Commit details**
+      e **GPG** non hanno un oggetto commit, quindi vogliono un placeholder che nomini la riga —
+      e nessuna delle due view espone oggi un'API per mostrarlo. *media*
+- [ ] 0.32 Con la finestra stretta il box "Filter:" finisce nel menu di overflow `»`, e lì il
+      mirror **non riceve i caratteri digitati** (il `MenuItem` li mangia). Preesistente, serve un
+      fix del fuoco dentro un controllo ospitato in un `MenuItem`. *banale/media*
 
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
@@ -1279,7 +1291,7 @@ nel port, manca il punto d'accesso)
       (`:1565-1568`) lancia *sempre* `ShowCommit` su Commit+Diff+File tree+GPG → a ogni movimento
       di selezione partono 4 catene di git (incluso `--show-signature` e `ls-tree -r`) di cui 3
       invisibili. Upstream carica solo il tab selezionato (`FormBrowse.cs:1240,1251,1306`). *banale*
-- [ ] 1.14 **Righe artificiali (Working directory / Commit index) non raggiungono il pannello**:
+- [~] 1.14 **Righe artificiali (Working directory / Commit index) non raggiungono il pannello**:
       `RevisionGridView.cs:513-531` esce prima di emettere l'evento e `ArtificialRowActivated`
       non ha subscriber → i tab restano sul commit precedente, cioè mostrano contenuto **stantio**
       (il caso peggiore). *banale per Commit, media per Diff/File tree*
@@ -1386,7 +1398,7 @@ nel port, manca il punto d'accesso)
       delete, show in file tree, filter in grid, file history, blame, gitignore/exclude,
       skip-worktree/assume-unchanged, blocco submodule). Più il **filtro regex di selezione**
       (visibile nello screenshot) e la validazione/persistenza del messaggio. *alta*
-- [ ] 4.5 **Il box "Filter:" della toolbar non filtra via git**: è un setaccio in memoria sulle
+- [x] 4.5 **Il box "Filter:" della toolbar non filtra via git**: è un setaccio in memoria sulle
       righe già caricate (`ApplyFilterCore`, `Matches`), mentre upstream applica il filtro **a
       git** su Invio con un dropdown "Filter type" (message/committer/author/diff contains) e una
       MRU di 30 voci. `RevisionFilter` supporta già tutti quei campi: è wiring + persistenza. Più
