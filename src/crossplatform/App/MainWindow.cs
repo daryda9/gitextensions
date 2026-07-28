@@ -1387,46 +1387,61 @@ public sealed class MainWindow : Window
             _menu.SetSelectionState(count, allNonArtificial);
         };
 
-        // Commit-targeted operations on the revision grid.
-        _revisions.AddCommitCommand("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
-        _revisions.AddCommitCommand("Cherry-pick",
+        // Commit-targeted operations on the revision grid — registered on BOTH grids:
+        // the repository one and the second instance inside the File history tab, whose
+        // row menu is the same menu. Registering only on the first left its Reset /
+        // Advanced / Compare / Bisect submenus empty in that tab (they are built from
+        // these registrations), i.e. dead entries.
+        //
+        // The file-history view registers a few of these itself, before this runs, so
+        // that its own file-aware handlers ("Save as", "Copy path") and its
+        // host-or-local revert/cherry-pick contract keep priority: the grid keeps the
+        // FIRST registration of a given header and drops later duplicates.
+        void Register(string header, Action<string> handler)
+        {
+            _revisions.AddCommitCommand(header, handler);
+            _fileHistory.AddCommitCommand(header, handler);
+        }
+
+        Register("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
+        Register("Cherry-pick",
             hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success));
-        _revisions.AddCommitCommand("Reset (soft) to here",
+        Register("Reset (soft) to here",
             hash => RunOp("Reset soft", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Soft).Success));
-        _revisions.AddCommitCommand("Reset (mixed) to here",
+        Register("Reset (mixed) to here",
             hash => RunOp("Reset mixed", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Mixed).Success));
-        _revisions.AddCommitCommand("Reset (HARD) to here…",
+        Register("Reset (HARD) to here…",
             hash => RunOp("Reset hard", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Hard).Success, confirm: true));
-        _revisions.AddCommitCommand("Create branch here…", hash => _ = CreateBranchHereAsync(hash));
-        _revisions.AddCommitCommand("Create tag here…", hash => _ = CreateTagHereAsync(hash));
-        _revisions.AddCommitCommand("Revert this commit…", RevertThisCommit);
-        _revisions.AddCommitCommand("Archive this commit…", hash => _ = ArchiveThisCommitAsync(hash));
+        Register("Create branch here…", hash => _ = CreateBranchHereAsync(hash));
+        Register("Create tag here…", hash => _ = CreateTagHereAsync(hash));
+        Register("Revert this commit…", RevertThisCommit);
+        Register("Archive this commit…", hash => _ = ArchiveThisCommitAsync(hash));
 
         // History-rewriting commit edits on the current branch. Each is guarded by a
         // dirty-tree refusal + a confirm dialog, and rebase-backed paths abort cleanly
         // on failure so the repository is never left mid-rebase (see CommitEditService).
-        _revisions.AddCommitCommand("Reword commit…", hash => _ = RewordCommitAsync(hash));
-        _revisions.AddCommitCommand("Squash with previous…", hash => _ = SquashOrFixupAsync(hash, squash: true));
-        _revisions.AddCommitCommand("Fixup with previous…", hash => _ = SquashOrFixupAsync(hash, squash: false));
+        Register("Reword commit…", hash => _ = RewordCommitAsync(hash));
+        Register("Squash with previous…", hash => _ = SquashOrFixupAsync(hash, squash: true));
+        Register("Fixup with previous…", hash => _ = SquashOrFixupAsync(hash, squash: false));
 
         // Compare actions. The grid is single-select, so we mirror the original's
         // two-commit compare with a remembered BASE + "Compare to BASE" pair, plus
         // a direct commit-vs-working-tree compare. Results drive the shared DiffView.
-        _revisions.AddCommitCommand("Select as BASE to compare", SelectCompareBase);
-        _revisions.AddCommitCommand("Compare to BASE", CompareToBase);
-        _revisions.AddCommitCommand("Compare to working directory", CompareToWorkingDirectory);
-        _revisions.AddCommitCommand("Compare to branch…", hash => _ = CompareToBranchAsync(hash));
+        Register("Select as BASE to compare", SelectCompareBase);
+        Register("Compare to BASE", CompareToBase);
+        Register("Compare to working directory", CompareToWorkingDirectory);
+        Register("Compare to branch…", hash => _ = CompareToBranchAsync(hash));
 
         // Bisect: mark the selected commit good/bad/skip (auto-starting a session
         // if none is in progress), plus a stop/reset entry. Each surfaces git's
         // output — the next commit to test, or the final "first bad commit".
-        _revisions.AddCommitCommand("Bisect: mark good",
+        Register("Bisect: mark good",
             hash => RunBisect("Bisect good", () => _bisect.MarkGood(_repoPath!, hash), ensureStarted: true));
-        _revisions.AddCommitCommand("Bisect: mark bad",
+        Register("Bisect: mark bad",
             hash => RunBisect("Bisect bad", () => _bisect.MarkBad(_repoPath!, hash), ensureStarted: true));
-        _revisions.AddCommitCommand("Bisect: skip",
+        Register("Bisect: skip",
             hash => RunBisect("Bisect skip", () => _bisect.Skip(_repoPath!, hash), ensureStarted: true));
-        _revisions.AddCommitCommand("Bisect: stop/reset",
+        Register("Bisect: stop/reset",
             _ => RunBisect("Bisect reset", () => _bisect.Reset(_repoPath!), ensureStarted: false));
     }
 

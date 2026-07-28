@@ -219,6 +219,22 @@ public sealed class FileHistoryView : UserControl
             : _filePath ?? string.Empty;
 
     /// <summary>
+    ///  Registers a commit-targeted command on the embedded grid's row menu, so the
+    ///  shell can give this tab the same operations it gives the repository grid
+    ///  (checkout, resets, compare, bisect, …). Without them the menu's Reset /
+    ///  Advanced / Compare / Bisect submenus — which are built from exactly these
+    ///  registrations — would open empty.
+    ///
+    ///  <para>This view registers its own file-aware entries in the constructor, i.e.
+    ///  BEFORE the shell gets a chance to, and the grid keeps the first registration
+    ///  of a given header: "Revert this commit…" / "Cherry-pick" therefore keep going
+    ///  through <see cref="RevertCommitRequested"/> /
+    ///  <see cref="CherryPickCommitRequested"/> (which the shell handles anyway).</para>
+    /// </summary>
+    public void AddCommitCommand(string header, Action<string> handler)
+        => _grid.AddCommitCommand(header, handler);
+
+    /// <summary>
     ///  The name the file had in <paramref name="hash"/>, or the current name when
     ///  git could not name it there. Upstream's
     ///  <c>FormFileHistory.GetFileNameForRevision</c>; kept public because it is what
