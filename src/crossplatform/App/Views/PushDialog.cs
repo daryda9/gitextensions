@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
+using GitExtensions.Extensibility.Git;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -39,7 +40,29 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class PushDialog : Window
 {
+    /// <summary>
+    ///  One attempt at a push. <paramref name="forceOverride"/> lets the SAME
+    ///  operation be replayed harder than the dialog's check boxes asked for —
+    ///  that is what the "Force push with lease" recovery from a rejected push
+    ///  needs, and it mirrors upstream mutating <c>form.ProcessArguments</c> to
+    ///  insert <c>--force-with-lease</c> before calling <c>Retry()</c>.
+    /// </summary>
+    private delegate RemoteOpResult PushOperation(
+        Action<string> emit,
+        GitCredentials? credentials,
+        PushForceMode? forceOverride);
+
+    /// <summary>
+    ///  What the "push was rejected" recovery needs to know to offer a pull. Non-null
+    ///  only for the case upstream supports: the <em>current</em> branch being pushed
+    ///  to a configured <em>remote</em> from the "Push branches" tab. A URL target has
+    ///  no tracking configuration to pull from, and a branch that is not checked out
+    ///  cannot be pulled into — upstream bails out of <c>HandlePushOnExit</c> for both.
+    /// </summary>
+    private sealed record PushRejectionContext(string Remote, string LocalBranch, string RemoteBranch);
+
     private readonly string _repoPath;
+    private readonly string _currentBranch;
 
     private readonly RadioButton _remoteRadio;
     private readonly RadioButton _urlRadio;
@@ -59,6 +82,7 @@ public sealed class PushDialog : Window
     private readonly ComboBox _remoteBranchCombo;
     private readonly CheckBox _forceWithLease;
     private readonly CheckBox _forcePush;
+    private readonly CheckBox _replaceTrackingReference;
     private readonly CheckBox _pushAllTagsOption;
     private readonly CheckBox _recursiveSubmodules;
     private readonly TextBlock _branchFromLabel;
@@ -102,6 +126,17 @@ public sealed class PushDialog : Window
     /// </summary>
     private IReadOnlyDictionary<string, IReadOnlyList<string>> _remoteBranches;
 
+    /// <summary>
+    ///  Each local branch's configured upstream (<c>main</c> → <c>origin/main</c>),
+    ///  empty when it has none. Read from the same <c>for-each-ref</c> snapshot the
+    ///  "Push multiple branches" grid uses, so deciding whether a push should write a
+    ///  tracking reference costs no extra git call.
+    /// </summary>
+    private readonly IReadOnlyDictionary<string, string> _branchUpstreams;
+
+    /// <summary>Configured remote names, used to spot a local branch named after one.</summary>
+    private IReadOnlyList<string> _remoteNames;
+
     /// <summary>A row of the "Push multiple branches" grid.</summary>
     private sealed record MultiBranchRow(string Local, CheckBox Check, TextBox Destination);
 
@@ -122,7 +157,17 @@ public sealed class PushDialog : Window
     private PushDialog(string repoPath, PushData data)
     {
         _repoPath = repoPath ?? string.Empty;
+        _currentBranch = data.CurrentBranch;
         _remoteBranches = data.RemoteBranches;
+        _remoteNames = [.. data.Remotes.Select(r => r.Name)];
+
+        Dictionary<string, string> upstreams = new(StringComparer.Ordinal);
+        foreach (PushBranchRow row in data.BranchRows)
+        {
+            upstreams[row.Local] = row.Upstream ?? string.Empty;
+        }
+
+        _branchUpstreams = upstreams;
 
         Width = 660;
         Height = 520;
@@ -252,6 +297,7 @@ public sealed class PushDialog : Window
         _forceWithLease = MakeCheck();
         _forcePush = MakeCheck();
         MakeExclusive(_forceWithLease, _forcePush);
+        _replaceTrackingReference = MakeCheck();
         _pushAllTagsOption = MakeCheck();
         _recursiveSubmodules = MakeCheck();
 
@@ -270,6 +316,7 @@ public sealed class PushDialog : Window
                         Spacing = 12,
                         Children = { _forceWithLease, _forcePush },
                     },
+                    _replaceTrackingReference,
                     _pushAllTagsOption,
                     _recursiveSubmodules,
                 },
@@ -495,6 +542,7 @@ public sealed class PushDialog : Window
         _showOptions.Header = T("FormPush/ShowOptions.Text", "Show options");
         _forceWithLease.Content = ForceWithLeaseCaption;
         _forcePush.Content = ForcePushCaption;
+        _replaceTrackingReference.Content = T("FormPush/ReplaceTrackingReference.Text", "Replace tracking reference");
         _pushAllTagsOption.Content = PushAllTagsCaption;
         _recursiveSubmodules.Content = T("FormPush/label2.Text", "Recursive submodules");
 
@@ -940,17 +988,35 @@ public sealed class PushDialog : Window
         // long-standing RemoteService path; anything extra (URL target, --tags,
         // submodule recursion, a renamed destination) goes through the refspec
         // service, which builds the single equivalent `git push`.
+        // The recovery from a rejected push only applies where upstream applies it:
+        // the current branch, pushed to a configured remote (see PushRejectionContext).
+        PushRejectionContext? rejection = !isUrl && !string.IsNullOrEmpty(local)
+            && string.Equals(local, _currentBranch, StringComparison.Ordinal)
+                ? new PushRejectionContext(target, local, remoteBranch)
+                : null;
+
+        // Cancelling the tracking question abandons the whole push, as upstream does.
+        if (await ResolveTrackingAsync(local, remoteBranch, isUrl) is not { } track)
+        {
+            return;
+        }
+
         if (!isUrl && !allTags && !recurse
             && string.Equals(local, remoteBranch, StringComparison.Ordinal))
         {
-            await RunPushAsync(T("FormPush/_pushCaption.Text", "Push"), (emit, creds) =>
-                new RemoteService().PushStreaming(repo, target, remoteBranch, force, emit, creds));
+            await RunPushAsync(
+                T("FormPush/_pushCaption.Text", "Push"),
+                (emit, creds, over) => new RemoteService().PushStreaming(repo, target, remoteBranch, over ?? force, track, emit, creds),
+                rejection);
             return;
         }
 
         string refspec = string.IsNullOrEmpty(local) ? remoteBranch : $"{local}:refs/heads/{remoteBranch}";
-        await RunPushAsync(T("FormPush/_pushCaption.Text", "Push"), (emit, creds) => new PushRefsService().PushRefsStreaming(
-            repo, target, [refspec], force, allTags, setUpstream: !isUrl, recurse, emit, creds));
+        await RunPushAsync(
+            T("FormPush/_pushCaption.Text", "Push"),
+            (emit, creds, over) => new PushRefsService().PushRefsStreaming(
+                repo, target, [refspec], over ?? force, allTags, setUpstream: track, recurse, emit, creds),
+            rejection);
     }
 
     private async Task PushTagsAsync(string target)
@@ -971,8 +1037,8 @@ public sealed class PushDialog : Window
         // plain ForcePushOptions.Force (FormPush.GetForcePushOption), and so do we.
         PushForceMode force = _tagsForce.IsChecked == true ? PushForceMode.Force : PushForceMode.None;
         string repo = _repoPath;
-        await RunPushAsync(T("FormPush/TagTab.Text", "Push tags"), (emit, creds) => new PushRefsService().PushRefsStreaming(
-            repo, target, refspecs, force, allTags: all, setUpstream: false, recurseSubmodules: false, emit, creds));
+        await RunPushAsync(T("FormPush/TagTab.Text", "Push tags"), (emit, creds, over) => new PushRefsService().PushRefsStreaming(
+            repo, target, refspecs, over ?? force, allTags: all, setUpstream: false, recurseSubmodules: false, emit, creds));
     }
 
     private async Task PushMultipleBranchesAsync(string target)
@@ -1020,10 +1086,15 @@ public sealed class PushDialog : Window
         }
 
         // Snapshot the control values on the UI thread (see PushSingleBranchAsync).
-        bool isUrl = TargetIsUrl();
         string repo = _repoPath;
-        await RunPushAsync(T("FormPush/BranchTab.Text", "Push branches"), (emit, creds) => new PushRefsService().PushRefsStreaming(
-            repo, target, refspecs, force, allTags: false, setUpstream: !isUrl, recurseSubmodules: false, emit, creds));
+
+        // NO -u here, deliberately. Upstream's multi-branch command builder
+        // (Commands.PushMultiple) takes no `track` argument at all, so this tab never
+        // rewrites tracking configuration. The port used to pass -u for every
+        // selected branch, which silently re-pointed the upstream of each one at the
+        // destination typed in the grid — a side effect nothing on this tab announces.
+        await RunPushAsync(T("FormPush/BranchTab.Text", "Push branches"), (emit, creds, over) => new PushRefsService().PushRefsStreaming(
+            repo, target, refspecs, over ?? force, allTags: false, setUpstream: false, recurseSubmodules: false, emit, creds));
     }
 
     /// <summary>
@@ -1032,16 +1103,28 @@ public sealed class PushDialog : Window
     ///  lack of credentials the user is asked in-app and the SAME operation is
     ///  retried once with the credentials fed through a transient helper.
     /// </summary>
-    private async Task RunPushAsync(string label, Func<Action<string>, GitCredentials?, RemoteOpResult> operation)
+    private async Task RunPushAsync(string label, PushOperation operation, PushRejectionContext? rejection = null)
     {
         _pushLaunched = true;
+
+        // The LAST attempt's result — a rejected push may be retried in place, and it
+        // is that final attempt, not the first, that decides whether we still need to
+        // ask for credentials afterwards.
         RemoteOpResult? res = null;
 
-        await GitProcessDialog.RunStreamingAsync(this, label, emit =>
-        {
-            res = operation(emit, null);
-            return new GitProcessOutcome(res.Success, res.Output);
-        }, closeOnAuthFailure: true);
+        await GitProcessDialog.RunStreamingAsync(
+            this,
+            label,
+            emit =>
+            {
+                res = operation(emit, null, null);
+                return new GitProcessOutcome(res.Success, res.Output);
+            },
+            closeOnAuthFailure: true,
+            onExit: rejection is null
+                ? null
+                : (dialog, outcome) => HandlePushRejectedAsync(
+                    dialog, outcome, operation, rejection, r => res = r));
 
         if (res is { AuthFailed: true })
         {
@@ -1050,7 +1133,7 @@ public sealed class PushDialog : Window
             {
                 await GitProcessDialog.RunStreamingAsync(this, string.Format(T("{0} (retry)"), label), emit =>
                 {
-                    RemoteOpResult r = operation(emit, creds);
+                    RemoteOpResult r = operation(emit, creds, null);
                     return new GitProcessOutcome(r.Success, r.Output);
                 });
             }
@@ -1058,6 +1141,342 @@ public sealed class PushDialog : Window
 
         Close();
     }
+
+    // --- Rejected push recovery -------------------------------------------
+
+    /// <summary>
+    ///  Exit hook for a push that the remote refused, porting
+    ///  <c>FormPush.HandlePushOnExit</c>: recognise the rejection, offer the same four
+    ///  ways out (pull with the default action / with rebase / with merge, or force
+    ///  push with lease) and re-run the push <em>in the dialog that is already
+    ///  open</em>, instead of leaving the user to fix it and start over.
+    ///
+    ///  <para>Returns <see langword="true"/> when a retry was started, which tells
+    ///  the process dialog not to report this failure.</para>
+    ///
+    ///  <para>Divergence, deliberate: upstream runs the recovery pull through a
+    ///  separate <c>FormPull</c> and only then calls <c>Retry()</c>. Here the pull and
+    ///  the re-push are one composed operation streamed into the SAME console, so the
+    ///  user watches the whole recovery in one place — and an Abort still kills it,
+    ///  because both commands run inside the retry's process scope.</para>
+    /// </summary>
+    private async Task<bool> HandlePushRejectedAsync(
+        GitProcessDialog dialog,
+        GitProcessOutcome outcome,
+        PushOperation operation,
+        PushRejectionContext context,
+        Action<RemoteOpResult> record)
+    {
+        if (outcome.Success)
+        {
+            return false;
+        }
+
+        PushRejection? rejection = PushRefsService.DetectRejection(outcome.Output, context.LocalBranch);
+        if (rejection is null)
+        {
+            return false;
+        }
+
+        string repo = _repoPath;
+
+        // A bare repository has no checked-out branch to pull into (upstream's
+        // `!Module.IsBareRepository()` condition).
+        if (await Task.Run(() => new PushRefsService().IsBareRepository(repo)))
+        {
+            return false;
+        }
+
+        GitPullAction? pull;
+        bool forcePush = false;
+
+        // A remembered choice skips the question entirely — and, as upstream, it can
+        // only ever be a pull: "force push with lease" is never made automatic.
+        if (ReadAutoPullOnPushRejected() is { } remembered)
+        {
+            pull = remembered;
+        }
+        else
+        {
+            PushRejectedAnswer? answer = await AskPushRejectedAsync(dialog, rejection.CurrentBranch, context.Remote);
+            if (answer is null)
+            {
+                // Cancelled: let the dialog report the rejection as the failure it is.
+                return false;
+            }
+
+            pull = answer.Pull;
+            forcePush = answer.ForcePush;
+
+            if (answer.DontAskAgain && pull is { } chosen)
+            {
+                WriteAutoPullOnPushRejected(chosen);
+            }
+        }
+
+        if (forcePush)
+        {
+            // Upstream inserts --force-with-lease into the pending command line and
+            // retries; the port replays the same operation with a force override,
+            // which reaches the identical `git push --force-with-lease`. Never plain
+            // --force: the recovery must not be able to discard unseen remote work.
+            dialog.Retry(
+                emit =>
+                {
+                    RemoteOpResult r = operation(emit, null, PushForceMode.WithLease);
+                    record(r);
+                    return new GitProcessOutcome(r.Success, r.Output);
+                },
+                T("Retrying with --force-with-lease…"));
+            return true;
+        }
+
+        GitPullAction action = pull ?? GitPullAction.None;
+        if (action == GitPullAction.Default)
+        {
+            action = ConfiguredDefaultPullAction();
+        }
+
+        if (action == GitPullAction.None)
+        {
+            return false;
+        }
+
+        if (action is not (GitPullAction.Merge or GitPullAction.Rebase))
+        {
+            await NoteAsync(dialog, T(
+                "Automatical pull can only be performed, when the default pull action "
+                + "is either set to Merge or Rebase."));
+            return false;
+        }
+
+        // Rebasing a merge commit rewrites history the user never agreed to flatten,
+        // so it is refused rather than automated.
+        if (action == GitPullAction.Rebase
+            && await Task.Run(() => new PushRefsService().WouldRebaseMergeCommit(
+                repo, context.Remote, context.RemoteBranch, context.LocalBranch)))
+        {
+            await NoteAsync(dialog, T(
+                "Can not perform automatical pull, when the pull action is set to Rebase "
+                + "and one of the commits that are about to be rebased is a merge commit."));
+            return false;
+        }
+
+        string remote = context.Remote;
+        string remoteBranch = context.RemoteBranch;
+        dialog.Retry(
+            emit =>
+            {
+                RemoteOpResult pulled = new RemoteService().PullStreaming(
+                    repo,
+                    new PullOptions(action, remote, RemoteBranch: remoteBranch),
+                    emit,
+                    credentials: null);
+
+                if (!pulled.Success)
+                {
+                    // The push is not attempted on a failed pull: it would only be
+                    // rejected again, burying the reason the pull failed.
+                    record(pulled);
+                    return new GitProcessOutcome(false, pulled.Output);
+                }
+
+                emit(string.Empty);
+                RemoteOpResult pushed = operation(emit, null, null);
+                record(pushed);
+                return new GitProcessOutcome(pushed.Success, pushed.Output);
+            },
+            action == GitPullAction.Rebase
+                ? T("Pulling with rebase, then pushing again…")
+                : T("Pulling with merge, then pushing again…"));
+
+        return true;
+    }
+
+    /// <summary>The user's answer to the "push was rejected" question.</summary>
+    private sealed record PushRejectedAnswer(GitPullAction? Pull, bool ForcePush, bool DontAskAgain);
+
+    /// <summary>
+    ///  The port's stand-in for upstream's <c>TaskDialog</c> with command links: the
+    ///  rejection is explained, then one button per way out. The three pull buttons
+    ///  appear only when the rejected ref is the current branch — pulling cannot fix a
+    ///  ref that is not checked out, so offering it would be a button that lies.
+    ///  Force push with lease is always offered, and always last.
+    /// </summary>
+    /// <returns><see langword="null"/> when the user cancels.</returns>
+    private async Task<PushRejectedAnswer?> AskPushRejectedAsync(Window owner, bool allOptions, string remote)
+    {
+        TaskCompletionSource<PushRejectedAnswer?> tcs = new();
+
+        Window dialog = new()
+        {
+            Title = string.Format(T("FormPush/_pullRepositoryCaption.Text", "Push was rejected from \"{0}\""), remote),
+            Width = 520,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Panel", Brushes.DimGray),
+        };
+
+        CheckBox dontAskAgain = MakeCheck(T("Don't show again"));
+
+        StackPanel buttons = new() { Orientation = Orientation.Vertical, Spacing = 6 };
+
+        void AddChoice(string text, GitPullAction? pull, bool force)
+        {
+            Button button = MakeButton();
+            button.Content = text;
+            button.MinWidth = 0;
+            button.HorizontalAlignment = HorizontalAlignment.Stretch;
+            button.HorizontalContentAlignment = HorizontalAlignment.Left;
+            button.Click += (_, _) =>
+            {
+                // "Don't show again" only ever remembers a pull: see UiState.AutoPullOnPushRejected.
+                tcs.TrySetResult(new PushRejectedAnswer(pull, force, dontAskAgain.IsChecked == true && pull is not null));
+                dialog.Close();
+            };
+            buttons.Children.Add(button);
+        }
+
+        if (allOptions)
+        {
+            AddChoice(
+                string.Format(
+                    T("FormPush/_pullDefaultButton.Text", "Pull with the default pull action ({0})"),
+                    DefaultPullActionName()),
+                GitPullAction.Default,
+                force: false);
+            AddChoice(T("FormPush/_pullRebaseButton.Text", "Pull with rebase"), GitPullAction.Rebase, force: false);
+            AddChoice(T("FormPush/_pullMergeButton.Text", "Pull with merge"), GitPullAction.Merge, force: false);
+        }
+
+        AddChoice(T("FormPush/_pushForceButton.Text", "Force push with lease"), pull: null, force: true);
+
+        Button cancel = MakeButton();
+        cancel.Content = T("Cancel");
+        cancel.HorizontalAlignment = HorizontalAlignment.Right;
+        cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+
+        // Dismissing the window is a cancel, never consent to rewrite the remote.
+        dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock
+        {
+            Text = allOptions
+                ? T("FormPush/_pullRepositoryMainMergeInstruction.Text", "Pull latest changes from remote repository")
+                : T("FormPush/_pullRepositoryMainForceInstruction.Text", "Push rejected"),
+            FontWeight = FontWeight.Bold,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = allOptions
+                ? T("FormPush/_pullRepositoryMergeInstruction.Text",
+                    "The push was rejected because the tip of your current branch is behind "
+                    + "its remote counterpart. Merge the remote changes before pushing again.")
+                : T("FormPush/_pullRepositoryForceInstruction.Text",
+                    "The push was rejected because the tip of your current branch is behind "
+                    + "its remote counterpart"),
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        });
+        content.Children.Add(buttons);
+        content.Children.Add(dontAskAgain);
+        content.Children.Add(cancel);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    // Single-button modal, for the two cases upstream reports with MessageBoxes.ShowError
+    // (default pull action not actionable, and the rebase-a-merge-commit refusal).
+    private async Task NoteAsync(Window owner, string message)
+    {
+        Window dialog = new()
+        {
+            Title = Title,
+            Width = 440,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Panel", Brushes.DimGray),
+        };
+
+        Button ok = MakeButton();
+        ok.Content = T("OK");
+        ok.HorizontalAlignment = HorizontalAlignment.Right;
+        ok.Click += (_, _) => dialog.Close();
+
+        StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+        content.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        });
+        content.Children.Add(ok);
+        dialog.Content = content;
+
+        await dialog.ShowDialog(owner);
+    }
+
+    // --- The persisted "don't show again" pull action ----------------------
+
+    private static GitPullAction? ReadAutoPullOnPushRejected()
+    {
+        try
+        {
+            string name = new UiStateService().Load().AutoPullOnPushRejected;
+            return Enum.TryParse(name, ignoreCase: true, out GitPullAction action) ? action : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static void WriteAutoPullOnPushRejected(GitPullAction action)
+    {
+        try
+        {
+            UiStateService service = new();
+            UiState state = service.Load();
+            state.AutoPullOnPushRejected = action.ToString();
+            service.Save(state);
+        }
+        catch (Exception)
+        {
+            // Failing to remember the choice must not break the push itself.
+        }
+    }
+
+    // The configured default pull action, i.e. the port's UiState.DefaultPullAction —
+    // the equivalent of upstream's AppSettings.DefaultPullAction.
+    private static GitPullAction ConfiguredDefaultPullAction()
+    {
+        try
+        {
+            return Enum.TryParse(new UiStateService().Load().DefaultPullAction, ignoreCase: true, out GitPullAction action)
+                ? action
+                : GitPullAction.Merge;
+        }
+        catch (Exception)
+        {
+            return GitPullAction.Merge;
+        }
+    }
+
+    // Label for the "(…)" of the default-action button, as upstream spells it.
+    private static string DefaultPullActionName() => ConfiguredDefaultPullAction() switch
+    {
+        GitPullAction.Fetch or GitPullAction.FetchAll or GitPullAction.FetchPruneAll => T("fetch"),
+        GitPullAction.Merge => T("merge"),
+        GitPullAction.Rebase => T("rebase"),
+        _ => T("none"),
+    };
+
+    // --- Force choice / confirmations -------------------------------------
 
     private async Task OnPullAsync()
     {
@@ -1070,8 +1489,71 @@ public sealed class PushDialog : Window
         }
 
         string repo = _repoPath;
-        await RunPushAsync(T("FormPush/Pull.Text", "Pull"), (emit, creds) =>
+        await RunPushAsync(T("FormPush/Pull.Text", "Pull"), (emit, creds, _) =>
             new RemoteService().PullStreaming(repo, remote, rebase: false, emit, creds));
+    }
+
+    // --- Tracking reference ------------------------------------------------
+
+    /// <summary>
+    ///  Decides whether this push should also write a tracking reference (<c>-u</c>),
+    ///  porting <c>FormPush.cs:335-365</c>. Either the user asked for it with
+    ///  "Replace tracking reference", or the push is about to create the branch's
+    ///  first upstream and we offer to record it:
+    ///  <list type="number">
+    ///   <item>the branch must have no upstream yet — never silently re-point one;</item>
+    ///   <item>its name must not start with a remote's name (<c>origin/x</c> as a
+    ///    LOCAL branch is a mistake waiting to happen, not a tracking candidate);</item>
+    ///   <item><c>branch.autosetupmerge</c> must not be <c>false</c>;</item>
+    ///   <item>and the user must confirm.</item>
+    ///  </list>
+    ///
+    ///  <para>Returns <see langword="null"/> when the user cancels, which abandons
+    ///  the push entirely.</para>
+    ///
+    ///  <para>Before this, the port hard-coded <c>-u</c> on every single-branch push,
+    ///  so pushing a branch anywhere rewrote its upstream without saying so.</para>
+    /// </summary>
+    private async Task<bool?> ResolveTrackingAsync(string local, string remoteBranch, bool isUrl)
+    {
+        if (_replaceTrackingReference.IsChecked == true)
+        {
+            return true;
+        }
+
+        // A URL target is not a remote: there is no `remote.<name>` for git to record,
+        // so -u could not write a meaningful upstream even if we asked for it.
+        if (isUrl || string.IsNullOrEmpty(local) || string.IsNullOrEmpty(remoteBranch))
+        {
+            return false;
+        }
+
+        if (_branchUpstreams.TryGetValue(local, out string? upstream) && !string.IsNullOrEmpty(upstream))
+        {
+            return false;
+        }
+
+        if (_remoteNames.Any(name => !string.IsNullOrEmpty(name)
+            && local.StartsWith(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        string repo = _repoPath;
+        if (await Task.Run(() => new PushRefsService().AutoSetupMergeDisabled(repo)))
+        {
+            return false;
+        }
+
+        return await AskAsync(
+            string.Format(
+                T("FormPush/_updateTrackingReference.Text",
+                    "The branch {0} does not have a tracking reference. Do you want to add a tracking reference to {1}?"),
+                local,
+                remoteBranch),
+            T("Yes"),
+            T("No"),
+            cancel: true);
     }
 
     // --- Force choice / confirmations -------------------------------------

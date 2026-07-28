@@ -461,6 +461,20 @@ public sealed class RemoteService
     ///  is what tags require, as git cannot lease a tag.
     /// </summary>
     public RemoteOpResult PushStreaming(string repoPath, string remote, string branch, PushForceMode force, Action<string> onOutput, GitCredentials? credentials = null)
+        => PushStreaming(repoPath, remote, branch, force, track: true, onOutput, credentials);
+
+    /// <summary>
+    ///  Streaming push that also decides whether to write TRACKING configuration.
+    /// </summary>
+    /// <param name="track">
+    ///  Add <c>-u</c>, making the pushed branch track the remote one. Upstream never
+    ///  hard-codes this: it comes from the "Replace tracking reference" check box,
+    ///  falling back to a probe of the branch's existing upstream and of
+    ///  <c>branch.autosetupmerge</c> (<c>FormPush.cs:335-365</c>). The port used to
+    ///  pass <c>-u</c> unconditionally here, so every push quietly (re)pointed the
+    ///  branch's upstream at whatever remote happened to be selected.
+    /// </param>
+    public RemoteOpResult PushStreaming(string repoPath, string remote, string branch, PushForceMode force, bool track, Action<string> onOutput, GitCredentials? credentials = null)
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
@@ -484,7 +498,7 @@ public sealed class RemoteService
                 PushForceMode.Force => ForcePushOptions.Force,
                 _ => ForcePushOptions.DoNotForce,
             },
-            track: true,
+            track: track,
             recursiveSubmodules: 0);
 
         return RunStreaming(module, remote, args, onOutput, credentials, forPush: true);

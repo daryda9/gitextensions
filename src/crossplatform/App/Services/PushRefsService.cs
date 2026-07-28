@@ -150,6 +150,34 @@ public sealed class PushRefsService
     }
 
     /// <summary>
+    ///  Whether <c>branch.autosetupmerge</c> is switched off, in which case a push
+    ///  must not volunteer to write a tracking reference
+    ///  (<c>FormPush.cs:344-348</c>).
+    ///
+    ///  <para>Only the literal value <c>false</c> disables it, exactly as upstream
+    ///  tests — and correctly so: git's other accepted values for this key
+    ///  (<c>true</c>, <c>always</c>, <c>inherit</c>, <c>simple</c>) all mean some
+    ///  form of "do set it up", so there is no other falsy spelling to honour.</para>
+    ///
+    ///  <para>Read with <c>GetEffectiveSetting</c>, so system, global and local
+    ///  config all count, with the usual precedence. Shells out to git — call off
+    ///  the UI thread.</para>
+    /// </summary>
+    public bool AutoSetupMergeDisabled(string repoPath)
+    {
+        try
+        {
+            string? value = GitContext.CreateModule(repoPath).GetEffectiveSetting("branch.autosetupmerge");
+            return !string.IsNullOrWhiteSpace(value)
+                && string.Equals(value.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     ///  Whether the repository is bare. A bare repository has no working branch to
     ///  pull into, so upstream does not offer the push-rejected recovery there.
     /// </summary>
