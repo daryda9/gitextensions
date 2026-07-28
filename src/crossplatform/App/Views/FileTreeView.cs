@@ -95,6 +95,10 @@ public sealed class FileTreeView : UserControl
     private string? _repoPath;
     private string? _commitHash;
 
+    // Set while the tab shows an artificial row instead of a commit; it decides
+    // which side the file CONTENT is read from (the index, or the file on disk).
+    private ArtificialDiff? _artificial;
+
     // The short hash currently listed, or null while nothing is loaded: it lets a
     // language switch re-state the header without re-running git.
     private string? _shortHash;
@@ -322,9 +326,50 @@ public sealed class FileTreeView : UserControl
     /// </summary>
     public void ShowCommit(string repoPath, string commitHash)
     {
+        _artificial = null;
+        Load(repoPath, commitHash, commitHash.Length > 8 ? commitHash[..8] : commitHash,
+            () => DiffService.GetTreeFiles(repoPath, commitHash));
+    }
+
+    /// <summary>
+    ///  Loads the file tree of one of the two <b>artificial</b> revision rows —
+    ///  the File tree half of the
+    ///  <c>RevisionGridView.ArtificialRevisionSelected</c> contract, called by the
+    ///  host instead of <see cref="ShowCommit"/> when the selection lands there.
+    ///
+    ///  <list type="bullet">
+    ///   <item><see cref="ArtificialDiff.WorkTree"/> lists the files as they are
+    ///    <b>on disk</b> (tracked plus untracked non-ignored, minus what was
+    ///    deleted) and reads their content from disk.</item>
+    ///   <item><see cref="ArtificialDiff.Index"/> lists the <b>index</b>
+    ///    (<c>git ls-files</c>) and reads each file's staged content
+    ///    (<c>git show :&lt;path&gt;</c>), which is what makes a partially staged
+    ///    file show its staged version here and its working version there.</item>
+    ///  </list>
+    ///
+    ///  <para>Upstream shows a tree for these rows too, with no message and nothing
+    ///  disabled ("File Tree tab […] works for artificial commits, too",
+    ///  <c>FormBrowse.cs:1223</c>).</para>
+    /// </summary>
+    public void ShowArtificial(string repoPath, ArtificialDiff which)
+    {
+        _artificial = which;
+
+        // The sentinel hash identifies the load (the stale-result guard compares
+        // it); it is never handed to git as a revision — see RevisionOfContent.
+        string hash = which == ArtificialDiff.Index ? DiffService.IndexHash : DiffService.WorkTreeHash;
+
+        Load(repoPath, hash, ArtificialRevisionName.Of(which),
+            () => DiffService.GetArtificialTreeFiles(repoPath, which));
+    }
+
+    // Shared loader: <paramref name="label"/> is what the status line calls the
+    // thing being listed (a short hash, or an artificial row's name).
+    private void Load(string repoPath, string commitHash, string label, Func<IReadOnlyList<DiffFileRow>> load)
+    {
         _repoPath = repoPath;
         _commitHash = commitHash;
-        _shortHash = commitHash.Length > 8 ? commitHash[..8] : commitHash;
+        _shortHash = label;
         _fileCount = 0;
         _loadError = null;
         _contentPath = null;
@@ -339,7 +384,7 @@ public sealed class FileTreeView : UserControl
             string? error = null;
             try
             {
-                rows = DiffService.GetTreeFiles(repoPath, commitHash);
+                rows = load();
             }
             catch (Exception ex)
             {
@@ -376,6 +421,7 @@ public sealed class FileTreeView : UserControl
     {
         _repoPath = null;
         _commitHash = null;
+        _artificial = null;
         _shortHash = null;
         _fileCount = 0;
         _loadError = null;
@@ -444,10 +490,12 @@ public sealed class FileTreeView : UserControl
     // "forceFileView: IsFileTreeMode": the tab shows the file, never a patch.
     private void LoadContent(string path)
     {
-        if (_repoPath is not string repoPath || _commitHash is not string commit)
+        if (_repoPath is not string repoPath || _commitHash is null)
         {
             return;
         }
+
+        string? commit = RevisionOfContent();
 
         _contentCts?.Cancel();
         _contentCts?.Dispose();
@@ -502,6 +550,17 @@ public sealed class FileTreeView : UserControl
             }
         });
     }
+
+    // Which side the displayed file's content is read from: the commit for a real
+    // revision, the index (":<path>") for the "Commit index" row, and the file on
+    // disk (null) for the "Working directory" row. Never the sentinel hash, which
+    // git could not resolve.
+    private string? RevisionOfContent() => _artificial switch
+    {
+        ArtificialDiff.Index => ":",
+        ArtificialDiff.WorkTree => null,
+        _ => _commitHash,
+    };
 
     // A NUL byte in the head of the blob means binary, as git decides it too.
     private static bool IsBinary(byte[] bytes)
@@ -686,13 +745,22 @@ public sealed class FileTreeView : UserControl
 
         string name = row.Name;
 
+        // The listed side, not the sentinel: the index for the "Commit index" row,
+        // the file on disk for "Working directory" (see RevisionOfContent).
+        string? rev = RevisionOfContent();
+        string label = _artificial switch
+        {
+            ArtificialDiff.Index => "index",
+            ArtificialDiff.WorkTree => "worktree",
+            _ => commit.Length > 8 ? commit[..8] : commit,
+        };
+
         RunFileLaunch(async () =>
         {
-            byte[] bytes = await DiffTextService.GetFileBytesAsync(repoPath, commit, name)
+            byte[] bytes = await DiffTextService.GetFileBytesAsync(repoPath, rev, name)
                 .ConfigureAwait(false);
 
-            string shortHash = commit.Length > 8 ? commit[..8] : commit;
-            string dir = Path.Combine(Path.GetTempPath(), "GitExtensions.Avalonia", shortHash);
+            string dir = Path.Combine(Path.GetTempPath(), "GitExtensions.Avalonia", label);
             Directory.CreateDirectory(dir);
 
             string temp = Path.Combine(dir, Path.GetFileName(name));
@@ -706,16 +774,17 @@ public sealed class FileTreeView : UserControl
     {
         if (_files.SelectedFile is not DiffFileRow row ||
             _repoPath is not string repoPath ||
-            _commitHash is not string commit)
+            _commitHash is null)
         {
             return;
         }
 
-        _ = SaveSelectedAsCoreAsync(repoPath, commit, row.Name);
+        _ = SaveSelectedAsCoreAsync(repoPath, RevisionOfContent(), row.Name);
     }
 
     // The picker must run on the UI thread; the git read and the write do not.
-    private async Task SaveSelectedAsCoreAsync(string repoPath, string commit, string name)
+    // "commit" is null when the listed side is the working tree (see RevisionOfContent).
+    private async Task SaveSelectedAsCoreAsync(string repoPath, string? commit, string name)
     {
         try
         {
