@@ -168,6 +168,9 @@ public sealed class MainWindow : Window
 
         // Detail/diff definitions are (re)created by RebuildRightRegion; seed them
         // here so PersistLayout has valid references before the first rebuild.
+        // The persisted values are proportions of their split (each pair sums to 1),
+        // which is exactly what a pair of star weights expresses — so the restored
+        // split is the one the user dragged, whatever this window's size is.
         _detailRow = new RowDefinition(new GridLength(_uiState.DetailStar, GridUnitType.Star));
         _diffRow = new RowDefinition(new GridLength(_uiState.DiffStar, GridUnitType.Star));
         _revRow = new RowDefinition(new GridLength(_uiState.RevisionsStar, GridUnitType.Star));
@@ -708,6 +711,11 @@ public sealed class MainWindow : Window
             _uiState.TreeWidth = _tree.IsVisible ? _treeCol.Width.Value : _treeWidthBeforeCollapse;
             _uiState.CommitInfoPosition = _commitInfoPosition.ToString();
             _uiState.LastRepoPath = _repoPath;
+            // The two splits go out as the raw star weights the grid holds, which after a
+            // GridSplitter drag are pixel magnitudes (Avalonia rewrites a dragged star
+            // definition with its current extent). UiStateService normalizes each PAIR to
+            // proportions summing to 1 before writing, so the restore below no longer
+            // depends on the window size the split was dragged at.
             _uiState.RevisionsStar = _revRow.Height.Value;
             _uiState.BottomStar = _bottomRow.Height.Value;
             _uiState.DetailStar = _detailRow.Height.Value;

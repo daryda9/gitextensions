@@ -85,17 +85,32 @@ public sealed class UiState
     /// </summary>
     public string LeftPanelCategoryOrder { get; set; } = string.Empty;
 
-    /// <summary>Right area: revision-grid row star weight.</summary>
-    public double RevisionsStar { get; set; } = 3;
+    /// <summary>
+    ///  Right area: the revision grid's share of the vertical split, as a fraction of
+    ///  the split — <see cref="RevisionsStar"/> + <see cref="BottomStar"/> == 1.
+    ///
+    ///  <para>Stored as a <i>proportion</i>, not as the raw star weight the grid holds
+    ///  at runtime: Avalonia's <c>GridSplitter</c> rewrites the star weights of the
+    ///  definitions it drags with their current <b>pixel</b> extents (a drag turns
+    ///  <c>3*</c>/<c>2*</c> into e.g. <c>199*</c>/<c>525*</c>), so the saved numbers used
+    ///  to scale with the window. The ratio between them is what the user actually chose,
+    ///  and it is all the layout needs to restore. <see cref="UiStateService"/> normalizes
+    ///  the pair on save and on load, so a file written by an older build (pixel-scale,
+    ///  or the original <c>3</c>/<c>2</c> weights) restores to exactly the same split.</para>
+    /// </summary>
+    public double RevisionsStar { get; set; } = 0.6;
 
-    /// <summary>Right area: bottom detail-panel row star weight.</summary>
-    public double BottomStar { get; set; } = 2;
+    /// <summary>Right area: the bottom detail panel's share of the vertical split
+    /// (see <see cref="RevisionsStar"/>).</summary>
+    public double BottomStar { get; set; } = 0.4;
 
-    /// <summary>Commit-info: detail row star weight (top of the info/diff split).</summary>
-    public double DetailStar { get; set; } = 2;
+    /// <summary>Commit-info: the detail pane's share of the info/diff split
+    /// (see <see cref="RevisionsStar"/>); pairs with <see cref="DiffStar"/>.</summary>
+    public double DetailStar { get; set; } = 0.4;
 
-    /// <summary>Commit-info: diff row star weight (bottom of the info/diff split).</summary>
-    public double DiffStar { get; set; } = 3;
+    /// <summary>Commit-info: the diff pane's share of the info/diff split
+    /// (see <see cref="RevisionsStar"/>); pairs with <see cref="DetailStar"/>.</summary>
+    public double DiffStar { get; set; } = 0.6;
 
     /// <summary>Whether the bottom panel shows commit detail and diff side by
     /// side (split view on) instead of the diff in its own tab.</summary>
@@ -251,10 +266,12 @@ public sealed class UiStateService
         s.WindowWidth = Clamp(s.WindowWidth, 400, 100000, 1280);
         s.WindowHeight = Clamp(s.WindowHeight, 300, 100000, 820);
         s.TreeWidth = Clamp(s.TreeWidth, 80, 100000, 260);
-        s.RevisionsStar = Clamp(s.RevisionsStar, 0.1, 1000, 3);
-        s.BottomStar = Clamp(s.BottomStar, 0.1, 1000, 2);
-        s.DetailStar = Clamp(s.DetailStar, 0.1, 1000, 2);
-        s.DiffStar = Clamp(s.DiffStar, 0.1, 1000, 3);
+        // Splits are stored as proportions, so each pair is normalized as a pair (see
+        // UiState.RevisionsStar): that is what makes the restore independent of the
+        // window size the split was dragged at, and what migrates the pixel-scale
+        // values older builds wrote.
+        (s.RevisionsStar, s.BottomStar) = NormalizeSplit(s.RevisionsStar, s.BottomStar, 0.6);
+        (s.DetailStar, s.DiffStar) = NormalizeSplit(s.DetailStar, s.DiffStar, 0.4);
         s.Theme = s.Theme == "Light" ? "Light" : "Dark";
         s.BottomTab = string.IsNullOrWhiteSpace(s.BottomTab) ? "Commit" : s.BottomTab.Trim();
 
@@ -301,6 +318,50 @@ public sealed class UiStateService
             "FetchPruneAll" => "FetchPruneAll",
             _ => "Merge",
         };
+
+    /// <summary>
+    ///  Turns one side of a two-pane split into the pair of proportions
+    ///  <c>(first, 1 - first)</c>, preserving the ratio the two values encode.
+    ///
+    ///  <para>Deliberately ratio-based rather than value-based, because it has to accept
+    ///  three generations of the same file without a version stamp and without losing the
+    ///  user's split:</para>
+    ///  <list type="bullet">
+    ///   <item>proportions written by this build (<c>0.27</c>/<c>0.73</c>) — already normal,
+    ///     round-trip unchanged;</item>
+    ///   <item>pixel-scale star weights written after a splitter drag by an older build
+    ///     (<c>199</c>/<c>525</c>) — the ratio is exactly the split that was on screen, so
+    ///     dividing by the sum recovers it;</item>
+    ///   <item>the original literal weights (<c>3</c>/<c>2</c>) — which normalize to the
+    ///     same <c>0.6</c>/<c>0.4</c> they always rendered as.</item>
+    ///  </list>
+    ///
+    ///  <para>Nothing is therefore discarded on migration: a "looks like pixels" heuristic
+    ///  (say, "&gt; 10 means pixels, fall back to the default") would be both unnecessary —
+    ///  normalizing a pair is correct for every generation — and lossy, since it cannot tell
+    ///  a genuine 90/10 split from a corrupt entry. Only a pair that cannot describe a split
+    ///  at all (non-finite, negative, or both sides zero) falls back to the default.</para>
+    ///
+    ///  <para>Each side keeps at least <see cref="MinSplitShare"/> of the split, so neither
+    ///  pane can come back invisible with no splitter left to grab.</para>
+    /// </summary>
+    private static (double First, double Second) NormalizeSplit(double first, double second, double fallback)
+    {
+        if (!IsUsableShare(first) || !IsUsableShare(second) || first + second <= 0)
+        {
+            return (fallback, 1 - fallback);
+        }
+
+        double share = first / (first + second);
+        share = Math.Clamp(share, MinSplitShare, 1 - MinSplitShare);
+        return (share, 1 - share);
+    }
+
+    /// <summary>Smallest share of a split either pane may be restored at (3%).</summary>
+    private const double MinSplitShare = 0.03;
+
+    private static bool IsUsableShare(double v)
+        => !double.IsNaN(v) && !double.IsInfinity(v) && v >= 0;
 
     private static int? SanePosition(int? v)
         => v is null || v.Value < -100000 || v.Value > 100000 ? null : v;
