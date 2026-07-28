@@ -385,8 +385,18 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
     // dismiss a "Failed" dialog first.
     private bool _closeOnAuthFailure;
 
-    // Authentication-failure markers (mirrors RemoteService.LooksLikeAuthFailure)
-    // so the dialog can decide whether to auto-close and hand off to credentials.
+    // The language-independent auth verdict for the run in flight: the services
+    // report into it (credential-helper verbs, exit code), so the dialog no longer
+    // depends on git's diagnostics being in a language it happens to know. Recreated
+    // per run, because one dialog hosts several attempts.
+    private Services.GitAuthSignal? _authSignal;
+
+    // Authentication-failure markers, the SECOND opinion now that Services.
+    // GitEnvironment pins the port's git children to English diagnostics: without
+    // that pinning an Italian git printed "Autenticazione non riuscita", no marker
+    // matched, and the CredentialsDialog fallback never opened (round 10 defect).
+    // Translated markers are deliberately NOT added here — the locale of the child
+    // process is the thing that was made deterministic instead.
     private static bool LooksLikeAuthFailure(string? output)
     {
         if (string.IsNullOrEmpty(output))
@@ -453,11 +463,18 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         _status.Text = "Running…";
         _status.Foreground = Brush("App.TextDim", Brushes.Gray);
 
+        Services.GitAuthSignal authSignal = new();
+        _authSignal = authSignal;
+
         _ = Task.Run(() =>
         {
             // Bind the scope to this logical flow so every git process the
             // operation starts registers itself and becomes killable.
             Services.GitStreamRunner.EnterScope(scope);
+
+            // …and the auth signal, so a service that recognises an authentication
+            // failure (in any language) can say so directly.
+            Services.GitAuthSignal.Enter(authSignal);
 
             // …and, when interactive, bind this dialog as the terminal host: git then
             // runs on a PTY, so it prints its own transfer progress and can ASK.
@@ -585,7 +602,14 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             _pollTimer.Tick += (_, _) => DrainNewCommands();
             _pollTimer.Start();
 
-            _ = Task.Run(operation).ContinueWith(t =>
+            Services.GitAuthSignal authSignal = new();
+            _authSignal = authSignal;
+
+            _ = Task.Run(() =>
+            {
+                Services.GitAuthSignal.Enter(authSignal);
+                return operation();
+            }).ContinueWith(t =>
             {
                 GitProcessOutcome outcome = t.IsFaulted
                     ? new GitProcessOutcome(false, t.Exception?.GetBaseException().Message ?? "Operation failed.")
@@ -747,7 +771,14 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             // On an authentication failure, when the caller opted in, auto-close so
             // it can immediately show the in-app credentials prompt and retry —
             // otherwise stay open (regardless of the checkbox) to show the error.
-            if (_closeOnAuthFailure && LooksLikeAuthFailure(outcome.Output))
+            // Two independent signals, in order of robustness: the structural one the
+            // service reported (credential-helper verbs — identical in every locale),
+            // then the English text markers, which are only guaranteed to appear
+            // because GitEnvironment pins the child's message locale.
+            bool authFailure = _authSignal?.AuthFailureDetected == true
+                || LooksLikeAuthFailure(outcome.Output);
+
+            if (_closeOnAuthFailure && authFailure)
             {
                 _status.Text = "Authentication required — asking for credentials…";
                 _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };

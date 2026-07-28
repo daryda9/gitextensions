@@ -568,10 +568,15 @@ public sealed class RemoteService
             ApproveCredentials(module, remote, forPush, credentials, onOutput, remoteIsUrl);
         }
 
-        return new RemoteOpResult(
-            exit == 0,
-            output,
-            LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(exit));
+        bool authFailed = LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(exit);
+        if (authFailed)
+        {
+            // Also report it to the hosting process dialog, which decides whether to
+            // auto-close and hand off to the in-app credentials prompt.
+            GitAuthSignal.Report();
+        }
+
+        return new RemoteOpResult(exit == 0, output, authFailed);
     }
 
     // Persists working credentials in git's configured credential helper by piping a
@@ -664,10 +669,13 @@ public sealed class RemoteService
         ArgumentString probed = probe.Decorate(args.Arguments ?? string.Empty);
         ExecutionResult result = module.GitExecutable.Execute(probed, throwOnErrorExit: false);
         string output = result.AllOutput;
-        return new RemoteOpResult(
-            result.ExitedSuccessfully,
-            output,
-            LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(result.ExitCode ?? -1));
+        bool authFailed = LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(result.ExitCode ?? -1);
+        if (authFailed)
+        {
+            GitAuthSignal.Report();
+        }
+
+        return new RemoteOpResult(result.ExitedSuccessfully, output, authFailed);
     }
 
     // Environment variable names the transient credential helper reads. Only these

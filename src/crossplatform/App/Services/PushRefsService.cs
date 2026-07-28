@@ -526,10 +526,16 @@ public sealed class PushRefsService
         }
 
         string output = sb.ToString();
-        return new RemoteOpResult(
-            exit == 0,
-            output,
-            LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(exit));
+        bool authFailed = LooksLikeAuthFailure(output) || probe.LooksLikeAuthFailure(exit);
+        if (authFailed)
+        {
+            // Tell the hosting process dialog too: it decides whether to auto-close
+            // and hand off to the credentials prompt, and it must not have to
+            // re-derive the verdict from git's (translated) console text.
+            GitAuthSignal.Report();
+        }
+
+        return new RemoteOpResult(exit == 0, output, authFailed);
     }
 
     /// <summary>
