@@ -1718,7 +1718,11 @@ public sealed class MainWindow : Window
         _diffLoadedFor = null;
         _fileTreeLoadedFor = null;
         _gpgLoadedFor = null;
-        _bottom.SelectedItem = _commitInfoTab;
+
+        // Upstream refreshes whichever tab is showing and leaves it there. Forcing the
+        // panel back to Commit made it impossible to watch Output, Diff or File tree
+        // while browsing revisions. Double click still pulls the panel onto Commit —
+        // that is RevisionActivated, wired separately.
         LoadSelectedBottomTab();
     }
 
@@ -2262,7 +2266,7 @@ public sealed class MainWindow : Window
     // toolbar refresh, which already knows the branch.
     private void UpdateWindowTitle(string? branch)
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        if (_dashboardShowing || _repoPath is not { Length: > 0 } repo)
         {
             Title = DefaultTitle;
             return;
@@ -3834,6 +3838,12 @@ public sealed class MainWindow : Window
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _ = LoadDashboardAsync();
         UpdateMenuRepositoryState();
+
+        // No repository is open any more: the title and the toolbar must stop
+        // advertising the one that was. RefreshToolbarState does not run here, so both
+        // would otherwise keep showing the old path, branch and counters.
+        UpdateWindowTitle(branch: null);
+        _toolbar.UpdateState(0, 0, 0, 0, repoPath: string.Empty, branch: string.Empty);
         _statusBar.SetText(T("FormBrowse/dashboardToolStripMenuItem.Text", "Dashboard"));
     }
 
