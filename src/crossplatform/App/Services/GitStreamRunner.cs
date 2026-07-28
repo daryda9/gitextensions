@@ -33,6 +33,23 @@ public static class GitStreamRunner
     /// </summary>
     public static void EnterScope(GitProcessScope scope) => _currentScope.Value = scope;
 
+    // The interactive-terminal host bound to the current logical call-flow. When set,
+    // Run() executes git on a PTY instead of on redirected pipes, so git behaves the
+    // way it does in a terminal: it prints transfer progress by itself with \r
+    // updates, and it may ASK (key passphrase, host-key yes/no, HTTPS credentials).
+    private static readonly AsyncLocal<IGitPtyHost?> _currentPtyHost = new();
+
+    /// <summary>
+    ///  Binds <paramref name="host"/> to the current logical call-flow: every
+    ///  <see cref="Run"/> executed from here on runs git on a pseudo-terminal and
+    ///  streams RAW terminal bytes to the host, which also gets the
+    ///  <see cref="PtyProcess"/> so it can answer prompts. Call it INSIDE the
+    ///  background task that runs the operation.
+    ///  <para>Passing <see langword="null"/> restores the piped, strictly
+    ///  non-interactive path.</para>
+    /// </summary>
+    public static void EnterPtyHost(IGitPtyHost? host) => _currentPtyHost.Value = host;
+
     /// <summary>
     ///  Runs <c>git <paramref name="arguments"/></c> in <paramref name="repoPath"/>,
     ///  emitting each stdout/stderr line through <paramref name="onLine"/> as it is
@@ -49,6 +66,21 @@ public static class GitStreamRunner
         onLine("Command to be executed:");
         onLine($"git {arguments}");
         onLine(string.Empty);
+
+        IGitPtyHost? ptyHost = _currentPtyHost.Value;
+        if (ptyHost is not null)
+        {
+            int? ptyExit = RunOnPty(repoPath, arguments, onLine, env, ptyHost);
+            if (ptyExit is int code)
+            {
+                return code;
+            }
+
+            // The PTY could not be created (no /dev/ptmx, exhausted pty slots): fall
+            // through to the piped path rather than failing the operation. Prompts
+            // are then unanswerable again, exactly as before this feature existed.
+            onLine("<no pseudo-terminal available; falling back to non-interactive git>");
+        }
 
         try
         {
@@ -143,6 +175,173 @@ public static class GitStreamRunner
             return -1;
         }
     }
+
+    /// <summary>
+    ///  Runs git on a pseudo-terminal, streaming raw bytes to <paramref name="host"/>.
+    ///  Returns the exit code, or <see langword="null"/> when no PTY could be created
+    ///  (the caller then falls back to the piped path).
+    /// </summary>
+    private static int? RunOnPty(
+        string repoPath,
+        string arguments,
+        Action<string> onLine,
+        IReadOnlyDictionary<string, string?>? env,
+        IGitPtyHost host)
+    {
+        Dictionary<string, string?> ptyEnv = new(StringComparer.Ordinal)
+        {
+            // THE deliberate difference from the piped path: on a PTY a prompt is
+            // visible and answerable, so git is allowed to ask. On pipes it must stay
+            // disabled, or the app would block on an invisible question.
+            ["GIT_TERMINAL_PROMPT"] = "1",
+            // Force the terminal, not a graphical askpass helper: ssh prefers
+            // SSH_ASKPASS whenever DISPLAY is set, which would move the passphrase
+            // prompt into a window we do not control (or fail if it is missing).
+            ["SSH_ASKPASS_REQUIRE"] = "never",
+            ["GIT_ASKPASS"] = null,
+            ["SSH_ASKPASS"] = null,
+            ["GCM_INTERACTIVE"] = "auto",
+            ["TERM"] = "xterm-256color",
+            // Progress is what we are here for; make sure a pager never swallows the
+            // output of a command that happens to produce a lot of it.
+            ["GIT_PAGER"] = "cat",
+        };
+
+        if (env is not null)
+        {
+            foreach (KeyValuePair<string, string?> entry in env)
+            {
+                ptyEnv[entry.Key] = entry.Value;
+            }
+        }
+
+        PtyProcess pty = new();
+        GitProcessScope? scope = _currentScope.Value;
+        try
+        {
+            pty.Output += (buffer, count) => host.Output(buffer, count);
+
+            // 200 columns: git sizes its progress line to the terminal width, and a
+            // narrow terminal truncates "Receiving objects: ..." mid-way.
+            pty.StartCommand(repoPath, "git", QuoteForShell(arguments), ptyEnv, cols: 200, rows: 50);
+        }
+        catch (Exception ex)
+        {
+            onLine("<pty: " + ex.Message + ">");
+            try
+            {
+                pty.Dispose();
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+
+            return null;
+        }
+
+        scope?.RegisterPty(pty, repoPath);
+        try
+        {
+            host.Started(pty);
+            pty.WaitForExit(Timeout.Infinite);
+            int code = pty.ExitCode ?? -1;
+            host.Ended(code);
+            return code;
+        }
+        finally
+        {
+            scope?.UnregisterPty(pty);
+            try
+            {
+                pty.Dispose();
+            }
+            catch (Exception)
+            {
+                // ignored
+            }
+        }
+    }
+
+    /// <summary>
+    ///  Re-quotes a <see cref="ProcessStartInfo.Arguments"/>-style string so it can be
+    ///  handed to <c>sh -c</c> without the shell re-interpreting <c>$</c>, backticks,
+    ///  globs or spaces inside a ref name. The string is first split with (an
+    ///  approximation of) the rules .NET itself uses on Unix — whitespace separates,
+    ///  double quotes group, a backslash escapes a following quote — then every token
+    ///  is wrapped in single quotes.
+    /// </summary>
+    internal static string QuoteForShell(string arguments)
+        => string.Join(' ', SplitArguments(arguments).Select(a => "'" + a.Replace("'", "'\\''") + "'"));
+
+    internal static List<string> SplitArguments(string arguments)
+    {
+        List<string> result = [];
+        StringBuilder token = new();
+        bool inQuotes = false;
+        bool hasToken = false;
+
+        for (int i = 0; i < arguments.Length; i++)
+        {
+            char c = arguments[i];
+
+            if (c == '\\' && i + 1 < arguments.Length && arguments[i + 1] == '"')
+            {
+                token.Append('"');
+                hasToken = true;
+                i++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                inQuotes = !inQuotes;
+                hasToken = true;
+                continue;
+            }
+
+            if (!inQuotes && (c == ' ' || c == '\t' || c == '\n' || c == '\r'))
+            {
+                if (hasToken)
+                {
+                    result.Add(token.ToString());
+                    token.Clear();
+                    hasToken = false;
+                }
+
+                continue;
+            }
+
+            token.Append(c);
+            hasToken = true;
+        }
+
+        if (hasToken)
+        {
+            result.Add(token.ToString());
+        }
+
+        return result;
+    }
+}
+
+/// <summary>
+///  Consumer of a git command running on a pseudo-terminal: it receives the raw
+///  terminal byte stream (which contains <c>\r</c> progress updates and ANSI escapes)
+///  and the live <see cref="PtyProcess"/>, so it can write answers to prompts.
+///  <para>All members are called from background threads — the PTY reader thread for
+///  <see cref="Output"/>, the operation's own thread for the others.</para>
+/// </summary>
+public interface IGitPtyHost
+{
+    /// <summary>The git command started on <paramref name="pty"/>; write answers to it.</summary>
+    void Started(PtyProcess pty);
+
+    /// <summary>A chunk of raw terminal output. The buffer is REUSED — copy what you keep.</summary>
+    void Output(byte[] buffer, int count);
+
+    /// <summary>The git command exited with <paramref name="exitCode"/>.</summary>
+    void Ended(int exitCode);
 }
 
 /// <summary>
@@ -155,6 +354,7 @@ public sealed class GitProcessScope
 {
     private readonly object _sync = new();
     private readonly List<Process> _live = [];
+    private readonly List<PtyProcess> _livePty = [];
     private string? _repoPath;
     private bool _abortRequested;
 
@@ -193,7 +393,7 @@ public sealed class GitProcessScope
         {
             lock (_sync)
             {
-                return _live.Count > 0;
+                return _live.Count > 0 || _livePty.Count > 0;
             }
         }
     }
@@ -222,6 +422,30 @@ public sealed class GitProcessScope
         }
     }
 
+    internal void RegisterPty(PtyProcess pty, string repoPath)
+    {
+        bool killNow;
+        lock (_sync)
+        {
+            _repoPath = repoPath;
+            _livePty.Add(pty);
+            killNow = _abortRequested;
+        }
+
+        if (killNow)
+        {
+            KillPty(pty);
+        }
+    }
+
+    internal void UnregisterPty(PtyProcess pty)
+    {
+        lock (_sync)
+        {
+            _livePty.Remove(pty);
+        }
+    }
+
     /// <summary>
     ///  Kills every git process running in this scope, whole process tree included
     ///  (git delegates to helpers such as <c>git-remote-https</c> / <c>ssh</c>, which
@@ -236,10 +460,12 @@ public sealed class GitProcessScope
     public bool KillAll()
     {
         Process[] snapshot;
+        PtyProcess[] ptySnapshot;
         lock (_sync)
         {
             _abortRequested = true;
             snapshot = _live.ToArray();
+            ptySnapshot = _livePty.ToArray();
         }
 
         bool killed = false;
@@ -248,7 +474,50 @@ public sealed class GitProcessScope
             killed |= Kill(process);
         }
 
+        foreach (PtyProcess pty in ptySnapshot)
+        {
+            killed |= KillPty(pty);
+        }
+
         return killed;
+    }
+
+    /// <summary>
+    ///  Aborts a git command running on a PTY the way a terminal user would, escalating
+    ///  only as needed: SIGINT to the terminal's FOREGROUND PROCESS GROUP first (that
+    ///  hits git and the <c>ssh</c>/<c>git-remote-https</c> helper sharing the group,
+    ///  and lets git clean up its own temporary files), then SIGTERM, then the hard
+    ///  path — <see cref="PtyProcess.Dispose"/> closes the master, which SIGHUPs the
+    ///  session and kills the child tree.
+    /// </summary>
+    private static bool KillPty(PtyProcess pty)
+    {
+        try
+        {
+            if (!pty.IsRunning)
+            {
+                return false;
+            }
+
+            pty.Interrupt();
+            if (pty.WaitForExit(700))
+            {
+                return true;
+            }
+
+            pty.Terminate();
+            if (!pty.WaitForExit(700))
+            {
+                pty.Dispose();
+            }
+
+            return true;
+        }
+        catch (Exception)
+        {
+            // An abort must never throw at the UI.
+            return false;
+        }
     }
 
     private static bool Kill(Process process)
