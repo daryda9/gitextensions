@@ -76,16 +76,17 @@ public sealed class MaintenanceDialog : Window
         _unlock.Click += (_, _) => DeleteLock();
         _config.Click += (_, _) => EditConfig();
 
-        StackPanel actions = new()
+        // A WrapPanel, not a horizontal StackPanel: the four captions are wider than
+        // the 620px dialog, so on screen "Edit .git/config" was clipped off the right
+        // edge and the action could not be clicked at all. Wrapping puts the overflow
+        // on a second line instead of past the border. The spacing rides on the
+        // buttons because WrapPanel has no Spacing of its own.
+        WrapPanel actions = new() { Margin = new Thickness(0, 16, 0, 8) };
+        foreach (Button action in new[] { _gc, _fsck, _unlock, _config })
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Margin = new Thickness(0, 16, 0, 0),
-        };
-        actions.Children.Add(_gc);
-        actions.Children.Add(_fsck);
-        actions.Children.Add(_unlock);
-        actions.Children.Add(_config);
+            action.Margin = new Thickness(0, 0, 8, 8);
+            actions.Children.Add(action);
+        }
 
         // TextBoxSurface: see OutputView — the Fluent per-state repaint beats the local
         // Background, so clicking this read-only log flipped its surface to pure
