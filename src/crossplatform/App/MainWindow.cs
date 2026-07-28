@@ -126,6 +126,11 @@ public sealed class MainWindow : Window
     // Which commit each lazily-loaded bottom tab is currently showing; null = stale.
     private string? _detailLoadedFor;
     private string? _diffLoadedFor;
+
+    // True while the Diff tab is showing a comparison the user asked for (a range,
+    // or against the working directory) rather than the selected commit. Without it
+    // the lazy tab loader would immediately overwrite it with `git show <commit>`.
+    private bool _diffShowsRange;
     private string? _fileTreeLoadedFor;
     private string? _gpgLoadedFor;
 
@@ -1741,6 +1746,8 @@ public sealed class MainWindow : Window
         }
 
         _lastSelectedHash = commitHash;
+        _diffShowsRange = false;
+        _statusBar.SetText(string.Empty);
 
         // Upstream loads only the tab that is actually showing (FormBrowse.cs:1240,
         // 1251, 1306) and marks the others stale. Loading all four on every selection
@@ -1773,7 +1780,7 @@ public sealed class MainWindow : Window
             _detailLoadedFor = hash;
             _detail.ShowCommit(repo, hash);
         }
-        else if (ReferenceEquals(tab, _diffTab) && _diffLoadedFor != hash)
+        else if (ReferenceEquals(tab, _diffTab) && !_diffShowsRange && _diffLoadedFor != hash)
         {
             _diffLoadedFor = hash;
             _diff.ShowCommit(repo, hash);
@@ -1799,6 +1806,7 @@ public sealed class MainWindow : Window
             return;
         }
 
+        _diffShowsRange = true;
         _diff.ShowRange(_repoPath, baseHash, otherHash);
         FocusDiff();
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
@@ -1835,6 +1843,7 @@ public sealed class MainWindow : Window
             return;
         }
 
+        _diffShowsRange = true;
         _diff.ShowRange(_repoPath, baseHash, hash);
         FocusDiff();
 
@@ -1852,6 +1861,7 @@ public sealed class MainWindow : Window
             return;
         }
 
+        _diffShowsRange = true;
         _diff.ShowAgainstWorkingDirectory(_repoPath, hash);
         FocusDiff();
 
@@ -1899,6 +1909,7 @@ public sealed class MainWindow : Window
         // back to its name if the ref carried no object id.
         string baseRef = chosen.ObjectId is { Length: > 0 } oid ? oid : chosen.Name;
 
+        _diffShowsRange = true;
         _diff.ShowRange(_repoPath, baseRef, hash);
         FocusDiff();
 
