@@ -194,6 +194,95 @@ public sealed class PushRefsService
     }
 
     /// <summary>
+    ///  Resolves where <paramref name="localBranch"/> should be pushed on
+    ///  <paramref name="remote"/>, porting the chain
+    ///  <c>FormPush.BranchSelectedValueChanged</c> walks
+    ///  (<c>FormPush.cs:773-822</c>):
+    ///  <list type="number">
+    ///   <item>a <c>remote.&lt;remote&gt;.push</c> refspec whose source is this branch
+    ///    — exact source first, then a wildcard one, whose <c>*</c> is substituted
+    ///    (upstream's <c>ConfigFileRemoteSettingsManager.GetDefaultPushRemote</c>);</item>
+    ///   <item>the branch's own upstream, <c>branch.&lt;x&gt;.merge</c>, but only when
+    ///    <c>branch.&lt;x&gt;.remote</c> IS the remote being pushed to — otherwise the
+    ///    destination would be a branch name that belongs to a different remote;</item>
+    ///   <item><c>remote.&lt;remote&gt;.prefix</c> prepended to the local branch name;</item>
+    ///   <item>failing all of that, the local branch name itself.</item>
+    ///  </list>
+    ///
+    ///  <para>Two notes on what is NOT here. <c>push.default</c> and
+    ///  <c>remote.pushDefault</c> are absent because upstream never reads them — they
+    ///  govern what bare <c>git push</c> does, whereas this dialog always pushes an
+    ///  explicit refspec, so honouring them would change the destination away from
+    ///  what the dialog displays. And <c>remote.&lt;name&gt;.prefix</c> is a Git
+    ///  Extensions key, not a git one: it is read here so a repository configured by
+    ///  the Windows app behaves the same, but nothing in this port writes it.</para>
+    ///
+    ///  <para>Shells out to git — call off the UI thread.</para>
+    /// </summary>
+    public string ResolvePushDestination(string repoPath, string remote, string localBranch)
+    {
+        if (string.IsNullOrEmpty(localBranch) || string.IsNullOrEmpty(remote))
+        {
+            return localBranch ?? string.Empty;
+        }
+
+        // 1. remote.<remote>.push refspecs — exact source match wins over a wildcard.
+        List<(string Source, string Destination)> refspecs = [];
+        foreach (string entry in Capture(repoPath, $"config --get-all {Quote($"remote.{remote}.push")}"))
+        {
+            // A leading '+' only means "allow non-fast-forward"; it is not part of the ref.
+            string spec = entry.Trim().TrimStart('+');
+            string[] sides = spec.Split(':');
+            if (sides.Length == 2 && sides[0].Length > 0 && sides[1].Length > 0)
+            {
+                refspecs.Add((ShortBranch(sides[0]), ShortBranch(sides[1])));
+            }
+        }
+
+        foreach ((string source, string destination) in refspecs)
+        {
+            if (!source.Contains('*') && string.Equals(source, localBranch, StringComparison.OrdinalIgnoreCase))
+            {
+                return destination;
+            }
+        }
+
+        foreach ((string source, string destination) in refspecs)
+        {
+            if (source.Contains('*'))
+            {
+                return destination.Replace("*", localBranch, StringComparison.Ordinal);
+            }
+        }
+
+        // 2. The branch's own upstream, but only on the remote it actually tracks.
+        string trackingRemote = First(Capture(repoPath, $"config --get {Quote($"branch.{localBranch}.remote")}"));
+        if (string.Equals(trackingRemote, remote, StringComparison.OrdinalIgnoreCase))
+        {
+            string merge = ShortBranch(First(Capture(repoPath, $"config --get {Quote($"branch.{localBranch}.merge")}")));
+            if (merge.Length > 0)
+            {
+                return merge;
+            }
+        }
+
+        // 3. The Git Extensions per-remote prefix, then 4. the plain branch name.
+        return First(Capture(repoPath, $"config --get {Quote($"remote.{remote}.prefix")}")) + localBranch;
+    }
+
+    private static string First(IReadOnlyList<string> lines)
+        => lines.Count > 0 ? lines[0].Trim() : string.Empty;
+
+    // "refs/heads/main" → "main"; anything else is returned as-is (a wildcard spec
+    // such as "refs/heads/*" keeps its star for the substitution above).
+    private static string ShortBranch(string reference)
+    {
+        string value = (reference ?? string.Empty).Trim();
+        const string prefix = "refs/heads/";
+        return value.StartsWith(prefix, StringComparison.Ordinal) ? value[prefix.Length..] : value;
+    }
+
+    /// <summary>
     ///  Lists local tags and local branches (with tracking state) in a single pair
     ///  of <c>git for-each-ref</c> calls.
     /// </summary>

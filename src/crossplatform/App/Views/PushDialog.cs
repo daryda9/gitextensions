@@ -114,6 +114,9 @@ public sealed class PushDialog : Window
     private readonly Button _pullBtn;
     private readonly Button _pushBtn;
 
+    // Guards against a slow destination resolution overwriting a newer one.
+    private int _destinationToken;
+
     private bool _pushLaunched;
     private bool _suppressSelectAll;
     private bool _suppressForceSync;
@@ -152,7 +155,8 @@ public sealed class PushDialog : Window
         IReadOnlyList<string> LocalBranches,
         IReadOnlyList<PushTagRow> Tags,
         IReadOnlyList<PushBranchRow> BranchRows,
-        IReadOnlyDictionary<string, IReadOnlyList<string>> RemoteBranches);
+        IReadOnlyDictionary<string, IReadOnlyList<string>> RemoteBranches,
+        string InitialDestination);
 
     private PushDialog(string repoPath, PushData data)
     {
@@ -265,18 +269,19 @@ public sealed class PushDialog : Window
             IsEditable = true,
         };
 
-        // Default local branch = current; remote target = same name.
+        // Default local branch = current; destination = whatever the configuration
+        // says it should be (pre-resolved off the UI thread in LoadData).
         SelectBranch(_localBranchCombo, currentBranch, localBranches);
-        UpdateRemoteBranchCombo(LocalBranchName());
+        UpdateRemoteBranchCombo(data.InitialDestination);
 
         // The destination list belongs to the selected remote, so it is rebuilt
         // whenever the remote changes (upstream: UpdateRemoteBranchDropDown).
-        _remoteCombo.SelectionChanged += (_, _) => UpdateRemoteBranchCombo(LocalBranchName());
+        _remoteCombo.SelectionChanged += (_, _) => ScheduleDestinationUpdate(discardTyped: false);
 
         // Keep the remote target in step with the local selection: picking another
         // branch to push retargets the destination (as upstream's
         // BranchSelectedValueChanged does), typed-over name included.
-        _localBranchCombo.SelectionChanged += (_, _) => UpdateRemoteBranchCombo(LocalBranchName(), discardTyped: true);
+        _localBranchCombo.SelectionChanged += (_, _) => ScheduleDestinationUpdate(discardTyped: true);
 
         _branchFromLabel = Label(string.Empty);
         _branchToLabel = Label(string.Empty);
@@ -650,13 +655,34 @@ public sealed class PushDialog : Window
             listing = new PushRefsListing([], []);
         }
 
+        // Resolve the destination for the branch and remote the dialog will open on,
+        // here rather than in the constructor: the chain shells out to git, and the
+        // services deadlock when called from the UI thread.
+        string initialRemote = remoteRows.Select(r => r.Name).FirstOrDefault(n => n == "origin")
+            ?? remoteRows.Select(r => r.Name).FirstOrDefault()
+            ?? string.Empty;
+
+        string destination = current;
+        try
+        {
+            if (!string.IsNullOrEmpty(initialRemote) && !string.IsNullOrEmpty(current))
+            {
+                destination = new PushRefsService().ResolvePushDestination(repoPath, initialRemote, current);
+            }
+        }
+        catch (Exception)
+        {
+            destination = current;
+        }
+
         return new PushData(
             remoteRows,
             current,
             locals,
             listing.Tags,
             listing.Branches,
-            LoadRemoteBranches(repoPath));
+            LoadRemoteBranches(repoPath),
+            string.IsNullOrEmpty(destination) ? current : destination);
     }
 
     // Branches known to exist on each remote. Must run OFF the UI thread (it shells
@@ -737,6 +763,52 @@ public sealed class PushDialog : Window
     ///  <paramref name="discardTyped"/> asks for the destination to be retargeted;
     ///  otherwise the destination defaults to <paramref name="preferred"/>.
     /// </summary>
+    /// <summary>
+    ///  Re-resolves the push destination for the current branch/remote pair and then
+    ///  rebuilds the drop-down. The resolution chain shells out to git, so it runs on
+    ///  a background thread; the result is applied on the UI thread and only if it is
+    ///  still the latest request, so a quick sequence of selection changes cannot
+    ///  leave an earlier answer on screen.
+    /// </summary>
+    private void ScheduleDestinationUpdate(bool discardTyped)
+    {
+        string local = LocalBranchName();
+        string remote = _remoteCombo.SelectedItem as string ?? string.Empty;
+
+        if (local.Length == 0 || remote.Length == 0)
+        {
+            UpdateRemoteBranchCombo(local, discardTyped);
+            return;
+        }
+
+        string repo = _repoPath;
+        int token = ++_destinationToken;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                return new PushRefsService().ResolvePushDestination(repo, remote, local);
+            }
+            catch (Exception)
+            {
+                return local;
+            }
+        }).ContinueWith(
+            task =>
+            {
+                string destination = task.IsFaulted || string.IsNullOrEmpty(task.Result) ? local : task.Result;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (token == _destinationToken)
+                    {
+                        UpdateRemoteBranchCombo(destination, discardTyped);
+                    }
+                });
+            },
+            TaskScheduler.Default);
+    }
+
     private void UpdateRemoteBranchCombo(string preferred, bool discardTyped = false)
     {
         // A destination the user typed by hand must survive the rebuild; a value we
@@ -824,11 +896,12 @@ public sealed class PushDialog : Window
                 });
 
             _remoteBranches = reloaded.Branches;
+            _remoteNames = [.. reloaded.Rows.Select(r => r.Name)];
             PopulateRemotes(reloaded.Rows);
 
             // PopulateRemotes only fires SelectionChanged when the selection really
             // changed, so refresh the destination list unconditionally.
-            UpdateRemoteBranchCombo(LocalBranchName());
+            ScheduleDestinationUpdate(discardTyped: false);
         }
         catch (Exception)
         {
