@@ -1,6 +1,7 @@
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
+using GitExtUtils;
 
 namespace GitExtensions.Avalonia.Services;
 
@@ -61,8 +62,19 @@ public sealed class CloneInitService
     ///  Initialises a new git repository in <paramref name="dir"/> (created if it
     ///  does not yet exist), returning the directory as the repository path on
     ///  success.
+    ///  <para>
+    ///  <paramref name="central"/> selects upstream's "Central repository" type
+    ///  (<c>FormInit</c>'s <c>Central</c> radio): <c>git init --bare --shared=all</c>,
+    ///  a repository with no working directory, group-writable, meant to be pushed
+    ///  to. The default — "Personal" — is a plain <c>git init</c>.
+    ///  </para>
+    ///  <para>
+    ///  A central repository has no work tree, so <c>IsValidGitWorkingDir</c> is the
+    ///  wrong success test for it; success is then git's own exit code plus the
+    ///  presence of the bare layout.
+    ///  </para>
     /// </summary>
-    public CloneInitResult Init(string dir)
+    public CloneInitResult Init(string dir, bool central = false)
     {
         if (string.IsNullOrWhiteSpace(dir))
         {
@@ -79,9 +91,17 @@ public sealed class CloneInitService
         }
 
         GitModule module = GitContext.CreateModule(dir);
-        ExecutionResult result = module.GitExecutable.Execute("init", throwOnErrorExit: false);
+        GitArgumentBuilder args = new("init")
+        {
+            { central, "--bare" },
+            { central, "--shared=all" },
+        };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
 
-        bool ok = result.ExitedSuccessfully && GitModule.IsValidGitWorkingDir(dir);
+        bool created = central
+            ? Directory.Exists(Path.Combine(dir, "refs")) && File.Exists(Path.Combine(dir, "HEAD"))
+            : GitModule.IsValidGitWorkingDir(dir);
+        bool ok = result.ExitedSuccessfully && created;
         return new CloneInitResult(ok, result.AllOutput, ok ? dir : null);
     }
 
