@@ -2001,6 +2001,50 @@ spesso**, non solo a fine unità.
 `pkill -f "Xvfb :151"` invocato da un comando che contiene quella stessa stringa). Usare un pattern
 auto-escluso (`Xvf[b] :151`) o `kill <PID>`.
 
+**M62** (2026-07-28) — **il tema scuro che anneriva le console al clic**, segnalato dall'utente con
+uno screenshot del dialogo `Process — Push`: cliccando il testo la console diventava tutta nera.
+
+- **Causa reale** (`0e5a91b49`): non i colori locali ma la **precedenza degli style setter sui figli
+  di template**. Il `ControlTheme` Fluent del `TextBox` (Avalonia 11.3.14, verificato decompilando
+  `Avalonia.Themes.Fluent.dll`) negli stati `:pointerover`/`:focus`/`:disabled` ridipinge **non il
+  `TextBox`** ma il figlio `Border#PART_BorderElement`, con `TextControlBackground{PointerOver,
+  Focused,Disabled}` → `Border.Background` (più le analoghe per bordo e foreground) — e uno style
+  setter **batte il valore locale**. Quindi `Background = #ECE9D8` valeva solo nello stato normale:
+  al clic il fondo passava al colore del tema, **misurato `#000000` in scuro e `#FFFFFF` in chiaro**,
+  mentre il foreground restava `#101010`. Nota: `TextControlSelectionHighlightColor`, malgrado il
+  nome, alimenta `TextBox.SelectionBrush` ed è tipizzata **`IBrush`**, non `Color`.
+- **Soluzione**: nuovo `App/Theming/TextBoxSurface.cs`, che popola le chiavi consumate dal template
+  nelle `Resources` **dell'istanza** (background/foreground/bordo/placeholder × 4 stati + selezione +
+  spessore del bordo) tenendo i brush **per riferimento**, così il cambio tema a caldo continua a
+  funzionare (`ThemeManager` muta i colori in place). Console misurata identica (`#DEDBCB`) prima del
+  clic, dopo il clic e dopo un drag di selezione; selezione ora `#007ACC` con inchiostro bianco.
+- **Estensione** (`b8b57f991`) a nove superfici di testo **read-only**: i log di `CleanupDialog` e
+  `CloneDialog`, `OutputView._detail`, gli output di `SubmodulesDialog`/`WorktreesDialog`/
+  `MaintenanceDialog`, i due box di `GpgView` e il branch locale read-only di `PullDialog`. I due log
+  erano il vero problema di leggibilità: in tema chiaro il focus portava il fondo a bianco col testo
+  `#D0D0D0`, **da 7,42:1 a ~1,5:1**. Lasciati fuori di proposito **tutti gli input editabili** (le
+  caselle di ricerca, il filtro, i box dei dialoghi): lì il riempimento al focus è un'affordance
+  reale e resta leggibile; fissarlo cancellerebbe l'indizio di focus.
+- **Difetto accoppiato scoperto e chiuso** (`3b73b44bc`): la chiave `App.Control` era letta in ~20
+  punti ma **mai registrata** in `ThemeManager`. `Brush("App.Control", Brushes.Black)` restituiva
+  quindi il fallback nero, che non segue il tema → in tema **chiaro** quei box erano testo quasi nero
+  su nero, **illeggibili a riposo** e resi leggibili solo dal riempimento bianco del focus; e
+  `B("App.Control")` restituiva **null**. Registrata con i valori di `App.Panel` (`#252526` scuro,
+  `#FFFFFF` chiaro): nessuna tinta nuova. Verificato in GUI a tema chiaro che la casella di ricerca
+  dell'albero è ora bianca con testo scuro.
+  ⚠️ Restano **non registrate** `App.ConsoleBackground` e `App.ConsoleForeground` (`CleanupDialog`,
+  `CloneDialog`): lì il fallback è un terminale scuro invariante al tema, coerente col beige fisso del
+  process dialog, e fissarlo è stabile per costruzione — ma se un giorno servono theme-driven, vanno
+  registrate.
+- *Non verificati in GUI*: `CleanupDialog._log`, `SubmodulesDialog._output`,
+  `MaintenanceDialog._output`, `PullDialog._localBranchBox` (stessa modifica di una riga e stessa
+  coppia di colori di un fratello verificato) e i due box di `GpgView`, che rendono il `TextBox` solo
+  per un commit **firmato**, assente nei repo di prova.
+- **Nota di metodo**: il primo tentativo di estensione era stato scritto su una base vecchia
+  (`a3aae6d0b`) e **non era cherry-pickabile** — i file erano cambiati troppo nel frattempo. È stato
+  riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
+  vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
+
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 
 > **Iterazione 2.** Nata da un'osservazione dell'utente ("mancano i tasti delle sezioni inferiori,

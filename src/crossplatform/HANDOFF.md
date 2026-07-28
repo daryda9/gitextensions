@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M61,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M62,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `cfa035555` (… + **round 9 completo: M52–M61**) |
+| HEAD al momento dell'handoff | `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M62**), tiene il contatore iterazione.
+  libera: **M63**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -173,6 +173,18 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 - **Tasto destro su una `ListBox`**: muove la selezione, quindi fa scattare gli eventi di
   selezione della view (in M51 questo spostava il pannello inferiore sul tab Commit mentre il
   menu si apriva). Se serve, sopprimere la notifica all'host per quel solo dispatch.
+- **Style setter vs valore locale sui figli di template**: impostare `Background` su un `TextBox`
+  vale solo per lo stato normale. Il `ControlTheme` Fluent, negli stati `:pointerover`/`:focus`/
+  `:disabled`, ridipinge il figlio `Border#PART_BorderElement` dalle chiavi `TextControlBackground*`
+  e uno style setter batte il valore locale (fondo `#000000` in scuro, `#FFFFFF` in chiaro). Per una
+  superficie che deve restare stabile usare `App/Theming/TextBoxSurface.cs` (M62), che popola le
+  chiavi nelle `Resources` dell'istanza tenendo i brush **per riferimento**, così il cambio tema a
+  caldo continua a funzionare. Non applicarlo agli **input editabili**: lì il riempimento al focus è
+  un'affordance voluta.
+- **Chiavi `App.*` non registrate**: `Brush("App.X", fallback)` restituisce silenziosamente il
+  fallback (che non segue il tema) e `B("App.X")` restituisce **null**. Prima di usare una chiave,
+  verificare che sia in `ThemeManager.Keys` + `Dark` + `Light` (M62: `App.Control` era letta in ~20
+  punti senza esistere; `App.ConsoleBackground`/`App.ConsoleForeground` restano volutamente fallback).
 - **Virtualizzazione**: ri-assegnare la *stessa* istanza di lista a `ItemsSource` non
   ricrea i container già realizzati → le righe visibili restano con i visual vecchi e il
   cambio si vede solo su quelle che entrano dopo. Assegnare una **nuova** lista (scoperto
@@ -375,7 +387,7 @@ click.py, rclick.py, esc.py, miniwm.py, g2_type.py e in r8/: altclick.py, ctrlke
 Le sleep di shell vengono UCCISE dall'harness (exit 144): usare
 python3 -c "import time;time.sleep(N)". Controllare l'mtime dello screenshot prima di leggerlo.
 Repo di prova /tmp/loop-testrepo; operazioni distruttive SOLO su repo in /tmp, mai su git_ext_mod.
-Aggiornare PORTING.md (prossima milestone libera: M52) e HANDOFF.md a ogni iterazione, e la
+Aggiornare PORTING.md (prossima milestone libera: M63) e HANDOFF.md a ogni iterazione, e la
 memoria avalonia-port-state.md a fine blocco.
 STOP quando la coda e' chiusa, oppure a 20 iterazioni, oppure se una strada si rivela
 impraticabile (documentare il vicolo cieco invece di forzare).
