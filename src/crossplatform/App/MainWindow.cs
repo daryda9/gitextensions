@@ -1148,6 +1148,10 @@ public sealed class MainWindow : Window
         _toolbar.CommitInfoPositionChanged += SetCommitInfoPosition;
         _toolbar.FileExplorerRequested += () => WithRepo(p => _externalTools.OpenPath(p));
         _toolbar.OpenTerminalRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
+        // The shell split button names the shell to launch; unwired it would fall back
+        // to the default terminal, which is a worse but not wrong behaviour.
+        _toolbar.OpenShellRequested += exe => WithRepo(p => _externalTools.OpenTerminal(p, exe));
+        _toolbar.CloseRepositoryRequested += ShowDashboard;
 
         // Right-side branch-scope + filter selectors: drive the revision grid's own
         // scope/filter logic (the grid's header menu keeps working independently).
