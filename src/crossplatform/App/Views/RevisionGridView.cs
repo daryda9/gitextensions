@@ -85,6 +85,43 @@ public sealed class RevisionGridView : UserControl
     // the quick box below, which only sifts the rows already loaded.
     private RevisionFilter _gitFilter = RevisionFilter.None;
 
+    // --- The quick filter box: which field it searches, and what it submitted ----
+    //
+    // The box is upstream's FilterToolBar "Filter:" combo: typing narrows nothing by
+    // itself, ENTER hands the text to git (FilterToolBar.cs:386-434), and a "Filter
+    // type" dropdown says which field the text applies to
+    // (FilterToolBar.Designer.cs:48-70). This port keeps the as-you-type sieve over
+    // the ALREADY LOADED rows as a free preview, and promotes it to a real git filter
+    // on Enter — the only way a term living in a commit that has not been paged in
+    // yet can ever be found.
+    private enum QuickFilterField
+    {
+        Message,
+        Committer,
+        Author,
+        DiffContent,
+    }
+
+    private QuickFilterField _quickFilterField = QuickFilterField.Message;
+
+    // The text currently APPLIED TO GIT through the quick box (empty when none).
+    // While the box still shows exactly this text there is nothing left to sift in
+    // memory — git already returned the matching set — so ApplyFilterCore treats it
+    // as no quick filter at all, which also keeps the graph column and the
+    // artificial rows visible. Typing further re-enables the in-memory preview on
+    // top of the git result.
+    private string _submittedQuickText = string.Empty;
+
+    // The last searches submitted from the quick box, newest first, capped at 30 —
+    // upstream's AppSettings.RevisionFilterDropdowns (FilterToolBar.cs:394-399).
+    private readonly List<string> _filterMru = [];
+    private const int MaxFilterMru = 30;
+
+    // The dropdown listing the MRU, and the button opening it. Rebuilt when the MRU
+    // changes — never from an Opening handler.
+    private readonly Button _mruButton;
+    private readonly Button _filterTypeButton;
+
     // Opens the filter dialog; captioned with a funnel so an active filter is
     // visible even before reading the status line.
     private readonly Button _filterButton;
@@ -518,7 +555,7 @@ public sealed class RevisionGridView : UserControl
 
         _search = new TextBox
         {
-            Watermark = T("Filter: author / message / hash"),
+            Watermark = QuickFilterWatermark,
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
             BorderBrush = B("App.Border"),
@@ -543,26 +580,57 @@ public sealed class RevisionGridView : UserControl
         clearButton.Click += (_, _) =>
         {
             _search.Text = string.Empty;
+
+            // The "✕" means "no filter", so it must also withdraw what was already
+            // handed to git — otherwise the box would read empty while the walk
+            // stayed narrowed.
+            SubmitQuickFilter(string.Empty);
             _search.Focus();
         };
         _search.InnerRightContent = clearButton;
 
-        // Live, in-memory filtering as the user types (no git re-run per keystroke).
+        // Typing sifts the rows ALREADY LOADED — a free preview, no git per
+        // keystroke. It is not the filter: the real one runs on Enter, below.
         _search.TextChanged += (_, _) =>
         {
             clearButton.IsVisible = !string.IsNullOrEmpty(_search.Text);
             ApplyFilterCore(_search.Text);
         };
 
-        // Esc clears the filter (and keeps focus in the box).
         _search.KeyDown += (_, e) =>
         {
+            if (e.Key is Key.Enter or Key.Return)
+            {
+                // ENTER hands the text to git, exactly as upstream's filter combo
+                // does (FilterToolBar.cs:386-434): only this reaches commits that
+                // have not been paged into memory yet.
+                SubmitQuickFilter(_search.Text);
+                e.Handled = true;
+                return;
+            }
+
+            // Esc drops both halves — the preview and anything already submitted —
+            // and keeps focus in the box.
             if (e.Key == Key.Escape)
             {
                 _search.Text = string.Empty;
+                SubmitQuickFilter(string.Empty);
                 e.Handled = true;
             }
         };
+
+        // Which field the quick box searches, and the list of what was searched
+        // before. Both sit immediately left of the box, so "what does Enter do" is
+        // readable without opening anything.
+        _filterTypeButton = MakeBarButton(Chevron(QuickFilterFieldLabel));
+        _filterTypeButton.Margin = new Thickness(0, 0, 6, 0);
+        _filterTypeButton.Flyout = BuildQuickFilterTypeFlyout();
+        ToolTip.SetTip(_filterTypeButton, T("Which field Enter searches in git"));
+
+        _mruButton = MakeBarButton("⌄");
+        _mruButton.Margin = new Thickness(0, 0, 6, 0);
+        ToolTip.SetTip(_mruButton, T("Recent searches"));
+        RebuildFilterMruFlyout();
 
         // Compact "View" controls sitting to the right of the filter box: a Date
         // menu (author/commit + relative/absolute) and a Columns menu (show/hide
@@ -617,6 +685,10 @@ public sealed class RevisionGridView : UserControl
         bar.Children.Add(_viewButton);
         bar.Children.Add(_branchesButton);
         bar.Children.Add(_goToButton);
+        DockPanel.SetDock(_filterTypeButton, Dock.Left);
+        DockPanel.SetDock(_mruButton, Dock.Left);
+        bar.Children.Add(_filterTypeButton);
+        bar.Children.Add(_mruButton);
         bar.Children.Add(_search); // fills the remaining space
 
         Border searchBar = new()
@@ -1035,7 +1107,8 @@ public sealed class RevisionGridView : UserControl
         _goToBox = MakeGoToBox();
         _goToButton.Flyout = BuildGoToFlyout();
 
-        _search.Watermark = T("Filter: author / message / hash");
+        _search.Watermark = QuickFilterWatermark;
+        _filterTypeButton.Content = Chevron(QuickFilterFieldLabel);
         UpdateFilterChrome();
         ToolTip.SetTip(_resetFilterButton, ResetFilterTip);
 
@@ -1502,26 +1575,277 @@ public sealed class RevisionGridView : UserControl
     };
 
     /// <summary>
-    ///  Applies a case-insensitive substring filter over the already-loaded
-    ///  revisions (author name, commit subject, and full/abbreviated hash).
-    ///  Empty text shows everything. Runs purely in memory — no git per keystroke.
+    ///  SUBMITS a search term, the way pressing Enter in the grid's own filter box
+    ///  does: the text becomes a <c>git log</c> criterion on the field chosen in the
+    ///  "Filter type" dropdown, so the whole history is searched — not merely the
+    ///  pages already in memory — and it joins the recent-searches list.
     ///
-    ///  Public entry point for host-driven filtering (e.g. the toolbar's Filter
-    ///  box). Drives the same path the grid's own search bar uses by routing
-    ///  through the search TextBox, so both surfaces stay in sync.
+    ///  <para>This is the host-driven entry point (the toolbar's "Filter:" box). It
+    ///  used to be an in-memory sieve over the loaded rows, called on every
+    ///  keystroke, which is why a term living in a commit that had not been paged in
+    ///  yet was simply never found. The toolbar now raises its event on Enter only,
+    ///  matching upstream's FilterToolBar, and this applies it to git.</para>
+    ///
+    ///  <para>An empty text withdraws the quick criteria (and only those: a path,
+    ///  date range or limit set from the filter dialog stays).</para>
     /// </summary>
     public void ApplyFilter(string text)
     {
         string value = text ?? string.Empty;
-        if (_search.Text == value)
+
+        // Keep the grid's own box showing what was submitted, so the two surfaces
+        // read the same. Assigning raises TextChanged -> ApplyFilterCore, which is
+        // the in-memory preview; SubmitQuickFilter then supersedes it.
+        if (_search.Text != value)
         {
-            // Text unchanged (TextChanged would not fire) — apply directly.
-            ApplyFilterCore(value);
+            _search.Text = value;
+        }
+
+        SubmitQuickFilter(value);
+    }
+
+    // What the box invites the user to do: name the field Enter will search, so the
+    // difference between the as-you-type preview and the real filter is on screen.
+    private string QuickFilterWatermark
+        => string.Format(T("{0} — press Enter to search git"), QuickFilterFieldLabel);
+
+    // The label of the field the quick box searches, on the dropdown button.
+    private string QuickFilterFieldLabel => _quickFilterField switch
+    {
+        QuickFilterField.Committer => T("FilterToolBar/tsmiCommitterFilter.Text", "Committer"),
+        QuickFilterField.Author => T("TranslatedStrings/_author.Text", "Author"),
+        QuickFilterField.DiffContent => T("FilterToolBar/tsmiDiffContainsFilter.Text", "Diff contains"),
+        _ => T("FilterToolBar/tsmiMessageFilter.Text", "Commit message"),
+    };
+
+    // Upstream's "Filter type" dropdown (FilterToolBar.Designer.cs:48-70).
+    //
+    // Upstream lets SEVERAL fields be ticked at once; git then ANDs them, so the
+    // same text has to appear in the message AND in the author for a commit to
+    // survive — a combination that is almost always empty and reads as a broken
+    // filter. Here the four are a radio group: one field at a time, which is how
+    // the box is actually used. Combining criteria is still possible, and explicit,
+    // in the filter dialog.
+    private Flyout BuildQuickFilterTypeFlyout()
+    {
+        StackPanel panel = new() { Spacing = 3, Margin = new Thickness(6), MinWidth = 180 };
+        panel.Children.Add(SectionLabel(T("FilterToolBar/tsddbtnRevisionFilter.Text", "Filter type")));
+
+        panel.Children.Add(OptionRadio(
+            OptQuickFilterMessage,
+            T("FilterToolBar/tsmiMessageFilter.Text", "Commit message"),
+            "revQuickFilterField",
+            () => SetQuickFilterField(QuickFilterField.Message)));
+        panel.Children.Add(OptionRadio(
+            OptQuickFilterCommitter,
+            T("FilterToolBar/tsmiCommitterFilter.Text", "Committer"),
+            "revQuickFilterField",
+            () => SetQuickFilterField(QuickFilterField.Committer)));
+        panel.Children.Add(OptionRadio(
+            OptQuickFilterAuthor,
+            T("TranslatedStrings/_author.Text", "Author"),
+            "revQuickFilterField",
+            () => SetQuickFilterField(QuickFilterField.Author)));
+        panel.Children.Add(OptionRadio(
+            OptQuickFilterDiff,
+            T("FilterToolBar/tsmiDiffContainsFilter.Text", "Diff contains (SLOW)"),
+            "revQuickFilterField",
+            () => SetQuickFilterField(QuickFilterField.DiffContent)));
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = T("Press Enter in the box to search git; typing alone only sifts the rows already loaded."),
+            Foreground = B("App.TextDim"),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 3, 0, 0),
+            MaxWidth = 220,
+        });
+
+        return new Flyout
+        {
+            Content = new Border
+            {
+                Background = B("App.Panel"),
+                Padding = new Thickness(2),
+                Child = panel,
+            },
+        };
+    }
+
+    // Switches the field the quick box searches. A term already submitted is
+    // re-submitted against the new field, so the change is visible at once instead
+    // of waiting for the next Enter.
+    private void SetQuickFilterField(QuickFilterField field)
+    {
+        if (_quickFilterField == field)
+        {
             return;
         }
 
-        // Setting the box text raises TextChanged, which calls ApplyFilterCore.
-        _search.Text = value;
+        _quickFilterField = field;
+        _filterTypeButton.Content = Chevron(QuickFilterFieldLabel);
+        _search.Watermark = QuickFilterWatermark;
+        OptionsChanged();
+
+        if (_submittedQuickText.Length > 0)
+        {
+            SubmitQuickFilter(_submittedQuickText);
+        }
+    }
+
+    /// <summary>
+    ///  Hands <paramref name="text"/> to git as a criterion on the currently chosen
+    ///  field, records it in the recent-searches list and restarts the walk.
+    ///
+    ///  <para>The four quick fields (author / committer / message / diff) are OWNED
+    ///  by this box: submitting replaces whatever they held, including a value the
+    ///  filter dialog put there — upstream's toolbar drives exactly the same four.
+    ///  Everything else the dialog can set (path, dates, limit, no-merges, …) is
+    ///  left untouched.</para>
+    /// </summary>
+    public void SubmitQuickFilter(string? text)
+    {
+        string value = (text ?? string.Empty).Trim();
+
+        RevisionFilter next = _gitFilter with
+        {
+            Author = string.Empty,
+            Committer = string.Empty,
+            Message = string.Empty,
+            DiffContent = string.Empty,
+        };
+
+        if (value.Length > 0)
+        {
+            next = _quickFilterField switch
+            {
+                QuickFilterField.Committer => next with { Committer = value },
+                QuickFilterField.Author => next with { Author = value },
+                QuickFilterField.DiffContent => next with { DiffContent = value },
+                _ => next with { Message = value },
+            };
+        }
+
+        _submittedQuickText = value;
+        PushFilterMru(value);
+
+        // ApplyRevisionFilter reloads; on completion it re-runs ApplyFilterCore,
+        // which now sees the box text as "already applied by git" and stops sifting
+        // in memory. When the criteria did not actually change it returns early, so
+        // the in-memory preview still has to be dropped explicitly.
+        if (next == _gitFilter)
+        {
+            ApplyFilterCore(_search.Text, preserveViewport: true);
+            return;
+        }
+
+        ApplyRevisionFilter(next);
+    }
+
+    // --- the recent-searches list (MRU) -----------------------------------------
+
+    /// <summary>
+    ///  The searches submitted from the quick box, newest first, capped at 30 —
+    ///  upstream's <c>AppSettings.RevisionFilterDropdowns</c>
+    ///  (<c>FilterToolBar.cs:394-399</c>).
+    /// </summary>
+    public IReadOnlyList<string> FilterMru => _filterMru;
+
+    /// <summary>
+    ///  Raised whenever the recent-searches list changes, so a host that wants to
+    ///  mirror it elsewhere can. Persistence needs no subscription: the list rides
+    ///  <see cref="PersistedViewOptions"/> like every other piece of grid state.
+    /// </summary>
+    public event Action<IReadOnlyList<string>>? FilterMruChanged;
+
+    private void PushFilterMru(string value)
+    {
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        int existing = _filterMru.FindIndex(v => string.Equals(v, value, StringComparison.Ordinal));
+        if (existing == 0)
+        {
+            return;
+        }
+
+        if (existing > 0)
+        {
+            _filterMru.RemoveAt(existing);
+        }
+
+        _filterMru.Insert(0, value);
+        while (_filterMru.Count > MaxFilterMru)
+        {
+            _filterMru.RemoveAt(_filterMru.Count - 1);
+        }
+
+        RebuildFilterMruFlyout();
+        FilterMruChanged?.Invoke(_filterMru);
+        OptionsChanged();
+    }
+
+    // Rebuilt whenever the list changes — never from an Opening handler, which for a
+    // popup is too late to re-measure.
+    private void RebuildFilterMruFlyout()
+    {
+        _mruButton.IsEnabled = _filterMru.Count > 0;
+
+        StackPanel panel = new() { Spacing = 1, Margin = new Thickness(4), MinWidth = 200 };
+        panel.Children.Add(SectionLabel(T("Recent searches")));
+
+        if (_filterMru.Count == 0)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = T("Nothing searched yet."),
+                Foreground = B("App.TextDim"),
+                FontSize = 11,
+            });
+        }
+
+        foreach (string entry in _filterMru)
+        {
+            Button item = new()
+            {
+                Content = new TextBlock
+                {
+                    Text = entry,
+                    Foreground = B("App.Text"),
+                    FontSize = 12,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 260,
+                },
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(4, 2, 4, 2),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+            };
+            item.Click += (_, _) =>
+            {
+                _mruButton.Flyout?.Hide();
+                ApplyFilter(entry);
+            };
+            panel.Children.Add(item);
+        }
+
+        _mruButton.Flyout = new Flyout
+        {
+            Content = new ScrollViewer
+            {
+                MaxHeight = 320,
+                Content = new Border
+                {
+                    Background = B("App.Panel"),
+                    Padding = new Thickness(2),
+                    Child = panel,
+                },
+            },
+        };
     }
 
     /// <summary>
@@ -1589,6 +1913,7 @@ public sealed class RevisionGridView : UserControl
     {
         bool hadGitFilter = GitFilterActive;
         _search.Text = string.Empty;
+        _submittedQuickText = string.Empty;
 
         if (!hadGitFilter)
         {
@@ -1770,6 +2095,17 @@ public sealed class RevisionGridView : UserControl
     private void ApplyFilterCore(string? text, bool preserveViewport = false)
     {
         string query = (text ?? string.Empty).Trim();
+
+        // Once the term has been SUBMITTED, git returned exactly the matching set,
+        // so sifting the same term again in memory would only cost the graph column
+        // and the artificial rows (both suppressed while the quick sieve is on) for
+        // no change in the rows shown. Editing the box past the submitted text
+        // re-enables the preview on top of the git result.
+        if (query.Length > 0 && string.Equals(query, _submittedQuickText, StringComparison.Ordinal))
+        {
+            query = string.Empty;
+        }
+
         bool wasFiltering = _quickFilterActive;
         _quickFilterActive = query.Length > 0;
 
@@ -2731,6 +3067,12 @@ public sealed class RevisionGridView : UserControl
     public const string OptDateColumn = "showDateColumnToolStripMenuItem";
     public const string OptIdColumn = "showIdColumnToolStripMenuItem";
 
+    // Quick-filter field (upstream's "Filter type" dropdown).
+    public const string OptQuickFilterMessage = "tsmiCommitFilter";
+    public const string OptQuickFilterCommitter = "tsmiCommitterFilter";
+    public const string OptQuickFilterAuthor = "tsmiAuthorFilter";
+    public const string OptQuickFilterDiff = "tsmiDiffContainsFilter";
+
     // Sorting.
     public const string OptOrderDefault = "GitDefaultOrder";
     public const string OptOrderAuthorDate = "AuthorDateSort";
@@ -2773,6 +3115,10 @@ public sealed class RevisionGridView : UserControl
         [OptOrderDefault] = !_topoOrder && !_authorDateSort,
         [OptOrderAuthorDate] = _authorDateSort,
         [OptOrderTopo] = _topoOrder,
+        [OptQuickFilterMessage] = _quickFilterField == QuickFilterField.Message,
+        [OptQuickFilterCommitter] = _quickFilterField == QuickFilterField.Committer,
+        [OptQuickFilterAuthor] = _quickFilterField == QuickFilterField.Author,
+        [OptQuickFilterDiff] = _quickFilterField == QuickFilterField.DiffContent,
     };
 
     /// <summary>
@@ -2807,6 +3153,13 @@ public sealed class RevisionGridView : UserControl
         OptRelativeDate,
         OptOrderAuthorDate,
         OptOrderTopo,
+
+        // Only the three non-default quick-filter fields are stored: "commit
+        // message" is the fallback, so a file that names none of them restores it —
+        // the same canonical-subset rule as the date / order pairs above.
+        OptQuickFilterCommitter,
+        OptQuickFilterAuthor,
+        OptQuickFilterDiff,
     ];
 
     /// <summary>
@@ -2843,6 +3196,14 @@ public sealed class RevisionGridView : UserControl
                 snapshot[FilteredRefKeyPrefix + name] = true;
             }
 
+            // The recent-searches list rides the same bag. The rank is part of the
+            // KEY, not the dictionary's order: a JSON object's member order is not
+            // something to stake the MRU's ordering on.
+            for (int i = 0; i < _filterMru.Count; i++)
+            {
+                snapshot[$"{FilterMruKeyPrefix}{i:D2}:{_filterMru[i]}"] = true;
+            }
+
             return snapshot;
         }
     }
@@ -2852,6 +3213,12 @@ public sealed class RevisionGridView : UserControl
     ///  per ref of the "Filtered branches" selection.
     /// </summary>
     public const string FilteredRefKeyPrefix = "filteredRef:";
+
+    /// <summary>
+    ///  Key prefix under which <see cref="PersistedViewOptions"/> stores the recent
+    ///  searches, as <c>filterMru:&lt;rank&gt;:&lt;text&gt;</c>.
+    /// </summary>
+    public const string FilterMruKeyPrefix = "filterMru:";
 
     /// <summary>How many commits one page of the walk loads (see <see cref="SetPageSize"/>).</summary>
     public int PageSize => _pageSize;
@@ -2916,6 +3283,35 @@ public sealed class RevisionGridView : UserControl
             // stored both, mirroring how the two are emitted in RevisionService.
             _topoOrder = Get(OptOrderTopo, false);
             _authorDateSort = !_topoOrder && Get(OptOrderAuthorDate, false);
+
+            // The quick box's field; "commit message" is what a file naming none of
+            // the three restores.
+            _quickFilterField = Get(OptQuickFilterCommitter, false) ? QuickFilterField.Committer
+                : Get(OptQuickFilterAuthor, false) ? QuickFilterField.Author
+                : Get(OptQuickFilterDiff, false) ? QuickFilterField.DiffContent
+                : QuickFilterField.Message;
+            _filterTypeButton.Content = Chevron(QuickFilterFieldLabel);
+            _search.Watermark = QuickFilterWatermark;
+
+            // The recent searches, ordered by the rank encoded in the key (see
+            // PersistedViewOptions) rather than by the file's member order.
+            _filterMru.Clear();
+            _filterMru.AddRange(options
+                .Where(kv => kv.Value && kv.Key.StartsWith(FilterMruKeyPrefix, StringComparison.Ordinal))
+                .Select(kv => kv.Key[FilterMruKeyPrefix.Length..])
+                .Select(rest =>
+                {
+                    int colon = rest.IndexOf(':');
+                    return colon < 0
+                        ? (Rank: int.MaxValue, Text: rest)
+                        : (Rank: int.TryParse(rest[..colon], out int r) ? r : int.MaxValue, Text: rest[(colon + 1)..]);
+                })
+                .Where(e => e.Text.Length > 0)
+                .OrderBy(e => e.Rank)
+                .Select(e => e.Text)
+                .Distinct(StringComparer.Ordinal)
+                .Take(MaxFilterMru));
+            RebuildFilterMruFlyout();
         }
 
         // The header is built from the column flags, and the footer's page-size

@@ -547,7 +547,7 @@ public sealed class MainToolbar : UserControl
         TextBox filterBox = new()
         {
             Width = 180,
-            Watermark = T("author / message / hash"),
+            Watermark = T("search term, then Enter"),
             Background = Brush("App.Panel", "#252526"),
             Foreground = Brush("App.Text", "#DCDCDC"),
             BorderBrush = border,
@@ -557,8 +557,34 @@ public sealed class MainToolbar : UserControl
             VerticalContentAlignment = VerticalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        ToolTip.SetTip(filterBox, T("Filter the revision grid (author / message / hash)"));
-        filterBox.TextChanged += (_, _) => FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
+        ToolTip.SetTip(filterBox, T("Type a term and press Enter to search the whole history with git"));
+
+        // ENTER submits, exactly as upstream's FilterToolBar does
+        // (FilterToolBar.cs:386-434) — NOT every keystroke.
+        //
+        // The box used to raise FilterChanged on TextChanged, and the host answered
+        // it with an in-memory sieve over the rows already loaded: a term living in
+        // a commit that had not been paged in was simply never found, and every
+        // keystroke re-sifted the list. Submitting on Enter is what lets the same
+        // event carry the term all the way into `git log` (the grid's ApplyFilter
+        // now applies it to the field chosen in its "Filter type" dropdown), and it
+        // is also what makes a git-side filter affordable at all.
+        filterBox.KeyDown += (_, e) =>
+        {
+            if (e.Key is Key.Enter or Key.Return)
+            {
+                FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Escape)
+            {
+                filterBox.Text = string.Empty;
+                FilterChanged?.Invoke(string.Empty);
+                e.Handled = true;
+            }
+        };
         bar.AddItem(filterBox);
         _overflow[filterBox] = new OverflowEntry
         {
@@ -2460,8 +2486,8 @@ public sealed class MainToolbar : UserControl
             case OverflowKind.Filter:
             {
                 // The real (hidden) TextBox cannot live in two visual trees, so the
-                // menu hosts a mirror that writes straight back into it — which in
-                // turn raises FilterChanged exactly as inline typing does.
+                // menu hosts a mirror that writes straight back into it, and submits
+                // on Enter exactly as the inline box does.
                 TextBox? source = entry.FilterBox;
                 TextBox mirror = new()
                 {
@@ -2480,6 +2506,23 @@ public sealed class MainToolbar : UserControl
                 {
                     mirror.TextChanged += (_, _) => source.Text = mirror.Text ?? string.Empty;
                 }
+
+                mirror.KeyDown += (_, e) =>
+                {
+                    if (e.Key is Key.Enter or Key.Return)
+                    {
+                        FilterChanged?.Invoke(mirror.Text ?? string.Empty);
+                        e.Handled = true;
+                        return;
+                    }
+
+                    if (e.Key == Key.Escape)
+                    {
+                        mirror.Text = string.Empty;
+                        FilterChanged?.Invoke(string.Empty);
+                        e.Handled = true;
+                    }
+                };
 
                 StackPanel host = new()
                 {
