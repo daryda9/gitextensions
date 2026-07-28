@@ -1142,7 +1142,7 @@ priorità massima)
       branch nuovo sul remote (`FormPush.cs:291-310`), nome remote duplicato
       (`FormRemotes.cs:464-483`). *banale ciascuna*
 
-- [ ] 0.16 **La finestra non risponde a `WM_DELETE_WINDOW`**: la toplevel Avalonia non espone il
+- [x] 0.16 **La finestra non risponde a `WM_DELETE_WINDOW`**: la toplevel Avalonia non espone il
       protocollo in `WM_PROTOCOLS` e ignora il ClientMessage → con un window manager reale la "X"
       della decorazione **non chiude l'app** e `PersistLayout()` non gira, quindi *tutto* lo stato
       UI (geometria, splitter, tab, collasso, pull action) si perde. Oggi solo `Start → Exit` passa
@@ -1152,6 +1152,19 @@ priorità massima)
       collegata: non è solo "la X non chiude", è che **si perde tutto lo stato UI**. Se il
       protocollo non è registrabile dal lato managed, la via è un ricevitore nativo come si è già
       fatto per XDND (`Services/X11DropTarget.cs`). *valore alto*
+      > **RISOLTO in M58, e la diagnosi storica era SBAGLIATA.** Avalonia implementa benissimo il
+      > protocollo di chiusura. Il difetto è un argomento in `Avalonia.X11.X11Atoms.PopulateAtoms`
+      > (11.3.14): `XInternAtoms(..., only_if_exists: true, ...)`, cioè "solo se qualcuno li ha già
+      > creati". Su un server dove nessun client precedente l'ha fatto — **cioè su Xvfb nudo** —
+      > tutte e 78 le lookup tornano 0 e **l'intera tabella degli atomi resta azzerata**:
+      > `XSetWMProtocols` pubblica l'atomo `0` (osservato: `WM_PROTOCOLS raw=[0]`) e il lato
+      > ricezione è morto perché il primo test dell'handler è `message_type != Atoms.WM_PROTOCOLS`.
+      > Ne cadono anche tutte le `_NET_WM_*` e gli atomi della clipboard.
+      > **Conseguenza sul metodo, non solo sul codice**: tutte le sessioni headless di questo
+      > progetto girano su Xvfb nudo, quindi **ogni verifica passata di maximize, window type o
+      > clipboard ha misurato un ambiente storpio**, non il comportamento su un desktop vero.
+      > Corollario: su un desktop reale, dove altri client hanno già creato quegli atomi, la "X"
+      > molto probabilmente **funzionava già**.
 - [ ] 0.17 `RevisionsStar`/`BottomStar` vengono salvati come valori **simil-pixel** (es. 199 / 525)
       invece di rapporti star normalizzati: passano il `Clamp(0.1, 1000)` di `Sanitize` quindi non
       rompono nulla, ma il ripristino dipende dalla dimensione della finestra. *banale*
@@ -1335,7 +1348,7 @@ nel port, manca il punto d'accesso)
       (`RecentRepositoriesService.cs:35-77`) mentre upstream le evidenzia e chiede: scelta
       difendibile, da *dichiarare*. Più branding (logo/sfondo/palette) e il branch corrente per
       voce. *media*
-- [ ] 3.4 **Banner "operazione git in corso"** (rebase / merge / bisect / cherry-pick) ancorato
+- [x] 3.4 **Banner "operazione git in corso"** (rebase / merge / bisect / cherry-pick) ancorato
       sopra la griglia (`FormBrowse.Designer.cs:650-668`): oggi nessun indizio visivo che un
       bisect o un merge è in corso. Serve un rilevatore di `rebase-merge/`, `MERGE_HEAD`,
       `BISECT_LOG`, `CHERRY_PICK_HEAD`. *media*
@@ -1772,6 +1785,37 @@ subagent più due voci fatte direttamente nel `MainWindow` (che nessun subagent 
   vengono azzerati** invece di continuare ad annunciare un repo non più aperto.
   **0.29 chiuso**: il crash intermittente sul doppio clic di un worktree **non si è riprodotto in
   15 tentativi** — la guardia di M56 copre anche quello stack.
+
+**M58** (2026-07-28) — **la finestra si chiude davvero, e la diagnosi storica era sbagliata**.
+
+- **Chiusura della finestra** (`fd54beaab`, nessun cablaggio) — vedi il riquadro in 0.16: non
+  serviva alcun ricevitore nativo, serviva un `XInternAtoms` con `only_if_exists: false` prima che
+  Avalonia costruisca la sua tabella (`Services/X11AtomPrimer.cs`, chiamato da `Program.Main`).
+  Una sola chiamata, nessuna seconda connessione, nessun event thread, nessuna finestra proxy.
+  *A/B a schermo su display vergini, finestra pre-dimensionata a 1111×777 e `WM_DELETE_WINDOW`
+  sintetico*: **prima** `WM_PROTOCOLS = [<UNSET/0>]`, app viva, `ui-state.json` **assente** (stato
+  perso); **dopo** `WM_PROTOCOLS = [WM_DELETE_WINDOW, _NET_WM_SYNC_REQUEST]`, app chiusa, e lo
+  stato **scritto** con `WindowWidth 1111, WindowHeight 777`. Vale per **tutte** le finestre, che
+  condividono la stessa tabella. *Correzione a una mia assunzione*: **Esc non c'entra** con questa
+  radice — è un binding managed, quindi la sua correzione per-dialogo (M57) era comunque
+  necessaria. Limite dichiarato: la lista di atomi è accoppiata ad Avalonia 11.3.14; un nome che
+  Avalonia togliesse costerebbe un atomo inutilizzato, uno che aggiungesse resterebbe non
+  pre-creato — nessuno dei due è un guasto.
+- **Banner "operazione git in corso"** (`701af7887`, cablaggio `92dbde20e`) —
+  `RepositoryStateService.GetProgress()` legge i marcatori nella git dir (`rebase-merge/` +
+  `interactive`, `rebase-apply/`, `MERGE_HEAD`, `BISECT_LOG`/`BISECT_START`, `CHERRY_PICK_HEAD`,
+  `REVERT_HEAD`) più il contatore di step e il branch di destinazione; `RepositoryProgressBanner`
+  rispecchia le due barre upstream e collassa a nulla quando il repo è a riposo.
+  *Verificati a schermo tutti e quattro gli stati* — rebase interattivo fermo su conflitto ("Step
+  1 of 1. Branch: topic"), merge in conflitto, bisect avviato con Good/Bad/Skip/Stop, cherry-pick
+  in conflitto — e la sparizione dopo l'abort; **"Stop bisect" dal vivo** ha rimosso i marcatori,
+  riportato HEAD su `main` e collassato il banner **senza riavviare l'app**.
+  *Rinviato con motivo*: nessun pulsante continue/abort/skip per rebase, merge, cherry-pick,
+  revert e `git am` — nel port **non esiste un servizio** dietro nessuno di essi (le uniche due
+  chiamate `--abort` in `App/Services` sono percorsi privati di pulizia dentro `CommitEditService`
+  e `PatchService`, non un'API). Il banner mostra lo stato e **nomina il comando git**, invece di
+  esibire un pulsante morto. Serve un `ConflictOpsService`; si lega a `FormResolveConflicts`, che
+  resta non portato (`AvaloniaGitUICommands.cs:137` lancia `NotSupported`).
 
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le

@@ -142,8 +142,8 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 - **`pkill -f "<pattern>"` uccide la shell che lo lancia** se il pattern compare anche nella
   propria riga di comando (successo garantito con `pkill -f "Xvfb :151"` invocato da un comando
   che contiene quella stringa). Usare un pattern auto-escluso (`Xvf[b] :151`) o `kill <PID>`.
-- Per chiudere l'app passando dal salvataggio dello stato usare **`Start → Exit`**, non `kill`:
-  la finestra non risponde a `WM_DELETE_WINDOW` e `kill` salta `PersistLayout()`.
+- Per chiudere l'app passando dal salvataggio dello stato usare `Start → Exit` **oppure** la "X"
+  / un `WM_DELETE_WINDOW` sintetico (funziona da M58); `kill` invece salta sempre `PersistLayout()`.
 - Repo di prova già pronti: `/tmp/r9repo` (4 commit, remote locale `/tmp/r9remote`, worktree
   `/tmp/r9wt`), `/tmp/r10repo` (branch `side`, per il merge base), `/tmp/g1repo` (rename),
   `/tmp/v4repo` (blame a bande).
@@ -209,9 +209,15 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > - **~35 impostazioni upstream sarebbero pulsanti finti** nel port (nessun consumatore): avatar
 >   provider/cache, `UseGitColoring`, ruler, `OutputHistoryDepth`, font, rendering del grafo.
 >
-> Difetto aperto di rilievo: la finestra **ignora `WM_DELETE_WINDOW`** (limite Avalonia/X11 già
-> noto) → chiudere dalla X non passa da `PersistLayout()` e **si perde tutto lo stato UI**; solo
-> `Start → Exit` salva. Via percorribile: ricevitore nativo come `Services/X11DropTarget.cs`.
+> **RISOLTO in M58 — e la diagnosi che girava da round era sbagliata.** Non è vero che "Avalonia
+> non espone `WM_DELETE_WINDOW`": Avalonia lo implementa. È che `X11Atoms.PopulateAtoms` (11.3.14)
+> chiama `XInternAtoms` con `only_if_exists: true`, quindi **su Xvfb nudo**, dove nessun client
+> precedente li ha creati, tutte e 78 le lookup tornano 0 e la tabella degli atomi resta azzerata
+> — muoiono il protocollo di chiusura, tutte le `_NET_WM_*` e la clipboard. Fix:
+> `Services/X11AtomPrimer.cs`, un `XInternAtoms(..., only_if_exists: false)` da `Program.Main`.
+> **Conseguenza sul metodo**: l'intera attrezzatura headless di questo progetto gira su Xvfb nudo,
+> quindi ogni verifica passata di maximize / window type / clipboard ha misurato un ambiente
+> storpio. E su un desktop vero la "X" probabilmente **funzionava già**.
 
 **Il blocco RIFINITURE (round 4, M39–M42) è CHIUSO**: tutti i residui A1–C10 e D11–D12
 elencati nelle versioni precedenti di questa sezione sono stati risolti e verificati in
