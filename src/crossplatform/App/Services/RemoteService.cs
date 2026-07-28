@@ -412,9 +412,24 @@ public sealed class RemoteService
             options.FetchTags,
             options.Unshallow);
 
+        string arguments = pull.Arguments ?? string.Empty;
+
+        // MERGE MUST SAY SO. The core builder emits `--rebase` for a rebase but
+        // nothing at all for a merge, leaving the choice to `pull.rebase`. Since git
+        // 2.27 that is fatal exactly when it matters: with divergent branches and
+        // `pull.rebase` unset, git refuses with "You have divergent branches and need
+        // to specify how to reconcile them" — and divergent branches are the whole
+        // reason one pulls here (it is what the push-rejected recovery offers).
+        // Passing --no-rebase also makes the menu honest for a user whose config says
+        // `pull.rebase = true`: picking "merge" then used to silently rebase.
+        if (!options.IsRebase)
+        {
+            arguments = InsertOption(arguments, "pull", "--no-rebase");
+        }
+
         return options.AutoStash
-            ? InsertOption(pull.Arguments ?? string.Empty, "pull", "--autostash")
-            : pull;
+            ? InsertOption(arguments, "pull", "--autostash")
+            : arguments;
     }
 
     // Inserts <paramref name="option"/> immediately after the <paramref name="subcommand"/>
