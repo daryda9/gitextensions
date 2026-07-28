@@ -232,7 +232,12 @@ public sealed partial class CommitDetailService
             ExecutionResult result = module.GitExecutable.Execute(
                 new GitArgumentBuilder("for-each-ref")
                 {
-                    "--format=%(refname:short)\t%(objectname)\t%(*objectname)",
+                    // "%09" and not a literal tab: ArgumentBuilder joins every argument
+                    // into one command line, so a tab inside an argument is eaten as an
+                    // argument separator and the fields arrive space-separated, which
+                    // makes the Split('\t') below yield a single part and drop the ref.
+                    // ref-filter interpolates "%09" itself, after the split.
+                    "--format=%(refname:short)%09%(objectname)%09%(*objectname)",
                     "refs/heads", "refs/remotes", "refs/tags",
                 },
                 throwOnErrorExit: false);
@@ -290,7 +295,11 @@ public sealed partial class CommitDetailService
             ExecutionResult result = module.GitExecutable.Execute(
                 new GitArgumentBuilder("branch")
                 {
-                    "--contains", fullHash, "--format=%(HEAD)\t%(refname:short)",
+                    // "%09" and not a literal tab, for the reason spelled out in
+                    // LoadRefHashes: a tab inside an argument never survives the
+                    // command line, so every branch used to be discarded here and the
+                    // panel always claimed "Contained in no branch".
+                    "--contains", fullHash, "--format=%(HEAD)%09%(refname:short)",
                 },
                 throwOnErrorExit: false);
             if (!result.ExitedSuccessfully)
