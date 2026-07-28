@@ -36,6 +36,11 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class MainMenu : UserControl
 {
+    // Ceiling for a menu popup. High enough that no caption of any shipped
+    // translation is clipped, low enough that a pathological entry still cannot
+    // grow the popup past a normal window.
+    private const double MenuPopupMaxWidth = 900d;
+
     private MenuItem _openRecent = new();
     private MenuItem _favorites = new();
     private MenuItem _plugins = new();
@@ -576,6 +581,16 @@ public sealed class MainMenu : UserControl
             Foreground = text,
             Items = { start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help },
         };
+
+        // Fluent caps every flyout — a menu popup included — at FlyoutThemeMaxWidth
+        // (456px), and the item template clips rather than ellipsises what does not
+        // fit. Several View entries are longer than that ("Highlight selected branch
+        // (until refresh)", "Arrange commits by topo order (ancestors first)"), so
+        // they were being cut mid-word. WinForms menus size to their content, so the
+        // popup is given the room it asks for instead. The override lives on this
+        // control's resources, not on the application's, so it only widens menus and
+        // leaves every other flyout at the theme's default.
+        Resources["FlyoutThemeMaxWidth"] = MenuPopupMaxWidth;
 
         Content = menu;
 
