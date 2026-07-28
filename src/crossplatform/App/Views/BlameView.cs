@@ -1114,8 +1114,10 @@ public sealed class BlameView : UserControl
         }
 
         // Upstream blames the path as it was named in that commit, which git
-        // blame --porcelain reports per line (it may have been renamed since).
-        ShowBlame(_repoPath, FileOf(row), row.CommitHash);
+        // blame --porcelain reports per line (it may have been renamed since), and
+        // opens on the line as numbered in that revision, not in this one
+        // (BlameControl.cs:126).
+        ShowBlame(_repoPath, FileOf(row), row.CommitHash, row.OriginLineNumber > 0 ? row.OriginLineNumber : row.LineNumber);
     }
 
     private void BlamePreviousRevision()
@@ -1128,38 +1130,43 @@ public sealed class BlameView : UserControl
 
         string repo = _repoPath;
         string file = FileOf(row);
-        string? parent = _selectedParent;
-        if (parent is not null)
-        {
-            ShowBlame(repo, file, parent);
-            return;
-        }
-
-        // Not pre-resolved yet (menu opened before the lookup landed): resolve
-        // now, still off the UI thread.
         string hash = row.CommitHash;
+        int line = row.LineNumber;
+        string? parent = _selectedParent;
+
+        // Both the parent lookup (when it has not landed yet) and the line mapping
+        // are git calls, so the whole thing goes on a worker.
         _ = Task.Run(() =>
         {
-            string? resolved = null;
-            try
+            string? resolved = parent;
+            if (resolved is null)
             {
-                resolved = _service.ResolveParent(repo, hash);
-            }
-            catch (Exception)
-            {
-                // Fall through to the status message below.
-            }
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (resolved is null)
+                try
                 {
-                    _status.Text = string.Format(T("{0} has no previous revision."), hash[..Math.Min(8, hash.Length)]);
-                    return;
+                    resolved = _service.ResolveParent(repo, hash);
                 }
+                catch (Exception)
+                {
+                    // Fall through to the status message below.
+                }
+            }
 
-                ShowBlame(repo, file, resolved);
-            });
+            if (resolved is null)
+            {
+                Dispatcher.UIThread.Post(() =>
+                    _status.Text = string.Format(
+                        T("{0} has no previous revision."), hash[..Math.Min(8, hash.Length)]));
+                return;
+            }
+
+            // Where the selected line sat before this commit touched the file.
+            // Without this the parent's blame opens at line 1, which makes walking
+            // back through a large file's history pointless — the whole reason the
+            // command exists (upstream GitBlameParser.cs:26-88).
+            int parentLine = _service.MapLineToParent(repo, hash, resolved, file, line);
+
+            string target = resolved;
+            Dispatcher.UIThread.Post(() => ShowBlame(repo, file, target, parentLine));
         });
     }
 
