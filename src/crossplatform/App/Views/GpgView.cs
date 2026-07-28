@@ -39,7 +39,9 @@ namespace GitExtensions.Avalonia.Views;
 ///  the "show GPG information" setting is off, <c>FormBrowse.cs:1291-1303</c>).
 ///  The port's tab is fixed, so an artificial revision empties the pane with a
 ///  sentence saying why; the setting is not invented here, because the port has no
-///  settings entry for it.</para>
+///  settings entry for it. <see cref="ShowArtificial"/> is the named entry point
+///  for that case, and its sentence <b>names the row</b> ("Working directory" /
+///  "Commit index") rather than talking vaguely about "the working tree".</para>
 ///
 ///  <para>All git work runs off the UI thread and never throws. The view's own
 ///  wording is translated with the <c>RevisionGpgInfoControl</c> ids where
@@ -71,6 +73,10 @@ public sealed class GpgView : UserControl
 
     // Identifies the load whose result may still be applied.
     private string? _commitHash;
+
+    // Set while the pane shows an artificial row's placeholder, so a language
+    // switch re-states it with the row's name (see OnLanguageChanged).
+    private ArtificialDiff? _artificial;
 
     public GpgView()
     {
@@ -178,13 +184,17 @@ public sealed class GpgView : UserControl
         _commitHash = commitHash;
 
         // An artificial revision (the working tree, the index) has no signature at
-        // all: upstream drops the tab, the port states why and stops.
+        // all: upstream drops the tab, the port states why and stops. Reached when a
+        // caller passes a sentinel hash through here; the named entry point is
+        // ShowArtificial, which also says WHICH row it is.
         if (!ObjectId.TryParse(commitHash, out ObjectId objectId) || objectId.IsArtificial)
         {
+            _artificial = DiffService.ArtificialFromHash(commitHash);
             ShowPlaceholder(noCommit: false);
             return;
         }
 
+        _artificial = null;
         _placeholder = null;
         _commitText.Text = F(T("Verifying signature of {0}…"),
             commitHash.Length > 8 ? commitHash[..8] : commitHash);
@@ -248,10 +258,31 @@ public sealed class GpgView : UserControl
         });
     }
 
+    /// <summary>
+    ///  Shows the placeholder of one of the two <b>artificial</b> revision rows —
+    ///  the GPG half of the <c>RevisionGridView.ArtificialRevisionSelected</c>
+    ///  contract. Nothing is signed until something is committed, so the pane names
+    ///  the row and says so instead of keeping the previous commit's verification on
+    ///  screen. Upstream removes the whole tab for these rows
+    ///  (<c>FormBrowse.cs:1288-1317</c>); the port's tab is fixed, so it states why
+    ///  it is empty.
+    ///
+    ///  <para>Synchronous and cheap: no git command runs.</para>
+    /// </summary>
+    public void ShowArtificial(ArtificialDiff which)
+    {
+        // Not a hash any load can match, so a verification still in flight for the
+        // previously selected commit cannot overwrite the placeholder.
+        _commitHash = which == ArtificialDiff.Index ? DiffService.IndexHash : DiffService.WorkTreeHash;
+        _artificial = which;
+        ShowPlaceholder(noCommit: false);
+    }
+
     /// <summary>Empties the tab (no repository selected).</summary>
     public void Clear()
     {
         _commitHash = null;
+        _artificial = null;
         ShowPlaceholder(noCommit: true);
     }
 
@@ -259,7 +290,10 @@ public sealed class GpgView : UserControl
     {
         _placeholder = noCommit
             ? T("No commit selected.")
-            : T("Signature information is not available for the working tree.");
+            : _artificial is { } which
+                ? F(T("{0} is not a commit: there is no signature to verify until it is committed."),
+                    ArtificialRevisionName.Of(which))
+                : T("Signature information is not available for the working tree.");
 
         _commitText.Text = _placeholder;
         _commitIcon.IsVisible = false;

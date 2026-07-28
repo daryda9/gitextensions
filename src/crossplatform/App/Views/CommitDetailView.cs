@@ -84,6 +84,10 @@ public sealed class CommitDetailView : UserControl
     // without another git round-trip.
     private CommitDetailInfo? _rendered;
 
+    // Set while the panel shows the placeholder of an artificial row instead of a
+    // commit, so a language switch can re-state it (there is nothing to re-load).
+    private ArtificialDiff? _artificial;
+
     // Extra data only some toggles need (remote branches, annotated tag messages,
     // the commit's note), for the commit in _rendered.
     private CommitInfoExtras _extras = CommitInfoExtras.Empty;
@@ -579,7 +583,11 @@ public sealed class CommitDetailView : UserControl
 
     private void Retranslate()
     {
-        if (_rendered is not null)
+        if (_artificial is { } which)
+        {
+            RenderArtificial(which);
+        }
+        else if (_rendered is not null)
         {
             Render(_rendered);
         }
@@ -602,6 +610,7 @@ public sealed class CommitDetailView : UserControl
 
         Clear();
         _repoPath = repoPath;
+        _artificial = null;
         _status.Text = string.Format(T("Loading commit {0}…"), commitHash);
 
         bool wantRemote = _settings.ShowContainedInBranchesRemote
@@ -664,8 +673,73 @@ public sealed class CommitDetailView : UserControl
         });
     }
 
+    /// <summary>
+    ///  Shows the placeholder of one of the two <b>artificial</b> revision rows —
+    ///  the Commit-details half of the
+    ///  <c>RevisionGridView.ArtificialRevisionSelected</c> contract. There is no
+    ///  commit object behind those rows, so there is no author, date, hash, message
+    ///  or "contained in" data to show: the pane names the row and says where its
+    ///  content actually is, which is the honest alternative to leaving the
+    ///  previously selected commit's details on screen.
+    ///
+    ///  <para>Upstream renders the row's Subject ("Working directory" / "Commit
+    ///  index") as the message body and clears the lower info pane outright
+    ///  (<c>CommitInfo.cs:328-357</c>, <c>CommitDataHeaderRenderer.cs:81-133</c>
+    ///  suppress date and hash for artificial revisions); the naming here is that
+    ///  Subject, with one added sentence because a fixed tab cannot be removed the
+    ///  way upstream's can.</para>
+    ///
+    ///  <para>Synchronous and cheap: it runs no git command at all, so it is safe
+    ///  to call straight from the selection handler on the UI thread.</para>
+    /// </summary>
+    public void ShowArtificial(string repoPath, ArtificialDiff which)
+    {
+        // Any in-flight commit load must not land on top of the placeholder.
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = null;
+
+        Clear();
+        _repoPath = repoPath;
+        _artificial = which;
+        RenderArtificial(which);
+    }
+
+    private void RenderArtificial(ArtificialDiff which)
+    {
+        string name = ArtificialRevisionName.Of(which);
+
+        _rendered = null;
+        _status.Text = name;
+        _avatarHost.Child = null;
+        _details.Children.Clear();
+        _linkTargets.Clear();
+        _messageLinks.Clear();
+
+        _message.Text = string.Empty;
+        InlineCollection inlines = _message.Inlines ??= [];
+        inlines.Clear();
+
+        // Both brushes are registered palette keys (ThemeManager.Keys + Dark +
+        // Light), so the placeholder stays readable in either theme; an unregistered
+        // key would silently fall back to black (M62).
+        inlines.Add(new Run(name)
+        {
+            Foreground = B("App.Text"),
+            FontWeight = FontWeight.SemiBold,
+        });
+        inlines.Add(new LineBreak());
+        inlines.Add(new Run(string.Format(
+            T("{0} is not a commit, so it has no author, date or message. Its changes are in the Diff and File tree tabs."),
+            name))
+        {
+            Foreground = B("App.TextDim"),
+        });
+    }
+
     private void Render(CommitDetailInfo detail)
     {
+        _artificial = null;
         _rendered = detail;
         _status.Text = detail.Subject;
 
@@ -955,6 +1029,7 @@ public sealed class CommitDetailView : UserControl
     private void Clear()
     {
         _rendered = null;
+        _artificial = null;
         _extras = CommitInfoExtras.Empty;
         _avatarHost.Child = null;
         _details.Children.Clear();
