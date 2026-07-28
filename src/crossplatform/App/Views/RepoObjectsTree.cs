@@ -654,11 +654,18 @@ public sealed class RepoObjectsTree : UserControl
         // Remotes: one group node per remote, and inside it the same folder hierarchy —
         // upstream builds path nodes below a remote too, so "origin/feature/x" is the
         // leaf "x" under "feature" under "origin", not a flat "feature/x".
-        TreeViewItem remotesNode = Category(T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), "Remotes", remote.Count, "remotes");
+        // The root count is the number of *remotes*, not of remote branches: a single
+        // "origin" holding four branches has to read "Remotes (1)" with "origin (4)"
+        // below it. Every other category counts its own kind of item already
+        // (branches, tags, stashes, submodules, worktrees), so only this one was off.
+        List<IGrouping<string, BranchTagRow>> remoteGroups = remote
+            .GroupBy(RemoteName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        TreeViewItem remotesNode = Category(T("RepoObjectsTree/tsbShowRemotes.ToolTipText", "Remotes"), "Remotes", remoteGroups.Count, "remotes");
         remotesNode.ContextMenu = RemotesRootMenu();
-        foreach (IGrouping<string, BranchTagRow> group in remote
-                     .GroupBy(RemoteName, StringComparer.OrdinalIgnoreCase)
-                     .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        foreach (IGrouping<string, BranchTagRow> group in remoteGroups)
         {
             string groupKey = "remotes/" + group.Key;
             TreeViewItem groupNode = Category(group.Key, "Remote", group.Count(), groupKey);
