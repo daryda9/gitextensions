@@ -11,6 +11,19 @@ namespace GitExtensions.Avalonia.Services;
 public sealed record ExternalToolResult(bool Success, string Message);
 
 /// <summary>
+///  A shell the user can start from the toolbar's shell split button — the port's
+///  equivalent of upstream's <c>IShellDescriptor</c> (GitUI/Shells).
+/// </summary>
+/// <param name="Name">Display name, used as the menu caption and the button tooltip.</param>
+/// <param name="Executable">The command as it is invoked (bare name resolved on PATH).</param>
+/// <param name="IconName">
+///  Base name of an icon in <c>Assets/Icons</c>. Only a handful of shells have real
+///  artwork in the reused Windows icon set; the rest deliberately share the generic
+///  <c>Console</c> icon rather than borrowing an unrelated one.
+/// </param>
+public sealed record ShellDescriptor(string Name, string Executable, string IconName);
+
+/// <summary>
 ///  Launches external programs, files, URLs and terminals on Linux without
 ///  blocking or crashing the UI thread. Every method catches its own errors
 ///  (missing binary, no display, etc.) and returns an <see cref="ExternalToolResult"/>
@@ -25,13 +38,39 @@ public sealed class ExternalToolService
     // Terminals to probe, in preference order. Each entry is the executable and
     // the flag used to set its working directory (null when it inherits the
     // launcher's cwd, which we set via ProcessStartInfo.WorkingDirectory).
-    private static readonly (string Exe, string? DirArg)[] Terminals =
+    // Terminals to probe, in preference order. DirArg is the flag used to set the
+    // working directory (null when it inherits the launcher's cwd, which we set via
+    // ProcessStartInfo.WorkingDirectory). ExecArg introduces the command to run
+    // instead of the login shell: gnome-terminal deprecated "-e" in favour of the
+    // "--" separator, everything else in this list understands "-e".
+    private static readonly (string Exe, string? DirArg, string ExecArg)[] Terminals =
     {
-        ("x-terminal-emulator", null),
-        ("gnome-terminal", "--working-directory"),
-        ("konsole", "--workdir"),
-        ("xfce4-terminal", "--working-directory"),
-        ("xterm", null),
+        ("x-terminal-emulator", null, "-e"),
+        ("gnome-terminal", "--working-directory", "--"),
+        ("konsole", "--workdir", "-e"),
+        ("xfce4-terminal", "--working-directory", "-e"),
+        ("xterm", null, "-e"),
+    };
+
+    // Every shell the port knows how to offer, in the order the dropdown lists them:
+    // the interactive shells people actually pick first, then the POSIX baselines.
+    // Presence is decided by probing PATH — nothing here is assumed to exist.
+    // Icons: the reused Windows icon set only ships cmd/Console/powershell, so pwsh
+    // gets "powershell" and every Unix shell falls back to the generic "Console".
+    private static readonly ShellDescriptor[] KnownShells =
+    {
+        new("Bash", "bash", "Console"),
+        new("Zsh", "zsh", "Console"),
+        new("Fish", "fish", "Console"),
+        new("Nushell", "nu", "Console"),
+        new("Elvish", "elvish", "Console"),
+        new("Xonsh", "xonsh", "Console"),
+        new("Ksh", "ksh", "Console"),
+        new("Tcsh", "tcsh", "Console"),
+        new("Csh", "csh", "Console"),
+        new("Dash", "dash", "Console"),
+        new("Sh", "sh", "Console"),
+        new("PowerShell", "pwsh", "powershell"),
     };
 
     /// <summary>
@@ -204,7 +243,7 @@ public sealed class ExternalToolService
     // Runs a console editor inside the first terminal emulator we find.
     private ExternalToolResult OpenInTerminalEditor(string command, string path)
     {
-        foreach ((string exe, string? _) in Terminals)
+        foreach ((string exe, string? _, string _) in Terminals)
         {
             if (!OnPath(exe))
             {
@@ -348,14 +387,27 @@ public sealed class ExternalToolService
     ///  terminals in order. If none is found the result reports that so the host
     ///  can surface a message rather than crash.
     /// </summary>
-    public ExternalToolResult OpenTerminal(string dir)
+    public ExternalToolResult OpenTerminal(string dir) => OpenTerminal(dir, shellExecutable: null);
+
+    /// <summary>
+    ///  Opens a terminal emulator in <paramref name="dir"/> running
+    ///  <paramref name="shellExecutable"/>. A null/empty shell keeps the previous
+    ///  behaviour: the emulator starts the user's login shell.
+    /// </summary>
+    public ExternalToolResult OpenTerminal(string dir, string? shellExecutable)
     {
         if (string.IsNullOrWhiteSpace(dir))
         {
             return new ExternalToolResult(false, "No directory for the terminal.");
         }
 
-        foreach ((string exe, string? dirArg) in Terminals)
+        // A shell we cannot find would produce a terminal that flashes and dies;
+        // fall back to the emulator's own default instead.
+        string? shell = string.IsNullOrWhiteSpace(shellExecutable) || !OnPath(shellExecutable!)
+            ? null
+            : shellExecutable;
+
+        foreach ((string exe, string? dirArg, string execArg) in Terminals)
         {
             if (!OnPath(exe))
             {
@@ -364,12 +416,23 @@ public sealed class ExternalToolService
 
             // When the terminal has an explicit working-directory flag we pass
             // it; otherwise we rely on ProcessStartInfo.WorkingDirectory.
-            string[] args = dirArg is null
-                ? Array.Empty<string>()
-                : new[] { dirArg, dir };
+            List<string> args = [];
+            if (dirArg is not null)
+            {
+                args.Add(dirArg);
+                args.Add(dir);
+            }
+
+            if (shell is not null)
+            {
+                args.Add(execArg);
+                args.Add(shell);
+            }
 
             ExternalToolResult result = LaunchDetached(exe, args, workingDir: dir,
-                friendly: $"Opened terminal in {dir}");
+                friendly: shell is null
+                    ? $"Opened terminal in {dir}"
+                    : $"Opened {shell} in {dir}");
             if (result.Success)
             {
                 return result;
@@ -378,6 +441,101 @@ public sealed class ExternalToolService
 
         return new ExternalToolResult(false,
             "No terminal emulator found (tried x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, xterm).");
+    }
+
+    // ---- shells (upstream ShellProvider / FillUserShells) ----------------------
+
+    /// <summary>
+    ///  Lists the shells that are actually installed, in dropdown order. Mirrors
+    ///  upstream's <c>FillUserShells</c>, which skips every descriptor whose
+    ///  <c>HasExecutable</c> is false, so the menu never offers a shell that is not
+    ///  there. The user's login shell (<c>$SHELL</c>) is appended when it is not one
+    ///  of the known names, so an unusual choice is still reachable.
+    ///
+    ///  <para>Probes PATH: call it off the UI thread.</para>
+    /// </summary>
+    public static IReadOnlyList<ShellDescriptor> GetShells()
+    {
+        List<ShellDescriptor> found = KnownShells.Where(s => OnPath(s.Executable)).ToList();
+
+        string? login = Environment.GetEnvironmentVariable("SHELL");
+        if (!string.IsNullOrWhiteSpace(login))
+        {
+            string name = Path.GetFileName(login);
+            if (name.Length > 0
+                && !found.Any(s => string.Equals(s.Executable, name, StringComparison.Ordinal))
+                && OnPath(login))
+            {
+                // Title-cased basename, the same shape as the known entries.
+                found.Add(new ShellDescriptor(
+                    char.ToUpperInvariant(name[0]) + name[1..], login, "Console"));
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    ///  The <see cref="ShellDescriptor.Executable"/> the user last picked, or null.
+    ///  Upstream keeps this in AppSettings; the port has no settings store it owns,
+    ///  so — like <see cref="FavoritesService"/> — it uses a small file of its own
+    ///  under the user's config directory.
+    /// </summary>
+    public static string? LoadPreferredShell()
+    {
+        try
+        {
+            string path = ShellPreferencePath();
+            if (File.Exists(path))
+            {
+                string value = File.ReadAllText(path).Trim();
+                return value.Length == 0 ? null : value;
+            }
+        }
+        catch
+        {
+            // Unreadable/corrupt → no preference.
+        }
+
+        return null;
+    }
+
+    /// <summary>Persists the picked shell. Best-effort; never throws.</summary>
+    public static void SavePreferredShell(string executable)
+    {
+        try
+        {
+            string path = ShellPreferencePath();
+            string? dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.WriteAllText(path, executable);
+        }
+        catch
+        {
+            // A persistence failure must not break launching the shell.
+        }
+    }
+
+    private static string ShellPreferencePath()
+    {
+        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        }
+
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            baseDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".config");
+        }
+
+        return Path.Combine(baseDir, "GitExtensions.Avalonia", "shell");
     }
 
     /// <summary>

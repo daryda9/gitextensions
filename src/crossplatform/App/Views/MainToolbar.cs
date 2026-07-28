@@ -171,6 +171,14 @@ public sealed class MainToolbar : UserControl
     public event Action? FileExplorerRequested;
     public event Action? OpenTerminalRequested;
 
+    /// <summary>
+    ///  Start a specific shell (the argument is its executable) in the repository
+    ///  directory — upstream's <c>userShell</c> split button. When no host handles
+    ///  this the button degrades to <see cref="OpenTerminalRequested"/>, i.e. a
+    ///  terminal running the login shell, so it is never a dead control.
+    /// </summary>
+    public event Action<string>? OpenShellRequested;
+
     // Right-side branch-scope + text filter, echoing the original FormBrowse
     // toolbar's "All branches ▾" scope dropdown and "Filter:" combo. The toolbar
     // performs no filtering itself: choosing a scope raises BranchScopeChanged
@@ -299,6 +307,15 @@ public sealed class MainToolbar : UserControl
     private string _currentBranch = string.Empty;
 
     // Rebuilt wholesale when the language changes, so neither is readonly.
+    // Shell split button (upstream userShell): the installed shells, the pick in
+    // force, and the controls whose icon/caption/tooltip follow that pick.
+    private Control? _shellHost;
+    private Button? _shellBody;
+    private TextBlock? _shellCaption;
+    private Image? _shellIcon;
+    private ShellDescriptor? _currentShell;
+    private IReadOnlyList<ShellDescriptor> _shells = Array.Empty<ShellDescriptor>();
+
     private OverflowPanel _bar = null!;
 
     // Overflow ("»") button + its flyout, and the per-item descriptors used to
@@ -510,8 +527,7 @@ public sealed class MainToolbar : UserControl
         bar.AddItem(MakeButton("BrowseFileExplorer", T("FormBrowse/toolStripFileExplorer.ToolTipText", "File Explorer"),
             T("Open the repository in the file manager"),
             () => FileExplorerRequested?.Invoke()));
-        bar.AddItem(MakeButton("Console", T("Terminal"), T("Open a terminal in the repository directory"),
-            () => OpenTerminalRequested?.Invoke()));
+        bar.AddItem(MakeShellSplitButton(border));
 
         // Settings closes the external-tools group, exactly as upstream's
         // EditSettings closes ToolStripMain.
@@ -1114,6 +1130,249 @@ public sealed class MainToolbar : UserControl
     // StartStashDialog, the same command as the "Manage stashes…" entry); arrow drops
     // Stash / Stash staged / Stash pop / — / Manage stashes… / Create a stash…, in
     // upstream's order. The caption carries the "(n)" stash count (UpdateStashCount).
+    // ---- Shell split button (upstream userShell) ------------------------------
+
+    // Upstream's userShell is a ToolStripSplitButton (FormBrowse.Designer.cs) filled
+    // by FillUserShells: the arrow lists every shell whose executable is actually
+    // present, each with its icon and its name as the tooltip; the body starts the
+    // selected one; the button's own icon and tooltip are those of that shell; and
+    // the whole button is hidden when no shell exists at all.
+    //
+    // The port enumerates the shells off the UI thread (ExternalToolService.GetShells
+    // probes PATH) and restores the last pick from disk, because a toolbar must not
+    // block on filesystem probing while it is being built.
+    private Control MakeShellSplitButton(IBrush border)
+    {
+        StackPanel bodyContent = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 4,
+        };
+
+        _shellIcon = IconLoader.Image("Console", 16);
+        if (_shellIcon is not null)
+        {
+            _shellIcon.VerticalAlignment = VerticalAlignment.Center;
+            bodyContent.Children.Add(_shellIcon);
+        }
+
+        _shellCaption = new TextBlock
+        {
+            Text = T("Terminal"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            FontSize = 12,
+        };
+        bodyContent.Children.Add(_shellCaption);
+
+        _shellBody = new Button
+        {
+            Content = bodyContent,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        _shellBody.Classes.Add("toolbtn");
+        ToolTip.SetTip(_shellBody, T("Open a terminal in the repository directory"));
+        _shellBody.Click += (_, _) => LaunchCurrentShell();
+
+        Border divider = new()
+        {
+            Width = 1,
+            Margin = new Thickness(0, 4),
+            Background = border,
+        };
+
+        Button arrow = new()
+        {
+            Content = new TextBlock
+            {
+                Text = "▾",
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 10,
+            },
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        arrow.Classes.Add("toolbtn");
+        ToolTip.SetTip(arrow, T("Choose the shell to open"));
+
+        // Populated BEFORE ShowAt, never inside Opening: Avalonia 11.3.x measures a
+        // MenuFlyout's content once, when the popup opens, and never re-measures it —
+        // items added later leave a thin empty sliver instead of a menu.
+        MenuFlyout flyout = new();
+        arrow.Click += (_, _) =>
+        {
+            BuildShellMenu(flyout);
+            flyout.ShowAt(arrow);
+        };
+
+        _shellHost = new Border
+        {
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { _shellBody, divider, arrow },
+            },
+        };
+
+        _overflow[_shellHost] = new OverflowEntry
+        {
+            Kind = OverflowKind.LazyMenu,
+            Label = T("Terminal"),
+            Icon = "Console",
+            LiveCaption = _shellCaption,
+            ShowMenu = anchor =>
+            {
+                BuildShellMenu(flyout);
+                flyout.ShowAt(anchor);
+                return Task.CompletedTask;
+            },
+        };
+
+        LoadShellsAsync();
+        return _shellHost;
+    }
+
+    // Probes PATH and reads the stored preference on a worker, then adopts the
+    // result on the UI thread. Rebuild() calls MakeShellSplitButton again (language
+    // switch), so this may run more than once — it is idempotent.
+    private void LoadShellsAsync()
+    {
+        _ = Task.Run(() =>
+        {
+            IReadOnlyList<ShellDescriptor> shells;
+            string? preferred;
+            try
+            {
+                shells = ExternalToolService.GetShells();
+                preferred = ExternalToolService.LoadPreferredShell();
+            }
+            catch
+            {
+                shells = Array.Empty<ShellDescriptor>();
+                preferred = null;
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                _shells = shells;
+
+                // Upstream: when the configured shell is no longer available, fall
+                // back to the first one that is.
+                _currentShell = shells.FirstOrDefault(s =>
+                                    string.Equals(s.Executable, preferred, StringComparison.Ordinal))
+                                ?? shells.FirstOrDefault();
+                ApplyShellAppearance();
+
+                // "userShell.Visible = userShell.DropDownItems.Count > 0". Removing the
+                // item (rather than hiding it) keeps the OverflowPanel from reserving
+                // space for it and keeps it out of the "»" menu too.
+                if (_shellHost is not null)
+                {
+                    SetItemPresent(_shellHost, shells.Count > 0);
+                }
+            });
+        });
+    }
+
+    // Mirrors upstream's "userShell.Image / ToolTipText / Tag = selected shell".
+    private void ApplyShellAppearance()
+    {
+        if (_currentShell is not { } shell)
+        {
+            return;
+        }
+
+        if (_shellCaption is not null)
+        {
+            _shellCaption.Text = shell.Name;
+        }
+
+        if (_shellIcon is not null && IconLoader.Load(shell.IconName) is { } bmp)
+        {
+            _shellIcon.Source = bmp;
+        }
+
+        if (_shellBody is not null)
+        {
+            ToolTip.SetTip(_shellBody, string.Format(
+                T("Open {0} in the repository directory"), shell.Name));
+        }
+
+        // The overflow ("»") entry picks the caption up on its own through
+        // LiveCaption, so it shows the current shell's name without extra work. Its
+        // icon stays the generic "Console" — OverflowEntry.Icon is init-only, and
+        // every Unix shell maps to that icon anyway.
+    }
+
+    // One entry per installed shell, the current one marked — upstream shows the
+    // shell name as both caption and tooltip.
+    private void BuildShellMenu(MenuFlyout flyout)
+    {
+        flyout.Items.Clear();
+
+        if (_shells.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem { Header = T("(no shell found)"), IsEnabled = false });
+            return;
+        }
+
+        foreach (ShellDescriptor shell in _shells)
+        {
+            bool isCurrent = _currentShell is { } current
+                             && string.Equals(current.Executable, shell.Executable, StringComparison.Ordinal);
+
+            MenuItem item = new()
+            {
+                Header = new TextBlock
+                {
+                    Text = shell.Name,
+                    FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
+                },
+                Icon = IconLoader.Image(shell.IconName, 16),
+            };
+            ToolTip.SetTip(item, shell.Name);
+
+            ShellDescriptor picked = shell;
+            item.Click += (_, _) =>
+            {
+                _currentShell = picked;
+                ApplyShellAppearance();
+
+                // Persisting is a two-byte file write; still, keep it off the UI thread.
+                _ = Task.Run(() => ExternalToolService.SavePreferredShell(picked.Executable));
+                LaunchCurrentShell();
+            };
+            flyout.Items.Add(item);
+        }
+    }
+
+    // The body click, and the tail of a dropdown pick: upstream's userShell_Click
+    // starts the selected shell in the repository directory. With no host handler
+    // wired we still open a terminal (login shell) rather than doing nothing.
+    private void LaunchCurrentShell()
+    {
+        if (_currentShell is { } shell && OpenShellRequested is not null)
+        {
+            OpenShellRequested.Invoke(shell.Executable);
+            return;
+        }
+
+        OpenTerminalRequested?.Invoke();
+    }
+
     private Control MakeStashSplitButton(IBrush border)
     {
         StackPanel bodyContent = new()
