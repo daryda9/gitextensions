@@ -511,6 +511,7 @@ public sealed class PushDialog : Window
         body.Children.Add(_pushToGroup);
         body.Children.Add(_tabs);
         Content = body;
+        DialogKeys.InstallEscapeClose(this);
 
         ApplyTranslations();
 

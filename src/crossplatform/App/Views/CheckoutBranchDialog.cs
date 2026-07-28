@@ -182,6 +182,8 @@ public sealed class CheckoutBranchDialog : Window
                 },
             },
         };
+
+        DialogKeys.InstallEscapeClose(this);
     }
 
     /// <summary>
@@ -384,6 +386,8 @@ public sealed class CreateBranchDialog : Window
                 },
             },
         };
+
+        DialogKeys.InstallEscapeClose(this);
 
         Opened += (_, _) =>
         {
@@ -620,6 +624,8 @@ public sealed class CreateTagDialog : Window
                 },
             },
         };
+
+        DialogKeys.InstallEscapeClose(this);
 
         Opened += (_, _) => _name.Focus();
     }

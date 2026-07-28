@@ -66,6 +66,7 @@ public sealed class PatchViewerWindow : Window
         root.Children.Add(scroll);
 
         Content = root;
+        DialogKeys.InstallEscapeClose(this);
     }
 
     // Colour each patch line, mirroring DiffView.RenderDiff exactly.
@@ -178,6 +179,7 @@ public sealed class PatchOutputWindow : Window
         root.Children.Add(scroll);
 
         Content = root;
+        DialogKeys.InstallEscapeClose(this);
     }
 
     private static IBrush B(string key, string fallback)

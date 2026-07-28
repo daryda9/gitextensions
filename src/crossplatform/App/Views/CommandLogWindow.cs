@@ -90,6 +90,7 @@ public sealed class CommandLogWindow : Window
         body.Children.Add(footer);
         body.Children.Add(_scroll);
         Content = body;
+        DialogKeys.InstallEscapeClose(this);
 
         _throttle = new DispatcherTimer(
             TimeSpan.FromMilliseconds(ThrottleMs),

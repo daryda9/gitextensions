@@ -117,6 +117,7 @@ public sealed class PluginSettingsWindow : Window
         root.Children.Add(buttonBar);
         root.Children.Add(scroller);
         Content = root;
+        DialogKeys.InstallEscapeClose(this);
     }
 
     /// <summary>True if the user pressed Save (values were written to the source).</summary>

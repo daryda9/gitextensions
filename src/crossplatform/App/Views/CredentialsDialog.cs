@@ -69,6 +69,7 @@ public sealed class CredentialsDialog : Window
         root.Children.Add(buttons);
 
         Content = root;
+        DialogKeys.InstallEscapeClose(this);
 
         Opened += (_, _) => _username.Focus();
     }

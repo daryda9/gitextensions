@@ -135,6 +135,7 @@ public sealed class MaintenanceDialog : Window
         root.Children.Add(close);
 
         Content = root;
+        DialogKeys.InstallEscapeClose(this);
     }
 
     /// <summary>Shows the maintenance dialog modally over <paramref name="owner"/>.</summary>

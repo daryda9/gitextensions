@@ -97,6 +97,7 @@ public sealed class ReflogWindow : Window
         body.Children.Add(_status);
         body.Children.Add(row);
         Content = body;
+        DialogKeys.InstallEscapeClose(this);
 
         Opened += (_, _) => ReloadList();
         UpdateButtons();

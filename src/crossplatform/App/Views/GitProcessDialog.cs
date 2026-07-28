@@ -185,6 +185,10 @@ public sealed class GitProcessDialog : Window
         body.Children.Add(footer);
         body.Children.Add(_scroll);
         Content = body;
+
+        // Escape must not abandon a git process that is still running: it only
+        // closes the dialog once the process has finished.
+        DialogKeys.InstallEscapeClose(this, () => _finished);
     }
 
     /// <summary>

@@ -150,6 +150,9 @@ public sealed class SparseDialog : Window
         body.Children.Add(row);
         Content = body;
 
+        // Escape is inert while a sparse-checkout apply is in flight.
+        DialogKeys.InstallEscapeClose(this, () => !_busy);
+
         Opened += (_, _) => ReloadStatus();
     }
 

@@ -201,6 +201,8 @@ public sealed class RevisionFilterDialog : Window
                 Children = { box, hint, buttons },
             },
         };
+
+        DialogKeys.InstallEscapeClose(this);
     }
 
     /// <summary>

@@ -110,6 +110,7 @@ public sealed class AddNotesDialog : Window
         root.Children.Add(_editor);
 
         Content = root;
+        DialogKeys.InstallEscapeClose(this);
 
         Opened += (_, _) =>
         {

@@ -299,6 +299,7 @@ public sealed class PullDialog : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         });
         Content = body;
+        DialogKeys.InstallEscapeClose(this);
 
         ApplyInitialAction(initialAction);
         ApplyTranslations();
