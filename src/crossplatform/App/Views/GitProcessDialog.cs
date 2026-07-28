@@ -78,6 +78,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
     // answer whatever git asks. null while nothing is running.
     private Services.PtyProcess? _pty;
     private bool _interactive;
+    private string? _promptShown;
 
     // Set for the streaming path: the scope holding the live git process, so Abort
     // can really kill it. null on the non-streaming path (the core Executable gives
@@ -162,6 +163,9 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             Text = "Running…",
             Foreground = Brush("App.TextDim", Brushes.Gray),
             VerticalAlignment = VerticalAlignment.Center,
+            // A prompt echoed here can be long; ellipsize it instead of letting it
+            // run under the footer buttons.
+            TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
         _keepOpen = new CheckBox
@@ -459,9 +463,14 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             GitProcessOutcome outcome;
             try
             {
-                // Marshal every emitted line to the UI thread; the runner calls
-                // this from threadpool threads (OutputDataReceived/ErrorDataReceived).
-                outcome = operation(line => Dispatcher.UIThread.Post(() => AppendLine(line)));
+                // On the PTY path append straight into the (thread-safe) console
+                // buffer: hopping through the dispatcher would let the terminal bytes,
+                // which arrive without a hop, overtake the command header and land
+                // above it. On the piped path there is no such race, and the existing
+                // dispatcher hop is kept.
+                outcome = _interactive
+                    ? operation(line => _console.AppendLine(line))
+                    : operation(line => Dispatcher.UIThread.Post(() => AppendLine(line)));
             }
             catch (Exception ex)
             {
@@ -819,6 +828,18 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         // passphrase prompt with echo off, so the answer is never echoed back into the
         // console either.
         bool prompting = running && LooksLikePrompt(currentLine);
+
+        // Put the caret where the answer has to be typed, once per question.
+        if (prompting && _promptShown != currentLine)
+        {
+            _promptShown = currentLine;
+            _input.Focus();
+        }
+        else if (!prompting)
+        {
+            _promptShown = null;
+        }
+
         bool secret = prompting && IsSecretPrompt(currentLine);
         _input.PasswordChar = secret ? '•' : '\0';
         _inputLabel.Text = prompting ? "git asks:" : "Reply:";
