@@ -296,6 +296,24 @@ public sealed class RevisionGridView : UserControl
     // log without the caller re-supplying it (LoadRepository stores it here).
     private string _repoPath = string.Empty;
 
+    // --- File-history mode ------------------------------------------------------
+    //
+    // Set by LoadFileHistory instead of LoadRepository: the same grid, but showing
+    // ONE file's history (path filter + --follow) rather than the repository's. The
+    // flag exists because that walk is not free to be reshaped — see the measured
+    // notes in RevisionService.LoadRevisionPage — so the controls that would reshape
+    // it are hidden rather than left as decorations that quietly do nothing:
+    // "Branches" (the scope is forced to a single starting commit), "View" (walk
+    // order, remotes/tags/stashes, artificial rows — all inert or harmful here) and
+    // the advanced "Filter…"/reset pair (its own path field would fight this one).
+    // Everything that still means what it says stays: the quick box, Go to, Date,
+    // Columns, the graph, the ref decorations, multi-selection and the row menu.
+    private bool _fileHistoryMode;
+
+    // The file whose history is shown (repository-relative, as given), for the
+    // status line. Empty outside file-history mode.
+    private string _fileHistoryFile = string.Empty;
+
     // Column visibility toggles (the Subject column always stays — upstream has no
     // toggle for it either, it is the Fill column of the grid).
     private bool _showGraph = true;    // "Show revision graph column"
@@ -1291,6 +1309,82 @@ public sealed class RevisionGridView : UserControl
     }
 
     /// <summary>
+    ///  Loads the history of ONE FILE — the same grid, graph, ref decorations,
+    ///  columns, multi-selection, row menu and hotkeys, with the walk narrowed to
+    ///  <paramref name="filePath"/> and following it across renames. This is the
+    ///  entry point the File history tab uses; <see cref="LoadRepository"/> stays the
+    ///  repository-wide one.
+    ///
+    ///  <para><paramref name="filePath"/> is repository-relative (POSIX or native
+    ///  separators; it is normalised here) and is quoted when it contains blanks, so
+    ///  a name with spaces stays ONE path — which is also what
+    ///  <see cref="RevisionFilter.FollowsSinglePath"/> requires for
+    ///  <c>--follow</c> to be emitted at all.</para>
+    ///
+    ///  <para><paramref name="options"/> are the four <c>git log</c> switches the
+    ///  upstream <c>FormFileHistory</c> exposes (follow renames / exact renames only /
+    ///  full history / simplify merges). Asking again for the same file with the same
+    ///  options is a refresh: depth, scroll offset and selection survive, so the
+    ///  shell's global refresh does not pull the list out from under the user. A
+    ///  different file — or a changed switch — restarts the walk.</para>
+    /// </summary>
+    public void LoadFileHistory(string repoPath, string filePath, FileHistoryOptions? options = null)
+    {
+        FileHistoryOptions opts = options ?? new FileHistoryOptions();
+        string path = filePath.Replace('\\', '/').Trim();
+
+        // Blanks in an unquoted value read as a SEPARATOR between several paths
+        // (RevisionFilter.BuildPathArgument, mirroring upstream), which would both
+        // filter on the wrong paths and suppress --follow.
+        string pathArgument = path.Any(char.IsWhiteSpace) ? $"\"{path}\"" : path;
+
+        RevisionFilter filter = new()
+        {
+            PathFilter = pathArgument,
+            FollowRenames = opts.FollowRenames,
+            ExactRenamesAndCopiesOnly = opts.ExactRenamesAndCopiesOnly,
+            FullHistory = opts.FullHistory,
+            SimplifyMerges = opts.SimplifyMerges,
+        };
+
+        bool sameWalk = _fileHistoryMode
+            && _loaded.Count > 0
+            && string.Equals(_repoPath, repoPath, StringComparison.Ordinal)
+            && string.Equals(_fileHistoryFile, path, StringComparison.Ordinal)
+            && _gitFilter == filter;
+
+        _fileHistoryMode = true;
+        _fileHistoryFile = path;
+        _repoPath = repoPath;
+        _gitFilter = filter;
+
+        // The walk is pinned to one starting commit while following (see
+        // RevisionService.LoadRevisionPage); keep the field honest about it so the
+        // status line does not claim "all branches".
+        _branchScope = BranchScope.CurrentBranch;
+
+        // No working-directory / index rows: they are the pending work of the
+        // REPOSITORY, they are never part of a file's log, and nothing feeds their
+        // counts here (SetWorkingState is the shell's call on the main grid). Off
+        // explicitly rather than "happens to be empty".
+        _showArtificial = false;
+
+        // Hide, once, the controls that cannot keep their promise in this mode.
+        _branchesButton.IsVisible = false;
+        _viewButton.IsVisible = false;
+        _filterButton.IsVisible = false;
+        _resetFilterButton.IsVisible = false;
+
+        if (sameWalk)
+        {
+            RefreshKeepingView();
+            return;
+        }
+
+        Reload();
+    }
+
+    /// <summary>
     ///  Re-runs the walk for the repository already on screen without disturbing
     ///  what the user is looking at.
     ///
@@ -1890,6 +1984,22 @@ public sealed class RevisionGridView : UserControl
     public void ApplyRevisionFilter(RevisionFilter filter)
     {
         RevisionFilter value = filter ?? RevisionFilter.None;
+
+        // In file-history mode the path + rename-following criteria ARE the subject
+        // of the view (LoadFileHistory owns them); a filter arriving from anywhere
+        // else may narrow the walk further, never take the file away.
+        if (_fileHistoryMode)
+        {
+            value = value with
+            {
+                PathFilter = _gitFilter.PathFilter,
+                FollowRenames = _gitFilter.FollowRenames,
+                ExactRenamesAndCopiesOnly = _gitFilter.ExactRenamesAndCopiesOnly,
+                FullHistory = _gitFilter.FullHistory,
+                SimplifyMerges = _gitFilter.SimplifyMerges,
+            };
+        }
+
         if (value == _gitFilter)
         {
             return;
@@ -1929,7 +2039,10 @@ public sealed class RevisionGridView : UserControl
     private void UpdateFilterChrome()
     {
         _filterButton.Content = FilterButtonCaption;
-        _resetFilterButton.IsVisible = GitFilterActive;
+
+        // File-history mode hides both (its path filter is the tab's subject, not a
+        // user filter): a "reset filters" ✕ there would empty the tab.
+        _resetFilterButton.IsVisible = GitFilterActive && !_fileHistoryMode;
     }
 
     /// <summary>
@@ -2167,7 +2280,18 @@ public sealed class RevisionGridView : UserControl
         // different thing: it changed WHICH commits git walked, so the counts above
         // are counts WITHIN the filtered history. Reset it with the ✕ next to the
         // "Filter…" button.
-        if (GitFilterActive && _repoLabel.Length > 0)
+        //
+        // In file-history mode the criterion IS the tab's subject, not something the
+        // user set and can reset: it is named once, as the file, instead of being
+        // repeated as "git filter: path: …".
+        if (_fileHistoryMode)
+        {
+            _status.Text = string.Format(
+                T("{0}  —  {1}"),
+                _fileHistoryFile,
+                _status.Text);
+        }
+        else if (GitFilterActive && _repoLabel.Length > 0)
         {
             _status.Text = string.Format(
                 T("{0}  —  git filter: {1}"),
