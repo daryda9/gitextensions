@@ -1155,6 +1155,10 @@ public sealed class MainWindow : Window
         _toolbar.Hotkeys = _hotkeys;
         _menu.Hotkeys = _hotkeys;
 
+        // Same reason for the commit-info panel: its "Add notes" entry advertises
+        // Ctrl+Shift+N and must show an override rather than the shipped default.
+        _detail.Hotkeys = _hotkeys;
+
         // Editing a binding in Settings must re-label the toolbar and the menu, or they
         // keep advertising the old gesture. Both setters rebuild only when the reference
         // changes, so bounce it — then push back the state a rebuild resets.
@@ -1164,6 +1168,9 @@ public sealed class MainWindow : Window
             _toolbar.Hotkeys = _hotkeys;
             _menu.Hotkeys = null;
             _menu.Hotkeys = _hotkeys;
+
+            // This setter re-labels on every assignment, so it needs no bounce.
+            _detail.Hotkeys = _hotkeys;
 
             _toolbar.SetLeftPanelVisible(_tree.IsVisible);
             _toolbar.SetCommitInfoPosition(_commitInfoPosition);
@@ -2094,7 +2101,7 @@ public sealed class MainWindow : Window
     ///  already has.</para>
     ///
     ///  <para>Commands with no port equivalent are left unbound on purpose and are
-    ///  inert: AddNotes, EditFile, the four difftool/temp-file gestures (they act on
+    ///  inert: EditFile, the four difftool/temp-file gestures (they act on
     ///  the diff's file selection, which the diff view handles itself),
     ///  GoToChild, ManageWorkTrees, MergeBranches, Rebase,
     ///  ToggleBetweenArtificialAndHeadCommits, and FocusBuildServerStatus (this port
@@ -2131,6 +2138,12 @@ public sealed class MainWindow : Window
         Bind(BrowseCommand.CreateBranch, () => _ = NewBranchAsync());
         Bind(BrowseCommand.CreateTag, () => _ = NewTagAsync());
         Bind(BrowseCommand.GoToParent, () => _ = GoToParentAsync());
+
+        // --- git notes on the selected commit (upstream: FormBrowse.AddNotes, which
+        // likewise delegates to the commit-info panel rather than reimplementing it).
+        // HotkeyService already shipped Ctrl+Shift+N for this command, but nothing
+        // answered it, so the gesture was inert and AddNotesDialog unreachable.
+        Bind(BrowseCommand.AddNotes, _detail.EditNotes);
 
         // --- stash (same service calls as the toolbar/menu items)
         Bind(BrowseCommand.Stash,

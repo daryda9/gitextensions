@@ -72,6 +72,43 @@ public sealed class CommitDetailView : UserControl
     private readonly MenuItem _showAnnotatedTagsItem;
     private readonly MenuItem _showDerivesFromItem;
 
+    /// <summary>
+    ///  The host's live hotkey map, used ONLY to label "Add notes" with the gesture
+    ///  actually in force — upstream does exactly this in
+    ///  <c>CommitInfo.cs:113</c> (<c>addNoteToolStripMenuItem.ShortcutKeyDisplayString
+    ///  = GetShortcutKeyDisplayString(FormBrowse.Command.AddNotes)</c>). Same contract
+    ///  as <see cref="MainMenu.Hotkeys"/>: while it is null the label falls back to
+    ///  <see cref="HotkeyService.Defaults"/>, and a command the user cleared shows no
+    ///  gesture at all rather than lying. Assigning it re-labels immediately, so a
+    ///  host can just re-assign after a <see cref="HotkeyService.Changed"/>.
+    /// </summary>
+    public HotkeyService? Hotkeys
+    {
+        get => _hotkeys;
+        set
+        {
+            _hotkeys = value;
+            _addNotesItem.InputGesture = AddNotesGesture();
+        }
+    }
+
+    private HotkeyService? _hotkeys;
+
+    /// <summary>The gesture in force for <see cref="BrowseCommand.AddNotes"/>.</summary>
+    private KeyGesture? AddNotesGesture()
+    {
+        if (_hotkeys is { } service)
+        {
+            return service.GestureFor(BrowseCommand.AddNotes) is { } bound
+                ? new KeyGesture(bound.Key, bound.Modifiers)
+                : null;
+        }
+
+        return HotkeyService.Defaults.TryGetValue(BrowseCommand.AddNotes, out HotkeyGesture g)
+            ? new KeyGesture(g.Key, g.Modifiers)
+            : null;
+    }
+
     // Which control carries which link target, so a right-click can name the link
     // under the pointer. Rebuilt by every Render.
     private readonly Dictionary<Control, string> _linkTargets = [];
@@ -182,6 +219,11 @@ public sealed class CommitDetailView : UserControl
         _copyLinkItem = Item(T("CommitInfo/copyLinkToolStripMenuItem.Text", "Copy link"), CopyLink);
         _copyInfoItem = Item(T("CommitInfo/copyCommitInfoToolStripMenuItem.Text", "&Copy commit info"), CopyCommitInfo);
         _addNotesItem = Item(T("CommitInfo/addNoteToolStripMenuItem.Text", "Add &notes"), () => EditNotes());
+
+        // Label it with the shipped default straight away, so the entry advertises
+        // Ctrl+Shift+N even before a host assigns Hotkeys (and in the Settings
+        // dialog's preview, which builds this panel without one).
+        _addNotesItem.InputGesture = AddNotesGesture();
 
         _showBranchesItem = Toggle(
             T("CommitInfo/showContainedInBranchesToolStripMenuItem.Text", "Show local branches containing this commit"),
@@ -448,8 +490,12 @@ public sealed class CommitDetailView : UserControl
     }
 
     /// <summary>
-    ///  Edits the current commit's git note. Public so the host can bind it to a
-    ///  hotkey (upstream: <c>FormBrowse.Command.AddNotes</c>); unwired is harmless.
+    ///  Edits the current commit's git note. Public because it has TWO callers: this
+    ///  panel's own context-menu entry, and <c>MainWindow.InstallHotkeys</c>, which
+    ///  binds it to <see cref="BrowseCommand.AddNotes"/> (Ctrl+Shift+N) exactly as
+    ///  upstream's <c>FormBrowse.Command.AddNotes</c> does — so the gesture works
+    ///  while focus is in the revision grid and acts on the selected commit, which is
+    ///  the commit this panel is showing.
     ///
     ///  <para>The note is read and written off the UI thread; the editor itself is
     ///  <see cref="AddNotesDialog"/>, because upstream's <c>git notes edit</c> would
