@@ -208,7 +208,7 @@ public sealed class MainToolbar : UserControl
     // The button caption shows the current repository path (home collapsed to ~).
     public Func<Task<IReadOnlyList<RepoLink>>>? RecentReposProvider { get; set; }
 
-    // Favourite repositories for the same drop-down (upstream's categorised-repos
+    // Favorite repositories for the same drop-down (upstream's categorised-repos
     // submenu, flat here). Optional: with no provider the toolbar reads the shell's
     // own favorites.json, so the group is populated without any host wiring.
     public Func<Task<IReadOnlyList<RepoLink>>>? FavoriteReposProvider { get; set; }
@@ -2452,7 +2452,7 @@ public sealed class MainToolbar : UserControl
 
     // Inline repo-path dropdown: icon + ~-collapsed current path + chevron, the port
     // of upstream's WorkingDirectoryToolStripSplitButton. The drop-down carries, in
-    // upstream's order: a live search box, the favourite repositories, the recent
+    // upstream's order: a live search box, the favorite repositories, the recent
     // ones, "Open repository" / "Close repository" with their gestures, and
     // "Configure this menu...". Right-clicking the button starts the open dialog and
     // Ctrl+click on an entry opens it in a new instance — both documented in the
@@ -2548,7 +2548,7 @@ public sealed class MainToolbar : UserControl
             T("Right click starts the \"Open repository\" dialog."));
 
     // Builds the working-directory drop-down in upstream's order: search box,
-    // separator, favourites, recents, separator, Open / Close repository, separator,
+    // separator, favorites, recents, separator, Open / Close repository, separator,
     // "Configure this menu...".
     //
     // Everything is added BEFORE ShowAt and rebuilt on every open: Avalonia 11.3.x
@@ -2596,14 +2596,22 @@ public sealed class MainToolbar : UserControl
         flyout.Items.Add(new MenuItem { Header = filterBox, StaysOpenOnClick = true });
         flyout.Items.Add(new MenuSeparator());
 
-        // Favourites. FavoritesService is a flat list in this port — repository
+        // Favorites. FavoritesService is a flat list in this port — repository
         // categories are a separate piece of work — so they all land in one group
         // under a non-clickable header instead of upstream's per-category submenus.
+        //
+        // The caption is deliberately the *same* key and English text as the Start
+        // menu entry (MainMenu.cs): upstream builds this group by reusing
+        // StartToolStripMenuItem.FavouriteRepositoriesMenuItem.Text verbatim
+        // (WorkingDirectoryToolStripSplitButton.cs:131), and that text is spelled the
+        // American way ("&Favorite repositories", StartToolStripMenuItem.Designer.cs:71)
+        // even though upstream's identifiers are British. The dropdown used to read
+        // "Favourite" here while the menu and the dashboard read "Favorite".
         if (favorites.Count > 0)
         {
             flyout.Items.Add(new MenuItem
             {
-                Header = T("FormBrowse/favouriteRepositoriesToolStripMenuItem.Text", "Favourite repositories"),
+                Header = T("FormBrowse/tsmiFavouriteRepositories.Text", "Favorite repositories"),
                 IsEnabled = false,
             });
             foreach (RepoLink link in favorites)
@@ -2738,7 +2746,7 @@ public sealed class MainToolbar : UserControl
         _ = Task.Run(() => new ExternalToolService().LaunchDetached(exe, args, workingDir: path));
     }
 
-    // Favourites for the working-directory drop-down. The host may supply its own
+    // Favorites for the working-directory drop-down. The host may supply its own
     // provider; otherwise the toolbar reads the same favorites.json the rest of the
     // shell uses, so the entry needs no wiring to be real.
     private Task<IReadOnlyList<RepoLink>> LoadFavoriteReposAsync()
