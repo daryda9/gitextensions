@@ -1,6 +1,7 @@
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
+using GitExtensions.Extensibility.Git;
 using GitExtUtils;
 
 namespace GitExtensions.Avalonia.Services;
@@ -56,6 +57,93 @@ public sealed class CloneInitService
 
         bool ok = result.ExitedSuccessfully && GitModule.IsValidGitWorkingDir(repoPath);
         return new CloneInitResult(ok, result.AllOutput, ok ? repoPath : null);
+    }
+
+    /// <summary>
+    ///  Builds the <c>git clone</c> argument string for the full option set of
+    ///  upstream's <c>FormClone</c> (<c>Commands.Clone</c>): bare, submodule
+    ///  initialisation, shallow depth, and the branch to check out.
+    ///  <para>
+    ///  Returned as a string rather than executed so the caller can stream it
+    ///  through <see cref="GitStreamRunner"/>: a clone can take minutes and git
+    ///  writes its transfer progress to stderr, which the core executable buffers.
+    ///  <c>--progress</c> is always passed, because git only prints progress when it
+    ///  believes it is talking to a terminal.
+    ///  </para>
+    /// </summary>
+    /// <param name="url">Repository to clone from.</param>
+    /// <param name="targetDir">Full path of the directory to create.</param>
+    /// <param name="central">Clone as a bare repository (<c>--bare</c>).</param>
+    /// <param name="initSubmodules">Clone submodules too (<c>--recurse-submodules</c>).</param>
+    /// <param name="branch">
+    ///  Branch to check out; empty means the remote's default HEAD, and
+    ///  <see langword="null"/> means "do not check anything out" (<c>--no-checkout</c>),
+    ///  mirroring the two synthetic entries of upstream's branch combo.
+    /// </param>
+    /// <param name="depth">
+    ///  Shallow-clone depth, or null for the full history. A depth is paired with
+    ///  <c>--no-single-branch</c>: git implies <c>--single-branch</c> when a depth is
+    ///  given, and a single-branch clone is painful to widen afterwards, so upstream
+    ///  deliberately turns it back off.
+    /// </param>
+    public static string CloneArguments(
+        string url,
+        string targetDir,
+        bool central = false,
+        bool initSubmodules = true,
+        string? branch = "",
+        int? depth = null)
+    {
+        GitArgumentBuilder args = new("clone")
+        {
+            "-v",
+            { central, "--bare" },
+            { initSubmodules, "--recurse-submodules" },
+            { depth is not null, $"--depth {depth}" },
+            { depth is not null, "--no-single-branch" },
+            "--progress",
+            { branch is null, "--no-checkout" },
+            { !string.IsNullOrEmpty(branch), $"--branch {branch}" },
+            url.Trim().ToPosixPath().Quote(),
+            targetDir.Trim().ToPosixPath().Quote(),
+        };
+
+        return args.ToString();
+    }
+
+    /// <summary>
+    ///  Asks the remote which branches it has (<c>git ls-remote --heads</c>), for the
+    ///  branch drop-down of the clone dialog. Returns an empty list when the remote
+    ///  cannot be reached or refuses — the dialog degrades to "clone the default
+    ///  branch" rather than failing. Blocking network call: never on the UI thread.
+    /// </summary>
+    public static IReadOnlyList<string> ListRemoteBranches(string url, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return [];
+        }
+
+        try
+        {
+            // Any directory works: ls-remote talks to the remote, not to a local repo.
+            GitModule module = GitContext.CreateModule(Path.GetTempPath());
+            IReadOnlyList<IGitRef> refs = module.GetRemoteServerRefs(
+                url.Trim(),
+                tags: false,
+                branches: true,
+                out string? errorOutput,
+                cancellationToken);
+
+            return string.IsNullOrEmpty(errorOutput)
+                ? refs.Select(r => r.LocalName).Where(n => !string.IsNullOrEmpty(n)).ToList()!
+                : [];
+        }
+        catch (Exception)
+        {
+            // Unreachable host, bad URL, cancelled: the drop-down just stays empty.
+            return [];
+        }
     }
 
     /// <summary>
