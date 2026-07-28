@@ -17,9 +17,17 @@ public sealed class PatchViewerWindow : Window
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 
-    // Same tuned line colours as DiffView so the patch reads identically.
-    private static readonly IBrush AddedBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
-    private static readonly IBrush RemovedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+    // Same line colours as DiffView so the patch reads identically — now from the
+    // shared theme keys rather than duplicated dark-palette literals, which measured
+    // 1.88:1 and 2.90:1 against the light theme's background.
+    private static IBrush? _addedBrush;
+    private static IBrush? _removedBrush;
+
+    private static IBrush AddedBrush =>
+        _addedBrush ??= (IBrush)Application.Current!.Resources["App.DiffAdded"]!;
+
+    private static IBrush RemovedBrush =>
+        _removedBrush ??= (IBrush)Application.Current!.Resources["App.DiffRemoved"]!;
 
     public PatchViewerWindow(string title, string patchText)
     {

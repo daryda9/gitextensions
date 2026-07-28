@@ -91,7 +91,7 @@ public sealed class BranchTagPanel : UserControl
         _status = new TextBlock
         {
             Margin = new Thickness(10, 2, 10, 6),
-            Foreground = Brushes.Gray,
+            Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
             Text = "No repository loaded.",
             TextWrapping = TextWrapping.Wrap,
         };

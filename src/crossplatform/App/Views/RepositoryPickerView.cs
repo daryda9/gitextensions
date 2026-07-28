@@ -46,7 +46,7 @@ public sealed class RepositoryPickerView : UserControl
         _status = new TextBlock
         {
             Margin = new Thickness(0, 8, 0, 0),
-            Foreground = Brushes.Gray,
+            Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
             TextWrapping = TextWrapping.Wrap,
             Text = "Open a git repository, or pick one from the recent list.",
         };

@@ -399,7 +399,9 @@ public sealed class BlameView : UserControl
 
         _headerHost = new Border
         {
-            BorderBrush = Brushes.Gray,
+            // App.Border, not Brushes.Gray: the rest of the file is themed and a
+            // fixed #808080 rule reads as a hard line on the light panel.
+            BorderBrush = B("App.Border"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = BuildHeader(),
         };

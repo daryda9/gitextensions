@@ -40,9 +40,15 @@ public sealed class StashPanel : UserControl
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
-    // Diff line colours, matching DiffView's dark-palette tuning.
-    private static readonly IBrush AddedBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
-    private static readonly IBrush RemovedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+    // Diff line colours, from the same theme keys DiffView reads. They used to
+    // duplicate DiffView's dark-palette literals, which measured 1.88:1 and 2.90:1
+    // against the light theme's diff background.
+    private static IBrush? _addedBrush;
+    private static IBrush? _removedBrush;
+
+    private static IBrush AddedBrush => _addedBrush ??= B("App.DiffAdded");
+
+    private static IBrush RemovedBrush => _removedBrush ??= B("App.DiffRemoved");
 
     private readonly ListBox _stashList;
     private readonly TextBox _messageBox;
@@ -187,7 +193,7 @@ public sealed class StashPanel : UserControl
         _status = new TextBlock
         {
             Margin = new Thickness(10, 2, 10, 6),
-            Foreground = Brushes.Gray,
+            Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
             TextWrapping = TextWrapping.Wrap,
         };
 
