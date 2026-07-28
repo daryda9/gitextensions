@@ -8,6 +8,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.TextFormatting;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
@@ -283,6 +284,7 @@ public sealed class CommitDetailView : UserControl
 
     private void OnMessagePointerPressed(object? sender, PointerPressedEventArgs e)
     {
+
         // The right button belongs to the context menu (handled by the tunnelling
         // handler on the panel), which offers "Copy link" for the same span.
         if (!e.GetCurrentPoint(_message).Properties.IsLeftButtonPressed)
@@ -892,24 +894,38 @@ public sealed class CommitDetailView : UserControl
             return null;
         }
 
-        // Outside the laid-out text the hit test still snaps to the nearest character,
-        // which would make the empty space past the end of a line "a link".
-        TextHitTestResult hit = _message.TextLayout.HitTestPoint(inMessage);
-        if (!hit.IsInside)
-        {
-            return null;
-        }
+        TextLayout layout = _message.TextLayout;
+        int index = layout.HitTestPoint(inMessage).TextPosition;
 
-        int index = hit.TextPosition;
+        CommitMessageLink? found = null;
         foreach (CommitMessageLink link in _messageLinks)
         {
             if (index >= link.Start && index < link.Start + link.Length)
             {
-                return link.FullHash;
+                found = link;
+                break;
             }
         }
 
-        return null;
+        if (found is null)
+        {
+            return null;
+        }
+
+        // The hit test snaps to the nearest character, so a point in the empty space
+        // past the end of a line comes back as that line's last character — which,
+        // when a link ends the line, would make the whole margin clickable. The
+        // character's own rectangle is what settles it.
+        //
+        // (TextHitTestResult.IsInside cannot be used for this: on a wrapping
+        // SelectableTextBlock it reads false even for a point squarely on a glyph.)
+        Rect glyph = layout.HitTestTextPosition(index);
+        bool onGlyph = inMessage.Y >= glyph.Y
+            && inMessage.Y <= glyph.Bottom
+            && inMessage.X >= glyph.X - 1
+            && inMessage.X <= glyph.Right + 1;
+
+        return onGlyph ? found.FullHash : null;
     }
 
     /// <summary>
