@@ -42,6 +42,12 @@ internal sealed class CopyPathsMenuItem : MenuItem
         FileName,
     }
 
+    // Avalonia resolves a ControlTheme by the control's exact type, so a subclass of
+    // MenuItem finds no theme, gets no template, and lays out at zero height: the
+    // command silently disappears from the menu, leaving only the gap between its
+    // neighbouring separators. Point the lookup back at MenuItem.
+    protected override Type StyleKeyOverride => typeof(MenuItem);
+
     private readonly Func<IEnumerable<string?>> _getPaths;
     private readonly Func<string?> _getWorkingDir;
     private readonly Action<string> _setClipboard;
