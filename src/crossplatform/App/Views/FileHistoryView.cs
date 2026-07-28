@@ -1,55 +1,52 @@
 using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Controls.Templates;
-using Avalonia.Input;
-using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
-using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
-///  A read-only view of a single file's commit history: a multi-column list
-///  (Hash / Author / Date / Subject) of the commits that touched the file,
-///  following it across renames. Heavy git work runs off the UI thread, matching
-///  <see cref="DiffView"/>. Built on a <see cref="ListBox"/> with a templated
-///  multi-column row so no extra NuGet package (e.g. DataGrid) is required.
+///  A single file's commit history, shown in the REAL revision grid: a second
+///  <see cref="RevisionGridView"/> instance loaded through
+///  <see cref="RevisionGridView.LoadFileHistory"/>, i.e. the same walk narrowed to
+///  the file and following it across renames. The tab therefore gets the DAG graph,
+///  the branch/tag decorations, the columns and their View menus, multi-selection,
+///  the full row context menu, quick-search and the navigation hotkeys — all of
+///  which the bare four-column list it replaced did not have.
 ///
-///  <para>Ported from upstream's <c>FormFileHistory</c>: the row context menu
-///  (<c>FileHistoryContextMenu</c>) with the Copy submenu, "Save as", the
-///  "Manipulate commit" submenu (revert / cherry pick) and the two
-///  "Detect and follow…" toggles, plus the <c>ShowFullHistory</c> drop-down with
-///  "Show full history" / "Simplify merges". All four toggles are only
-///  <c>git log</c> switches: they go through <see cref="FileHistoryOptions"/> and
-///  trigger a reload. Upstream persists them in <c>AppSettings</c>; the port keeps
-///  them session-local like the other view toggles.</para>
+///  <para>WHY A SECOND INSTANCE, not the shell's main grid. The main instance carries
+///  repository-wide state that the file history would corrupt and cannot share: the
+///  user's place in the repository history (selection, scroll, paged-in depth), the
+///  quick-filter box and the advanced <c>RevisionFilter</c> he set, the branch scope
+///  and filtered-ref set, the artificial working-directory/index rows fed by
+///  <c>MainWindow.SetWorkingState</c>, the persisted view options it publishes through
+///  <c>ViewOptionsChanged</c>, and its event wiring into the shell (selection drives
+///  the bottom tabs). Narrowing that grid to one path would hijack the top pane, lie
+///  in the toolbar (a path filter the user never typed) and be persisted as his
+///  preference. It also lives in a different pane: the history has to be visible in
+///  the bottom tab while the repository history stays on screen above it.</para>
 ///
-///  <para>Deliberately NOT ported here (upstream's four inner tabs
-///  Commit diff / Diff / View / Blame, the eleven "Blame options" toggles, the
-///  full <c>FilterToolBar</c> and open-with-difftool "selected &lt;-&gt; local").</para>
+///  <para>WHAT THIS VIEW STILL OWNS. The four <c>git log</c> switches upstream's
+///  <c>FormFileHistory</c> exposes (its "Show Full History" drop-down and the two
+///  "Detect and follow…" toggles), the Reload button, the message/identity line, and
+///  the file-specific commands it plants in the grid's row menu through
+///  <see cref="RevisionGridView.AddCommitCommand"/>: "Save as", "Copy path" (both of
+///  which need the name the file had IN THAT REVISION — see
+///  <see cref="FileHistoryService.GetFilePathByRevision"/>) and the revert /
+///  cherry-pick pair, which keep their host-handler-else-do-it-here contract.</para>
 ///
-///  <para>Captions go through <see cref="TranslationService"/>. Upstream's
-///  <c>FormFileHistory</c> is a tabbed window whose grid is a
-///  <c>RevisionGridControl</c>, so its trans-units are tabs and menu entries rather
-///  than column headers; the four headers here are keyed to the equivalent
-///  upstream columns (<c>FormVerify</c>) and to the shared
-///  <c>TranslatedStrings</c> labels. Header, menu and status line are rebuilt on
-///  <see cref="TranslationService.LanguageChanged"/>.</para>
+///  <para>Deliberately NOT ported here (upstream's four inner tabs Commit diff /
+///  Diff / View / Blame, the eleven "Blame options" toggles and open-with-difftool
+///  "selected &lt;-&gt; local"). Upstream's "Show author date" toggle is gone as a
+///  local switch: the grid's own Date menu does author/commit date (and relative
+///  dates) for every column set.</para>
 /// </summary>
 public sealed class FileHistoryView : UserControl
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
-
-    // Shared column widths so the header and every row line up.
-    private const double HashWidth = 90;
-    private const double AuthorWidth = 170;
-    private const double DateWidth = 130;
-
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
     private static string T(string? key, string english) => TranslationService.T(key, english);
@@ -60,24 +57,11 @@ public sealed class FileHistoryView : UserControl
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
     private readonly FileHistoryService _service = new();
-    private readonly ListBox _list;
+    private readonly RevisionGridView _grid = new();
     private readonly TextBlock _status;
-    private readonly Border _headerHost;
     private readonly Button _fullHistoryButton;
+    private readonly Button _followButton;
     private readonly Button _reloadButton;
-
-    // Row context menu: every item is built once in the constructor. The Opening
-    // handler only flips IsEnabled / IsChecked — mutating Items there leaves the
-    // popup unmeasured (HANDOFF §3).
-    private readonly MenuItem _copyItem = new();
-    private readonly List<(MenuItem Item, string Key, string English, Func<FileHistoryRow, string> Value)> _copyEntries = [];
-    private readonly MenuItem _saveAsItem = new();
-    private readonly MenuItem _manipulateItem = new();
-    private readonly MenuItem _revertItem = new();
-    private readonly MenuItem _cherryPickItem = new();
-    private readonly MenuItem _followItem = new() { ToggleType = MenuItemToggleType.CheckBox };
-    private readonly MenuItem _followExactItem = new() { ToggleType = MenuItemToggleType.CheckBox };
-    private readonly MenuItem _authorDateItem = new() { ToggleType = MenuItemToggleType.CheckBox };
 
     // The git log switches, session-local (upstream: AppSettings.*InFileHistory).
     private FileHistoryOptions _options = new();
@@ -87,33 +71,22 @@ public sealed class FileHistoryView : UserControl
     private string? _repoPath;
     private string? _filePath;
     private string? _shownFile;
-    private int _shownCommits;
 
-    // The rows currently displayed, so the Date column can switch between author and
-    // commit date without re-running git.
-    private List<FileHistoryRow> _rows = [];
+    // Commit hash -> the name the file had in that revision. The grid's row model
+    // (RevisionRow) carries no file name, so the mapping is kept here and loaded
+    // alongside the grid's walk; without it "Save as" on a commit older than a
+    // rename would read (or fail to read) the wrong path.
+    private IReadOnlyDictionary<string, string> _pathByHash =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 
-    // Upstream's AppSettings.ShowAuthorDate (default true): the grid's Date column is
-    // the AUTHOR date, not the commit date.
-    private bool _showAuthorDate = true;
+    // Guards the path map against a stale load: a second file asked for while the
+    // first map was still being built must not overwrite it.
+    private int _mapToken;
 
     // Upstream's _fileNotFound marker, appended to the status line for the selected
     // revision; guarded by a token so a stale background check cannot overwrite it.
     private string _notFoundMarker = string.Empty;
     private int _notFoundToken;
-
-    // The row that was right-clicked; a right-click does not move ListBox
-    // selection by itself.
-    private FileHistoryRow? _menuRow;
-
-    // True for the duration of a right-button press dispatch.
-    private bool _rightPressed;
-
-    // True while the view puts a selection back by hand after replacing ItemsSource.
-    // The host reacts to RevisionSelected by switching the bottom panel to the commit
-    // tab, which would pull the file history out from under the user for what was only
-    // a column re-render (seen headless while toggling the date column).
-    private bool _restoringSelection;
 
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
@@ -121,7 +94,7 @@ public sealed class FileHistoryView : UserControl
     public event Action<string>? RevisionSelected;
 
     /// <summary>
-    ///  Raised by "Manipulate commit &gt; Revert commit". When nothing is subscribed
+    ///  Raised by the row menu's "Revert this commit…". When nothing is subscribed
     ///  the view performs the revert itself through <see cref="RevertArchiveService"/>
     ///  and reports the outcome in its own status line; a host that wants the
     ///  shared refresh / watcher-suspend treatment (<c>MainWindow.RunOp</c>) can
@@ -130,17 +103,17 @@ public sealed class FileHistoryView : UserControl
     public event Action<string>? RevertCommitRequested;
 
     /// <summary>
-    ///  Raised by "Manipulate commit &gt; Cherry pick commit". Same fallback contract
-    ///  as <see cref="RevertCommitRequested"/> (<see cref="StashOpsService.CherryPick"/>).
+    ///  Raised by the row menu's "Cherry-pick". Same fallback contract as
+    ///  <see cref="RevertCommitRequested"/> (<see cref="StashOpsService.CherryPick"/>).
     /// </summary>
     public event Action<string>? CherryPickCommitRequested;
 
     /// <summary>
     ///  Raised on double click / Enter on a row — upstream's
     ///  <c>FileChangesDoubleClick</c> → <c>RevisionGrid.ViewSelectedRevisions()</c>,
-    ///  i.e. "open that revision". The argument is the full commit hash. The row is
-    ///  selected first, so even with nothing subscribed the double click still brings
-    ///  the commit forward through <see cref="RevisionSelected"/>.
+    ///  i.e. "open that revision". The argument is the full commit hash. The grid
+    ///  selects the row first, so even with nothing subscribed the double click still
+    ///  brings the commit forward through <see cref="RevisionSelected"/>.
     /// </summary>
     public event Action<string>? RevisionActivated;
 
@@ -156,91 +129,31 @@ public sealed class FileHistoryView : UserControl
             Text = T("No file loaded."),
         };
 
-        _list = new ListBox
+        // The grid raises RevisionSelected only for real commits (never for the
+        // artificial rows, which this mode does not show at all), so the host
+        // contract is unchanged from the list this replaced.
+        _grid.RevisionSelected += hash =>
         {
-            FontFamily = Monospace,
-            FontSize = 12,
-            Background = B("App.Panel"),
-            Foreground = B("App.Text"),
-            BorderThickness = new Thickness(0),
-            ItemTemplate = new FuncDataTemplate<FileHistoryRow>((row, _) => BuildRow(row), supportsRecycling: true),
+            CheckFilePresence(hash);
+            RevisionSelected?.Invoke(hash);
         };
+        _grid.RevisionActivated += hash => RevisionActivated?.Invoke(hash);
 
-        // Upstream's FileChangesDoubleClick. The ListBox has already moved the
-        // selection by the time the tap arrives, so RevisionSelected has fired and
-        // the host is on the right commit.
-        _list.DoubleTapped += (_, e) =>
-        {
-            if ((e.Source as Visual)?.FindAncestorOfType<ListBoxItem>(includeSelf: true)?.DataContext
-                is FileHistoryRow row)
-            {
-                RevisionActivated?.Invoke(row.Hash);
-            }
-        };
-
-        _list.SelectionChanged += (_, _) =>
-        {
-            if (_rightPressed || _restoringSelection)
-            {
-                // Selecting by right-click must stay inside this view: the host
-                // reacts to RevisionSelected by switching the bottom panel to the
-                // commit tab, which would pull the view (and the menu about to
-                // open) out from under the pointer. Seen headless.
-                return;
-            }
-
-            // A left-click supersedes whatever row a previous right-click aimed at.
-            _menuRow = null;
-
-            if (_list.SelectedItem is FileHistoryRow row)
-            {
-                CheckFilePresence(row);
-                RevisionSelected?.Invoke(row.Hash);
-            }
-        };
-
-        // A ListBox is not focusable (its containers are) and a bubbling key
-        // handler is eaten by the item; tunnelling with handledEventsToo is the
-        // shape that works (HANDOFF §3).
-        _list.AddHandler(
-            KeyDownEvent,
-            (object? _, KeyEventArgs e) =>
-            {
-                if (e.Key == Key.C && e.KeyModifiers.HasFlag(KeyModifiers.Control)
-                    && _list.SelectedItem is FileHistoryRow row)
-                {
-                    Copy(row.Hash);
-                    e.Handled = true;
-                }
-            },
-            RoutingStrategies.Tunnel,
-            handledEventsToo: true);
-
-        // Remember which row the pointer is over before the menu opens, and flag
-        // the press as a right one for the whole of its dispatch. Tunnelling with
-        // handledEventsToo because the ListBoxItem marks the press handled.
-        _list.AddHandler(
-            PointerPressedEvent,
-            (object? _, PointerPressedEventArgs e) =>
-            {
-                if (!e.GetCurrentPoint(_list).Properties.IsRightButtonPressed)
-                {
-                    return;
-                }
-
-                _menuRow = (e.Source as Visual)?
-                    .FindAncestorOfType<ListBoxItem>(includeSelf: true)?.DataContext as FileHistoryRow;
-
-                // Reset once this input event is fully processed — the ListBox's
-                // own selection handling (and the SelectionChanged above) runs
-                // inside it.
-                _rightPressed = true;
-                Dispatcher.UIThread.Post(() => _rightPressed = false, DispatcherPriority.Input);
-            },
-            RoutingStrategies.Tunnel,
-            handledEventsToo: true);
-
-        _list.ContextMenu = BuildContextMenu();
+        // File-specific commands in the grid's own row menu. The two headers below
+        // that the grid routes ("Revert this commit…", "Cherry-pick") land in their
+        // structured slots; the file-name-dependent pair lands under "Other actions".
+        _grid.AddCommitCommand(
+            T("FormFileHistory/saveAsToolStripMenuItem.Text", "Save as") + "…",
+            SaveAs);
+        _grid.AddCommitCommand(
+            T("FileStatusList/tsmiCopyPaths.Text", "Copy path"),
+            hash => Copy(PathFor(hash)));
+        _grid.AddCommitCommand(
+            T("FormFileHistory/revertCommitToolStripMenuItem.Text", "Revert this commit…"),
+            RevertCommit);
+        _grid.AddCommitCommand(
+            T("FormFileHistory/cherryPickThisCommitToolStripMenuItem.Text", "Cherry-pick"),
+            CherryPickCommit);
 
         _fullHistoryButton = new Button
         {
@@ -249,6 +162,18 @@ public sealed class FileHistoryView : UserControl
             Padding = new Thickness(8, 3, 8, 3),
         };
         _fullHistoryButton.Click += (_, _) => ShowFullHistoryMenu();
+
+        // The two "Detect and follow…" switches. They used to sit in the row context
+        // menu, which is now the grid's; a drop-down of their own keeps them visible
+        // (and keeps them next to the other git log switch, which is what they are).
+        _followButton = new Button
+        {
+            Background = B("App.Control"),
+            Foreground = B("App.Text"),
+            Padding = new Thickness(8, 3, 8, 3),
+            Margin = new Thickness(0, 0, 6, 0),
+        };
+        _followButton.Click += (_, _) => ShowFollowMenu();
 
         // Upstream's toolStripSplitLoad ("Reload"): re-runs the log for the same file.
         _reloadButton = new Button
@@ -260,30 +185,21 @@ public sealed class FileHistoryView : UserControl
         };
         _reloadButton.Click += (_, _) => Reload();
 
-        _headerHost = new Border
-        {
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = BuildHeader(),
-        };
-
         // WrapPanel, not a fixed-width horizontal StackPanel: the Italian captions
         // are longer than the English ones (HANDOFF §3).
         WrapPanel toolbar = new()
         {
             Background = B("App.Toolbar"),
             Margin = new Thickness(8, 2, 8, 2),
-            Children = { _reloadButton, _fullHistoryButton },
+            Children = { _reloadButton, _followButton, _fullHistoryButton },
         };
 
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(_headerHost, Dock.Top);
         root.Children.Add(_status);
         root.Children.Add(toolbar);
-        root.Children.Add(_headerHost);
-        root.Children.Add(_list);
+        root.Children.Add(_grid);
 
         Content = root;
 
@@ -291,142 +207,24 @@ public sealed class FileHistoryView : UserControl
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
-    // ------------------------------------------------------------- context menu
+    // ------------------------------------------------------- per-revision file name
 
-    private ContextMenu BuildContextMenu()
-    {
-        // Copy submenu: a fixed set of entries, because Items may not be rebuilt
-        // while the popup opens. Only the headers change (they carry a preview of
-        // the value, like upstream's CopyContextMenuItem).
-        CopyEntry("TranslatedStrings/_commitHashText.Text", "Commit hash", r => r.Hash);
-        CopyEntry(null, "Short hash", r => r.ShortHash);
-        CopyEntry("TranslatedStrings/_message.Text", "Message", r => r.Message.Length > 0 ? r.Message : r.Subject);
-        CopyEntry("TranslatedStrings/_author.Text", "Author",
-            r => r.AuthorEmail.Length > 0 ? $"{r.Author} <{r.AuthorEmail}>" : r.Author);
-        CopyEntry("TranslatedStrings/_authorDateText.Text", "Author date", r => r.AuthorDate);
-        CopyEntry("TranslatedStrings/_commitDateText.Text", "Commit date", r => r.CommitDate);
-
-        // The name the file had in that revision — worth copying precisely because it
-        // differs from the current one across a rename.
-        CopyEntry("FileStatusList/tsmiCopyPaths.Text", "Copy path", PathFor);
-
-        _saveAsItem.Click += (_, _) => SaveAs();
-        _revertItem.Click += (_, _) => RevertCommit();
-        _cherryPickItem.Click += (_, _) => CherryPickCommit();
-
-        _manipulateItem.Items.Add(_revertItem);
-        _manipulateItem.Items.Add(_cherryPickItem);
-
-        _followItem.Click += (_, _) => SetOptions(_options with { FollowRenames = !_options.FollowRenames });
-        _followExactItem.Click += (_, _) => SetOptions(
-            _options with { ExactRenamesAndCopiesOnly = !_options.ExactRenamesAndCopiesOnly });
-
-        // Author vs commit date in the Date column. No git needed: both dates already
-        // came back with the row, so only the list is re-templated.
-        _authorDateItem.Click += (_, _) =>
-        {
-            _showAuthorDate = !_showAuthorDate;
-            _headerHost.Child = BuildHeader();
-
-            // A NEW list instance: re-assigning the same one leaves the realised
-            // containers (and their hand-built text) untouched. The selection has to
-            // be put back by hand, since the items are different objects only by
-            // reference for the ListBox.
-            FileHistoryRow? selected = _list.SelectedItem as FileHistoryRow;
-            _restoringSelection = true;
-            try
-            {
-                List<FileHistoryRow> fresh = _rows.ToList();
-                _list.ItemsSource = fresh;
-                if (selected is not null)
-                {
-                    _list.SelectedItem = fresh.Find(r => r.Hash == selected.Hash);
-                }
-            }
-            finally
-            {
-                _restoringSelection = false;
-            }
-        };
-
-        ContextMenu menu = new()
-        {
-            ItemsSource = new Control[]
-            {
-                _copyItem,
-                new Separator(),
-                _saveAsItem,
-                new Separator(),
-                _manipulateItem,
-                new Separator(),
-                _followItem,
-                _followExactItem,
-                new Separator(),
-                _authorDateItem,
-            },
-        };
-
-        menu.Opening += (_, _) => UpdateMenuState();
-        return menu;
-    }
-
-    private void CopyEntry(string? key, string english, Func<FileHistoryRow, string> value)
-    {
-        MenuItem item = new();
-        item.Click += (_, _) =>
-        {
-            if (Current() is FileHistoryRow row)
-            {
-                Copy(value(row));
-            }
-        };
-
-        _copyEntries.Add((item, key ?? string.Empty, english, value));
-        _copyItem.Items.Add(item);
-    }
-
-    // Opening: enable/disable, check/uncheck, and re-word the Copy previews. No
-    // Items are touched.
-    private void UpdateMenuState()
-    {
-        FileHistoryRow? row = Current();
-        bool hasRow = row is not null && _repoPath is not null;
-
-        _copyItem.IsEnabled = hasRow;
-        _saveAsItem.IsEnabled = hasRow && _filePath is not null;
-        _manipulateItem.IsEnabled = hasRow;
-
-        foreach ((MenuItem item, string key, string english, Func<FileHistoryRow, string> value) in _copyEntries)
-        {
-            string caption = T(key.Length > 0 ? key : null, english);
-            item.Header = row is null ? caption : $"{caption}:   {Preview(value(row))}";
-            item.IsEnabled = row is not null && value(row).Length > 0;
-        }
-
-        _followItem.IsChecked = _options.FollowRenames;
-        _followExactItem.IsChecked = _options.ExactRenamesAndCopiesOnly;
-        _followExactItem.IsEnabled = _options.FollowRenames;
-        _authorDateItem.IsChecked = _showAuthorDate;
-    }
-
-    // The path the file had in the row's revision — the ONLY one that resolves
-    // against that commit's tree once --follow has walked past a rename. Upstream:
+    // The path the file had in a revision — the ONLY one that resolves against that
+    // commit's tree once --follow has walked past a rename. Upstream:
     // FormFileHistory.GetFileNameForRevision, with the same fall back to the current
     // name when git could not name the file.
-    private string PathFor(FileHistoryRow row)
-        => row.FilePath.Length > 0 ? row.FilePath : _filePath ?? string.Empty;
+    private string PathFor(string hash)
+        => _pathByHash.TryGetValue(hash, out string? historic) && historic.Length > 0
+            ? historic
+            : _filePath ?? string.Empty;
 
-    // First line, shortened — upstream shows the same kind of inline preview.
-    private static string Preview(string text)
-    {
-        string line = text.Split('\n')[0].Trim();
-        return line.Length > 40 ? line[..40] + "…" : line;
-    }
-
-    // The right-clicked row wins over the selection: it is what the user aimed at,
-    // and it is cleared again as soon as the selection moves.
-    private FileHistoryRow? Current()
-        => _menuRow ?? _list.SelectedItem as FileHistoryRow;
+    /// <summary>
+    ///  The name the file had in <paramref name="hash"/>, or the current name when
+    ///  git could not name it there. Upstream's
+    ///  <c>FormFileHistory.GetFileNameForRevision</c>; kept public because it is what
+    ///  a host needs to read the right blob for an older revision.
+    /// </summary>
+    public string GetFileNameForRevision(string hash) => PathFor(hash);
 
     private void Copy(string text)
     {
@@ -440,7 +238,7 @@ public sealed class FileHistoryView : UserControl
         }
     }
 
-    // ---------------------------------------------------- "Show Full History" ▾
+    // ---------------------------------------------------- the git log switch menus
 
     // Items are added before ShowAt: a MenuFlyout populated inside Opening is not
     // re-measured and shows up as an empty sliver (HANDOFF §3).
@@ -470,6 +268,35 @@ public sealed class FileHistoryView : UserControl
         flyout.ShowAt(_fullHistoryButton);
     }
 
+    private void ShowFollowMenu()
+    {
+        MenuFlyout flyout = new();
+
+        MenuItem follow = new()
+        {
+            Header = T("FormFileHistory/followFileHistoryToolStripMenuItem.Text", "Detect and follow renames"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _options.FollowRenames,
+        };
+        follow.Click += (_, _) => SetOptions(_options with { FollowRenames = !_options.FollowRenames });
+
+        MenuItem exact = new()
+        {
+            Header = T(
+                "FormFileHistory/followFileHistoryRenamesToolStripMenuItem.Text",
+                "Detect and follow - exact renames and copies only"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _options.ExactRenamesAndCopiesOnly,
+            IsEnabled = _options.FollowRenames,
+        };
+        exact.Click += (_, _) => SetOptions(
+            _options with { ExactRenamesAndCopiesOnly = !_options.ExactRenamesAndCopiesOnly });
+
+        flyout.Items.Add(follow);
+        flyout.Items.Add(exact);
+        flyout.ShowAt(_followButton);
+    }
+
     private void SetOptions(FileHistoryOptions options)
     {
         _options = options;
@@ -482,11 +309,11 @@ public sealed class FileHistoryView : UserControl
 
     // --------------------------------------------------------------- "Save as"
 
-    // The file's content at the selected commit. The picker runs on the UI
-    // thread; the git read and the write do not (same shape as DiffView).
-    private void SaveAs()
+    // The file's content at the given commit. The picker runs on the UI thread; the
+    // git read and the write do not (same shape as DiffView).
+    private void SaveAs(string hash)
     {
-        if (Current() is not FileHistoryRow row || _repoPath is null || _filePath is null)
+        if (_repoPath is null || _filePath is null)
         {
             return;
         }
@@ -494,7 +321,7 @@ public sealed class FileHistoryView : UserControl
         // PathFor, not _filePath: for a commit older than a rename the blob only
         // exists under the OLD name, so saving the current name wrote the wrong bytes
         // (or failed) without saying so.
-        _ = SaveAsCoreAsync(_repoPath, row.Hash, PathFor(row));
+        _ = SaveAsCoreAsync(_repoPath, hash, PathFor(hash));
     }
 
     private async Task SaveAsCoreAsync(string repoPath, string commit, string path)
@@ -544,22 +371,21 @@ public sealed class FileHistoryView : UserControl
         }
     }
 
-    // ------------------------------------------------- "Manipulate commit" ▸
+    // ------------------------------------------------- revert / cherry-pick
 
-    private void RevertCommit()
+    private void RevertCommit(string hash)
     {
-        if (Current() is not FileHistoryRow row || _repoPath is null)
+        if (_repoPath is null)
         {
             return;
         }
 
         if (RevertCommitRequested is { } handler)
         {
-            handler(row.Hash);
+            handler(hash);
             return;
         }
 
-        string hash = row.Hash;
         RunLocally(T("FormFileHistory/revertCommitToolStripMenuItem.Text", "Revert commit"), repo =>
         {
             RevertArchiveResult result = new RevertArchiveService().Revert(repo, hash);
@@ -567,20 +393,19 @@ public sealed class FileHistoryView : UserControl
         });
     }
 
-    private void CherryPickCommit()
+    private void CherryPickCommit(string hash)
     {
-        if (Current() is not FileHistoryRow row || _repoPath is null)
+        if (_repoPath is null)
         {
             return;
         }
 
         if (CherryPickCommitRequested is { } handler)
         {
-            handler(row.Hash);
+            handler(hash);
             return;
         }
 
-        string hash = row.Hash;
         RunLocally(T("FormFileHistory/cherryPickThisCommitToolStripMenuItem.Text", "Cherry pick commit"), repo =>
         {
             StashOpResult result = new StashOpsService().CherryPick(repo, hash);
@@ -633,7 +458,6 @@ public sealed class FileHistoryView : UserControl
 
     private void Retranslate()
     {
-        _headerHost.Child = BuildHeader();
         ApplyTranslations();
         _status.Text = _shownFile is null ? T("No file loaded.") : StatusLine();
     }
@@ -641,31 +465,23 @@ public sealed class FileHistoryView : UserControl
     private void ApplyTranslations()
     {
         _fullHistoryButton.Content = T("FormFileHistory/ShowFullHistory.ToolTipText", "Show Full History") + "  ▾";
+        _followButton.Content =
+            T("FormFileHistory/followFileHistoryToolStripMenuItem.Text", "Detect and follow renames") + "  ▾";
         // Upstream's split button carries no caption, only the tooltip, so that is
         // the trans-unit the port's visible caption is keyed to.
         _reloadButton.Content = T("FormFileHistory/toolStripSplitLoad.ToolTipText", "Load file history");
-        _authorDateItem.Header = T(
-            "FormFileHistory/showAuthorDateToolStripMenuItem.Text",
-            "Show author date");
-        _copyItem.Header = T("FormFileHistory/copyToClipboardToolStripMenuItem.Text", "_Copy to clipboard");
-        _saveAsItem.Header = T("FormFileHistory/saveAsToolStripMenuItem.Text", "Save as");
-        _manipulateItem.Header = T("FormFileHistory/manipulateCommitToolStripMenuItem.Text", "Manipulate commit");
-        _revertItem.Header = T("FormFileHistory/revertCommitToolStripMenuItem.Text", "Revert commit");
-        _cherryPickItem.Header = T("FormFileHistory/cherryPickThisCommitToolStripMenuItem.Text", "Cherry pick commit");
-        _followItem.Header = T("FormFileHistory/followFileHistoryToolStripMenuItem.Text", "Detect and follow renames");
-        _followExactItem.Header = T(
-            "FormFileHistory/followFileHistoryRenamesToolStripMenuItem.Text",
-            "Detect and follow - exact renames and copies only");
     }
 
-    private string StatusLine()
-        => string.Format(T("{0}  —  {1} commit(s)"), _shownFile, _shownCommits) + _notFoundMarker;
+    // The tab's own line: WHICH file is shown (the grid's status line below counts
+    // the commits) plus, for the selected revision, upstream's "could not identify
+    // the file" marker. It is also the surface the Save as / revert messages use.
+    private string StatusLine() => (_shownFile ?? string.Empty) + _notFoundMarker;
 
     // Upstream's _fileNotFound (" - Git could not identify the file {0}"), which it
     // appends to the commit-info tab caption; the port has no tab there, so it goes on
     // the status line of the selected revision. The blob probe is a git call: off the
     // UI thread, and only the newest one is allowed to write.
-    private void CheckFilePresence(FileHistoryRow row)
+    private void CheckFilePresence(string hash)
     {
         if (_repoPath is null)
         {
@@ -679,8 +495,7 @@ public sealed class FileHistoryView : UserControl
         }
 
         string repo = _repoPath;
-        string hash = row.Hash;
-        string path = PathFor(row);
+        string path = PathFor(hash);
         int token = ++_notFoundToken;
 
         _ = Task.Run(() =>
@@ -710,43 +525,47 @@ public sealed class FileHistoryView : UserControl
 
     /// <summary>
     ///  Loads and displays the commit history of <paramref name="filePath"/> in
-    ///  the repository at <paramref name="repoPath"/>. Heavy git work runs off the
-    ///  UI thread.
+    ///  the repository at <paramref name="repoPath"/>, in the revision grid. Heavy
+    ///  git work runs off the UI thread (the grid's own walk, plus the per-revision
+    ///  file-name map this view needs on top of it).
     /// </summary>
     public void ShowHistory(string repoPath, string filePath)
     {
         _repoPath = repoPath;
         _filePath = filePath;
-        _menuRow = null;
-        _list.ItemsSource = null;
-        _rows = [];
-        _shownFile = null;
+        _shownFile = filePath;
         _notFoundMarker = string.Empty;
         _notFoundToken++;
-        _status.Text = string.Format(T("Loading history of {0}…"), filePath);
+        _status.Text = StatusLine();
 
+        _grid.LoadFileHistory(repoPath, filePath, _options);
+
+        // The name-per-revision map, in its own git call (one `git log --name-only`,
+        // as before): the grid's rows do not carry it, and "Save as" on a pre-rename
+        // commit is wrong without it.
         FileHistoryOptions options = _options;
-
+        int token = ++_mapToken;
         _ = Task.Run(() =>
         {
+            IReadOnlyDictionary<string, string> map;
             try
             {
-                IReadOnlyList<FileHistoryRow> rows = _service.GetHistory(repoPath, filePath, options);
-                Dispatcher.UIThread.Post(() =>
-                {
-                    // A brand-new list: re-assigning the same instance would leave
-                    // the realised containers untouched (HANDOFF §3).
-                    _rows = rows.ToList();
-                    _list.ItemsSource = _rows.ToList();
-                    _shownFile = filePath;
-                    _shownCommits = rows.Count;
-                    _status.Text = StatusLine();
-                });
+                map = _service.GetFilePathByRevision(repoPath, filePath, options);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = string.Format(T("Error: {0}"), ex.Message));
+                // A missing map degrades to "use the current path" — never to a
+                // broken history.
+                map = new Dictionary<string, string>(StringComparer.Ordinal);
             }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (token == _mapToken)
+                {
+                    _pathByHash = map;
+                }
+            });
         });
     }
 
@@ -761,72 +580,5 @@ public sealed class FileHistoryView : UserControl
         {
             ShowHistory(_repoPath, _filePath);
         }
-    }
-
-    private static Grid MakeColumns()
-        => new()
-        {
-            ColumnDefinitions = new ColumnDefinitions($"{HashWidth},{AuthorWidth},{DateWidth},*"),
-        };
-
-    private Control BuildHeader()
-    {
-        Grid grid = MakeColumns();
-        grid.Margin = new Thickness(8, 0, 8, 2);
-
-        AddCell(grid, 0, T("FormVerify/columnHash.HeaderText", "Hash"), bold: true);
-        AddCell(grid, 1, T("TranslatedStrings/_author.Text", "Author"), bold: true);
-        AddCell(grid, 2, DateHeader, bold: true);
-        AddCell(grid, 3, T("FormVerify/columnSubject.HeaderText", "Subject"), bold: true);
-
-        return grid;
-    }
-
-    private string DateHeader => _showAuthorDate
-        ? T("TranslatedStrings/_authorDateText.Text", "Author date")
-        : T("TranslatedStrings/_commitDateText.Text", "Commit date");
-
-    // A recycled container is re-templated with a null item when the ListBox empties
-    // it, so the row builder has to tolerate null (it crashed there once).
-    private Control BuildRow(FileHistoryRow? row)
-    {
-        Grid grid = MakeColumns();
-        grid.Margin = new Thickness(8, 1, 8, 1);
-
-        if (row is null)
-        {
-            return grid;
-        }
-
-        AddCell(grid, 0, row.ShortHash);
-        AddCell(grid, 1, row.Author);
-        AddCell(grid, 2, DateCell(row));
-        AddCell(grid, 3, row.Subject);
-
-        return grid;
-    }
-
-    // Upstream's grid Date column follows AppSettings.ShowAuthorDate (default true),
-    // so the author date is what shows unless the toggle says otherwise. Falls back to
-    // the other date when one of them is unknown.
-    private string DateCell(FileHistoryRow row)
-    {
-        string preferred = _showAuthorDate ? row.AuthorDate : row.CommitDate;
-        string other = _showAuthorDate ? row.CommitDate : row.AuthorDate;
-        return preferred.Length > 0 ? preferred : (other.Length > 0 ? other : row.Date);
-    }
-
-    private static void AddCell(Grid grid, int column, string text, bool bold = false)
-    {
-        TextBlock block = new()
-        {
-            Text = text,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = bold ? FontWeight.Bold : FontWeight.Normal,
-        };
-
-        Grid.SetColumn(block, column);
-        grid.Children.Add(block);
     }
 }

@@ -153,6 +153,29 @@ public sealed class FileHistoryService
         return rows;
     }
 
+    /// <summary>
+    ///  Commit hash → the name the file had in that commit, for the whole history of
+    ///  <paramref name="filePath"/>. This is the mapping "Save as" (and "Copy path")
+    ///  needs to read the right blob for a commit OLDER than a rename, where the
+    ///  current name does not exist yet.
+    ///
+    ///  <para>It is exposed separately from <see cref="GetHistory"/> because the rows
+    ///  themselves can come from the revision grid (which carries no file name), while
+    ///  this mapping still has to: upstream keeps the same split between
+    ///  <c>RevisionGridControl.FilePathByObjectId</c> and the grid's own rows.
+    ///  Blocking; call it off the UI thread.</para>
+    /// </summary>
+    public IReadOnlyDictionary<string, string> GetFilePathByRevision(
+        string repoPath,
+        string filePath,
+        FileHistoryOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => GetFilePathByHash(
+            GitContext.CreateModule(repoPath),
+            filePath,
+            options ?? new FileHistoryOptions(),
+            cancellationToken);
+
     // Upstream's marker in the "commit info" tab caption.
     private const string ObjectIdPrefix = "????";
 
