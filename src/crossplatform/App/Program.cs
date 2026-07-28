@@ -76,6 +76,15 @@ internal static class Program
             // A missing/corrupt ui-state.json just means "English".
         }
 
+        // Intern the X11 atoms Avalonia only looks up with "only_if_exists: true",
+        // so that its atom table is not left all-zero on a fresh X server. Without
+        // this the window advertises no WM_DELETE_WINDOW, the decoration's "X" kills
+        // the connection instead of closing the window, and Closing/PersistLayout
+        // never runs — the UI state is lost. Must happen before the Avalonia app
+        // builder, which is where X11Atoms is populated.
+        // See Services/X11AtomPrimer for the full diagnosis; it never throws.
+        Services.X11AtomPrimer.TryPrime();
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 
