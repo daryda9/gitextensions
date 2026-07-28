@@ -1,11 +1,13 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
@@ -64,6 +66,10 @@ public sealed class DashboardView : UserControl
     // in as answers arrive. Keyed by the row, not the path: the same repository
     // can appear both as a favorite and as a recent entry.
     private readonly Dictionary<RepoEntry, TextBlock> _branchLabels = [];
+
+    // The three labels of each visible row, so the selected row can be re-inked
+    // without rebuilding it (a rebuild would drop the selection it is reacting to).
+    private readonly Dictionary<RepoEntry, TextBlock[]> _rowLabels = [];
 
     // Branch names already resolved, so switching the filter (which rebuilds
     // every row) does not re-read HEAD for repositories we have already seen.
@@ -127,6 +133,20 @@ public sealed class DashboardView : UserControl
             BorderThickness = new Thickness(0),
             Padding = new Thickness(0),
         };
+        // A selected row has to swap to the palette's plain ink. The Fluent
+        // ListBoxItem theme paints the selected row with the framework accent —
+        // measured #92C2E8 in the light theme — and this row's ink was never chosen
+        // for that background: the repository name (App.Accent) measured 2.39:1 on it
+        // and the path (App.TextDim) 2.86:1, so selecting a row made it HARDER to
+        // read than leaving it alone. Right-clicking selects, so the context menu put
+        // its own target into that state.
+        //
+        // App.Text on that same selection measures 8.82:1, so the fix is the ink, not
+        // the background: no new tint, and nothing to unpick in the theme (a style
+        // targeting the theme's own template child loses the precedence contest —
+        // verified on screen, the background stayed #92C2E8).
+        _list.SelectionChanged += (_, _) => ApplySelectionInk();
+
         // Tunnelling: the ListBox's own arrow-key navigation is a class handler on
         // the bubbling phase, and it would have moved the selection onto a group
         // caption before this handler ever saw the key.
@@ -297,6 +317,7 @@ public sealed class DashboardView : UserControl
             .ToList();
 
         _branchLabels.Clear();
+        _rowLabels.Clear();
 
         // The group caption is its own row rather than the first child of the tile
         // below it. Folded into the tile it became part of that tile's selection, so
@@ -381,21 +402,23 @@ public sealed class DashboardView : UserControl
         StackPanel texts = new() { Spacing = 0 };
         Grid.SetColumn(texts, 1);
 
-        texts.Children.Add(new TextBlock
+        TextBlock name = new()
         {
             Text = FolderName(entry.Path),
             Foreground = entry.Exists ? B("App.Accent") : B("App.TextDim"),
             FontSize = 13,
             FontWeight = FontWeight.SemiBold,
             TextTrimming = TextTrimming.CharacterEllipsis,
-        });
-        texts.Children.Add(new TextBlock
+        };
+        TextBlock path = new()
         {
             Text = entry.Exists ? entry.Path : string.Format(T("{0} (missing)"), entry.Path),
             Foreground = B("App.TextDim"),
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,
-        });
+        };
+        texts.Children.Add(name);
+        texts.Children.Add(path);
         grid.Children.Add(texts);
 
         TextBlock branch = new()
@@ -409,6 +432,7 @@ public sealed class DashboardView : UserControl
         Grid.SetColumn(branch, 2);
         grid.Children.Add(branch);
         _branchLabels[entry] = branch;
+        _rowLabels[entry] = [name, path, branch];
 
         // Upstream opens on a single click; the right button belongs to the
         // context menu, which the tunnelling handler has already dealt with.
@@ -428,6 +452,24 @@ public sealed class DashboardView : UserControl
         outer.Children.Add(grid);
         outer.Tag = entry;
         return outer;
+    }
+
+    // Re-inks the rows for the current selection: the selected one gets App.Text
+    // (8.82:1 on the theme's selection fill, against 2.39:1 for the accent-coloured
+    // name and 2.86:1 for the dim path), everything else goes back to its own colour.
+    private void ApplySelectionInk()
+    {
+        RepoEntry? selected = EntryOf(_list.SelectedItem);
+
+        foreach ((RepoEntry entry, TextBlock[] labels) in _rowLabels)
+        {
+            bool isSelected = ReferenceEquals(entry, selected);
+            labels[0].Foreground = isSelected
+                ? B("App.Text")
+                : entry.Exists ? B("App.Accent") : B("App.TextDim");
+            labels[1].Foreground = isSelected ? B("App.Text") : B("App.TextDim");
+            labels[2].Foreground = isSelected ? B("App.Text") : B("App.GraphGreen");
+        }
     }
 
     private string BranchText(RepoEntry entry)
@@ -950,25 +992,55 @@ public sealed class DashboardView : UserControl
 
         // The bitmap is 381x100; drawn at half height it matches the text wordmark's
         // optical weight on the strip. Stretch.Uniform keeps its aspect ratio.
-        if (IconLoader.Load("GitExtensionsLogoWide") is { } logo)
-        {
-            panel.Children.Add(new Image
+        //
+        // It is only usable on a DARK strip, though. The wordmark's glyphs are pure
+        // white with a transparent ground (measured on screen: #FFFFFF), so on the
+        // light theme's App.PanelAlt strip (#ECECEC) it came out at 1.18:1 — the
+        // lettering was invisible and only the green/red logo arrows showed. Rather
+        // than invent a dark backing tint just for the strip, the light theme falls
+        // back to the text wordmark that already existed here for builds without the
+        // setup assets: App.Text on App.PanelAlt = 14.11:1.
+        //
+        // Both are built once and swapped by visibility, because the theme can be
+        // changed at runtime from the View menu and this strip is built in the
+        // constructor. ActualThemeVariantChanged fires on the control when
+        // ThemeManager flips Application.RequestedThemeVariant.
+        Control? bitmap = IconLoader.Load("GitExtensionsLogoWide") is { } logo
+            ? new Image
             {
                 Source = logo,
                 Height = 50,
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Left,
-            });
+            }
+            : null;
+
+        TextBlock wordmark = new()
+        {
+            Text = "Git Extensions",
+            Foreground = B("App.Text"),
+            FontSize = 26,
+            FontWeight = FontWeight.SemiBold,
+        };
+
+        if (bitmap is null)
+        {
+            panel.Children.Add(wordmark);
         }
         else
         {
-            panel.Children.Add(new TextBlock
+            panel.Children.Add(bitmap);
+            panel.Children.Add(wordmark);
+
+            void ApplyVariant()
             {
-                Text = "Git Extensions",
-                Foreground = B("App.Text"),
-                FontSize = 26,
-                FontWeight = FontWeight.SemiBold,
-            });
+                bool light = ActualThemeVariant == ThemeVariant.Light;
+                bitmap.IsVisible = !light;
+                wordmark.IsVisible = light;
+            }
+
+            ApplyVariant();
+            ActualThemeVariantChanged += (_, _) => ApplyVariant();
         }
 
         panel.Children.Add(new TextBlock
