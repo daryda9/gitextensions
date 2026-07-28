@@ -8,6 +8,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands;
+using GitCommands.Git;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 using GitExtensions.Extensibility.Git;
@@ -1791,22 +1792,23 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
+            // A remote branch goes through the full FormCheckoutBranch port: upstream's
+            // RemoteBranchNode.Checkout opens that dialog with remote:true
+            // (LeftPanel/RemoteBranchNode.cs:63-66), because "check out origin/x" has to
+            // be answered first — new local branch with a custom name, reset of the
+            // tracking branch, or a detached HEAD. A plain `git checkout origin/x`
+            // always detaches.
+            if (row is { IsRemote: true, IsTag: false })
+            {
+                await CheckoutRemoteWithFormAsync(repo, row.Name);
+                return;
+            }
+
             LocalChangesAction? action = await CheckoutBranchDialog.AskAsync(
                 TopLevel.GetTopLevel(this) as Window, repo, row.Name);
 
             if (action is not { } changesAction)
             {
-                return;
-            }
-
-            // A remote branch goes through CheckoutRemoteBranch, which lands on a local
-            // branch tracking it the way upstream's StartCheckoutRemoteBranch does — a
-            // plain `git checkout origin/x` would detach HEAD instead.
-            if (row is { IsRemote: true, IsTag: false })
-            {
-                string remote = RemoteName(row);
-                string branch = ShortRemoteName(row.Name, remote);
-                RunMutation(() => _branchTagService.CheckoutRemoteBranch(repo, remote, branch, changesAction));
                 return;
             }
 
@@ -1816,6 +1818,46 @@ public sealed class RepoObjectsTree : UserControl
         {
             // Never throw from an interaction handler.
         }
+    }
+
+    /// <summary>
+    ///  Checkout of a REMOTE branch with upstream's own semantics: the full
+    ///  <see cref="CheckoutBranchForm"/>, then — for a <c>checkout -B</c> that is not a
+    ///  fast-forward — the confirmation upstream shows before discarding commits
+    ///  (<c>FormCheckoutBranch.cs:293-317</c>), and finally the core command through
+    ///  <see cref="BranchTagService.CheckoutBranch"/>.
+    /// </summary>
+    private async Task CheckoutRemoteWithFormAsync(string repo, string remoteBranch)
+    {
+        CheckoutBranchChoice? choice = await CheckoutBranchForm.AskAsync(
+            TopLevel.GetTopLevel(this) as Window, repo, remoteBranch, remote: true);
+
+        if (choice is not { } c)
+        {
+            return;
+        }
+
+        if (c.NewBranchMode == CheckoutNewBranchMode.Reset && c.NewBranchName is { Length: > 0 } localName)
+        {
+            ResetFastForwardInfo info = await Task.Run(
+                () => _branchTagService.GetResetFastForwardInfo(repo, localName, c.BranchName));
+
+            if (!info.IsFastForward)
+            {
+                bool go = await ConfirmAsync(TF(
+                    "You are going to reset the “{0}” branch to a new location discarding ALL the commited changes since the {1} revision.\n\nAre you sure?",
+                    localName,
+                    info.MergeBaseDisplay));
+
+                if (!go)
+                {
+                    return;
+                }
+            }
+        }
+
+        RunMutation(() => _branchTagService.CheckoutBranch(
+            repo, c.BranchName, c.IsRemote, c.LocalChanges, c.NewBranchMode, c.NewBranchName));
     }
 
     // --- Create branch / tag ----------------------------------------------
