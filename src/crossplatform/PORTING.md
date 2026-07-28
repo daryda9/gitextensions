@@ -1242,6 +1242,43 @@ priorità massima)
       mirror **non riceve i caratteri digitati** (il `MenuItem` li mangia). Preesistente, serve un
       fix del fuoco dentro un controllo ospitato in un `MenuItem`. *banale/media*
 
+**Esito della verifica GUI finale del round 9** (display :401, repo costruito ad hoc con merge,
+tag, sottocartelle e date distinte). **Nessuna eccezione nel log in tutta la sessione.** Tutte le
+regressioni cercate sono risultate negative: griglia/grafo/selezione/menu a piena altezza,
+Alt+clic che ri-ancora l'evidenziazione, i nove tab, l'albero che conserva espansione e selezione
+dopo un refresh, l'apertura dalla dashboard (crash chiuso), il tab che non salta più su Commit, il
+`cd` della console al cambio repo, e la chiusura con la "X" che riscrive `ui-state.json` (61 →
+1472 byte). Misurato: una selezione di revisione produce **9 comandi in una sola catena**, nessuna
+moltiplicazione ×4; i toggle della griglia tornano come lasciati dopo un riavvio.
+
+*Difetti minori registrati e NON corretti* (costo basso, nessuno bloccante):
+
+- [ ] 0.33 Il nodo **"Remotes (n)"** dell'albero conta i **branch remoti**, non i remote: con un
+      solo `origin` mostra `Remotes (4)` mentre il figlio è `origin (4)`. *banale*
+- [ ] 0.34 Dopo un **clone**, il repo clonato **non entra nei recenti** della dashboard (finisce
+      solo in `LastRepoPath`). *banale*
+- [ ] 0.35 **Ctrl+W** viene inghiottito quando il fuoco è nel terminale del tab Console: funziona
+      solo dopo aver dato il fuoco alla griglia. Coerente con la regola "la console riceve tutto",
+      ma Ctrl+W non è un carattere di controllo utile lì. *banale*
+- [ ] 0.36 Incoerenza lessicale **"Favourite" / "Favorite"** fra dropdown WorkingDir, menu Start e
+      dashboard. *banale*
+- [ ] 0.37 In About l'URL dell'attribuzione icone è reso **monco** (`p.yusukekamiyamane.com`).
+      *banale*
+- [ ] 0.38 Il bottone **Refresh del tab Output** sembra inerte subito dopo una selezione fatta
+      mentre Output è visibile — conseguenza del caricamento pigro, ma dà l'impressione di un
+      pulsante rotto. *banale*
+- [ ] 0.39 `Commands → New branch… / New tag…` risultano disabilitati quando **nessuna riga è
+      selezionata** (es. dopo un refresh che perde la selezione): upstream li àncora a HEAD.
+      *banale*
+
+*Non verificabile con l'attrezzatura headless — dichiarato, non dedotto dal codice*: i **file
+picker** (`Browse…` di Open/Clone/Init/Archive) non si materializzano senza portal XDG, quindi la
+loro resa resta non provata (tutti i percorsi sono stati digitati a mano); il **depth** del clone
+(git ignora `--depth` su un clone locale); **"Clean submodules"** e **"Initialize all submodules"**
+(nessun submodule nei repo di prova usati in quella sessione — il secondo era però stato provato
+dal suo autore su un repo con submodule); il **cambio effettivo di shell** dal picker; i **tooltip
+per tile** della dashboard (l'hover sintetico non li fa scattare nemmeno su controlli preesistenti).
+
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
 
