@@ -604,6 +604,7 @@ public sealed class SettingsWindow : Window
         root.Children.Add(buttonBar);
         root.Children.Add(body);
         Content = root;
+        DialogKeys.EnsureFocusRoute(this);
 
         // Load current values.
         _revertTheme = LoadValues();

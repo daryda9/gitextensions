@@ -156,6 +156,8 @@ public sealed class InitDialog : Window
             }
         }, RoutingStrategies.Bubble);
 
+        DialogKeys.EnsureFocusRoute(this);
+
         _ = LoadHistoryAsync();
     }
 

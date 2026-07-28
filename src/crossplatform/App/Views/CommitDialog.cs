@@ -564,6 +564,7 @@ public sealed class CommitDialog : Window
         root.Children.Add(_conflictBanner);
         root.Children.Add(split);
         Content = root;
+        DialogKeys.EnsureFocusRoute(this);
 
         InstallShortcuts();
         ApplyTranslations();

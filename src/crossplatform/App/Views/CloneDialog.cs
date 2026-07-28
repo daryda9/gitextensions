@@ -289,6 +289,7 @@ public sealed class CloneDialog : Window
         root.Children.Add(buttonRow);
 
         Content = root;
+        DialogKeys.EnsureFocusRoute(this);
 
         UpdateDestinationPreview();
 

@@ -150,6 +150,7 @@ public sealed class WorktreesDialog : Window
         body.Children.Add(_output);
 
         Content = body;
+        DialogKeys.EnsureFocusRoute(this);
 
         Opened += (_, _) => ReloadList();
         UpdateButtons();

@@ -309,6 +309,7 @@ public sealed class CleanupDialog : Window
         root.Children.Add(buttonRow);
 
         Content = root;
+        DialogKeys.EnsureFocusRoute(this);
 
         // Escape = Close (upstream's CancelButton). While a confirmation is pending
         // Escape answers "no" instead of leaving the dialog behind a live prompt.

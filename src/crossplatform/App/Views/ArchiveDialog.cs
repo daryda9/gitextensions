@@ -246,6 +246,8 @@ public sealed class ArchiveDialog : Window
             }
         }, RoutingStrategies.Bubble);
 
+        DialogKeys.EnsureFocusRoute(this);
+
         _ = LoadRevisionAsync();
     }
 

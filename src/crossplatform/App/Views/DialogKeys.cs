@@ -48,28 +48,7 @@ internal static class DialogKeys
         // embedded terminal, which all rely on seeing Escape before the window does.
         window.AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Bubble);
 
-        // Without a focused element *inside this window* Avalonia has nowhere to start
-        // the bubble, so the handler above — and Button.IsCancel, which works the same
-        // way — never runs, even though X has given the dialog keyboard focus. That is
-        // the whole bug: dialogs full of text boxes auto-focus a field and work, while
-        // a dialog of plain text and buttons focuses nothing and looks dead to Escape.
-        //
-        // The visual-root test matters. FocusManager is app-wide in Avalonia 11, so
-        // GetFocusedElement() keeps returning the *main* window's focused control while
-        // the dialog is up; a plain null check passes and fixes nothing. Only adopt
-        // focus when it is not already somewhere in this window, so a dialog that
-        // deliberately focuses its first field keeps it.
-        window.Opened += (_, _) =>
-        {
-            if (window.FocusManager?.GetFocusedElement() is Visual focused
-                && ReferenceEquals(focused.GetVisualRoot(), window))
-            {
-                return;
-            }
-
-            window.Focusable = true;
-            window.Focus();
-        };
+        EnsureFocusRoute(window);
 
         void OnKeyDown(object? sender, KeyEventArgs e)
         {
@@ -87,5 +66,40 @@ internal static class DialogKeys
                 window.Close();
             }
         }
+    }
+
+    /// <summary>
+    ///  Guarantees that key presses reaching <paramref name="window"/> from the window
+    ///  manager are actually routed inside it, by giving the window itself focus when
+    ///  nothing in it has any.
+    ///
+    ///  <para>For dialogs that already own a correct Escape handler and only need it to
+    ///  start firing. <c>CommitDialog</c> is the case that proves the distinction: its
+    ///  Escape-as-Cancel was written correctly and still did nothing, because a
+    ///  <c>KeyDown</c> is routed from the focused element and that dialog focuses
+    ///  nothing on open — so the key died before reaching the handler. Wiring a second
+    ///  Escape handler there would have been wrong; the handler was never the
+    ///  problem.</para>
+    /// </summary>
+    public static void EnsureFocusRoute(Window window)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+
+        // The visual-root test, not a null check: FocusManager is app-wide in
+        // Avalonia 11, so GetFocusedElement() keeps returning the *main* window's
+        // focused control while a dialog is up, and a null check would pass and fix
+        // nothing. Only adopt focus when it is not already somewhere in this window,
+        // so a dialog that deliberately focuses its first field keeps it.
+        window.Opened += (_, _) =>
+        {
+            if (window.FocusManager?.GetFocusedElement() is Visual focused
+                && ReferenceEquals(focused.GetVisualRoot(), window))
+            {
+                return;
+            }
+
+            window.Focusable = true;
+            window.Focus();
+        };
     }
 }

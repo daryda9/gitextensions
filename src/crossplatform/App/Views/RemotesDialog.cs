@@ -101,6 +101,7 @@ public sealed class RemotesDialog : Window
         body.Children.Add(buttons);
 
         Content = body;
+        DialogKeys.EnsureFocusRoute(this);
 
         Opened += (_, _) => ReloadList();
         UpdateButtons();
