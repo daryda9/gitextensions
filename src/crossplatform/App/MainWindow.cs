@@ -3042,63 +3042,16 @@ public sealed class MainWindow : Window
             return;
         }
 
-        _statusBar.SetText(T("Previewing clean…"));
-        WorkingDirectoryService service = new();
-
-        (bool Ok, string Error, string Plain, string WithIgnored) preview;
-        try
+        // Upstream's FormCleanupRepository: modes (all / non-ignored / ignored only),
+        // directories, submodules, include/exclude filters, and a repeatable dry-run
+        // preview. The old inline confirm could not reach `git clean -X` at all.
+        Views.CleanupDialog dialog = new(repo);
+        await dialog.ShowDialog(this);
+        if (dialog.Cleaned)
         {
-            preview = await Task.Run(() =>
-            {
-                WorkingDirCommitResult plain = service.CleanDryRun(repo, includeIgnored: false);
-                if (!plain.Success)
-                {
-                    return (false, plain.Output.Trim(), string.Empty, string.Empty);
-                }
-
-                WorkingDirCommitResult ignored = service.CleanDryRun(repo, includeIgnored: true);
-                return (true, string.Empty, plain.Output.Trim(), (ignored.Success ? ignored.Output : plain.Output).Trim());
-            });
+            _statusBar.SetText(T("Working directory cleaned."));
+            RefreshAll();
         }
-        catch (Exception ex)
-        {
-            _statusBar.SetText(TF("{0} failed: {1}", T("Clean preview"), ex.Message));
-            return;
-        }
-
-        if (!preview.Ok)
-        {
-            _statusBar.SetText(TF("{0} failed: {1}", T("Clean preview"), preview.Error));
-            return;
-        }
-
-        if (preview.Plain.Length == 0 && preview.WithIgnored.Length == 0)
-        {
-            _statusBar.SetText(T("Nothing to clean (no untracked files)."));
-            return;
-        }
-
-        bool? includeIgnored = await ConfirmCleanAsync(preview.Plain, preview.WithIgnored);
-        if (includeIgnored is null)
-        {
-            _statusBar.SetText(TF("{0}: {1}", CleanCaption, T("cancelled.")));
-            return;
-        }
-
-        // Live output: git clean prints one "Removing <path>" line per entry, so the
-        // streaming runner (stdout+stderr, unbuffered) is worth it here.
-        string args = includeIgnored.Value ? "clean -f -d -x" : "clean -f -d";
-        int exitCode = -1;
-        await Views.GitProcessDialog.RunStreamingAsync(this, CleanCaption, emit =>
-        {
-            exitCode = GitStreamRunner.Run(repo, args, emit);
-            return new Views.GitProcessOutcome(exitCode == 0, exitCode == 0 ? string.Empty : $"git clean exited with code {exitCode}.");
-        });
-
-        _statusBar.SetText(exitCode == 0
-            ? T("Working directory cleaned.")
-            : TF("{0} — {1}", CleanCaption, T("failed, see the process output.")));
-        RefreshAll();
     }
 
     // Reset confirmation: returns the chosen includeStaged flag, or null on cancel.
@@ -3151,88 +3104,6 @@ public sealed class MainWindow : Window
         return result;
     }
 
-    // Clean preview + confirmation: shows what `git clean -nd` (or -ndx) reported and
-    // returns the chosen includeIgnored flag, or null on cancel. Both texts are
-    // pre-computed, so the checkbox only swaps already-loaded strings.
-    private async Task<bool?> ConfirmCleanAsync(string plain, string withIgnored)
-    {
-        TextBlock header = new() { TextWrapping = TextWrapping.Wrap };
-        TextBlock list = new()
-        {
-            FontFamily = new FontFamily("monospace"),
-            TextWrapping = TextWrapping.NoWrap,
-        };
-        CheckBox ignored = new()
-        {
-            Content = T("Include ignored files (git clean -x)"),
-            IsChecked = false,
-            Margin = new Thickness(0, 10, 0, 0),
-        };
-
-        Button clean = new() { Content = T("FormCleanupRepository/Cleanup.Text", "Clean"), MinWidth = 90 };
-        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
-
-        ScrollViewer scroll = new()
-        {
-            Content = list,
-            HorizontalScrollBarVisibility = global::Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-            Margin = new Thickness(0, 10, 0, 0),
-            Background = (IBrush)Application.Current!.Resources["App.Panel"]!,
-            Padding = new Thickness(8),
-        };
-
-        // The height is set explicitly from the line count: inside a StackPanel the
-        // ScrollViewer otherwise settles on a single text line, hiding the rest of
-        // the preview behind a scrollbar the user has no reason to look for.
-        void Update()
-        {
-            string text = ignored.IsChecked == true ? withIgnored : plain;
-            int count = text.Length == 0
-                ? 0
-                : text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
-            header.Text = count == 0
-                ? T("Nothing would be removed with these options.")
-                : TF("The following {0} untracked file(s)/directory(ies) will be permanently removed.", count)
-                  + " " + T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone.");
-            list.Text = text.Length > 0 ? text : T("(nothing to remove)");
-            scroll.Height = Math.Clamp((Math.Max(count, 1) * 19) + 18, 40, 280);
-        }
-
-        ignored.IsCheckedChanged += (_, _) => Update();
-        Update();
-
-        Window dlg = new()
-        {
-            Title = CleanCaption,
-            Width = 640,
-            SizeToContent = SizeToContent.Height,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
-            Content = new StackPanel
-            {
-                Margin = new Thickness(16),
-                Children =
-                {
-                    header,
-                    scroll,
-                    ignored,
-                    new StackPanel
-                    {
-                        Orientation = Orientation.Horizontal,
-                        HorizontalAlignment = HorizontalAlignment.Right,
-                        Margin = new Thickness(0, 16, 0, 0),
-                        Children = { clean, cancel },
-                    },
-                },
-            },
-        };
-
-        bool? result = null;
-        clean.Click += (_, _) => { result = ignored.IsChecked == true; dlg.Close(); };
-        cancel.Click += (_, _) => dlg.Close();
-        await dlg.ShowDialog(this);
-        return result;
-    }
 
     private void RunOp(string label, Func<bool> op, bool confirm = false)
     {
@@ -3684,53 +3555,25 @@ public sealed class MainWindow : Window
     // new repository through OpenRepository (same as clone / picker).
     private async Task InitRepositoryAsync()
     {
-        TopLevel? top = GetTopLevel(this);
-        if (top is null)
+        // Upstream's FormInit: a directory with history plus the repository type,
+        // where "Central" means --bare --shared=all. The old code was a bare folder
+        // picker followed by a plain `git init`.
+        Views.InitDialog dialog = new();
+        await dialog.ShowDialog(this);
+        if (dialog.CreatedRepoPath is not { Length: > 0 } path)
         {
             return;
         }
 
-        IReadOnlyList<IStorageFolder> folders =
-            await top.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-            {
-                AllowMultiple = false,
-                Title = T("Choose a directory for the new repository"),
-            });
-
-        if (folders.Count == 0)
+        // A central (bare) repository has no working directory to open.
+        if (dialog.IsCentral)
         {
+            _statusBar.SetText(TF("Created central repository at {0}", path));
             return;
         }
 
-        string? dir = folders[0].TryGetLocalPath();
-        if (string.IsNullOrEmpty(dir))
-        {
-            _statusBar.SetText(T("The selected folder has no local path."));
-            return;
-        }
-
-        _statusBar.SetText(T("Initialising repository…"));
-
-        CloneInitResult result;
-        try
-        {
-            result = await Task.Run(() => new CloneInitService().Init(dir));
-        }
-        catch (Exception ex)
-        {
-            _statusBar.SetText(TF("{0} failed: {1}", T("FormInit/$this.Text", "Init"), ex.Message));
-            return;
-        }
-
-        if (result.Success && result.RepoPath is not null)
-        {
-            _statusBar.SetText(TF("Initialised repository at {0}", result.RepoPath));
-            OpenRepository(result.RepoPath);
-        }
-        else
-        {
-            _statusBar.SetText(TF("{0} — {1}: {2}", T("FormInit/$this.Text", "Init"), T("failed, see output"), result.Output));
-        }
+        _statusBar.SetText(TF("Initialised repository at {0}", path));
+        OpenRepository(path);
     }
 
     // Opens a submodule / worktree / super-project path as the active repository
@@ -4115,7 +3958,6 @@ public sealed class MainWindow : Window
 
     private static string ResetChangesCaption => T("FormResetChanges/$this.Text", "Reset changes");
 
-    private static string CleanCaption => T("FormCleanupRepository/$this.Text", "Clean working directory");
 
     private static string FormatPatchCaption => T("FormFormatPatch/$this.Text", "Format patch");
 
