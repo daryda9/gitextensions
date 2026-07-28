@@ -1328,7 +1328,7 @@ nel port, manca il punto d'accesso)
       (`:1565-1568`) lancia *sempre* `ShowCommit` su Commit+Diff+File tree+GPG → a ogni movimento
       di selezione partono 4 catene di git (incluso `--show-signature` e `ls-tree -r`) di cui 3
       invisibili. Upstream carica solo il tab selezionato (`FormBrowse.cs:1240,1251,1306`). *banale*
-- [~] 1.14 **Righe artificiali (Working directory / Commit index) non raggiungono il pannello**:
+- [x] 1.14 **Righe artificiali (Working directory / Commit index) non raggiungono il pannello**:
       `RevisionGridView.cs:513-531` esce prima di emettere l'evento e `ArtificialRowActivated`
       non ha subscriber → i tab restano sul commit precedente, cioè mostrano contenuto **stantio**
       (il caso peggiore). *banale per Commit, media per Diff/File tree*
@@ -1391,7 +1391,7 @@ nel port, manca il punto d'accesso)
       posizioni esiste, riparte sempre da `BelowGraph`); più le opzioni del **diff viewer**, gli
       **switch della file history**, i **filtri del left panel** e la **MRU dei filtri di
       revisione**. *banale ciascuno*
-- [~] 3.3 **Dashboard: menu contestuale** (Show in folder / Categories ▸ / Remove from list /
+- [x] 3.3 **Dashboard: menu contestuale** (Show in folder / Categories ▸ / Remove from list /
       Remove missing projects) — serve `RemoveRecentAsync` in `RecentRepositoriesService`, che oggi
       ha solo Load/Add. Nota: il port **elimina in silenzio** le voci morte
       (`RecentRepositoriesService.cs:35-77`) mentre upstream le evidenzia e chiede: scelta
@@ -1455,7 +1455,7 @@ nel port, manca il punto d'accesso)
       filter** (oggi `LoadRepository(string)` è l'unico loader) chiuderebbe in un colpo grafo,
       decorazioni ref, righe artificiali e multi-selezione nel tab File history, che oggi
       reimplementa una lista nuda. *media/alta*
-- [~] 4.10 Toolbar, resto: **shell-picker** (upstream `userShell` è uno split-button che elenca le
+- [x] 4.10 Toolbar, resto: **shell-picker** (upstream `userShell` è uno split-button che elenca le
       shell disponibili, il port ha un "Terminal" secco), dropdown **WorkingDir** ricco (ricerca,
       preferiti categorizzati, Open/Close repository, "Configure this menu…"), voce **"Checkout
       branch…"** in testa al dropdown branch, corpo cliccabile di **CommitInfoPosition** (cicla le
