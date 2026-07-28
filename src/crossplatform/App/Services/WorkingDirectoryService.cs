@@ -409,6 +409,100 @@ public sealed class WorkingDirectoryService
     }
 
     /// <summary>
+    ///  Renames / moves ONE file with <c>git mv</c>, so the move is recorded in the
+    ///  index instead of showing up as a delete plus an untracked file. Creates the
+    ///  destination directory first: <c>git mv</c> refuses to create it itself.
+    ///  Never throws.
+    /// </summary>
+    public WorkingDirCommitResult MoveFile(string repoPath, string path, string newPath)
+    {
+        newPath = (newPath ?? string.Empty).Trim().Replace('\\', '/').TrimStart('/');
+        if (newPath.Length == 0)
+        {
+            return new WorkingDirCommitResult(false, "Empty destination path.");
+        }
+
+        try
+        {
+            string full = System.IO.Path.Combine(repoPath, newPath);
+            string? parent = System.IO.Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(parent))
+            {
+                Directory.CreateDirectory(parent);
+            }
+
+            GitModule module = GitContext.CreateModule(repoPath);
+            GitArgumentBuilder args = new("mv") { "--", path, newPath };
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not move the file: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    ///  Deletes ONE file. A TRACKED file goes through <c>git rm -f</c>, so the
+    ///  deletion is staged as well; an UNTRACKED one is simply removed from disk,
+    ///  which is all git could do with it anyway.
+    ///  Destructive — callers MUST confirm first. Never throws.
+    /// </summary>
+    public WorkingDirCommitResult DeleteFile(string repoPath, string path, bool tracked)
+    {
+        try
+        {
+            if (!tracked)
+            {
+                string full = System.IO.Path.Combine(
+                    repoPath,
+                    path.Replace('/', System.IO.Path.DirectorySeparatorChar));
+                if (File.Exists(full))
+                {
+                    File.Delete(full);
+                }
+
+                return new WorkingDirCommitResult(true, $"Deleted '{path}'.");
+            }
+
+            GitModule module = GitContext.CreateModule(repoPath);
+            GitArgumentBuilder args = new("rm") { "-f", "--", path };
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not delete the file: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    ///  Copies the WORK-TREE version of a file to <paramref name="destination"/> —
+    ///  the original's "Save selected as...", which for the commit form's lists is
+    ///  always the on-disk version (there is no revision to extract). Never throws.
+    /// </summary>
+    public WorkingDirCommitResult SaveFileAs(string repoPath, string path, string destination)
+    {
+        try
+        {
+            string full = System.IO.Path.Combine(
+                repoPath,
+                path.Replace('/', System.IO.Path.DirectorySeparatorChar));
+            if (!File.Exists(full))
+            {
+                return new WorkingDirCommitResult(false, $"'{path}' does not exist in the working directory.");
+            }
+
+            File.Copy(full, destination, overwrite: true);
+            return new WorkingDirCommitResult(true, $"Saved '{path}' to '{destination}'.");
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not save the file: " + ex.Message);
+        }
+    }
+
+    /// <summary>
     ///  Restores a SINGLE tracked file from <c>HEAD</c> (<c>git checkout HEAD --
     ///  &lt;path&gt;</c>), which unlike <see cref="ResetFile"/> also rewrites the
     ///  file's index entry: any staged change to it is dropped too. This is the

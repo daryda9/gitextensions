@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GitCommands;
 using GitExtensions.Avalonia.Services;
@@ -771,6 +772,9 @@ public sealed class CommitDialog : Window
         public readonly MenuItem ShowFolder = new();
         public readonly MenuItem History = new();
         public readonly MenuItem Blame = new();
+        public readonly MenuItem SaveAs = new();
+        public readonly MenuItem Move = new();
+        public readonly MenuItem Delete = new();
         public readonly MenuItem SkipWorktree = new();
         public readonly MenuItem AssumeUnchanged = new();
         public readonly MenuItem RestoreHidden = new();
@@ -789,6 +793,8 @@ public sealed class CommitDialog : Window
             new Separator(),
             e.Open, e.OpenEditor, e.ShowFolder,
             new Separator(),
+            e.SaveAs, e.Move, e.Delete,
+            new Separator(),
             e.History, e.Blame,
         ];
 
@@ -804,6 +810,9 @@ public sealed class CommitDialog : Window
         e.ShowFolder.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
         e.History.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
         e.Blame.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
+        e.SaveAs.Header = T("FileStatusList/tsmiSaveAs.Text", "Save selected as...");
+        e.Move.Header = T("FileStatusList/tsmiMove.Text", "Rename / move");
+        e.Delete.Header = T("FileStatusList/tsmiDeleteFile.Text", "Delete file");
         e.SkipWorktree.Header = T("FileStatusList/tsmiSkipWorktree.Text", "Skip worktree");
         e.AssumeUnchanged.Header = T("FileStatusList/tsmiAssumeUnchanged.Text", "Assume unchanged");
         e.RestoreHidden.Header = RestoreHiddenCaption;
@@ -828,6 +837,9 @@ public sealed class CommitDialog : Window
         e.SkipWorktree.Click += (_, _) => SetIndexFlag(list, skipWorktree: true);
         e.AssumeUnchanged.Click += (_, _) => SetIndexFlag(list, skipWorktree: false);
         e.RestoreHidden.Click += (_, _) => RestoreHiddenFiles();
+        e.SaveAs.Click += (_, _) => SaveSelectedAs(list);
+        e.Move.Click += (_, _) => MoveSelected(list);
+        e.Delete.Click += (_, _) => DeleteSelected(list);
     }
 
     // Enable/disable only — the Items themselves never move while the menu opens.
@@ -854,6 +866,11 @@ public sealed class CommitDialog : Window
         e.ResetToParent.IsEnabled = tracked;
         e.SkipWorktree.IsEnabled = tracked;
         e.AssumeUnchanged.IsEnabled = tracked;
+        // All three act on the file as it is ON DISK: a deleted row has nothing to
+        // copy, move or delete any more.
+        e.SaveAs.IsEnabled = onDisk;
+        e.Move.IsEnabled = onDisk && !conflict;
+        e.Delete.IsEnabled = onDisk && !conflict;
         e.RestoreHidden.IsEnabled = _hiddenByIndexFlag > 0;
         e.RestoreHidden.Header = WithCount(RestoreHiddenCaption, _hiddenByIndexFlag);
     }
@@ -1053,6 +1070,193 @@ public sealed class CommitDialog : Window
                 SetStatus(FirstLine(result.Output));
                 Reload();
             });
+    }
+
+    /// <summary>
+    ///  "Save selected as..." — for these lists the file always exists on disk, so
+    ///  this copies the WORK-TREE version; there is no revision to extract here.
+    /// </summary>
+    private async void SaveSelectedAs(ListBox list)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        try
+        {
+            IStorageProvider? storage = StorageProvider;
+            if (storage is null)
+            {
+                SetStatus(T("No file picker is available on this display."));
+                return;
+            }
+
+            IStorageFile? target = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = T("FileStatusList/tsmiSaveAs.Text", "Save selected as..."),
+                SuggestedFileName = System.IO.Path.GetFileName(row.Path),
+                ShowOverwritePrompt = true,
+            });
+
+            if (target?.TryGetLocalPath() is not { } destination)
+            {
+                return;   // cancelled, or a location that is not a local file
+            }
+
+            string repo = _repoPath;
+            string path = row.Path;
+            RunGitResult(
+                () => _service.SaveFileAs(repo, path, destination),
+                result => SetStatus(FirstLine(result.Output)));
+        }
+        catch (Exception ex)
+        {
+            SetStatus(FirstLine(ex.Message));
+        }
+    }
+
+    /// <summary>
+    ///  "Rename / move" via <c>git mv</c>, so the move lands in the index instead of
+    ///  looking like a delete plus an untracked file. The new path is asked for as a
+    ///  repository-relative path, which is what git mv takes.
+    /// </summary>
+    private async void MoveSelected(ListBox list)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        string? destination = await PromptTextAsync(
+            T("FileStatusList/tsmiMove.Text", "Rename / move"),
+            T("New path, relative to the repository root:"),
+            row.Path);
+        if (string.IsNullOrWhiteSpace(destination)
+            || string.Equals(destination.Trim(), row.Path, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string path = row.Path;
+        string target = destination.Trim();
+        SetStatus(string.Format(T("Running {0} …"), $"git mv -- {path} {target}"));
+        RunGitResult(
+            () => _service.MoveFile(repo, path, target),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? string.Format(T("Moved '{0}' to '{1}'."), path, target)
+                    : FirstLine(result.Output));
+                Reload();
+            });
+    }
+
+    /// <summary>
+    ///  "Delete file". A tracked file goes through <c>git rm -f</c> (the deletion is
+    ///  staged with it); an untracked one is removed from disk. Both are irreversible
+    ///  for the work-tree content, so both are confirmed.
+    /// </summary>
+    private void DeleteSelected(ListBox list)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string path = row.Path;
+        bool tracked = row.Status != "new";
+        ConfirmThen(
+            string.Format(
+                tracked
+                    ? T("Delete '{0}'? The file is removed from the work tree and the deletion is staged.")
+                    : T("Delete '{0}'? The file is untracked, so it cannot be recovered from git."),
+                path),
+            () =>
+            {
+                SetStatus(string.Format(
+                    T("Running {0} …"),
+                    tracked ? $"git rm -f -- {path}" : $"rm {path}"));
+                RunGitResult(
+                    () => _service.DeleteFile(repo, path, tracked),
+                    result =>
+                    {
+                        SetStatus(result.Success
+                            ? string.Format(T("Deleted '{0}'."), path)
+                            : FirstLine(result.Output));
+                        Reload();
+                    });
+            });
+    }
+
+    /// <summary>
+    ///  A modal one-line text question: returns the entered text, or <c>null</c> when
+    ///  cancelled. Same shape as the dialog's other modal questions
+    ///  (<see cref="ChooseAsync"/>), so it inherits the window styling and Esc.
+    /// </summary>
+    private async Task<string?> PromptTextAsync(string caption, string label, string initial)
+    {
+        Window prompt = new()
+        {
+            Title = caption,
+            Width = 520,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Window", Brushes.DimGray),
+        };
+
+        TextBox box = new() { Text = initial };
+        string? result = null;
+
+        Button ok = new()
+        {
+            Content = T("FormCommit/Ok.Text", "OK"),
+            IsDefault = true,
+        };
+        ok.Click += (_, _) =>
+        {
+            result = box.Text;
+            prompt.Close();
+        };
+
+        Button cancel = MakeButton(T("FormCommit/Cancel.Text", "Cancel"), prompt.Close);
+        prompt.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                prompt.Close();
+            }
+        };
+
+        prompt.Content = new StackPanel
+        {
+            Margin = new Thickness(16),
+            Spacing = 12,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = label,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+                },
+                box,
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Children = { ok, cancel },
+                },
+            },
+        };
+
+        box.Focus();
+        await prompt.ShowDialog(this);
+        return result;
     }
 
     private static WorkingDirFileRow? SingleRow(ListBox list)
