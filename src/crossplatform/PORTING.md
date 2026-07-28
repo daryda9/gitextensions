@@ -1183,7 +1183,7 @@ priorità massima)
 - [x] 0.20 **Sospetto**: un path filter applicato dal dialogo "Filter…" lascerebbe la griglia con
       **tutti** i commit. Osservato di sfuggita mentre si indagava 0.19, non confermato: da
       verificare contro `git log` reale prima di trattarlo come difetto.
-- [ ] 0.21 Il logo `GitExtensionsLogoWide.png` esiste in `setup/assets/Logo/` ma è **fuori dal
+- [x] 0.21 Il logo `GitExtensionsLogoWide.png` esiste in `setup/assets/Logo/` ma è **fuori dal
       glob** del csproj (`src/app/GitUI/Resources/Icons/*.png`), quindi non è risolvibile come
       `avares:`. Servono due cose insieme: la riga nel csproj **e** il codice che lo carica; oggi
       la dashboard tiene il wordmark testuale invece di sostituire artwork a caso. *banale*
@@ -1218,7 +1218,7 @@ priorità massima)
       riga selezionata), intermittente 1 volta su 5. Le prove successive alla build con la guardia
       non l'hanno più riprodotto: **verificare che la guardia copra anche questo stack**.
 
-- [ ] 0.30 `CommitDialog.cs:1830` — "Commit & push" chiama ancora la `PushStreaming` a due stati
+- [x] 0.30 `CommitDialog.cs:1830` — "Commit & push" chiama ancora la `PushStreaming` a due stati
       e quindi passa **`-u` cablato**, ri-puntando l'upstream del ramo. Va instradato sullo stesso
       probe `ResolveTrackingAsync` introdotto per il push dialog. *banale*
 
@@ -1238,7 +1238,7 @@ priorità massima)
       `DiffService`, che non esistono (già censite come "alta" nell'audit E/D1); **Commit details**
       e **GPG** non hanno un oggetto commit, quindi vogliono un placeholder che nomini la riga —
       e nessuna delle due view espone oggi un'API per mostrarlo. *media*
-- [ ] 0.32 Con la finestra stretta il box "Filter:" finisce nel menu di overflow `»`, e lì il
+- [x] 0.32 Con la finestra stretta il box "Filter:" finisce nel menu di overflow `»`, e lì il
       mirror **non riceve i caratteri digitati** (il `MenuItem` li mangia). Preesistente, serve un
       fix del fuoco dentro un controllo ospitato in un `MenuItem`. *banale/media*
 
@@ -1392,7 +1392,7 @@ nel port, manca il punto d'accesso)
       tutto. Upstream salva/ripristina lo stato e ri-seleziona (`Tree.cs:163-183`). Più la
       **gerarchia a cartelle** per branch/tag (upstream `BranchPathNode`/`BasePathNode`, visibile
       nello screenshot come `docs/`, `feature/`). *media*
-- [ ] 4.4 **CommitDialog: lista file senza menu contestuale.** `FileStatusListView` non ha
+- [x] 4.4 **CommitDialog: lista file senza menu contestuale.** `FileStatusListView` non ha
       `ContextMenu` nel commit dialog e la lista è un `ListBox` di stringhe. Upstream ha ~25 voci
       (reset file to, interactive add, cherry-pick changes, difftool, open/edit, save as/move/
       delete, show in file tree, filter in grid, file history, blame, gitignore/exclude,
@@ -1425,7 +1425,7 @@ nel port, manca il punto d'accesso)
       3 posizioni con icona dinamica), **icona di Commit dallo stato del repo** (7 stati upstream),
       **behind** sul pulsante Push, visibilità condizionale dei Worktrees, filtri **branch** e
       **revision** della seconda toolstrip. *banale→media, molte voci*
-- [ ] 4.11 Dialoghi, resto (media ciascuno): `RemotesDialog` senza il tab **"Default pull
+- [~] 4.11 Dialoghi, resto (media ciascuno): `RemotesDialog` senza il tab **"Default pull
       behavior"** né **push URL separata**; `FormVerify` ("Recover lost objects") ridotto a un dump
       di `git fsck`; `FormCleanupRepository` ridotto a un confirm inline (la modalità
       **solo-ignorati `clean -X` è irraggiungibile**); **dialogo bisect** + gating su
@@ -1862,6 +1862,57 @@ artificiali segnalate, e il crash della dashboard chiuso.
 - *Segnalato invece di lasciarlo rotto in silenzio* (voce **0.32**): con la finestra stretta il box
   "Filter:" finisce nel menu di overflow `»` e lì **non riceve i caratteri digitati** — il
   `MenuItem` li mangia. Preesistente, indipendente dall'Invio.
+
+**M60** (2026-07-28) — **file list del commit dialog, cinque dialoghi, toolbar e logo**. Tre
+subagent, l'ultima ondata del round.
+
+- **Commit dialog** (`c96958824`…`538083ece`, nessun cablaggio) — 15 voci nuove nel menu
+  contestuale delle due liste file: reset a HEAD, difftool (index→worktree per unstaged,
+  HEAD→index per staged), open/edit del file, show in folder, save as, **rename/move** (`git mv`),
+  **delete** (`git rm -f` se tracciato, unlink se no), file history, blame, `.git/info/exclude`,
+  **skip-worktree** e **assume-unchanged** — più una voce che upstream non ha e qui serve:
+  **Restore skipped / assumed-unchanged**, perché i due bit fanno sparire il file da entrambe le
+  liste e senza di essa sarebbe una porta a senso unico.
+  *Verificato con git reale*: `H a.txt` → `S a.txt` e ritorno dopo Restore; reset a HEAD su un file
+  **staged** ripristina il contenuto e toglie anche lo staged (a differenza di Discard);
+  `git mv` produce `RM a.txt -> moved/a2.txt`; delete distingue tracciato (`D  sub/c.txt`) da
+  untracked (rimozione dal disco), con conferme diverse.
+  **0.30 chiuso**: "Commit & push" non ri-punta più l'upstream. Command line effettiva dal tab del
+  processo: ramo **già tracciante** → `git push --progress origin main:refs/heads/main`, **nessun
+  `-u`**; ramo nuovo + "No" → nessun `-u` e upstream non scritto; ramo nuovo + "Sì" → `-u` e
+  `origin/feature2`. Più quattro opzioni del dialogo ora persistite.
+  *Omesse con motivo* (non voci morte): reset-chunk e `add -p` (il primo è già coperto dal pannello
+  diff, il secondo vuole un terminale interattivo); tutto ciò che richiede **revisioni** (cherry-pick
+  changes, i quattro difftool fra commit, "open this revision") perché queste liste contengono
+  worktree e index, non commit; *Show in file tree* e *Filter in grid*, che agiscono sulla finestra
+  principale mentre il dialogo è **modale** — il risultato sarebbe invisibile fino alla chiusura;
+  il blocco submodule (manca reset/stash/commit dentro il submodule in `SubmoduleService`).
+- **Cinque dialoghi** (`8477ddb76`…`1ef143cca`, cablaggio `c3d40054f`) — **`git clean -X` è
+  finalmente raggiungibile**: nuovo `CleanupDialog` con i tre modi, directories, submodules,
+  filtri include/exclude e un **dry-run ripetibile mostrato prima di cancellare**. *Prova*: su un
+  repo con untracked e ignorati, "solo ignorati" ha elencato `build/` e `debug.log` nel preview e
+  dopo l'esecuzione `git status --short --ignored` mostrava gli untracked ancora lì e gli ignorati
+  spariti. Nuovo `InitDialog` col tipo **Central** (`--bare --shared=all`, verificato:
+  `core.bare=true`, `core.sharedRepository=2`). `CloneDialog`: subdirectory editabile, preview della
+  destinazione, **init dei submodule** (prima non avvenivano mai: verificato `libs/sub/subfile.txt`
+  presente), depth, bare, e la combo dei branch da `ls-remote`. `ArchiveDialog`: pannello della
+  revisione e i due filtri — l'archivio con "solo i file cambiati da un'altra revisione" conteneva
+  esattamente `b.txt` e `sub/d.txt`, con l'invariato e il cancellato correttamente assenti.
+  `AboutDialog`: versione, `Build <sha> (Dirty)`, versione di git, copyright e **l'attribuzione
+  delle icone a Yusuke Kamiyamane (CCA3)**, che è un obbligo di licenza.
+  Il vecchio confirm inline del clean e i suoi helper sono stati rimossi dal `MainWindow`.
+  *Rinviati*: il commit picker dell'archive (nel port non esiste un picker riusabile → la revisione
+  si digita e viene validata con `rev-parse`) e lo storico From/To del clone.
+- **Toolbar e logo** (`6c3bd1c78`, `61309ecc3`, `0f355029f`, cablaggio `17aa4b960`) — **shell
+  picker** che elenca solo le shell realmente installate (qui Bash/Dash/Sh; `command -v` conferma
+  che zsh e fish non ci sono), con la scelta persistita su disco; **dropdown WorkingDir** con
+  ricerca dal vivo, preferiti, Open/Close repository e **Ctrl+click che apre una seconda istanza
+  vera**; e il **logo** della dashboard, che richiedeva sia la riga nel csproj sia il codice che lo
+  carica.
+  **0.32 smentita**: il box "Filter:" non finisce mai nel menu di overflow — il pulsante è secondo
+  da sinistra e l'`OverflowPanel` scarta da destra, quindi il difetto non lo tocca.
+  *Dichiarato non visto*: i tooltip delle tile della dashboard sono compilati ma l'hover sintetico
+  non li fa scattare **nemmeno su pulsanti preesistenti** — limite dell'attrezzatura, non verifica.
 
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
