@@ -1103,6 +1103,18 @@ public sealed class MainWindow : Window
             }
         };
         _dashboard.OpenOtherRequested += () => _ = PickRepositoryAsync();
+        // Assigning a category (or dropping a favorite) from the dashboard has to reach
+        // the two other places that list favorites: the Start menu builds them eagerly,
+        // the toolbar dropdown lazily through FavoriteReposProvider — so it only needs
+        // the menu rebuilt here to stop showing a stale set.
+        _dashboard.FavoritesChanged += () =>
+        {
+            _menu.SetFavoriteRepositories(_favoritesService.Load());
+            if (_dashboardShowing)
+            {
+                _ = LoadDashboardAsync();
+            }
+        };
 
         _diff.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _diff.FileHistoryRequested += path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
