@@ -409,6 +409,60 @@ public sealed class WorkingDirectoryService
     }
 
     /// <summary>
+    ///  Opens ONE working-directory file in the configured external difftool, the way
+    ///  the shared file-list menu's difftool block does for a revision.
+    ///
+    ///  <para>Which two sides are compared follows the list the file was picked from:
+    ///  an unstaged row is <c>index → work tree</c> (git's own defaults), a staged row
+    ///  is <c>HEAD → index</c>. The launch is detached, so the tool stays open and the
+    ///  app never waits on it.</para>
+    ///
+    ///  <para>Fails with a friendly message rather than silently doing nothing when no
+    ///  difftool is configured: a detached difftool with no tool set writes its error
+    ///  to a console nobody sees.</para>
+    /// </summary>
+    public WorkingDirCommitResult LaunchDifftool(string repoPath, string path, bool staged, bool isTracked)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+
+            bool hasTool =
+                !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("diff.guitool")) ||
+                !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("diff.tool")) ||
+                !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("merge.guitool")) ||
+                !string.IsNullOrWhiteSpace(module.GetEffectiveSetting("merge.tool"));
+            if (!hasTool)
+            {
+                return new WorkingDirCommitResult(
+                    false,
+                    "No external difftool is configured. Set one with e.g. "
+                    + "\"git config --global diff.tool <tool>\".");
+            }
+
+            if (staged)
+            {
+                module.OpenWithDifftool(
+                    filename: path,
+                    firstRevision: "HEAD",
+                    secondRevision: GitUIPluginInterfaces.GitRevision.IndexGuid,
+                    isTracked: isTracked);
+            }
+            else
+            {
+                // Defaults are index → work tree, which is exactly the unstaged diff.
+                module.OpenWithDifftool(filename: path, isTracked: isTracked);
+            }
+
+            return new WorkingDirCommitResult(true, string.Empty);
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not start the difftool: " + ex.Message);
+        }
+    }
+
+    /// <summary>
     ///  Appends <paramref name="pattern"/> as a new line to <c>&lt;repo&gt;/.gitignore</c>,
     ///  creating the file when it does not exist. This is a plain file append — no git
     ///  command is involved. Duplicate lines (matching an existing trimmed line) are

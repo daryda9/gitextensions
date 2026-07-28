@@ -74,6 +74,12 @@ public sealed class CommitDialog : Window
     private readonly MenuItem _unstageItem = new();
     private readonly MenuItem _stagedCopyItem = new();
 
+    // Upstream binds ONE shared menu (FileStatusList's ItemContextMenu) to whichever
+    // file list has focus. This dialog owns two lists and a MenuItem cannot live in
+    // two menus at once, so the shared block is instantiated once per list.
+    private readonly FileEntries _unstagedExtras = new();
+    private readonly FileEntries _stagedExtras = new();
+
     // Per-hunk / per-line entries on the diff panel's own context menu (the port's
     // answer to `git add -p`). Like every other menu here the Items are fixed and
     // only IsEnabled / IsVisible move while the menu opens.
@@ -265,6 +271,9 @@ public sealed class CommitDialog : Window
         _ignoreExtItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Extension);
         _ignoreFolderItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Folder);
 
+        WireFileEntries(_unstagedExtras, _unstagedList, staged: false);
+        WireFileEntries(_stagedExtras, _stagedList, staged: true);
+
         ContextMenu unstagedMenu = new()
         {
             ItemsSource = new Control[]
@@ -274,10 +283,18 @@ public sealed class CommitDialog : Window
                 new Separator(),
                 _mergetoolItem, _takeOursItem, _takeTheirsItem, _markResolvedItem,
                 new Separator(),
+            }
+            .Concat(FileEntryControls(_unstagedExtras))
+            .Concat(new Control[]
+            {
+                new Separator(),
                 _unstagedCopyItem,
                 new Separator(),
                 _ignorePathItem, _ignoreExtItem, _ignoreFolderItem,
-            },
+                new Separator(),
+                _unstagedExtras.Refresh,
+            })
+            .ToArray(),
         };
         unstagedMenu.Opening += (_, _) =>
         {
@@ -310,6 +327,8 @@ public sealed class CommitDialog : Window
             _takeOursItem.IsEnabled = conflict;
             _takeTheirsItem.IsEnabled = conflict;
             _markResolvedItem.IsEnabled = conflict;
+
+            UpdateFileEntries(_unstagedExtras, _unstagedList, staged: false);
         };
         _unstagedList.ContextMenu = unstagedMenu;
 
@@ -317,7 +336,16 @@ public sealed class CommitDialog : Window
         _stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
         ContextMenu stagedMenu = new()
         {
-            ItemsSource = new Control[] { _unstageItem, new Separator(), _stagedCopyItem },
+            ItemsSource = new Control[] { _unstageItem, new Separator() }
+                .Concat(FileEntryControls(_stagedExtras))
+                .Concat(new Control[]
+                {
+                    new Separator(),
+                    _stagedCopyItem,
+                    new Separator(),
+                    _stagedExtras.Refresh,
+                })
+                .ToArray(),
         };
         stagedMenu.Opening += (_, _) =>
         {
@@ -326,6 +354,7 @@ public sealed class CommitDialog : Window
             _unstageItem.Header = WithCount(UnstageCaption, count);
             _stagedCopyItem.IsEnabled = count > 0;
             _stagedCopyItem.Header = WithCount(CopyPathCaption, count);
+            UpdateFileEntries(_stagedExtras, _stagedList, staged: true);
         };
         _stagedList.ContextMenu = stagedMenu;
 
@@ -550,6 +579,9 @@ public sealed class CommitDialog : Window
         _selectAllLinesItem.Header = T("Select whole diff");
         _copyDiffItem.Header = T("FormBrowse/copyToolStripMenuItem.Text", "Copy");
 
+        CaptionFileEntries(_unstagedExtras);
+        CaptionFileEntries(_stagedExtras);
+
         _ignorePathItem.Header = T("FileStatusList/tsmiAddFileToGitIgnore.Text", "Add to .gitignore");
         _ignoreExtItem.Header = T("Ignore by extension");
         _ignoreFolderItem.Header = T("Ignore in folder");
@@ -693,6 +725,204 @@ public sealed class CommitDialog : Window
         dialog.Committed += onCommitted;
         await dialog.ShowDialog(owner);
     }
+
+    // ---------- shared per-file menu entries ----------
+
+    /// <summary>
+    ///  The entries the original shared file-list menu offers for the file under the
+    ///  cursor, regardless of which list it sits in (difftool, open, show in folder,
+    ///  history, blame, refresh). One instance per list — see the fields.
+    /// </summary>
+    private sealed class FileEntries
+    {
+        public readonly MenuItem Difftool = new();
+        public readonly MenuItem Open = new();
+        public readonly MenuItem OpenEditor = new();
+        public readonly MenuItem ShowFolder = new();
+        public readonly MenuItem History = new();
+        public readonly MenuItem Blame = new();
+        public readonly MenuItem Refresh = new();
+    }
+
+    // The block as it appears in a menu, in the original's order: difftool first,
+    // then the open/edit group, then the navigation group. Refresh is NOT here: it
+    // is not a per-file entry and goes last in each menu, as upstream places it.
+    private static Control[] FileEntryControls(FileEntries e)
+        =>
+        [
+            e.Difftool,
+            new Separator(),
+            e.Open, e.OpenEditor, e.ShowFolder,
+            new Separator(),
+            e.History, e.Blame,
+        ];
+
+    // Captions come from the original shared menu's own trans-units, so the
+    // catalogues fit the port's entries without new strings.
+    private static void CaptionFileEntries(FileEntries e)
+    {
+        e.Difftool.Header = T("FileStatusList/tsmiOpenWithDifftool.Text", "Open with difftool");
+        e.Open.Header = T("FileStatusList/tsmiOpenWorkingDirectoryFile.Text", "Open working directory file");
+        e.OpenEditor.Header = T("FileStatusList/tsmiEditWorkingDirectoryFile.Text", "Edit working directory file");
+        e.ShowFolder.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
+        e.History.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
+        e.Blame.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
+        e.Refresh.Header = T("FormBrowse/refreshToolStripMenuItem.Text", "Refresh");
+    }
+
+    private void WireFileEntries(FileEntries e, ListBox list, bool staged)
+    {
+        e.Difftool.Click += (_, _) => OpenWithDifftool(list, staged);
+        e.Open.Click += (_, _) => OpenWorkingFile(list, inEditor: false);
+        e.OpenEditor.Click += (_, _) => OpenWorkingFile(list, inEditor: true);
+        e.ShowFolder.Click += (_, _) => ShowSelectedInFolder(list);
+        e.History.Click += (_, _) => ShowFileTool(list, blame: false);
+        e.Blame.Click += (_, _) => ShowFileTool(list, blame: true);
+        e.Refresh.Click += (_, _) => Reload();
+    }
+
+    // Enable/disable only — the Items themselves never move while the menu opens.
+    private void UpdateFileEntries(FileEntries e, ListBox list, bool staged)
+    {
+        List<WorkingDirFileRow> rows = SelectedRows(list);
+        WorkingDirFileRow? row = rows.Count == 1 ? rows[0] : null;
+        bool conflict = row is not null && _conflictPaths.Contains(row.Path);
+        bool onDisk = row is not null && File.Exists(FullPath(row));
+
+        // Every entry below acts on exactly ONE file: the difftool, the editor and
+        // the file manager all take a single target, and history/blame are per-file
+        // views. Upstream's counted variants only exist for stage/unstage/copy.
+        e.Difftool.IsEnabled = row is not null && !conflict;
+        e.Open.IsEnabled = onDisk;
+        e.OpenEditor.IsEnabled = onDisk;
+        e.ShowFolder.IsEnabled = row is not null;
+        e.History.IsEnabled = row is not null;
+        e.Blame.IsEnabled = onDisk && row!.Status != "new";
+    }
+
+    private string FullPath(WorkingDirFileRow row)
+        => System.IO.Path.Combine(_repoPath, row.Path.Replace('/', System.IO.Path.DirectorySeparatorChar));
+
+    private void OpenWithDifftool(ListBox list, bool staged)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string path = row.Path;
+        bool tracked = row.Status != "new";
+        SetStatus(string.Format(T("Running {0} …"), "git difftool"));
+        RunGitResult(
+            () => _service.LaunchDifftool(repo, path, staged, tracked),
+            result => SetStatus(result.Success
+                ? string.Format(T("Opened '{0}' in the difftool."), path)
+                : FirstLine(result.Output)));
+    }
+
+    private void OpenWorkingFile(ListBox list, bool inEditor)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        string full = FullPath(row);
+        string repo = _repoPath;
+        RunTool(() => inEditor
+            ? new ExternalToolService().OpenInEditor(full, repo)
+            : new ExternalToolService().OpenOrCreateFile(full));
+    }
+
+    private void ShowSelectedInFolder(ListBox list)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        string full = FullPath(row);
+        RunTool(() => new ExternalToolService().ShowInFolder(full));
+    }
+
+    /// <summary>
+    ///  Opens the file history / blame of the selected file in a window of its own,
+    ///  owned by this dialog.
+    ///
+    ///  <para>Upstream opens a separate <c>FormFileHistory</c> here rather than
+    ///  routing into the main window's bottom panel, and it has to: the commit form
+    ///  is modal, so anything shown behind it would be unreachable until it closes.
+    ///  The port therefore hosts the existing <see cref="FileHistoryView"/> /
+    ///  <see cref="BlameView"/> controls in a child window instead of raising an
+    ///  event at the host.</para>
+    /// </summary>
+    private void ShowFileTool(ListBox list, bool blame)
+    {
+        if (SingleRow(list) is not { } row)
+        {
+            return;
+        }
+
+        string full = FullPath(row);
+        Control view;
+        string caption;
+        if (blame)
+        {
+            BlameView blameView = new();
+            blameView.ShowBlame(_repoPath, row.Path);
+            view = blameView;
+            caption = string.Format(T("FormBlame/$this.Text", "Blame - {0}"), row.Path);
+        }
+        else
+        {
+            FileHistoryView history = new();
+            history.ShowHistory(_repoPath, row.Path);
+            view = history;
+            caption = string.Format(T("FormFileHistory/$this.Text", "File History - {0}"), row.Path);
+        }
+
+        Window window = new()
+        {
+            Title = caption,
+            Width = 900,
+            Height = 600,
+            Background = Brush("App.Window", Brushes.DimGray),
+            Content = view,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+        };
+
+        // Not a dialog: the user must be able to keep staging while it is open.
+        window.Show(this);
+        SetStatus(string.Format(T("Opened '{0}'."), full));
+    }
+
+    private static WorkingDirFileRow? SingleRow(ListBox list)
+    {
+        List<WorkingDirFileRow> rows = SelectedRows(list);
+        return rows.Count == 1 ? rows[0] : null;
+    }
+
+    // External tools are launched detached but Process.Start itself can block on a
+    // slow filesystem, so it goes to the pool; only the failure message comes back.
+    private void RunTool(Func<ExternalToolResult> work)
+        => _ = Task.Run(() =>
+        {
+            try
+            {
+                return work();
+            }
+            catch (Exception ex)
+            {
+                return new ExternalToolResult(false, ex.Message);
+            }
+        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        {
+            if (!t.Result.Success)
+            {
+                SetStatus(FirstLine(t.Result.Message));
+            }
+        }), TaskScheduler.Default);
 
     // ---------- list plumbing ----------
 
