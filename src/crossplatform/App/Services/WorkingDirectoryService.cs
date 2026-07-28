@@ -33,6 +33,52 @@ public sealed record WorkingDirStatus(
     IReadOnlyList<string> Conflicts);
 
 /// <summary>
+///  The full option set of upstream's <c>FormCleanupRepository</c>, in one value:
+///  which class of files to remove (<see cref="Mode"/> → <c>-x</c> / nothing /
+///  <c>-X</c>), whether untracked directories go too (<c>-d</c>), whether the
+///  same clean is repeated in every submodule, and the include / exclude path
+///  filters.
+///  <para>
+///  <see cref="IncludePaths"/> and <see cref="ExcludePaths"/> are the raw,
+///  multi-line text of the two filter boxes; empty lines are dropped.
+///  Include lines become quoted pathspecs, exclude lines become
+///  <c>--exclude=&lt;line&gt;</c> (spaces turned into the <c>?</c> wildcard, as
+///  upstream does, because <c>git clean</c> takes one exclude pattern per option
+///  and cannot see through a space).
+///  </para>
+/// </summary>
+public sealed record CleanOptions(
+    CleanMode Mode = CleanMode.OnlyNonIgnored,
+    bool Directories = true,
+    bool CleanSubmodules = false,
+    string? IncludePaths = null,
+    string? ExcludePaths = null)
+{
+    /// <summary>Include lines as a single quoted pathspec argument, or null when the filter is unused.</summary>
+    public string? IncludeArgument => JoinNonEmptyLines(IncludePaths, line => line.Quote());
+
+    /// <summary>Exclude lines as <c>--exclude=</c> options, or null when the filter is unused.</summary>
+    public string? ExcludeArgument => JoinNonEmptyLines(ExcludePaths, line => $"--exclude={line.Replace(" ", "?")}".ToPosixPath());
+
+    private static string? JoinNonEmptyLines(string? text, Func<string, string> project)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        string joined = string.Join(
+            ' ',
+            text.Split('\n')
+                .Select(line => line.Trim('\r', ' ', '\t'))
+                .Where(line => line.Length > 0)
+                .Select(project));
+
+        return joined.Length == 0 ? null : joined;
+    }
+}
+
+/// <summary>
 ///  Working-directory operations (status, stage, unstage, commit) implemented by
 ///  reusing the Git Extensions core (<see cref="GitModule"/>) via
 ///  <see cref="GitContext.CreateModule"/>. All methods are synchronous and are
@@ -281,6 +327,39 @@ public sealed class WorkingDirectoryService
         ExecutionResult result = module.Clean(mode, dryRun: false, directories: true);
         return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
     }
+
+    /// <summary>
+    ///  Builds the <c>git clean</c> argument string for <paramref name="options"/>
+    ///  (upstream <c>FormCleanupRepository.CleanUp</c>). With
+    ///  <paramref name="dryRun"/> the command carries <c>--dry-run</c> and deletes
+    ///  nothing; without it, <c>-f</c>.
+    ///  <para>
+    ///  Returned as a string rather than executed so the caller can stream it through
+    ///  <see cref="GitStreamRunner"/> — <c>git clean</c> prints one line per entry and
+    ///  the dialog shows them as they arrive. Pure string work: safe on any thread.
+    ///  </para>
+    /// </summary>
+    public static string CleanArguments(CleanOptions options, bool dryRun)
+        => Commands.Clean(
+            options.Mode,
+            dryRun,
+            directories: options.Directories,
+            paths: options.IncludeArgument,
+            excludes: options.ExcludeArgument).ToString();
+
+    /// <summary>
+    ///  Builds the <c>git submodule foreach --recursive git clean …</c> argument
+    ///  string that repeats the same clean inside every submodule (upstream's
+    ///  "Clean submodules" checkbox). The exclude filter is deliberately not passed
+    ///  on — upstream's <c>Commands.CleanSubmodules</c> does not take one either,
+    ///  since the patterns are relative to the super-project.
+    /// </summary>
+    public static string CleanSubmodulesArguments(CleanOptions options, bool dryRun)
+        => Commands.CleanSubmodules(
+            options.Mode,
+            dryRun,
+            directories: options.Directories,
+            paths: options.IncludeArgument).ToString();
 
     /// <summary>
     ///  Discards uncommitted modifications to TRACKED files. Destructive — callers
