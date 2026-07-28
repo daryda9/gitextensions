@@ -1177,30 +1177,30 @@ priorità massima)
 
 **Difetti trovati dalla verifica GUI di M53–M56** (sessioni :281–:287, tutti visti a schermo)
 
-- [ ] 0.22 **Il `CommitDialog` non ha alcun pulsante di chiusura**, ignora Esc e ignora
+- [x] 0.22 **Il `CommitDialog` non ha alcun pulsante di chiusura**, ignora Esc e ignora
       `WM_DELETE_WINDOW`: una volta aperto non è dismissibile in alcun modo sintetico. Upstream ha
       `Cancel` (`FormCommit.Designer.cs:142-151`). *grave, banale*
-- [ ] 0.23 **Nessuno dei tre dialoghi del menu Repository si chiude con Esc** (Remotes,
+- [x] 0.23 **Nessuno dei tre dialoghi del menu Repository si chiude con Esc** (Remotes,
       Submodules, Worktrees): solo il loro pulsante `Close`. Anche il `WM_DELETE_WINDOW`
       sintetico è ignorato (stessa radice di 0.16). *banale*
-- [ ] 0.24 **Selezionare una riga della griglia riporta a forza il pannello inferiore sul tab
+- [x] 0.24 **Selezionare una riga della griglia riporta a forza il pannello inferiore sul tab
       Commit**: non si può tenere aperto Output, Diff o File tree mentre si naviga la storia.
       Upstream aggiorna il tab visibile senza cambiarlo. Il colpevole è la riga
       `_bottom.SelectedItem = _commitInfoTab;` in `OnRevisionSelected`. *banale, alta seccatura*
-- [ ] 0.25 **Titolo stantio dopo `Close (go to Dashboard)`**: resta `<repo> (<branch>)` mentre a
+- [x] 0.25 **Titolo stantio dopo `Close (go to Dashboard)`**: resta `<repo> (<branch>)` mentre a
       schermo c'è la dashboard (`RefreshToolbarState` non gira più). E in dashboard mode la
       **toolbar non viene neutralizzata**: mostra ancora path, branch e i pulsanti Fetch/Pull/
       Push/Commit di un repo che non è più aperto. *banale*
-- [ ] 0.26 **Navigazione da tastiera della dashboard rotta**: dalla casella di ricerca il primo ↓
+- [x] 0.26 **Navigazione da tastiera della dashboard rotta**: dalla casella di ricerca il primo ↓
       evidenzia il *contenitore del gruppo* ("Recent repositories" + prima riga) invece della
       prima voce, e i ↓ successivi non avanzano; il caret resta nella casella, quindi il fuoco non
       si sposta mai davvero. *media*
-- [ ] 0.27 **Etichette di menu troncate senza ellissi**: "Toggle between artificial and HEAD
+- [x] 0.27 **Etichette di menu troncate senza ellissi**: "Toggle between artificial and HEAD
       commi", "Highlight selected branch (until refresh", "Arrange commits by topo order (ances".
       *banale, cosmetico*
-- [ ] 0.28 Su un repo **bare** il pannello sinistro mostra l'errore git grezzo
+- [x] 0.28 Su un repo **bare** il pannello sinistro mostra l'errore git grezzo
       (`Error: fatal: quest'operazione deve …`) invece di un albero vuoto. *banale*
-- [ ] 0.29 Da confermare: lo stack del crash 0.19 è stato visto anche sul percorso
+- [x] 0.29 Da confermare: lo stack del crash 0.19 è stato visto anche sul percorso
       `OpenRepository → LoadRepository → Reload` (doppio clic su un worktree nell'albero con una
       riga selezionata), intermittente 1 volta su 5. Le prove successive alla build con la guardia
       non l'hanno più riprodotto: **verificare che la guardia copra anche questo stack**.
@@ -1208,6 +1208,14 @@ priorità massima)
 - [ ] 0.30 `CommitDialog.cs:1830` — "Commit & push" chiama ancora la `PushStreaming` a due stati
       e quindi passa **`-u` cablato**, ri-puntando l'upstream del ramo. Va instradato sullo stesso
       probe `ResolveTrackingAsync` introdotto per il push dialog. *banale*
+
+- [ ] 0.31 **CRASH aprendo un repository dalla Dashboard** (clic su una tile o Invio):
+      `NullReferenceException` in `RevisionGridView.IsArtificial` (`:984`, `row` è **null**) da
+      `BuildRow` (`:3873`) via `FuncDataTemplate`. È la trappola già nota: col **riciclo dei
+      container disabilitato** Avalonia re-invoca il template con item `null` quando svuota un
+      container (stesso difetto che causò il crash di `BlameView` in M51). Verificato
+      **preesistente** ricompilando con la baseline: non introdotto dalle correzioni della
+      dashboard. Assegnato al proprietario di `RevisionGridView.cs`. *grave, banale*
 
 **BLOCCO 1 — menu, toolbar e chrome: alto valore, costo banale** (le funzioni **esistono già**
 nel port, manca il punto d'accesso)
@@ -1370,11 +1378,11 @@ nel port, manca il punto d'accesso)
       git** su Invio con un dropdown "Filter type" (message/committer/author/diff contains) e una
       MRU di 30 voci. `RevisionFilter` supporta già tutti quei campi: è wiring + persistenza. Più
       il **ref picker** per "Show filtered branches", oggi dichiaratamente uno stub. *media*
-- [ ] 4.6 **Blame: evidenziazione di tutte le righe dello stesso commit** su hover/selezione
+- [x] 4.6 **Blame: evidenziazione di tutte le righe dello stesso commit** su hover/selezione
       (l'affordance più usata upstream), **find/F3/go-to-line** (template già in `DiffView`) e il
       walk accurato "blame previous revision" (upstream mappa la riga nel parent con
       `GitBlameParser`; il port ri-blama e perde la posizione). *media*
-- [ ] 4.7 **Linkificazione del commit info**: gli hash dentro il corpo del messaggio non sono link
+- [x] 4.7 **Linkificazione del commit info**: gli hash dentro il corpo del messaggio non sono link
       (`CommitDataBodyRenderer.cs:44-65`), branch e tag non sono cliccabili (pillole inerti), e
       "Derives from" stampa `v1.0-5-gabc1234` invece di `v1.2.0 + 66 commits`. *media*
 - [ ] 4.8 **`GitProcessDialog` su PTY**: passarlo a `PtyProcess`/`TerminalEmulator` (**già
@@ -1719,6 +1727,51 @@ subagent più due voci fatte direttamente nel `MainWindow` (che nessun subagent 
   commit-info, gating, view options).
   *Escluse come pulsanti finti*: tutte le ~35 senza consumatore, più la metà *display* della
   pagina blame upstream (autore/data/numeri di riga), che qui la griglia del blame rende comunque.
+
+**M57** (2026-07-28) — **push rifiutato, blame, linkificazione e otto difetti di GUI**.
+
+- **Push rifiutato e destinazione** (`95b883274`…`65deff70d`, nessun cablaggio necessario) — il
+  port ora riconosce `! [rejected]` e offre le quattro scelte upstream (pull default / rebase /
+  merge / force-with-lease) con "don't show again" persistito, e soprattutto fa il **retry in
+  place** senza chiudere il dialogo (nuovo `GitProcessDialog.Retry()`). *Prova per reflog*:
+  `pull --rebase … (finish): returning to refs/heads/main` seguito da `a5d3a64..33f3720 main ->
+  main`, con la finestra mai chiusa fra i due tentativi. Il force-with-lease ha **correttamente
+  rifiutato** un lease stantio e ri-offerto le scelte.
+  **Due correzioni al brief del loop, verificate dal subagent**: (a) upstream **non legge**
+  `push.default` né `remote.pushDefault` (zero occorrenze); la catena vera è `remote.<n>.push` →
+  `branch.<x>.merge` (solo se `branch.<x>.remote` è il remote di destinazione) → `remote.<n>.prefix`
+  → nome del branch, ed è quella portata; (b) il difetto del `-u` era **invertito**: non "mai sul
+  fast path" ma `track: true` **cablato sempre**, e il tab multi-branch lo passava anche lì,
+  ri-puntando in silenzio l'upstream di ogni ramo selezionato.
+  *Bug latente trovato provando davvero l'opzione*: senza `--no-rebase` **ogni pull di tipo merge
+  era fatale** su git ≥ 2.27 ("devi specificare come riconciliare i rami divergenti").
+- **Blame e commit info** (`005a0463e`…`6f40dc81c`, cablaggio `9b5873d3a`) — evidenziazione di
+  **tutte** le righe dello stesso commit su hover e selezione, find/F3 con contatore e
+  scroll-into-view, go-to-line, riga iniziale, encoding, doppio clic per blamare quella revisione;
+  e nel commit info gli **hash dentro il messaggio sono link** che navigano, branch e tag
+  cliccabili, "Derives from tag: **v1.0** + 2 commits" al posto della stampa grezza di
+  `git describe`. Il cablaggio cede Ctrl+F/Ctrl+G/F3 al tab Blame quando ha il fuoco.
+  *Validazione del mapping riga→parent contro git reale*: 27/27 su un caso sintetico e
+  **3066/3066 su cinque commit reali**, zero discrepanze. Nel farlo è emerso che **l'espressione
+  di upstream è off-by-one** quando un hunk `-U0` ha range vuoto (`@@ -0,0 +1,5 @@`, dove `,0`
+  indica la riga *prima* del buco): il port tratta ogni hunk come le sue due range, e la
+  divergenza è documentata nel codice — meglio divergere con una ragione che replicare un difetto.
+  *Rinviata*: colorazione del gutter per fascia d'età (la palette ha 10 chiavi e nessun gradiente:
+  servirebbero voci nuove in `ThemeManager`, e cablare una rampa a mano violerebbe la convenzione
+  dei brush).
+- **Otto difetti trovati dalla verifica GUI** (`059a441cd`…`f1dadfac5`, più `dc0e3dd21` fatto dal
+  loop) — il **commit dialog ora è dismissibile** (Cancel + Esc: prima non c'era *alcun* modo di
+  chiuderlo); Esc chiude i tre dialoghi del menu Repository **conservando il flag `Changed`**
+  (verificato rimuovendo un remote e uscendo con Esc: l'albero è passato a `Remotes (0)`); su repo
+  **bare** l'albero si popola invece di mostrare l'errore git (colpevoli `git stash list` e
+  `git submodule status`, che rifiutano di girare senza working tree, ora saltati); etichette di
+  menu non più troncate (era il cap Fluent `FlyoutThemeMaxWidth`, rialzato solo per il MainMenu);
+  navigazione ↓/↑ della dashboard che entra sulle **voci** e non sul contenitore del gruppo.
+  Dal loop: il pannello inferiore **non salta più sul tab Commit** a ogni selezione (si aggiorna il
+  tab visibile, come upstream; il salto resta sul doppio clic), e in dashboard **titolo e toolbar
+  vengono azzerati** invece di continuare ad annunciare un repo non più aperto.
+  **0.29 chiuso**: il crash intermittente sul doppio clic di un worktree **non si è riprodotto in
+  15 tentativi** — la guardia di M56 copre anche quello stack.
 
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
