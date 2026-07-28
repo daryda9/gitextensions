@@ -55,7 +55,20 @@ public sealed class RevertArchiveService
     ///  -o &lt;path&gt; &lt;hash&gt;</c>. Success requires both a clean git exit and the
     ///  output file existing and non-empty. Never throws.
     /// </summary>
-    public RevertArchiveResult Archive(string repoPath, string commitHash, ArchiveFormat format, string outputPath)
+    /// <param name="paths">
+    ///  Optional pathspec limiting what goes into the archive — upstream's
+    ///  "Files matching these paths" filter and its "only the files changed since
+    ///  another revision" mode both end up here (<c>FormArchive.cs:139-158</c>).
+    ///  Each entry is quoted and appended after the commit, i.e.
+    ///  <c>git archive … &lt;hash&gt; -- &lt;path&gt; …</c>. An empty or null list
+    ///  archives the whole tree, as before.
+    /// </param>
+    public RevertArchiveResult Archive(
+        string repoPath,
+        string commitHash,
+        ArchiveFormat format,
+        string outputPath,
+        IReadOnlyList<string>? paths = null)
     {
         GitModule module = GitContext.CreateModule(repoPath);
         string formatArg = format == ArchiveFormat.Zip ? "zip" : "tar.gz";
@@ -66,6 +79,20 @@ public sealed class RevertArchiveService
             outputPath.Quote(),
             commitHash,
         };
+
+        // "--" keeps a path that looks like a revision from being read as one.
+        if (paths is { Count: > 0 })
+        {
+            args.Add("--");
+            foreach (string path in paths)
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    args.Add(path.Trim().Quote());
+                }
+            }
+        }
+
         ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
 
         bool created = File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
@@ -74,5 +101,30 @@ public sealed class RevertArchiveService
             ? result.AllOutput
             : $"{result.AllOutput}\n(archive file {(created ? "was written but git reported an error" : "was not created")}: {outputPath})";
         return new RevertArchiveResult(ok, output);
+    }
+
+    /// <summary>
+    ///  Resolves a user-typed revision expression (a hash prefix, branch, tag,
+    ///  <c>HEAD~2</c>, …) to a full commit hash, or <see langword="null"/> when git
+    ///  cannot make a commit of it. Used by the archive dialog to validate the
+    ///  "changed since another revision" filter before diffing against it.
+    /// </summary>
+    public static string? ResolveCommit(string repoPath, string revision)
+    {
+        if (string.IsNullOrWhiteSpace(revision))
+        {
+            return null;
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("rev-parse")
+        {
+            "--verify",
+            "--quiet",
+            $"{revision.Trim()}^{{commit}}",
+        };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        string hash = result.StandardOutput.Trim();
+        return result.ExitedSuccessfully && hash.Length > 0 ? hash : null;
     }
 }
