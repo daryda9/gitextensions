@@ -64,6 +64,19 @@ public sealed class RemotesDialog : Window
         _remove.Click += (_, _) => _ = DoRemoveAsync();
         close.Click += (_, _) => Close();
 
+        // Escape = Close, like every WinForms dialog upstream (their CancelButton).
+        // Bubbling phase, so an open context menu or the inline prompts get the key
+        // first. Close() alone leaves <see cref="Changed"/> as it stands, so a caller
+        // that refreshes on Changed still refreshes after an Escape.
+        KeyDown += (_, e) =>
+        {
+            if (!e.Handled && e.Key == Key.Escape && e.KeyModifiers == KeyModifiers.None)
+            {
+                e.Handled = true;
+                Close();
+            }
+        };
+
         StackPanel buttons = new()
         {
             Orientation = Orientation.Vertical,

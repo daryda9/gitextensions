@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -69,6 +70,17 @@ public sealed class SubmodulesDialog : Window
         syncAll.Click += (_, _) => Run("Synchronize all", () => _service.SynchronizeAll(_repoPath));
         initAll.Click += (_, _) => Run("Init all", () => _service.InitAll(_repoPath));
         close.Click += (_, _) => Close();
+
+        // Escape = Close (upstream's CancelButton). Bubbling, so inner popups keep
+        // their own Escape; Close() does not touch <see cref="Changed"/>.
+        KeyDown += (_, e) =>
+        {
+            if (!e.Handled && e.Key == Key.Escape && e.KeyModifiers == KeyModifiers.None)
+            {
+                e.Handled = true;
+                Close();
+            }
+        };
 
         StackPanel buttons = new()
         {

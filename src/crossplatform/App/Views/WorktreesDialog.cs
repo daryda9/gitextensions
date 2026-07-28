@@ -88,6 +88,17 @@ public sealed class WorktreesDialog : Window
         _prune.Click += (_, _) => Run("Prune", () => _service.PruneWorktrees(_repoPath));
         close.Click += (_, _) => Close();
 
+        // Escape = Close (upstream's CancelButton). Bubbling, so inner popups keep
+        // their own Escape; Close() does not touch <see cref="Changed"/>.
+        KeyDown += (_, e) =>
+        {
+            if (!e.Handled && e.Key == Key.Escape && e.KeyModifiers == KeyModifiers.None)
+            {
+                e.Handled = true;
+                Close();
+            }
+        };
+
         StackPanel buttons = new()
         {
             Orientation = Orientation.Vertical,
