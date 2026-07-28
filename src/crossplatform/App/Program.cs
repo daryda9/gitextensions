@@ -12,6 +12,8 @@ internal static class Program
         // Initialize the reused Git Extensions core threading context.
         GitUI.CrossPlatformBootstrap.InitializeThreading();
 
+        WarmUpCoreOutputEncoding();
+
         // Headless self-test: exercise the reused git core without a display.
         // Usage: GitExtensions.Avalonia --selftest [repoPath]
         if (args.Length > 0 && args[0] == "--selftest")
@@ -86,6 +88,49 @@ internal static class Program
         Services.X11AtomPrimer.TryPrime();
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+
+    /// <summary>
+    ///  Materialises the core's default output encoding ONCE, on the main thread,
+    ///  before anything can issue git commands concurrently.
+    ///
+    ///  <para><c>GitCommands.ExecutableExtensions</c> (src/app/GitCommands/Git/
+    ///  ExecutableExtensions.cs:15) holds
+    ///  <c>static readonly Lazy&lt;Encoding&gt; _defaultOutputEncoding = new(() =&gt;
+    ///  GitModule.SystemEncoding, false)</c> — <c>isThreadSafe: false</c>, i.e.
+    ///  <see cref="LazyThreadSafetyMode.None"/>. Every core call that leaves
+    ///  <c>outputEncoding</c> null dereferences it (<c>GetOutputAsync</c> line 97,
+    ///  <c>ExecuteAsync</c> line 291) as its FIRST statement, so the very first two
+    ///  git commands of the process, if they start on two different threads, race
+    ///  inside that <c>Lazy</c> and one of them dies with
+    ///  <c>InvalidOperationException</c> ("ValueFactory attempted to access the Value
+    ///  property"). This port fans revision/status/ref loading out over
+    ///  <c>Task.Run</c> from the very first refresh, so it hits that window; upstream
+    ///  WinForms did not, which is why the field is still declared that way.</para>
+    ///
+    ///  <para>The core is NOT patched (it is shared with the Windows build). Instead
+    ///  the first dereference happens here, single-threaded: the public member that
+    ///  touches it is <c>ExecutableExtensions.GetOutput</c> — with
+    ///  <c>outputEncoding: null</c> it runs <c>outputEncoding ??=
+    ///  _defaultOutputEncoding.Value</c> before it even starts the process, so
+    ///  <c>git --version</c> is merely the cheapest excuse to reach that line. Once
+    ///  the <c>Lazy</c> holds a value, later concurrent reads are plain field reads
+    ///  and safe.</para>
+    ///
+    ///  <para>Failure is swallowed: whatever <c>SystemEncodingReader</c> would throw,
+    ///  it would throw on the first real git command too (and be cached by the
+    ///  <c>Lazy</c> either way), so warming up adds no new failure mode.</para>
+    /// </summary>
+    private static void WarmUpCoreOutputEncoding()
+    {
+        try
+        {
+            _ = GitCommands.ExecutableExtensions.GetOutput(new GitCommands.Executable("git"), "--version");
+        }
+        catch
+        {
+            // See above: nothing here is worse than the first real git call.
+        }
     }
 
     /// <summary>
