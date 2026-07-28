@@ -208,6 +208,23 @@ public sealed class MainToolbar : UserControl
     // The button caption shows the current repository path (home collapsed to ~).
     public Func<Task<IReadOnlyList<RepoLink>>>? RecentReposProvider { get; set; }
 
+    // Favourite repositories for the same drop-down (upstream's categorised-repos
+    // submenu, flat here). Optional: with no provider the toolbar reads the shell's
+    // own favorites.json, so the group is populated without any host wiring.
+    public Func<Task<IReadOnlyList<RepoLink>>>? FavoriteReposProvider { get; set; }
+
+    /// <summary>
+    ///  "Close (go to Dashboard)" from the working-directory drop-down — upstream's
+    ///  <c>_tsmiCloseRepo</c>. Unwired, the entry is shown disabled.
+    /// </summary>
+    public event Action? CloseRepositoryRequested;
+
+    /// <summary>
+    ///  "Configure this menu..." from the working-directory drop-down — upstream
+    ///  opens <c>FormRecentReposSettings</c>. Unwired, the entry is shown disabled.
+    /// </summary>
+    public event Action? ConfigureRecentReposRequested;
+
     // ---- stateful controls kept for UpdateState() ---------------------------
     // References to the Push / Pull / Commit buttons and their caption TextBlocks
     // (and icon Images, so we can tint them) so UpdateState() can refresh badges
@@ -2433,10 +2450,13 @@ public sealed class MainToolbar : UserControl
         return button;
     }
 
-    // Inline repo-path dropdown: icon + ~-collapsed current path + chevron. When a
-    // RecentReposProvider is wired, the flyout lists recent repositories (choosing
-    // one raises OpenRepositoryRequested). When no provider is wired the button
-    // falls back to opening the repository picker via OpenRepoRequested on click.
+    // Inline repo-path dropdown: icon + ~-collapsed current path + chevron, the port
+    // of upstream's WorkingDirectoryToolStripSplitButton. The drop-down carries, in
+    // upstream's order: a live search box, the favourite repositories, the recent
+    // ones, "Open repository" / "Close repository" with their gestures, and
+    // "Configure this menu...". Right-clicking the button starts the open dialog and
+    // Ctrl+click on an entry opens it in a new instance — both documented in the
+    // tooltip, exactly as upstream words it.
     private Button MakeRepoPathButton(IBrush border)
     {
         StackPanel content = new()
@@ -2483,17 +2503,23 @@ public sealed class MainToolbar : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
         };
         button.Classes.Add("toolbtn");
-        ToolTip.SetTip(button, T("FormBrowse/tsmiRecentRepositories.Text", "Open a recent repository"));
+        ToolTip.SetTip(button, WorkingDirTooltip());
+
+        // Upstream's MouseUpHandler: the right button starts the "Open repository"
+        // dialog instead of dropping the menu. Tunnelling, because the Button's own
+        // press handling swallows the bubbling event.
+        button.AddHandler(PointerReleasedEvent, (_, e) =>
+        {
+            if (e.InitialPressMouseButton == MouseButton.Right)
+            {
+                e.Handled = true;
+                OpenRepoRequested?.Invoke();
+            }
+        }, RoutingStrategies.Tunnel);
+
         button.Click += async (_, _) =>
         {
-            if (RecentReposProvider is null)
-            {
-                // Fallback: no recent-repos source wired — open the picker instead.
-                OpenRepoRequested?.Invoke();
-                return;
-            }
-
-            await PopulateRepoLinksAsync(flyout, "RepoOpen", RecentReposProvider);
+            await BuildWorkingDirMenuAsync(flyout);
             flyout.ShowAt(button);
         };
         _overflow[button] = new OverflowEntry
@@ -2504,17 +2530,249 @@ public sealed class MainToolbar : UserControl
             LiveCaption = _repoPathCaption,
             ShowMenu = async anchor =>
             {
-                if (RecentReposProvider is null)
-                {
-                    OpenRepoRequested?.Invoke();
-                    return;
-                }
-
-                await PopulateRepoLinksAsync(flyout, "RepoOpen", RecentReposProvider);
+                await BuildWorkingDirMenuAsync(flyout);
                 flyout.ShowAt(anchor);
             },
         };
         return button;
+    }
+
+    // Upstream's four-line tooltip for the working-directory button, verbatim in
+    // meaning: what the button is, what each mouse button does, and the Ctrl
+    // modifier. The two gestures come from the live Hotkeys service.
+    private string WorkingDirTooltip()
+        => string.Join('\n',
+            T("FormBrowse/_workingDirectory.ToolTipText", "Change working directory"),
+            T("Left click opens the drop-down menu."),
+            T("Then hold Ctrl in order to open the selected repository in a new instance."),
+            T("Right click starts the \"Open repository\" dialog."));
+
+    // Builds the working-directory drop-down in upstream's order: search box,
+    // separator, favourites, recents, separator, Open / Close repository, separator,
+    // "Configure this menu...".
+    //
+    // Everything is added BEFORE ShowAt and rebuilt on every open: Avalonia 11.3.x
+    // measures a MenuFlyout's content when the popup opens and never re-measures it,
+    // so anything added afterwards would collapse the popup to a thin sliver.
+    // Filtering therefore only toggles IsVisible on items that already exist — which
+    // is what upstream's TextChanged handler does too.
+    private async Task BuildWorkingDirMenuAsync(MenuFlyout flyout)
+    {
+        flyout.Items.Clear();
+
+        // Both lists are read off the UI thread; a failure degrades to an empty
+        // group rather than an exception out of a click handler.
+        Task<IReadOnlyList<RepoLink>> favoritesTask = LoadFavoriteReposAsync();
+        Task<IReadOnlyList<RepoLink>> recentTask = LoadRecentReposAsync();
+        IReadOnlyList<RepoLink> favorites = await favoritesTask;
+        IReadOnlyList<RepoLink> recent = await recentTask;
+
+        // Repo entries only: the fixed commands and the group headers are excluded
+        // from filtering, like upstream's _excludeFromFilterMarker.
+        List<MenuItem> filterable = [];
+
+        TextBox filterBox = new()
+        {
+            Watermark = T("Search repositories..."),
+            MinWidth = 240,
+            Margin = new Thickness(0, 2),
+            Background = Brush("App.Panel", "#252526"),
+            Foreground = Brush("App.Text", "#DCDCDC"),
+            BorderBrush = Brush("App.Border", "#3F3F46"),
+            FontSize = 12,
+        };
+        filterBox.TextChanged += (_, _) =>
+        {
+            string text = filterBox.Text ?? string.Empty;
+            foreach (MenuItem item in filterable)
+            {
+                item.IsVisible = text.Length == 0
+                    || (item.Tag as string ?? string.Empty)
+                        .Contains(text, StringComparison.CurrentCultureIgnoreCase);
+            }
+        };
+
+        // StaysOpenOnClick: clicking into the box must not dismiss the menu.
+        flyout.Items.Add(new MenuItem { Header = filterBox, StaysOpenOnClick = true });
+        flyout.Items.Add(new MenuSeparator());
+
+        // Favourites. FavoritesService is a flat list in this port — repository
+        // categories are a separate piece of work — so they all land in one group
+        // under a non-clickable header instead of upstream's per-category submenus.
+        if (favorites.Count > 0)
+        {
+            flyout.Items.Add(new MenuItem
+            {
+                Header = T("FormBrowse/favouriteRepositoriesToolStripMenuItem.Text", "Favourite repositories"),
+                IsEnabled = false,
+            });
+            foreach (RepoLink link in favorites)
+            {
+                filterable.Add(AddRepoEntry(flyout, link, "RepoOpen"));
+            }
+
+            flyout.Items.Add(new MenuSeparator());
+        }
+
+        if (recent.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem { Header = T("(none)"), IsEnabled = false });
+        }
+        else
+        {
+            foreach (RepoLink link in recent)
+            {
+                filterable.Add(AddRepoEntry(flyout, link, "RepoOpen"));
+            }
+        }
+
+        flyout.Items.Add(new MenuSeparator());
+
+        MenuItem open = new()
+        {
+            Header = T("FormBrowse/openToolStripMenuItem.Text", "Open repository…"),
+            Icon = IconLoader.Image("RepoOpen", 16),
+            InputGesture = GestureFor(BrowseCommand.OpenRepo),
+        };
+        open.Click += (_, _) => OpenRepoRequested?.Invoke();
+        flyout.Items.Add(open);
+
+        MenuItem close = new()
+        {
+            Header = T("FormBrowse/closeToolStripMenuItem.Text", "Close (go to Dashboard)"),
+            Icon = IconLoader.Image("DashboardFolderGit", 16),
+            InputGesture = GestureFor(BrowseCommand.CloseRepository),
+            // Shown but inert until a host wires it, rather than pretending to work.
+            IsEnabled = CloseRepositoryRequested is not null,
+        };
+        close.Click += (_, _) => CloseRepositoryRequested?.Invoke();
+        flyout.Items.Add(close);
+
+        flyout.Items.Add(new MenuSeparator());
+
+        MenuItem configure = new()
+        {
+            Header = T("Configure this menu..."),
+            // Upstream opens FormRecentReposSettings; the port has no equivalent
+            // dialog yet, so the entry is present but disabled until one is wired.
+            IsEnabled = ConfigureRecentReposRequested is not null,
+        };
+        configure.Click += (_, _) => ConfigureRecentReposRequested?.Invoke();
+        flyout.Items.Add(configure);
+
+        // Give the search box the keyboard as soon as the popup is up, so typing
+        // filters straight away instead of going to the menu's own type-ahead.
+        Dispatcher.UIThread.Post(() => filterBox.Focus(), DispatcherPriority.Input);
+    }
+
+    // One repository row: caption + full path as the tooltip, Ctrl-aware activation.
+    // Returns the item so the caller can register it for filtering; Tag carries the
+    // text the filter matches against (label and path, as upstream matches on Text).
+    private MenuItem AddRepoEntry(MenuFlyout flyout, RepoLink link, string iconName)
+    {
+        MenuItem item = new()
+        {
+            // A string header goes through Avalonia's access-key parser, so an
+            // underscore in the data ("git_ext_mod") has to be escaped to survive.
+            Header = link.Label.Replace("_", "__"),
+            Icon = IconLoader.Image(link.Icon is { Length: > 0 } i ? i : iconName, 16),
+            Tag = link.Label + " " + link.Path,
+        };
+        ToolTip.SetTip(item, link.Path);
+
+        // MenuItem.Click carries no modifier state, so remember what was held down
+        // when the row was pressed. Reset per item, so a keyboard activation after a
+        // Ctrl+click elsewhere cannot inherit a stale modifier.
+        KeyModifiers modifiers = KeyModifiers.None;
+        item.AddHandler(PointerPressedEvent, (_, e) => modifiers = e.KeyModifiers,
+            RoutingStrategies.Tunnel);
+
+        string path = link.Path;
+        item.Click += (_, _) =>
+        {
+            bool newInstance = modifiers.HasFlag(KeyModifiers.Control);
+            modifiers = KeyModifiers.None;
+            OpenRepoLink(path, newInstance);
+        };
+
+        flyout.Items.Add(item);
+        return item;
+    }
+
+    // Plain click opens the repository in place (the host's OpenRepositoryRequested);
+    // Ctrl+click starts another copy of this application on that path, which
+    // Program.Main already understands ("first argument that is an existing directory
+    // becomes the initial repo"). If we cannot work out how we were launched, opening
+    // in place is a better outcome than doing nothing.
+    private void OpenRepoLink(string path, bool newInstance)
+    {
+        if (!newInstance)
+        {
+            OpenRepositoryRequested?.Invoke(path);
+            return;
+        }
+
+        string? exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe))
+        {
+            OpenRepositoryRequested?.Invoke(path);
+            return;
+        }
+
+        List<string> args = [];
+
+        // "dotnet GitExtensions.Avalonia.dll <path>" when running without an apphost.
+        if (string.Equals(Path.GetFileNameWithoutExtension(exe), "dotnet", StringComparison.Ordinal))
+        {
+            string? assembly = System.Reflection.Assembly.GetEntryAssembly()?.Location;
+            if (string.IsNullOrEmpty(assembly))
+            {
+                OpenRepositoryRequested?.Invoke(path);
+                return;
+            }
+
+            args.Add(assembly);
+        }
+
+        args.Add(path);
+        _ = Task.Run(() => new ExternalToolService().LaunchDetached(exe, args, workingDir: path));
+    }
+
+    // Favourites for the working-directory drop-down. The host may supply its own
+    // provider; otherwise the toolbar reads the same favorites.json the rest of the
+    // shell uses, so the entry needs no wiring to be real.
+    private Task<IReadOnlyList<RepoLink>> LoadFavoriteReposAsync()
+    {
+        if (FavoriteReposProvider is { } provider)
+        {
+            return SafeLinksAsync(provider);
+        }
+
+        return SafeLinksAsync(() => Task.Run<IReadOnlyList<RepoLink>>(() =>
+            new FavoritesService().Load().Select(ToRepoLink).ToList()));
+    }
+
+    private Task<IReadOnlyList<RepoLink>> LoadRecentReposAsync()
+        => RecentReposProvider is { } provider
+            ? SafeLinksAsync(provider)
+            : SafeLinksAsync(() => Task.Run<IReadOnlyList<RepoLink>>(async () =>
+                (await new RecentRepositoriesService().LoadAsync()).Select(ToRepoLink).ToList()));
+
+    private static RepoLink ToRepoLink(string path)
+        => new(Path.GetFileName(path) is { Length: > 0 } name ? name : path, path, "RepoOpen");
+
+    // A drop-down that cannot list one of its groups must still show the rest.
+    private static async Task<IReadOnlyList<RepoLink>> SafeLinksAsync(
+        Func<Task<IReadOnlyList<RepoLink>>> provider)
+    {
+        try
+        {
+            return await provider();
+        }
+        catch
+        {
+            return Array.Empty<RepoLink>();
+        }
     }
 
     // Rebuilds the branch flyout from the host provider using the same
