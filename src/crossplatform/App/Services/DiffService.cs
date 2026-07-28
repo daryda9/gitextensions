@@ -1,4 +1,6 @@
 using GitCommands;
+using GitExtUtils;
+using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
 
 namespace GitExtensions.Avalonia.Services;
@@ -37,12 +39,53 @@ public sealed record DiffFileRow(string Name, string? OldName, DiffChangeKind Ki
 }
 
 /// <summary>
+///  Which of the two artificial (non-commit) revisions of the revision grid a
+///  diff refers to — the counterpart of the core's
+///  <see cref="ObjectId.WorkTreeId"/> / <see cref="ObjectId.IndexId"/> sentinels
+///  and of <c>RevisionGridView.ArtificialRevision</c>.
+/// </summary>
+public enum ArtificialDiff
+{
+    /// <summary>
+    ///  The "Working directory" row: unstaged changes, i.e. the worktree against
+    ///  the index (<c>git diff</c>), untracked files included.
+    /// </summary>
+    WorkTree,
+
+    /// <summary>
+    ///  The "Commit index" row: staged changes, i.e. the index against HEAD
+    ///  (<c>git diff --cached</c>).
+    /// </summary>
+    Index,
+}
+
+/// <summary>
 ///  Reads diff data for a commit by reusing the Git Extensions core module
 ///  (<see cref="GitModule"/>) obtained from <see cref="GitContext.CreateModule"/>.
 ///  All calls are blocking and meant to run off the UI thread.
 /// </summary>
 public static class DiffService
 {
+    /// <summary>
+    ///  The sentinel hash of the "Working directory" row, taken from the core
+    ///  (<see cref="ObjectId.WorkTreeId"/>) rather than spelled out again.
+    /// </summary>
+    public static string WorkTreeHash { get; } = ObjectId.WorkTreeId.ToString();
+
+    /// <summary>The sentinel hash of the "Commit index" row (<see cref="ObjectId.IndexId"/>).</summary>
+    public static string IndexHash { get; } = ObjectId.IndexId.ToString();
+
+    /// <summary>
+    ///  Maps a sentinel hash back to the artificial revision it names, or
+    ///  <see langword="null"/> when <paramref name="hash"/> is a real commit.
+    ///  Lets a host that only has the hash from
+    ///  <c>RevisionGridView.ArtificialRevisionSelected</c> reach these APIs.
+    /// </summary>
+    public static ArtificialDiff? ArtificialFromHash(string? hash) =>
+        hash == IndexHash ? ArtificialDiff.Index
+        : hash == WorkTreeHash ? ArtificialDiff.WorkTree
+        : null;
+
     /// <summary>
     ///  Returns the files changed by <paramref name="commitHash"/> compared with
     ///  its first parent (or the empty tree for a root commit).
@@ -96,6 +139,140 @@ public static class DiffService
         }
 
         return rows;
+    }
+
+    /// <summary>
+    ///  Returns the changed files of one of the two <b>artificial</b> revisions:
+    ///  <see cref="ArtificialDiff.WorkTree"/> is <c>git diff</c> (worktree vs
+    ///  index, untracked files included), <see cref="ArtificialDiff.Index"/> is
+    ///  <c>git diff --cached</c> (index vs HEAD).
+    ///
+    ///  <para>Both go through the very same core entry point the commit modes use,
+    ///  <see cref="GitModule.GetDiffFilesWithSubmodulesStatus"/>, with the sentinel
+    ///  ids the core recognises — so the port does not invent a second code path.
+    ///  The core turns those sentinels into <c>StagedStatus.WorkTree</c> /
+    ///  <c>StagedStatus.Index</c> and answers from <c>git status</c> rather than
+    ///  <c>git diff</c>, which is why untracked files can appear at all and why
+    ///  renames are reported (<c>git status</c> detects them for the index).</para>
+    ///
+    ///  <para><b>Repository without HEAD</b> (a fresh <c>git init</c>, nothing
+    ///  committed): <see cref="GitModule.GetCurrentCheckout"/> answers a zero
+    ///  <see cref="ObjectId"/> there, which is a legal "old" side — the core reads
+    ///  <c>git status</c> anyway, so nothing has to be diffed against the empty
+    ///  tree and nothing throws. Everything staged shows up as added.</para>
+    /// </summary>
+    public static IReadOnlyList<DiffFileRow> GetArtificialChangedFiles(string repoPath, ArtificialDiff which)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        // The pairs below are the ones GitModule.GetStagedStatus recognises:
+        //  * (Index, WorkTree)          => StagedStatus.WorkTree  ("git diff")
+        //  * (HEAD, Index) with parent
+        //    == first                   => StagedStatus.Index     ("git diff --cached")
+        // For the index side "HEAD" may legitimately be the zero id (no commits
+        // yet): first == parentToSecond is what selects Index, not its value.
+        (ObjectId firstId, ObjectId secondId) = which == ArtificialDiff.WorkTree
+            ? (ObjectId.IndexId, ObjectId.WorkTreeId)
+            : (module.GetCurrentCheckout(), ObjectId.IndexId);
+
+        IReadOnlyList<GitItemStatus> changes = module.GetDiffFilesWithSubmodulesStatus(
+            firstId: firstId,
+            secondId: secondId,
+            parentToSecond: firstId,
+            excludeSkipWorktreeFiles: true,
+
+            // Untracked files belong to the working directory row (they are what
+            // "git status" reports and what the Windows view lists there); the
+            // index row can only ever hold tracked entries.
+            untrackedFilesMode: which == ArtificialDiff.WorkTree
+                ? UntrackedFilesMode.Default
+                : UntrackedFilesMode.No,
+            cancellationToken: CancellationToken.None);
+
+        List<DiffFileRow> rows = [];
+        foreach (GitItemStatus item in changes)
+        {
+            rows.Add(new DiffFileRow(item.Name, item.OldName, MapKind(item), item.IsTracked));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    ///  Returns the file list the <b>File tree</b> tab shows for an artificial
+    ///  revision — every file of that "tree", not the changed ones:
+    ///  <list type="bullet">
+    ///   <item><see cref="ArtificialDiff.Index"/>: the index, i.e.
+    ///    <c>git ls-files --cached</c> (through the core's
+    ///    <see cref="GitModule.GetTreeFiles"/>, which already maps the
+    ///    <see cref="ObjectId.IndexId"/> sentinel onto that command).</item>
+    ///   <item><see cref="ArtificialDiff.WorkTree"/>: the files as they are
+    ///    <b>on disk</b> — tracked entries plus untracked non-ignored ones, minus
+    ///    the entries deleted from the working tree. The core cannot answer this
+    ///    one: for the worktree sentinel it runs <c>git ls-files --no-cached</c>,
+    ///    an option git ignores when no other selector is given, so it returns the
+    ///    index again (verified with git 2.43) — a file deleted on disk would still
+    ///    be listed and an untracked one would not. Hence the two explicit
+    ///    <c>ls-files</c> runs here.</item>
+    ///  </list>
+    ///
+    ///  <para>As with <see cref="GetTreeFiles"/> the rows carry no change kind, so
+    ///  the list must be told not to draw status glyphs.</para>
+    /// </summary>
+    public static IReadOnlyList<DiffFileRow> GetArtificialTreeFiles(string repoPath, ArtificialDiff which)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        if (which == ArtificialDiff.Index)
+        {
+            IReadOnlyList<GitItemStatus> files = module.GetTreeFiles(ObjectId.IndexId, full: true);
+            List<DiffFileRow> indexRows = new(files.Count);
+            foreach (GitItemStatus item in files)
+            {
+                indexRows.Add(new DiffFileRow(item.Name, OldName: null, DiffChangeKind.Modified, IsTracked: true));
+            }
+
+            return indexRows;
+        }
+
+        // On disk = (tracked ∪ untracked-not-ignored) \ deleted-from-worktree.
+        // "--deduplicate" would spare the HashSet but only exists since git 2.31.
+        HashSet<string> onDisk = new(StringComparer.Ordinal);
+        foreach (string name in LsFiles(module, "--cached", "--others", "--exclude-standard"))
+        {
+            onDisk.Add(name);
+        }
+
+        foreach (string name in LsFiles(module, "--deleted"))
+        {
+            onDisk.Remove(name);
+        }
+
+        List<DiffFileRow> rows = new(onDisk.Count);
+        foreach (string name in onDisk.OrderBy(n => n, StringComparer.Ordinal))
+        {
+            rows.Add(new DiffFileRow(name, OldName: null, DiffChangeKind.Modified, IsTracked: true));
+        }
+
+        return rows;
+    }
+
+    // "git ls-files -z <selectors>", NUL-separated so odd path names survive.
+    private static IEnumerable<string> LsFiles(GitModule module, params string[] selectors)
+    {
+        GitArgumentBuilder args = new("ls-files") { "-z" };
+        foreach (string selector in selectors)
+        {
+            args.Add(selector);
+        }
+
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        if (!result.ExitedSuccessfully)
+        {
+            return [];
+        }
+
+        return result.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
     }
 
     /// <summary>

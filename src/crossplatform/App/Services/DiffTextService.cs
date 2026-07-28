@@ -15,22 +15,49 @@ public enum DiffTextKind
 
     /// <summary>A commit against the working tree (<c>git diff commit</c>).</summary>
     WorkingTree,
+
+    /// <summary>
+    ///  The artificial "Working directory" row: the worktree against the index —
+    ///  plain <c>git diff</c>, no revision argument at all.
+    /// </summary>
+    WorkTree,
+
+    /// <summary>
+    ///  The artificial "Commit index" row: the index against HEAD —
+    ///  <c>git diff --cached</c>, again with no revision argument, which is also
+    ///  what makes it work in a repository that has no HEAD yet.
+    /// </summary>
+    Index,
 }
 
 /// <summary>The identity of the diff to produce: what to compare and for which path.</summary>
 /// <param name="Kind">Which comparison to run.</param>
 /// <param name="RepoPath">Repository working directory.</param>
-/// <param name="CommitHash">The "new" side (or the commit shown).</param>
+/// <param name="CommitHash">
+///  The "new" side (or the commit shown). Ignored by
+///  <see cref="DiffTextKind.WorkTree"/> and <see cref="DiffTextKind.Index"/>, which
+///  are options rather than revisions — pass
+///  <see cref="DiffService.WorkTreeHash"/> / <see cref="DiffService.IndexHash"/>
+///  there so the request still says what it describes.
+/// </param>
 /// <param name="BaseHash">The "old" side, for <see cref="DiffTextKind.Range"/>.</param>
 /// <param name="Path">Repo-relative path of the file.</param>
 /// <param name="OldPath">Previous path, for renames (passed as an extra pathspec).</param>
+/// <param name="IsTracked">
+///  Whether git knows the file at all. An untracked file has nothing to be
+///  compared against, so it is diffed against <c>/dev/null</c> with
+///  <c>--no-index</c> — the same thing the Windows
+///  <c>RevisionDiffProvider</c> does — which is what makes a brand-new file in the
+///  "Working directory" row show its content instead of an empty pane.
+/// </param>
 public sealed record DiffTextRequest(
     DiffTextKind Kind,
     string RepoPath,
     string CommitHash,
     string? BaseHash,
     string Path,
-    string? OldPath);
+    string? OldPath,
+    bool IsTracked = true);
 
 /// <summary>
 ///  The user-toggleable diff presentation options of the diff toolbar. A single
@@ -170,12 +197,38 @@ public static class DiffTextService
             args.Add("-U" + context.ToString(CultureInfo.InvariantCulture));
         }
 
+        // An untracked file is on neither side of any revision pair, so the only
+        // diff there is against /dev/null, and "--no-index" is what lets git diff
+        // paths it does not track (the same shape the Windows RevisionDiffProvider
+        // produces). No revision argument may follow.
+        if (!request.IsTracked && request.Kind is DiffTextKind.WorkTree or DiffTextKind.WorkingTree)
+        {
+            args.Add("--no-index");
+            args.Add("--");
+            args.Add("/dev/null");
+            args.Add(request.Path);
+            return args;
+        }
+
         switch (request.Kind)
         {
             case DiffTextKind.Range:
                 args.Add(request.BaseHash ?? request.CommitHash);
                 args.Add(request.CommitHash);
                 break;
+
+            // The two artificial rows are OPTIONS, not revisions: "git diff" is
+            // worktree-vs-index and "git diff --cached" is index-vs-HEAD. Naming a
+            // revision would change the comparison — and "--cached" alone is also
+            // what keeps the index diff working in a repository with no HEAD yet
+            // (git reports every staged entry as added instead of failing to
+            // resolve HEAD; verified against git 2.43).
+            case DiffTextKind.WorkTree:
+                break;
+            case DiffTextKind.Index:
+                args.Add("--cached");
+                break;
+
             default:
                 args.Add(request.CommitHash);
                 break;
