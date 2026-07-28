@@ -1230,7 +1230,7 @@ priorità massima)
       **preesistente** ricompilando con la baseline: non introdotto dalle correzioni della
       dashboard. Assegnato al proprietario di `RevisionGridView.cs`. *grave, banale*
 
-- [ ] 1.14b **Righe artificiali, seconda metà.** La griglia ora alza
+- [x] 1.14b **Righe artificiali, seconda metà.** La griglia ora alza
       `ArtificialRevisionSelected` con un contratto scritto, e l'host pulisce File tree e GPG e
       marca stantii tutti i tab — quindi **il contenuto del commit precedente non resta più lì**.
       Manca il contenuto vero: **Diff** (`git diff` per Working directory, `git diff --cached` per
@@ -1447,11 +1447,11 @@ nel port, manca il punto d'accesso)
 - [x] 4.7 **Linkificazione del commit info**: gli hash dentro il corpo del messaggio non sono link
       (`CommitDataBodyRenderer.cs:44-65`), branch e tag non sono cliccabili (pillole inerti), e
       "Derives from" stampa `v1.0-5-gabc1234` invece di `v1.2.0 + 66 commits`. *media*
-- [ ] 4.8 **`GitProcessDialog` su PTY**: passarlo a `PtyProcess`/`TerminalEmulator` (**già
+- [x] 4.8 **`GitProcessDialog` su PTY**: passarlo a `PtyProcess`/`TerminalEmulator` (**già
       esistenti**, alimentano `ConsoleView`) sblocca in un colpo output live, barra di progresso
       dalle righe `\r` e **prompt interattivi** — oggi stdin è chiuso e `GIT_TERMINAL_PROMPT=0`,
       quindi passphrase e host-key `yes/no` non sono rispondibili. *media/alta*
-- [ ] 4.9 **Leva massima della file history**: dare a `RevisionGridView` un entry point **con path
+- [x] 4.9 **Leva massima della file history**: dare a `RevisionGridView` un entry point **con path
       filter** (oggi `LoadRepository(string)` è l'unico loader) chiuderebbe in un colpo grafo,
       decorazioni ref, righe artificiali e multi-selezione nel tab File history, che oggi
       reimplementa una lista nuda. *media/alta*
@@ -2138,6 +2138,107 @@ filtri, upstream lo tiene dismissibile a parte).
 *Non verificato*: la creazione effettiva di un tag; un repository **bare** (la metà bare del gating
 di New branch resta verificata solo per ispezione); il flusso Init → recenti (solo letto);
 `Ctrl+W` con la sola modifica del subagent (mai spedita).
+
+**M64** (2026-07-28) — **le tre leve architetturali della coda, chiuse in una iterazione**: 1.14b
+(righe artificiali), 4.8 (process dialog su PTY), 4.9 (file history sulla griglia vera). Tre
+subagent in worktree su file disgiunti + il cablaggio del loop. Quindici commit
+(`e66fe23d6`…`4a56e0fc1`).
+
+- **1.14b — contenuto vero per le righe artificiali** (`e66fe23d6`…`155f76bb9`, cablaggio
+  `27e7abe87`). `DiffService` ha ora le modalità **worktree** (`git diff`) e **index**
+  (`git diff --cached --find-renames`), lista file e testo per-file; l'untracked passa da
+  `git diff --no-index -- /dev/null <path>`. `DiffView`/`FileTreeView` hanno `ShowArtificial`,
+  `CommitDetailView`/`GpgView` un placeholder che **nomina la riga** ("Commit index is not a commit:
+  there is no signature to verify until it is committed."). Il loop ha cablato la dispatch sullo
+  **stesso path lazy per-tab** del commit (voce 1.13), quindi carica solo il tab visibile.
+  *Verificato dal subagent contro git a mano*: worktree = `D gone.txt, M mod.txt, A untracked`,
+  index = `R ren-src→ren-dst, M staged.txt`, patch byte-identiche; su un repo **senza HEAD** git
+  2.43 risolve `git diff --cached` da sé (nessun empty-tree fallback: verificato, non assunto).
+  *Verificato a schermo dal loop*: riga Working directory → `git diff -- one.txt` con `M one.txt` +
+  `A loose.txt`; riga Commit index → `--cached -- newstaged.txt`; File tree su index mostra
+  `newstaged.txt @ Commit index` col contenuto **staged** di un file cancellato sul disco;
+  placeholder leggibili; zero eccezioni.
+  - ⚠️ **Difetto trovato dal cablaggio: i sentinel erano invertiti** (`2e658b153`).
+    `RevisionGridView.WorkTreeHash` era `2222…` e `IndexHash` `1111…`, mentre il core ha
+    `ObjectId.WorkTreeId = 1111…` / `IndexId = 2222…` (`ObjectId.cs:33,38`) — e il commento sopra le
+    due costanti **affermava** che erano identiche byte per byte. Il nuovo `DiffService` deriva dal
+    core, quindi mappare per hash mostrava il diff **staged** sulla riga working-directory: visto a
+    schermo. Il cablaggio usa ora il `kind` dell'evento, e le due costanti sono state allineate al
+    core (dentro la view sono confrontate solo simbolicamente).
+  - **Cambio di interazione** (`4a56e0fc1`): il clic **singolo** su una riga artificiale non apre più
+    il commit dialog — apriva una finestra sopra il contenuto appena caricato. Upstream non lo fa
+    (`FormBrowse` riempie i tab e il dialogo si raggiunge dal pulsante Commit). Ora singolo =
+    seleziona, **doppio = dialogo**. Verificati entrambi a schermo.
+  - *Divergenza dichiarata*: il File tree della riga working-directory elenca i file **sul disco**,
+    non l'index come upstream, perché `GetTreeFiles(ObjectId.WorkTreeId)` del core emette
+    `git ls-files --no-cached` — opzione che git **ignora** senza altri selettori, restituendo di
+    nuovo l'index (verificato su git 2.43).
+  - *Landmine registrata nel core*: `ExecutableExtensions.cs:15` costruisce
+    `Lazy<Encoding>(… , isThreadSafe: false)`, quindi **le prime due chiamate git concorrenti** di un
+    processo lanciano `InvalidOperationException: ValueFactory attempted to access the Value
+    property`. Riprodotto dal subagent con un harness che partiva a freddo. Nell'app non morde (git
+    gira sempre prima che una riga sia cliccabile), ma un warm-up di una riga in `Program.Main` la
+    chiuderebbe per sempre.
+- **4.8 — process dialog su PTY** (`44f95787c`…`ef1f2c2d8`). `PtyProcess.StartCommand` (additivo)
+  più `GitStreamRunner.EnterPtyHost`/`IGitPtyHost`: sul flusso interattivo git gira su un PTY, con
+  fallback a pipe se il PTY manca. Nuovo `PtyTextBuffer` **line-oriented** (non `TerminalEmulator`:
+  una griglia cols×rows fissa avrebbe wrappato/troncato le righe di git — divergenza dichiarata in
+  codice), che consuma i ``, strippa ANSI/CSI/OSC ed estrae la percentuale. Il dialogo ha console
+  live, **barra di progresso** e **casella Reply** (mascherata per i segreti).
+  *Verificato con run reali*: clone locale `--no-local` di un repo da 900 file → **273 aggiornamenti
+  di percentuale durante il run** (primo a 54 ms), console finale **10 righe**, una sola riga
+  "Ricezione degli oggetti"; A/B sul path a pipe, stesso clone: **0 aggiornamenti**. Host-key
+  `yes/no` (fake ssh su `/dev/tty`) rispondibile dalla casella → fetch completato; **passphrase**
+  OpenSSH vera consumata e **mai** comparsa in console (echo tty off, `grep` = 0); credenziali
+  HTTPS username+password con Basic auth effettivamente inviata. **Abort**: hook `pre-commit` da
+  60 s → 3 processi, `KillAll` in 1 ms, 0 residui, exit 130; con un clean filter lento che tiene
+  davvero `index.lock`, **SIGINT lascia git rimuovere il proprio lock** (contro-prova: `kill -9` lo
+  lascia lì), e su uno scope senza processi vivi `KillAll` torna **false**, quindi l'unlock resta
+  gated. Console tab e path non-streaming senza regressioni. *Verificato a schermo dal loop*: Fetch
+  apre il dialogo PTY con comando, esito Success, Reply+Send, Abort disabilitato e **nessuna barra
+  finta** quando non c'è progresso da mostrare.
+  - **Cambio voluto**: `GIT_TERMINAL_PROMPT=1` (più `SSH_ASKPASS_REQUIRE=never`, `GIT_PAGER=cat`)
+    **solo sul path PTY**; il path a pipe resta a `0`. Conseguenza: un'operazione streaming può ora
+    **attendere un umano**, visibilmente e con Abort a portata.
+  - *Difetto registrato, non corretto*: il rilevamento del fallimento di autenticazione è
+    **solo inglese**. Con git in italiano il PTY stampa `fatal: Autenticazione non riuscita per …`,
+    che non matcha né `GitProcessDialog.LooksLikeAuthFailure` né i marker di `RemoteService`/
+    `PushRefsService`, quindi il fallback al `CredentialsDialog` non si apre (con `LC_ALL=C` matcha:
+    verificati entrambi i casi). Preesistente ma **più esposto**: il path vecchio falliva con il
+    messaggio non tradotto `could not read Username … terminal prompts disabled`, che matchava.
+- **4.9 — file history sulla griglia vera** (`c46dedc23`…`7aaa97f6d`). Nuovo
+  `RevisionGridView.LoadFileHistory(repo, path, options)`, fratello con path filter di
+  `LoadRepository`; `RevisionFilter` guadagna `FollowRenames`/`ExactRenamesAndCopiesOnly`/
+  `FullHistory`/`SimplifyMerges`. Il tab File history è ora un consumatore di una **seconda istanza**
+  della griglia (scelta (a)): l'istanza principale porta stato che la file history corromperebbe —
+  posizione nella storia, quick filter e `RevisionFilter`, scope dei branch, righe artificiali via
+  `SetWorkingState`, view options persistite, cablaggio ai tab inferiori. Arrivano quindi grafo,
+  pillole dei ref, multi-selezione e il menu di riga completo.
+  - **Scoperta da non riscoprire: `--follow` è fragile, non solo limitato** (git 2.43, misurato). Con
+    più ref di partenza (`HEAD --branches --remotes --tags`) o sotto `--topo-order` **tronca in
+    silenzio** al commit del rename (3 righe invece di 6), e `--skip` oltre quel commit restituisce
+    una **pagina vuota**. Una storia troncata è indistinguibile da una completa, quindi il servizio
+    forza un solo commit di partenza in date order e pagina allargando la finestra e scartando la
+    testa in memoria invece di usare `--skip`.
+  - *Verificato dal subagent* su un repo con merge, branch, rename in sottocartella e path con
+    spazi, ogni volta contro `git log`: 6 righe identiche a `git log --follow` con grafo e pillole
+    `main`/`side`/`v1`; Shift+clic → range di 4, Ctrl+clic → selezione discontinua di 5; follow
+    off → 3 righe (git dice 3), full-history off/on → 4/5; **voce 0.3 intatta** ("Copy path" dà
+    `sub/old.txt` prima del rename e `sub/new.txt` dopo); paging attraverso il rename 2 → 4 → 6.
+    *Verificato a schermo dal loop*: `one.txt — /tmp/r10loop — 1 commits (current branch)` con una
+    riga, uguale a `git log --follow --oneline -- one.txt`.
+  - *Disattivati di proposito in questa modalità* (non lasciati come decorazione): scope Branches,
+    menu View, Filter avanzato + reset ✕ (il suo campo path litigherebbe con questo), righe
+    artificiali.
+  - *Difetto lasciato*: con `--follow` git non riscrive i link ai parent, quindi il parent della riga
+    del rename è assente e la sua lane esce dal fondo mentre i commit pre-rename aprono una lane
+    nuova — discontinuità visibile nel grafo. È l'output di git; upstream ha la stessa lacuna e
+    nasconderla vorrebbe dire inventare archi.
+
+*Non verificato in M64*: il file picker "Save as" della file history (serve un portal XDG);
+revert/cherry-pick dal menu della file history (mutano il repo, stessi handler di prima); remote di
+rete veri e operazioni ricorsive sui submodule per il PTY; `CloneDialog`, che chiama
+`GitStreamRunner.Run` diretto e resta sul path a pipe.
 
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 

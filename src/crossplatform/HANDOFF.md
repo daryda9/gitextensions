@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M64**), tiene il contatore iterazione.
+  libera: **M65**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -207,15 +207,30 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M64**
-> **M63** ha chiuso le **nove voci banali** della coda (0.17, 0.33–0.39, 1.24). Di `- [ ]` restano
-> solo le tre leve — **1.14b**, **4.8**, **4.9** — più i `[~]` parziali (4.10 residuo toolbar, 3.2,
-> 3.3, 4.1, 4.11). Due scoperte di M63 da non riscoprire: **1.24 era già cablata** da M56 (la voce
-> di coda era stantia), e **Ctrl+W** non era un problema del PTY ma dell'allowlist di
-> `IsGestureOwnedByFocusedView` in `MainWindow` (il dispatcher hotkey **tunnela**, quindi vede la
-> gesture prima del terminale). Resta aperto un difetto del core: `MainWindow.OpenRepository` →
-> `RecordRecentAsync` non fa attecchire un repo appena clonato nella MRU (coperto lato
-> `CloneDialog`).
+> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M65**
+> **M63** ha chiuso le nove voci banali (0.17, 0.33–0.39, 1.24); **M64** le **tre leve**: 1.14b
+> (modalità worktree/index in `DiffService` + contenuto nei quattro tab per le righe artificiali),
+> 4.8 (`GitProcessDialog` su **PTY**: progress dai `\r`, prompt interattivi rispondibili, Abort che
+> fa rimuovere a git il proprio `index.lock` via SIGINT), 4.9 (**file history sulla griglia vera**
+> via `LoadFileHistory`, seconda istanza della grid). Nella coda round 9 **non resta nessuna `- [ ]`**:
+> solo i `[~]` parziali (4.10 residuo toolbar, 3.2, 3.3, 4.1, 4.11).
+>
+> Cose scoperte in M63/M64 da NON riscoprire:
+> - **1.24 era già cablata** da M56 (voce di coda stantia).
+> - **Ctrl+W**: non il PTY, ma l'allowlist di `IsGestureOwnedByFocusedView` (il dispatcher hotkey
+>   **tunnela**, vede la gesture prima del terminale).
+> - **Sentinel delle righe artificiali invertiti** rispetto al core (`WorkTreeId=1111`,
+>   `IndexId=2222`): allineati in M64, ma il cablaggio usa il `kind` dell'evento, non l'hash.
+> - **`--follow` è fragile**: con più ref di partenza o `--topo-order` **tronca in silenzio** al
+>   rename, e `--skip` oltre quel commit dà una pagina vuota. Un solo commit di partenza, date
+>   order, paging per allargamento della finestra.
+> - **`ExecutableExtensions.cs:15` del core**: `Lazy<Encoding>(isThreadSafe: false)` → le prime due
+>   chiamate git **concorrenti** di un processo lanciano `InvalidOperationException`. Un warm-up di
+>   una riga in `Program.Main` la chiuderebbe.
+> - **Rilevamento auth-failure solo inglese** (`LooksLikeAuthFailure`, marker in `RemoteService`/
+>   `PushRefsService`): con git in italiano il fallback `CredentialsDialog` non si apre. Aperto.
+> - `MainWindow.OpenRepository` → `RecordRecentAsync` non fa attecchire un repo appena clonato nella
+>   MRU (coperto lato `CloneDialog`). Aperto, meccanismo dentro il core.
 >
 > ### ► ROUND 9 (2026-07-27/28) — la lista buona è in `PORTING.md` → **"Coda round 9"**
 > Otto subagent READ-ONLY hanno auditato tutta la GUI area per area contro l'upstream. La coda che
