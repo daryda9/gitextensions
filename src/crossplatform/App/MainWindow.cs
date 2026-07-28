@@ -121,6 +121,11 @@ public sealed class MainWindow : Window
     private string? _repoPath;
     private string? _lastSelectedHash;
 
+    // True while the grid selection sits on an artificial row (working directory or
+    // index): _lastSelectedHash still holds the previous real commit, so anything that
+    // needs a start point must fall back to HEAD instead of using a stale hash.
+    private bool _artificialRowSelected;
+
     private const string DefaultTitle = "Git Extensions (Avalonia / Linux)";
 
     // Which commit each lazily-loaded bottom tab is currently showing; null = stale.
@@ -994,6 +999,7 @@ public sealed class MainWindow : Window
         // to be re-filled by the next real selection rather than lying.
         _revisions.ArtificialRevisionSelected += (_, _) =>
         {
+            _artificialRowSelected = true;
             _detailLoadedFor = null;
             _diffLoadedFor = null;
             _fileTreeLoadedFor = null;
@@ -1754,6 +1760,7 @@ public sealed class MainWindow : Window
         }
 
         _lastSelectedHash = commitHash;
+        _artificialRowSelected = false;
         _diffShowsRange = false;
         _statusBar.SetText(string.Empty);
 
@@ -3209,7 +3216,11 @@ public sealed class MainWindow : Window
             return;
         }
 
-        CreateTagRequest? request = await CreateTagDialog.AskAsync(this, _repoPath, "HEAD");
+        // Upstream tags the SELECTED revision and only falls back to HEAD when there is
+        // no selection (GitUICommands.cs:562). Passing "HEAD" unconditionally tagged the
+        // wrong commit whenever the user had picked an older one.
+        string startPoint = StartPointForRefCreation();
+        CreateTagRequest? request = await CreateTagDialog.AskAsync(this, _repoPath, startPoint);
         if (request is null)
         {
             return;
@@ -3217,7 +3228,7 @@ public sealed class MainWindow : Window
 
         RunOp($"Create tag {request.Name}",
             () => new BranchTagService().CreateTag(
-                _repoPath!, request.Name, "HEAD", request.Message,
+                _repoPath!, request.Name, startPoint, request.Message,
                 request.Operation, request.SignKeyId, request.Force, request.PushToRemote).Success);
     }
 
@@ -3228,7 +3239,8 @@ public sealed class MainWindow : Window
             return;
         }
 
-        CreateBranchRequest? request = await CreateBranchDialog.AskAsync(this, _repoPath, "HEAD");
+        string startPoint = StartPointForRefCreation();
+        CreateBranchRequest? request = await CreateBranchDialog.AskAsync(this, _repoPath, startPoint);
         if (request is null)
         {
             return;
@@ -3236,8 +3248,14 @@ public sealed class MainWindow : Window
 
         RunOp($"Create branch {request.Name}",
             () => new BranchTagService()
-                .CreateBranch(_repoPath!, request.Name, startPoint: "HEAD", checkout: request.Checkout).Success);
+                .CreateBranch(_repoPath!, request.Name, startPoint: startPoint, checkout: request.Checkout).Success);
     }
+
+    // The revision a new branch/tag should be anchored to: the selected commit when
+    // there is one, HEAD otherwise (no selection, or an artificial working-directory /
+    // index row, which has no commit of its own).
+    private string StartPointForRefCreation()
+        => !_artificialRowSelected && _lastSelectedHash is { Length: > 0 } hash ? hash : "HEAD";
 
     // ---- patch operations (format / apply / view) ----------------------------------
 
