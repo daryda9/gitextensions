@@ -1951,6 +1951,45 @@ subagent, l'ultima ondata del round.
   *Dichiarato non visto*: i tooltip delle tile della dashboard sono compilati ma l'hover sintetico
   non li fa scattare **nemmeno su pulsanti preesistenti** — limite dell'attrezzatura, non verifica.
 
+**M61** (2026-07-28) — **i due difetti della verifica finale**, entrambi con la causa vera diversa
+da quella che sembrava.
+
+- **Il TAB perso negli argomenti git** (`3b8b2bb3b`) — «Contained in no branch» compariva per
+  **ogni** commit. Non era il parser: `ArgumentBuilder` concatena gli argomenti in **una** command
+  line, quindi il TAB dentro `--format=%(HEAD)\t%(refname:short)` **spezzava l'argomento in due**.
+  Catturato con uno shim su PATH che logga ogni voce di argv:
+  prima `<--format=%(HEAD)>` `<%(refname:short)>`, dopo `<--format=%(HEAD)%09%(refname:short)>`.
+  Due occorrenze in `CommitDetailService` (anche `LoadRefHashes`, che rendeva i **pill dei ref link
+  morti**). *A schermo dopo il fix*: "Contained in branches: master, feature/alpha, release-2" —
+  identico a `git branch --contains`, col branch corrente per primo — e i pill navigano (clic su
+  `master` e sul tag `v1.0` spostano la selezione della griglia; prima non facevano nulla).
+  **Scansione dell'intero `App/`** per la stessa classe di bug: restano 5 occorrenze di spazi in
+  argomenti git, tutte **deliberate e verificate benigne** (due argomenti impacchettati di
+  proposito con valori quotati in `FileHistoryService`, le command line del credential helper, e
+  una stringa di sola anteprima mai eseguita). Gli usi corretti dell'idioma erano già lì
+  (`%x09`, `%x20`, `%09`, e `GitService` che aggira il problema con ASCII 0x1F): i due punti
+  corretti erano gli unici veri.
+- **Esc che non chiudeva i dialoghi-finestra** (`e6e611558`, `5d6b87fae`, `3869ee1ef`, più
+  `cfa035555`) — la causa **non era un handler mancante**: l'input focus X era già sulla finestra
+  del dialogo, ma Avalonia instrada `KeyDown` dall'**elemento** focalizzato, e quelle finestre non
+  ne avevano alcuno — il che spiega anche perché `Button.IsCancel` non funzionava, viaggiando sullo
+  stesso evento. I dialoghi pieni di caselle di testo sembravano a posto solo perché un campo
+  prendeva il fuoco da sé. Nuovo helper `Views/DialogKeys.cs` esteso a **25 finestre**, con
+  `EnsureFocusRoute` per le 9 che un handler ce l'avevano già e una **overload di veto** perché Esc
+  non possa abbandonare un processo git in corso (`GitProcessDialog`) o un'applicazione sparse.
+  *Trovato strada facendo*: anche l'**Esc-come-Cancel del commit dialog (M57) era morto** —
+  `CommitDialog.cs` è a zero righe di differenza dalla base, quindi l'handler era sempre stato
+  corretto: non riceveva mai il tasto. Ora funziona: **ripristinato, non rotto**.
+  *Nota di metodo dal subagent*: `FocusManager` in Avalonia 11 è **a livello di applicazione**,
+  quindi `GetFocusedElement()` continua a restituire un controllo della finestra principale mentre
+  un dialogo è aperto; un primo tentativo basato su un null check non funzionava, e la verifica
+  buona confronta i **visual root**.
+  Il loop ha poi spostato l'installazione dell'Esc del picker dal self-install nella view al suo
+  chiamante, dov'è il posto giusto.
+  *Verificate a schermo 5 finestre* (Open, About, Commit, Create branch, Cleanup) più le
+  non-regressioni; le altre 20 sono coperte dall'helper condiviso e dalla build, **non aperte una
+  per una**.
+
 **Interruzione**: il limite di sessione ha ucciso tre subagent a metà (verifica GUI di M53, albero
 sinistro, File tree+GPG). I due worktree contenevano ~1100 righe **non committate** ciascuno; le
 diff sono state salvate in `/tmp/loop-salvage/*.patch` e gli agent sono stati **ripresi dal loro
