@@ -162,8 +162,13 @@ public sealed class RevisionGridView : UserControl
     // bottom tabs for an artificial selection (see ArtificialRevisionSelected):
     // they are byte-for-byte the core's ObjectId.WorkTreeId / ObjectId.IndexId, so
     // a tab that understands those ids can be handed this hash unchanged.
-    public const string WorkTreeHash = "2222222222222222222222222222222222222222";
-    public const string IndexHash = "1111111111111111111111111111111111111111";
+    // They were SWAPPED with respect to the core until M64: the core has
+    // ObjectId.WorkTreeId = 1111…, ObjectId.IndexId = 2222…
+    // (GitExtensions.Extensibility/Git/ObjectId.cs:33,38), so a tab that mapped the
+    // hash through the core's ids showed the staged diff for the working-directory
+    // row. Both are only compared symbolically here, so the values can be aligned.
+    public const string WorkTreeHash = "1111111111111111111111111111111111111111";
+    public const string IndexHash = "2222222222222222222222222222222222222222";
 
     // Pending-work counts, pushed in by MainWindow via SetWorkingState; this view
     // never queries git for them itself.
