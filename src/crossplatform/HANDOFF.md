@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M65**), tiene il contatore iterazione.
+  libera: **M66**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -207,7 +207,7 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M65**
+> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M66**
 > **M63** ha chiuso le nove voci banali (0.17, 0.33–0.39, 1.24); **M64** le **tre leve**: 1.14b
 > (modalità worktree/index in `DiffService` + contenuto nei quattro tab per le righe artificiali),
 > 4.8 (`GitProcessDialog` su **PTY**: progress dai `\r`, prompt interattivi rispondibili, Abort che
@@ -312,9 +312,12 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
    assoluto nel titolo.
 5. **Compat/** — restano no-op solo shim **irraggiungibili** dal port (censiti in M42/D12);
    i file picker richiedono un portal XDG, altrimenti servirebbe `UseManagedSystemDialogs()`.
-6. **Clipboard** — verificato solo fino al confine Avalonia: sotto Xvfb il clipboard X11 di
-   Avalonia è inerte (controprova con `xclip`: il round-trip nudo funziona, `SetTextAsync`
-   no). Va provato su un display reale con "Copy hash" / "Copy file path".
+6. ✅ **RISOLTO — il clipboard FUNZIONA anche headless** (verificato in M65 con `xclip`:
+   `Copy to clipboard → Commit hash` restituisce l'hash esatto di `git rev-parse`, `Copy file path`
+   il path del file). La vecchia misura "clipboard X11 inerte sotto Xvfb" era un altro sintomo della
+   tabella atomi azzerata corretta da M58. **Resta** una divergenza di contenuto: upstream copia il
+   path **assoluto nativo** da un sottomenu con default in grassetto
+   (`CopyPathsToolStripMenuItem.cs:44-50`), il port copia il relativo.
 
 ### ⚠️ Classe di bug ricorrente: il core condiviso su Linux
 M43 e M44 sono lo stesso genere di difetto — codice del core che assume Windows o un thread

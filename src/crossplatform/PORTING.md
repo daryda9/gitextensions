@@ -2183,7 +2183,8 @@ subagent in worktree su file disgiunti + il cablaggio del loop. Quindici commit
   più `GitStreamRunner.EnterPtyHost`/`IGitPtyHost`: sul flusso interattivo git gira su un PTY, con
   fallback a pipe se il PTY manca. Nuovo `PtyTextBuffer` **line-oriented** (non `TerminalEmulator`:
   una griglia cols×rows fissa avrebbe wrappato/troncato le righe di git — divergenza dichiarata in
-  codice), che consuma i ``, strippa ANSI/CSI/OSC ed estrae la percentuale. Il dialogo ha console
+  codice), che consuma i `
+`, strippa ANSI/CSI/OSC ed estrae la percentuale. Il dialogo ha console
   live, **barra di progresso** e **casella Reply** (mascherata per i segreti).
   *Verificato con run reali*: clone locale `--no-local` di un repo da 900 file → **273 aggiornamenti
   di percentuale durante il run** (primo a 54 ms), console finale **10 righe**, una sola riga
@@ -2239,6 +2240,102 @@ subagent in worktree su file disgiunti + il cablaggio del loop. Quindici commit
 revert/cherry-pick dal menu della file history (mutano il repo, stessi handler di prima); remote di
 rete veri e operazioni ricorsive sui submodule per il PTY; `CloneDialog`, che chiama
 `GitStreamRunner.Run` diretto e resta sul path a pipe.
+
+**M65** (2026-07-28) — **residuo toolbar 4.10 + passata di leggibilità in tema CHIARO**, più i tre
+punti "da display reale" provati davvero. Iterazione 3, due subagent in worktree (uno **ucciso da un
+watchdog** a lavoro quasi finito: i cinque commit e il suo `NOTES.md` sono stati recuperati intatti —
+la disciplina del NOTES incrementale ha pagato). Nove commit (`e09a4c5b3`…`cbe6df507`).
+
+- **4.10 — quattro priorità su cinque erano GIÀ in base** (M60: `56f36b4c6` shell picker,
+  `8ea4081a4` dropdown WorkingDir, `d40fccae6`), e `ToolbarStateService.Classify` porta **tutti e 7**
+  gli stati upstream, combaciando riga per riga con `RepoStateVisualiser.Invoke`. Il buco vero era
+  uno: i **preferiti categorizzati** (`e09a4c5b3`, `81443dbab`). `FavoritesService` ha ora
+  `FavoriteRepo(Path, Category)` + `LoadEntries`/`AssignCategory`/`Categories`/`CategoryOf` con JSON
+  **tollerante** (stringa nuda = preferito senza categoria, oggetto = categorizzato; le firme
+  `Load`/`Add`/`Remove`/`Contains` non cambiano, le usano `DashboardView` e `MainWindow`), e il
+  dropdown WorkingDir raggruppa in un sottomenu per categoria con numerazione che riparte.
+  Contratto preso da upstream: **una categoria vuota RIMUOVE il preferito**, perché lì la categoria
+  *è* il flag di preferito.
+  *Verificato a schermo dal loop*: `1: r9repo` senza categoria in testa, poi ⭐ Experiments e
+  ⭐ Work, con i repo dentro. *Verificato dal subagent*: shell picker con le **3 shell realmente
+  presenti** (Bash in grassetto, Dash, Sh), corpo di CommitInfoPosition che cicla le 3 posizioni
+  **spostando davvero il layout**, "Checkout branch… Ctrl+." in testa al dropdown branch,
+  **6 stati su 7** del pulsante Commit da repo veri (incluso dirty-submodules da un repo con
+  submodule), Push `1↑ 2↓`, visibilità condizionale dei Worktrees, filtri che arrivano a git.
+  Ogni split-button e dropdown è stato **aperto** in uno screenshot (la trappola "Items dentro
+  Opening" si vede solo così). *Non verificato*: `RepoState.Unknown`, non provocabile headless.
+  *Escluso di proposito*: "Configure this menu…" (upstream `FormRecentReposSettings` riguarda i
+  **recenti**, non i preferiti; il port non ha quella pagina → niente pulsante finto) e la UI di
+  assegnazione categoria, che upstream mette nel menu contestuale della dashboard.
+- **Tema chiaro — la classe di bug M62 era davvero una classe.** Censimento: delle **23** chiavi
+  `App.*` lette nel port, **quattro erano lette e mai registrate** (`App.Foreground`,
+  `App.PanelBackground`, `App.DiffAdded`, `App.DiffRemoved`) più le sei `App.RepoState*`. Effetto
+  misurato in tema chiaro: testo `#DCDCDC` su finestra `#F3F3F3` = **1,24:1** (illeggibile) in tutto
+  il `CommitDialog`, righe `+` del diff **1,91:1**, righe `-` **3,10:1**. Registrate con valori
+  affini (nessuna tinta nuova): dark identico a quello che le view già dipingevano, light scurito
+  come fa `App.GraphGreen`. Dopo: **15,02:1**, **4,58:1**, **5,39:1**.
+  - **Decisione richiesta su `App.ConsoleBackground`/`App.ConsoleForeground`: REGISTRARE** (rovescia
+    la scelta di M62). I due presupposti di allora non reggono, verificati in codice: il process
+    dialog **non legge** quelle chiavi (codifica a mano `#ECE9D8`/`#101010`), e la console del tab
+    Console è **già** theme-driven (`App.Text`/`App.Panel`). Delle nove superfici read-only fissate
+    da `TextBoxSurface`, sette leggono già le chiavi di tema, una è il beige voluto, e solo queste
+    due erano `#111111` fisso. Il contrasto testo-su-fondo **non** discriminava (12,24:1 il
+    fallback), ha deciso il resto: il beige dista **1,10:1** dalla finestra chiara → si fonde, ed è
+    per questo che lì il fisso non stona; `#111111` distava **17,02:1** → era esattamente la
+    "lastra nera in un dialogo chiaro" che la passata doveva cacciare. Ora `#ECECEC`/`#1E1E1E` in
+    chiaro (14,11:1) e `#2D2D30`/`#DCDCDC` in scuro (10,01:1); l'identità "terminale" resta portata
+    da font monospace e bordo, come già per `OutputView`.
+  - **Nove difetti corretti e misurati** (`5419be6d5`, `1c556813b`, `52bcf288e`, `ab420b0b7`,
+    `04ffda3cd`): righe diff slavate nel tab Diff (1,88/2,90 → 4,58/5,39); console del Cleanup
+    lastra nera (fondo → `#ECECEC`, 14,11:1, e **invariata dopo il clic**: il pinning di M62 regge);
+    barra di conferma "will be deleted permanently" a 1,17:1; "Success" del process dialog in
+    LimeGreen a 1,91:1; otto `TextBlock` del `CommitDialog` in Gainsboro a 1,24:1; label
+    "No repository loaded." in `Brushes.Gray` (3,95:1 → 5,41:1) in quattro view; inchiostri diff
+    **duplicati** in `StashPanel` e `PatchDialogs`; stati Aborting/Aborted/Failed in `OrangeRed`
+    (3,10:1 → 5,39:1); separatore dell'header blame da `Brushes.Gray` ad `App.Border`.
+  - **Sei accenti del pulsante Commit** (`cbe6df507`, fatto dal loop perché cadeva fra i due
+    subagent): `MainToolbar` leggeva `App.RepoState*` "con fallback ai valori upstream", ma nessun
+    tema le registrava → vinceva **sempre** il fallback, che è tarato sulla toolbar chiara di
+    WinForms mentre qui è il **foreground del testo** della caption. Misurati su toolbar chiara
+    `#E4E4E4`: da **1,35:1** (Staged) a **3,44:1** (UntrackedOnly), quattro su sei sotto perfino
+    3:1. Ora dark = valori upstream, light = stessa tinta scurita a poco più di 4,6:1. *Misurato a
+    schermo*: caption `#366887` a **4,74:1** in chiaro, ancora `#87CEFA` a **7,33:1** in scuro.
+  - *Coperto e sano* (nessun difetto): chrome e menu aperti, albero, griglia, righe artificiali di
+    M64, tutti e nove i tab inferiori (compresa la file history-griglia di M64), e i dialoghi
+    Remotes/Submodules/Worktrees/Settings/About/Pull/Push/Cleanup più il process dialog aperto da un
+    Pull vero.
+  - *Misurati e NON corretti, con motivo* (richiederebbero tinte nuove o di ridisegnare un gruppo,
+    fuori mandato): la **palette di syntax highlighting** (5 tinte duplicate in `DiffView` e
+    `FileTreeView`, da **1,53:1** a 2,67:1 in chiaro → servono 5 chiavi `App.Token*` × 2 temi, cioè
+    progettare un tema di sintassi chiaro: **voce di coda a sé**); la pillola **tag** (3,25:1: fa
+    parte della terna delle pillole ref, va rifatta come gruppo); il marcatore ▶ del branch corrente
+    e ✔/✚ delle righe artificiali (2,83:1 e 2,67:1, appena sotto la soglia grafica, e
+    l'informazione non è veicolata dal solo colore); la **lane arancione** del grafo (2,33:1: è una
+    palette categorica di 8 tinte, cambiarne una rompe la distinguibilità che è il suo scopo);
+    l'ink **ambra** del prompt PTY (`Goldenrod`, 2,02:1: non esiste una chiave ambra affine da
+    riusare); `App.Accent` `#007ACC` su finestra chiara = **4,06:1** (è la tinta d'accento di base,
+    usata anche come *fondo*: ridisegnarla è fuori mandato). La palette **ANSI** di
+    `TerminalControl` è theme-invariant **per correttezza**: sono i colori SGR che chiede la shell.
+- **I tre punti "da display reale", provati e non dedotti.**
+  - **Clipboard: FUNZIONA headless**, contrariamente al follow-up storico. `Copy to clipboard →
+    Commit hash` mette `a93f54ab201b549b70b59c7cc8d9451857239165`, identico a `git rev-parse`;
+    `Copy file path` mette `one.txt`. La vecchia misura "clipboard X11 inerte sotto Xvfb" era un
+    altro sintomo della **tabella atomi azzerata** che M58 ha corretto: da rimuovere dalle liste di
+    limiti noti. Divergenza trovata di conseguenza: upstream copia il **path assoluto nativo** da un
+    **sottomenu** con default in grassetto (`CopyPathsToolStripMenuItem.cs:44-50`), il port copia il
+    relativo.
+  - **File picker: non si materializza, e ora sappiamo di più.** Un portal XDG è attivo nella
+    sessione (`xdg-desktop-portal-gnome`/`-gtk`) e l'app headless eredita
+    `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`, quindi la chiamata è possibile. Cliccando
+    `Browse…`: nessuna finestra su `:195`, **nessuna finestra sul display reale `:1`** (ispezionato
+    l'albero X), e `RepositoryPickerView.BrowseAsync` non scrive alcun `Error:` — quindi
+    `OpenFolderPickerAsync` **è tornata a mani vuote senza eccezione**. Resta non provato che il
+    picker funzioni su un desktop vero: servirebbe lanciare l'app sul display dell'utente.
+  - **0.16 / `WM_DELETE_WINDOW`**: già chiuso in M58, riconfermato in questa sessione (la "X"
+    riscrive `ui-state.json`).
+- **Trappola registrata**: `IconLoader.Load` costruisce un URI `avares://` **case-sensitive** e
+  restituisce **null in silenzio** → un nome con la capitalizzazione sbagliata non mostra nulla e non
+  segnala niente.
 
 ### Blocco PANNELLO INFERIORE (round 8) — i pulsanti che mancavano nei tab
 
