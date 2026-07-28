@@ -43,15 +43,20 @@ public sealed class CommandLogWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
-        _log = new TextBox
-        {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("monospace"),
-            Background = Brush("App.Control", Brushes.Black),
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
-        };
+        // TextBoxSurface (M62): the Fluent per-state repaint of the template child
+        // beats the local Background, so clicking this read-only log flipped its
+        // surface — measured #252526 → #000000 in the dark theme. The last read-only
+        // monospace output left unpinned along with SparseDialog's.
+        _log = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                AcceptsReturn = true,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = new FontFamily("monospace"),
+            },
+            Brush("App.Control", Brushes.Black),
+            Brush("App.Text", Brushes.Gainsboro));
         _scroll = new ScrollViewer
         {
             Content = _log,

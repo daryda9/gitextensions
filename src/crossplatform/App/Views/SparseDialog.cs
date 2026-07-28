@@ -80,15 +80,19 @@ public sealed class SparseDialog : Window
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             Margin = new Thickness(0, 10, 0, 4),
         };
-        _output = new TextBox
-        {
-            AcceptsReturn = true,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("monospace"),
-            Background = Brush("App.Control", Brushes.Black),
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
-        };
+        // TextBoxSurface (M62): see CommandLogWindow — the Fluent per-state repaint
+        // beats the local Background, so clicking this read-only output flipped its
+        // surface to pure black (dark) / pure white (light).
+        _output = Theming.TextBoxSurface.Apply(
+            new TextBox
+            {
+                AcceptsReturn = true,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.NoWrap,
+                FontFamily = new FontFamily("monospace"),
+            },
+            Brush("App.Control", Brushes.Black),
+            Brush("App.Text", Brushes.Gainsboro));
         ScrollViewer outputScroll = new()
         {
             Content = _output,
