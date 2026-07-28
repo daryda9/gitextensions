@@ -270,6 +270,10 @@ public sealed class MainWindow : Window
             // and only re-parses if the pre-load did not run or was overtaken.
             _ = InitializeTranslationsAsync();
 
+            // Restore the grid's view options before any repository is loaded, so the
+            // first git log already runs with the user's page size and toggles.
+            _revisions.RestoreViewOptions(_uiState.GridViewOptions, _uiState.GridPageSize);
+
             // CLI argument > cwd if it is a repo > last repo opened > dashboard.
             string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory())
                 ?? (_uiState.LastRepoPath is string last ? FindRepositoryRoot(last) : null);
@@ -697,6 +701,8 @@ public sealed class MainWindow : Window
             _uiState.BottomStar = _bottomRow.Height.Value;
             _uiState.DetailStar = _detailRow.Height.Value;
             _uiState.DiffStar = _diffRow.Height.Value;
+            _uiState.GridViewOptions = new Dictionary<string, bool>(_revisions.PersistedViewOptions);
+            _uiState.GridPageSize = _revisions.PageSize;
             _uiStateService.Save(_uiState);
         }
         catch
@@ -1036,6 +1042,9 @@ public sealed class MainWindow : Window
 
         _diff.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _diff.FileHistoryRequested += path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
+        // Safe to wire now that the grid guards against rebind re-entrancy (0.19).
+        _diff.FilterFileInGridRequested +=
+            path => _revisions.ApplyRevisionFilter(_revisions.CurrentFilter with { PathFilter = path });
         // Same two jumps from the file tree, now that it is a real tree.
         _fileTree.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _fileTree.FileHistoryRequested +=
