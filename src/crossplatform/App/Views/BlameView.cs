@@ -56,6 +56,14 @@ public sealed class BlameView : UserControl
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
     private static readonly IBrush MetaBrush = B("App.TextDim");
 
+    // Upstream's whole-commit highlight is the editor background nudged 6% darker
+    // (BlameControl.cs:84) — deliberately a shade of the surface, not an accent, so a
+    // commit spanning half the file does not repaint the view. "App.PanelAlt" is the
+    // palette's shade-of-the-panel entry and is exactly that relationship to
+    // "App.Panel", which the list is painted with; the brush instance is mutated in
+    // place on a theme switch, so capturing it once still follows the theme.
+    private static readonly IBrush CommitHighlightBrush = B("App.PanelAlt");
+
     private static string T(string? key, string english) => TranslationService.T(key, english);
 
     private static string T(string english) => TranslationService.T(english);
@@ -121,6 +129,15 @@ public sealed class BlameView : UserControl
     // Final line numbers that begin a run of consecutive lines from the same commit,
     // i.e. the only rows whose gutter is printed (see BuildRow).
     private HashSet<int> _bandStarts = [];
+
+    // The commit whose lines are currently tinted, and the one the pointer is over.
+    // Upstream drives the tint from the pointer alone (BlameControl.cs:191,223 →
+    // HighlightLinesForCommit); this port also drives it from the selection, so the
+    // affordance survives keyboard navigation and stays put once the pointer leaves —
+    // hence the two fields: _hoverCommit wins while the pointer is inside the list,
+    // and the selection is what the view falls back to.
+    private string? _highlightedCommit;
+    private string? _hoverCommit;
 
     /// <summary>
     ///  Raised with a full commit hash when the user picks "Show changes" for a
@@ -222,6 +239,25 @@ public sealed class BlameView : UserControl
         // ListBoxItem's own handler runs first and marks the event handled.
         _list.AddHandler(PointerPressedEvent, OnListPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
         _list.SelectionChanged += OnSelectionChanged;
+
+        // Hover drives the whole-commit tint, as upstream's two MouseMove handlers do.
+        _list.PointerMoved += OnListPointerMoved;
+        _list.PointerExited += (_, _) =>
+        {
+            _hoverCommit = null;
+            RefreshHighlight();
+        };
+
+        // Upstream's double click on either blame panel blames the revision of the
+        // line under the pointer (BlameControl.cs:71,530-537). DoubleTapped bubbles
+        // from the row, and the preceding single click has already selected it.
+        _list.DoubleTapped += (_, e) =>
+        {
+            if (RowFrom(e.Source) is not null)
+            {
+                BlameSelectedRevision();
+            }
+        };
 
         _detail.CommitNavigated += hash => CommitNavigated?.Invoke(hash);
 
@@ -356,6 +392,8 @@ public sealed class BlameView : UserControl
         _detailHash = null;
         _selectedParent = null;
         _selectedParentOf = null;
+        _highlightedCommit = null;
+        _hoverCommit = null;
         _status.Text = string.Format(T("Blaming {0}…"), filePath);
 
         // Supersede whatever was in flight. ShowBlame only ever runs on the UI
@@ -448,6 +486,10 @@ public sealed class BlameView : UserControl
 
     private BlameLineRow? Selected => _list.SelectedItem as BlameLineRow;
 
+    // The row an event landed on, or null when it landed on the list's background.
+    private static BlameLineRow? RowFrom(object? source)
+        => (source as Visual)?.FindAncestorOfType<ListBoxItem>(includeSelf: true)?.DataContext as BlameLineRow;
+
     private void OnListPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (!e.GetCurrentPoint(_list).Properties.IsRightButtonPressed)
@@ -455,14 +497,82 @@ public sealed class BlameView : UserControl
             return;
         }
 
-        if ((e.Source as Visual)?.FindAncestorOfType<ListBoxItem>(includeSelf: true) is { DataContext: BlameLineRow row })
+        if (RowFrom(e.Source) is { } row)
         {
             _list.SelectedItem = row;
         }
     }
 
+    private void OnListPointerMoved(object? sender, PointerEventArgs e)
+    {
+        string? commit = RowFrom(e.Source) is { IsUncommitted: false } row ? row.CommitHash : null;
+        if (commit == _hoverCommit)
+        {
+            return;
+        }
+
+        _hoverCommit = commit;
+        RefreshHighlight();
+    }
+
+    // ---- whole-commit highlight ---------------------------------------------
+
+    /// <summary>
+    ///  Tints every line of one commit, which is what makes "this block came in
+    ///  together" readable at a glance (upstream <c>HighlightLinesForCommit</c>,
+    ///  <c>BlameControl.cs:226-274</c>). The pointer wins while it is over the list;
+    ///  otherwise the selected line's commit is tinted.
+    ///
+    ///  <para>Only the <see cref="Grid.Background"/> of the already-built rows is
+    ///  touched: re-assigning <c>ItemsSource</c> would rebuild every container (and,
+    ///  from inside a selection handler, re-enter selection), which is the very
+    ///  defect the revision grid was just cured of.</para>
+    /// </summary>
+    /// <param name="force">
+    ///  Repaint even when the highlighted commit did not change. Needed on a
+    ///  selection change inside one commit's block: the tint itself is unchanged,
+    ///  but which row is left untinted (the selected one) has moved.
+    /// </param>
+    private void RefreshHighlight(bool force = false)
+    {
+        string? wanted = _hoverCommit
+            ?? (Selected is { IsUncommitted: false } selected ? selected.CommitHash : null);
+
+        if (wanted == _highlightedCommit && !force)
+        {
+            return;
+        }
+
+        _highlightedCommit = wanted;
+
+        foreach (Control container in _list.GetRealizedContainers())
+        {
+            // The container is a ListBoxItem wrapping the templated row; the grid
+            // BuildRow produced is found by its Tag, so no grid the control theme
+            // itself may contribute is ever repainted.
+            if (container.GetVisualDescendants().OfType<Grid>().FirstOrDefault(g => g.Tag is BlameLineRow) is { Tag: BlameLineRow row } grid)
+            {
+                grid.Background = TintFor(row);
+            }
+        }
+    }
+
+    // Null (transparent) leaves the container's own selection brush visible, so the
+    // selected line still reads as selected inside a tinted block.
+    private IBrush? TintFor(BlameLineRow row)
+        => _highlightedCommit is not null
+           && row.CommitHash == _highlightedCommit
+           && !ReferenceEquals(row, _list.SelectedItem)
+            ? CommitHighlightBrush
+            : null;
+
     private void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        // Only row backgrounds are touched, never ItemsSource: rebinding the items
+        // from inside a selection handler is the re-entrancy the revision grid was
+        // just fixed for.
+        RefreshHighlight(force: true);
+
         BlameLineRow? row = Selected;
         if (row is null || row.IsUncommitted || _repoPath is null)
         {
@@ -664,6 +774,12 @@ public sealed class BlameView : UserControl
         // of the band is left blank (BlameControl.cs:402-405). Repeating the hash on
         // every line — which is what this port used to do — destroys exactly the
         // "where does this commit's block start and end" reading the original gives.
+        // Tagged so RefreshHighlight can find this grid again inside its container,
+        // and tinted up front so a row scrolled into view while a commit is
+        // highlighted arrives already tinted.
+        grid.Tag = row;
+        grid.Background = TintFor(row);
+
         bool bandStart = _bandStarts.Contains(row.LineNumber);
 
         AddCell(grid, 0, bandStart ? row.ShortHash : string.Empty, foreground: MetaBrush);
