@@ -27,9 +27,6 @@ public sealed class RepositoryPickerView : UserControl
     private readonly TextBlock _status;
     private readonly TextBlock _recentHeader;
 
-    // Guards against re-installing when the control is detached and re-attached.
-    private bool _escapeInstalled;
-
     /// <summary>
     ///  Raised with the resolved repository root when the user picks a valid
     ///  repository (either via Browse… or the recent list). The MRU entry has
@@ -84,33 +81,6 @@ public sealed class RepositoryPickerView : UserControl
 
         // Populate the recent list without blocking construction.
         Refresh();
-    }
-
-    /// <summary>
-    ///  Wires Escape to close the dialog this picker is shown in.
-    ///
-    ///  <para>The "Open Git repository" dialog is assembled inline by the caller as a
-    ///  bare <see cref="Window"/> wrapped around this control, with no cancel button
-    ///  and no key handling, so Escape did nothing. The wiring belongs on that window,
-    ///  but the picker is its only content and its only consumer, so installing from
-    ///  here fixes it without reaching into the caller.</para>
-    ///
-    ///  <para>The <c>Content == this</c> test is the guard that keeps it honest: it
-    ///  only fires when the picker <em>is</em> the whole window, i.e. the Open dialog.
-    ///  Were the picker ever embedded in a larger window — the dashboard, say — Escape
-    ///  must not close that window, and this check makes sure it cannot.</para>
-    /// </summary>
-    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
-    {
-        base.OnAttachedToVisualTree(e);
-
-        if (!_escapeInstalled
-            && this.GetVisualRoot() is Window window
-            && ReferenceEquals(window.Content, this))
-        {
-            _escapeInstalled = true;
-            DialogKeys.InstallEscapeClose(window);
-        }
     }
 
     /// <summary>

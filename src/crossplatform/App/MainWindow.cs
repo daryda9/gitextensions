@@ -3540,6 +3540,9 @@ public sealed class MainWindow : Window
             Background = (IBrush)Application.Current!.Resources["App.Window"]!,
             Content = picker,
         };
+
+        // Esc closes it, like every other dialog in the port.
+        Views.DialogKeys.InstallEscapeClose(dlg);
         picker.RepositorySelected += repo =>
         {
             dlg.Close();
