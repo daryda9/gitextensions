@@ -21,7 +21,8 @@ public static class ThemeManager
     [
         "App.Window", "App.Panel", "App.PanelAlt", "App.Toolbar", "App.Border",
         "App.Text", "App.TextDim", "App.Accent", "App.Selection", "App.GraphGreen",
-        "App.Control",
+        "App.Control", "App.Foreground", "App.PanelBackground",
+        "App.DiffAdded", "App.DiffRemoved",
     ];
 
     private static readonly Dictionary<string, Color> Dark = new()
@@ -42,6 +43,25 @@ public static class ThemeManager
         // Brushes.Black) silently pinned a black surface that never followed the theme —
         // unreadable in the light theme, where the text stays App.Text.
         ["App.Control"] = Color.Parse("#252526"),
+
+        // Aliases of an existing key, registered because the call sites already read
+        // them (same M62 trap as App.Control: an unregistered key silently pins the
+        // fallback, which does not follow the theme).
+        //   App.Foreground      — synonym of App.Text used by CommitDialog (9 sites).
+        //     Its fallback was Brushes.Gainsboro (#DCDCDC): correct by accident in the
+        //     dark theme, 1.24:1 against the light window. Same value as App.Text, so
+        //     the dark theme is pixel-identical to before.
+        //   App.PanelBackground — synonym of App.PanelAlt used by CleanupDialog's
+        //     confirmation bar; its #2A2A2E fallback held a dark bar under App.Text ink
+        //     in the light theme (1.17:1). #2D2D30 vs #2A2A2E is 1.04:1, invisible.
+        ["App.Foreground"] = Color.Parse("#DCDCDC"),
+        ["App.PanelBackground"] = Color.Parse("#2D2D30"),
+
+        // Diff ink. The dark values are the ones DiffView already paints its own added
+        // and removed lines with (#6AC776 / #E06C6C), so the CommitDialog diff pane
+        // stops drifting to LimeGreen/OrangeRed and matches the real diff view.
+        ["App.DiffAdded"] = Color.Parse("#6AC776"),
+        ["App.DiffRemoved"] = Color.Parse("#E06C6C"),
     };
 
     private static readonly Dictionary<string, Color> Light = new()
@@ -57,6 +77,17 @@ public static class ThemeManager
         ["App.Selection"] = Color.Parse("#CBE3F7"),
         ["App.GraphGreen"] = Color.Parse("#1E7D5A"),
         ["App.Control"] = Color.Parse("#FFFFFF"),
+        ["App.Foreground"] = Color.Parse("#1E1E1E"),
+        ["App.PanelBackground"] = Color.Parse("#ECECEC"),
+
+        // Light-theme diff ink. The dark greens/reds are unreadable on a white panel
+        // (#6AC776 → 2.09:1, #E06C6C → 3.22:1), so they darken the way App.GraphGreen
+        // already does (#4EC9B0 → #1E7D5A). App.DiffAdded reuses that very value;
+        // App.DiffRemoved is the same brick-red hue as #E06C6C/#CE5C5C taken darker,
+        // because the palette registers no red at all and #CE5C5C only reaches 3.95:1.
+        // Measured on #FFFFFF: 5.08:1 and 5.98:1.
+        ["App.DiffAdded"] = Color.Parse("#1E7D5A"),
+        ["App.DiffRemoved"] = Color.Parse("#B03A3A"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
