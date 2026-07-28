@@ -409,6 +409,158 @@ public sealed class WorkingDirectoryService
     }
 
     /// <summary>
+    ///  Restores a SINGLE tracked file from <c>HEAD</c> (<c>git checkout HEAD --
+    ///  &lt;path&gt;</c>), which unlike <see cref="ResetFile"/> also rewrites the
+    ///  file's index entry: any staged change to it is dropped too. This is the
+    ///  "parent" half of the original's "Reset file(s) to" submenu, whose other half
+    ///  ("index") is <see cref="ResetFile"/>.
+    ///  Destructive — callers MUST confirm first. Never throws.
+    /// </summary>
+    public WorkingDirCommitResult ResetFileToHead(string repoPath, string path)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("checkout") { "HEAD", "--", path };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  Appends a pattern to <c>.git/info/exclude</c> — the same thing
+    ///  <see cref="AddToGitignore"/> does, but to the repository-local, never
+    ///  committed ignore list. Uses the module's own git directory, so it lands in
+    ///  the right place inside a worktree or a submodule.
+    /// </summary>
+    public WorkingDirCommitResult AddToInfoExclude(string repoPath, string pattern)
+    {
+        pattern = (pattern ?? string.Empty).Trim();
+        if (pattern.Length == 0)
+        {
+            return new WorkingDirCommitResult(false, "Empty ignore pattern.");
+        }
+
+        try
+        {
+            string gitDir = GitContext.CreateModule(repoPath).WorkingDirGitDir;
+            string infoDir = System.IO.Path.Combine(gitDir, "info");
+            Directory.CreateDirectory(infoDir);
+            string file = System.IO.Path.Combine(infoDir, "exclude");
+            string existing = File.Exists(file) ? File.ReadAllText(file) : string.Empty;
+
+            if (existing.Split('\n').Select(l => l.Trim().TrimEnd('\r')).Any(l => l == pattern))
+            {
+                return new WorkingDirCommitResult(true, $"'{pattern}' is already in .git/info/exclude.");
+            }
+
+            System.Text.StringBuilder sb = new(existing);
+            if (existing.Length > 0 && !existing.EndsWith('\n'))
+            {
+                sb.Append('\n');
+            }
+
+            sb.Append(pattern).Append('\n');
+            File.WriteAllText(file, sb.ToString());
+            return new WorkingDirCommitResult(true, $"Added '{pattern}' to .git/info/exclude.");
+        }
+        catch (Exception ex)
+        {
+            return new WorkingDirCommitResult(false, "Could not update .git/info/exclude: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    ///  Sets or clears the index bit that makes git ignore local changes to a file:
+    ///  <c>--skip-worktree</c> (the sparse-checkout bit, the one to use for a file
+    ///  that must keep local edits) or <c>--assume-unchanged</c> (a promise to git
+    ///  that the file will not change, purely a stat-cache optimisation).
+    /// </summary>
+    public WorkingDirCommitResult SetIndexFlag(string repoPath, string path, bool skipWorktree, bool on)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        string flag = (skipWorktree, on) switch
+        {
+            (true, true) => "--skip-worktree",
+            (true, false) => "--no-skip-worktree",
+            (false, true) => "--assume-unchanged",
+            (false, false) => "--no-assume-unchanged",
+        };
+        GitArgumentBuilder args = new("update-index") { flag, "--", path };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  The files currently hidden by one of the two bits above. <c>git ls-files -v</c>
+    ///  reports <c>S</c> for skip-worktree and a LOWER-CASE tag (<c>h</c>) for
+    ///  assume-unchanged; both make the file vanish from <c>git status</c>, and so
+    ///  from this dialog's lists, which is why the UI needs a way to list them back.
+    /// </summary>
+    public IReadOnlyList<string> ListHiddenByIndexFlag(string repoPath)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            GitArgumentBuilder args = new("ls-files") { "-v" };
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            if (!result.ExitedSuccessfully)
+            {
+                return [];
+            }
+
+            List<string> hidden = [];
+            foreach (string line in (result.StandardOutput ?? string.Empty)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string trimmed = line.TrimEnd('\r');
+                if (trimmed.Length < 3 || trimmed[1] != ' ')
+                {
+                    continue;
+                }
+
+                char tag = trimmed[0];
+                if (tag == 'S' || char.IsLower(tag))
+                {
+                    hidden.Add(trimmed[2..]);
+                }
+            }
+
+            return hidden;
+        }
+        catch (Exception)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    ///  Clears BOTH bits on every path returned by
+    ///  <see cref="ListHiddenByIndexFlag"/>, bringing the files back into the lists.
+    /// </summary>
+    public WorkingDirCommitResult RestoreHiddenByIndexFlag(string repoPath)
+    {
+        IReadOnlyList<string> hidden = ListHiddenByIndexFlag(repoPath);
+        if (hidden.Count == 0)
+        {
+            return new WorkingDirCommitResult(true, "No skipped or assumed-unchanged files.");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        foreach (string path in hidden)
+        {
+            foreach (string flag in new[] { "--no-skip-worktree", "--no-assume-unchanged" })
+            {
+                GitArgumentBuilder args = new("update-index") { flag, "--", path };
+                ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+                if (!result.ExitedSuccessfully)
+                {
+                    return new WorkingDirCommitResult(false, result.AllOutput);
+                }
+            }
+        }
+
+        return new WorkingDirCommitResult(true, $"Restored {hidden.Count} file(s).");
+    }
+
+    /// <summary>
     ///  Opens ONE working-directory file in the configured external difftool, the way
     ///  the shared file-list menu's difftool block does for a revision.
     ///

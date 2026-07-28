@@ -80,6 +80,15 @@ public sealed class CommitDialog : Window
     private readonly FileEntries _unstagedExtras = new();
     private readonly FileEntries _stagedExtras = new();
 
+    // .git/info/exclude sits next to the .gitignore block and, like it, only makes
+    // sense for an UNTRACKED file, so it belongs to the unstaged menu alone.
+    private readonly MenuItem _excludePathItem = new();
+
+    // How many files git is currently hiding because of skip-worktree /
+    // assume-unchanged. Refreshed by Reload (off the UI thread) because those files
+    // appear in neither list and the menu must not shell out while it opens.
+    private int _hiddenByIndexFlag;
+
     // Per-hunk / per-line entries on the diff panel's own context menu (the port's
     // answer to `git add -p`). Like every other menu here the Items are fixed and
     // only IsEnabled / IsVisible move while the menu opens.
@@ -270,6 +279,7 @@ public sealed class CommitDialog : Window
         _ignorePathItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Path);
         _ignoreExtItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Extension);
         _ignoreFolderItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Folder);
+        _excludePathItem.Click += (_, _) => AddSelectedToInfoExclude();
 
         WireFileEntries(_unstagedExtras, _unstagedList, staged: false);
         WireFileEntries(_stagedExtras, _stagedList, staged: true);
@@ -290,7 +300,12 @@ public sealed class CommitDialog : Window
                 new Separator(),
                 _unstagedCopyItem,
                 new Separator(),
-                _ignorePathItem, _ignoreExtItem, _ignoreFolderItem,
+                _ignorePathItem, _ignoreExtItem, _ignoreFolderItem, _excludePathItem,
+                new Separator(),
+            })
+            .Concat(FileFlagControls(_unstagedExtras))
+            .Concat(new Control[]
+            {
                 new Separator(),
                 _unstagedExtras.Refresh,
             })
@@ -320,6 +335,7 @@ public sealed class CommitDialog : Window
             _ignoreExtItem.IsEnabled = untracked is not null
                 && System.IO.Path.GetExtension(path).TrimStart('.').Length > 0;
             _ignoreFolderItem.IsEnabled = untracked is not null && path.LastIndexOf('/') > 0;
+            _excludePathItem.IsEnabled = untracked is not null;
 
             // The merge tool opens one file at a time, so it stays single-selection
             // only; taking a side / marking resolved already loops over the selection.
@@ -342,6 +358,11 @@ public sealed class CommitDialog : Window
                 {
                     new Separator(),
                     _stagedCopyItem,
+                    new Separator(),
+                })
+                .Concat(FileFlagControls(_stagedExtras))
+                .Concat(new Control[]
+                {
                     new Separator(),
                     _stagedExtras.Refresh,
                 })
@@ -585,6 +606,8 @@ public sealed class CommitDialog : Window
         _ignorePathItem.Header = T("FileStatusList/tsmiAddFileToGitIgnore.Text", "Add to .gitignore");
         _ignoreExtItem.Header = T("Ignore by extension");
         _ignoreFolderItem.Header = T("Ignore in folder");
+        _excludePathItem.Header =
+            T("FileStatusList/tsmiAddFileToGitInfoExclude.Text", "Add file to .git/info/exclude");
 
         // Headline: the upstream trans-unit that is a *complete* sentence, period
         // included, in every catalogue — unlike FormCommit/SolveMergeconflicts.Text,
@@ -625,6 +648,12 @@ public sealed class CommitDialog : Window
     private static string UnstageCaption => T("FormCommit/toolUnstageItem.Text", "Unstage");
     private static string CopyPathCaption => T("FileStatusList/tsmiCopyPaths.Text", "Copy path");
     private static string DiscardCaption => T("Discard changes");
+
+    // No upstream trans-unit: upstream reaches the same result by TOGGLING the
+    // "Show skip-worktree files" / "Show assume-unchanged files" filters and
+    // unchecking the bit on the rows that then appear. This dialog's lists have no
+    // such filters, so the only way back is a single restore-all entry.
+    private static string RestoreHiddenCaption => T("Restore skipped / assumed-unchanged files");
 
     // "Stage" + 3 → "Stage (3 files)". Upstream has a counted variant for staging
     // only (FormCommit/_stageFiles.Text, "Stage {0} files"); using it just for that
@@ -735,12 +764,16 @@ public sealed class CommitDialog : Window
     /// </summary>
     private sealed class FileEntries
     {
+        public readonly MenuItem ResetToParent = new();
         public readonly MenuItem Difftool = new();
         public readonly MenuItem Open = new();
         public readonly MenuItem OpenEditor = new();
         public readonly MenuItem ShowFolder = new();
         public readonly MenuItem History = new();
         public readonly MenuItem Blame = new();
+        public readonly MenuItem SkipWorktree = new();
+        public readonly MenuItem AssumeUnchanged = new();
+        public readonly MenuItem RestoreHidden = new();
         public readonly MenuItem Refresh = new();
     }
 
@@ -750,6 +783,8 @@ public sealed class CommitDialog : Window
     private static Control[] FileEntryControls(FileEntries e)
         =>
         [
+            e.ResetToParent,
+            new Separator(),
             e.Difftool,
             new Separator(),
             e.Open, e.OpenEditor, e.ShowFolder,
@@ -761,14 +796,24 @@ public sealed class CommitDialog : Window
     // catalogues fit the port's entries without new strings.
     private static void CaptionFileEntries(FileEntries e)
     {
+        e.ResetToParent.Header =
+            T("FileStatusList/tsmiResetFileTo.Text", "Reset file(s) to") + "  HEAD";
         e.Difftool.Header = T("FileStatusList/tsmiOpenWithDifftool.Text", "Open with difftool");
         e.Open.Header = T("FileStatusList/tsmiOpenWorkingDirectoryFile.Text", "Open working directory file");
         e.OpenEditor.Header = T("FileStatusList/tsmiEditWorkingDirectoryFile.Text", "Edit working directory file");
         e.ShowFolder.Header = T("FileStatusList/tsmiShowInFolder.Text", "Show in folder");
         e.History.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
         e.Blame.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
+        e.SkipWorktree.Header = T("FileStatusList/tsmiSkipWorktree.Text", "Skip worktree");
+        e.AssumeUnchanged.Header = T("FileStatusList/tsmiAssumeUnchanged.Text", "Assume unchanged");
+        e.RestoreHidden.Header = RestoreHiddenCaption;
         e.Refresh.Header = T("FormBrowse/refreshToolStripMenuItem.Text", "Refresh");
     }
+
+    // The index-bit entries, which upstream keeps at the bottom of the menu next to
+    // the ignore entries because they are the other way of making a file "go away".
+    private static Control[] FileFlagControls(FileEntries e)
+        => [e.SkipWorktree, e.AssumeUnchanged, e.RestoreHidden];
 
     private void WireFileEntries(FileEntries e, ListBox list, bool staged)
     {
@@ -779,6 +824,10 @@ public sealed class CommitDialog : Window
         e.History.Click += (_, _) => ShowFileTool(list, blame: false);
         e.Blame.Click += (_, _) => ShowFileTool(list, blame: true);
         e.Refresh.Click += (_, _) => Reload();
+        e.ResetToParent.Click += (_, _) => ResetSelectedToHead(list);
+        e.SkipWorktree.Click += (_, _) => SetIndexFlag(list, skipWorktree: true);
+        e.AssumeUnchanged.Click += (_, _) => SetIndexFlag(list, skipWorktree: false);
+        e.RestoreHidden.Click += (_, _) => RestoreHiddenFiles();
     }
 
     // Enable/disable only — the Items themselves never move while the menu opens.
@@ -798,6 +847,15 @@ public sealed class CommitDialog : Window
         e.ShowFolder.IsEnabled = row is not null;
         e.History.IsEnabled = row is not null;
         e.Blame.IsEnabled = onDisk && row!.Status != "new";
+
+        // Only a TRACKED file can be reset to HEAD or carry an index bit: an
+        // untracked one has no HEAD version and no index entry at all.
+        bool tracked = row is not null && row.Status != "new" && !conflict;
+        e.ResetToParent.IsEnabled = tracked;
+        e.SkipWorktree.IsEnabled = tracked;
+        e.AssumeUnchanged.IsEnabled = tracked;
+        e.RestoreHidden.IsEnabled = _hiddenByIndexFlag > 0;
+        e.RestoreHidden.Header = WithCount(RestoreHiddenCaption, _hiddenByIndexFlag);
     }
 
     private string FullPath(WorkingDirFileRow row)
@@ -895,6 +953,106 @@ public sealed class CommitDialog : Window
         // Not a dialog: the user must be able to keep staging while it is open.
         window.Show(this);
         SetStatus(string.Format(T("Opened '{0}'."), full));
+    }
+
+    /// <summary>
+    ///  "Reset file(s) to HEAD" — <c>git checkout HEAD -- &lt;path&gt;</c>. Unlike the
+    ///  Discard entry (which only restores the work tree from the index) this also
+    ///  drops what is STAGED for the file, so it is confirmed in its own words.
+    /// </summary>
+    private void ResetSelectedToHead(ListBox list)
+    {
+        if (SingleRow(list) is not { } row || row.Status == "new")
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string path = row.Path;
+        ConfirmThen(
+            string.Format(
+                T("Reset '{0}' to HEAD? Both the staged and the unstaged changes to this file are discarded, and this cannot be undone."),
+                path),
+            () =>
+            {
+                SetStatus(string.Format(T("Running {0} …"), $"git checkout HEAD -- {path}"));
+                RunGitResult(
+                    () => _service.ResetFileToHead(repo, path),
+                    result =>
+                    {
+                        SetStatus(result.Success
+                            ? string.Format(T("Reset '{0}' to HEAD."), path)
+                            : FirstLine(result.Output));
+                        Reload();
+                    });
+            });
+    }
+
+    // Appends the selected untracked file's path to .git/info/exclude — the same
+    // gesture as the .gitignore entries above it, but repository-local.
+    private void AddSelectedToInfoExclude()
+    {
+        if (SingleUntracked() is not { } row)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string pattern = "/" + row.Path.Replace('\\', '/');
+        SetStatus(string.Format(T("Adding '{0}' to .git/info/exclude …"), pattern));
+        RunGitResult(
+            () => _service.AddToInfoExclude(repo, pattern),
+            result =>
+            {
+                SetStatus(FirstLine(result.Output));
+                Reload();
+            });
+    }
+
+    /// <summary>
+    ///  Sets <c>--skip-worktree</c> / <c>--assume-unchanged</c> on the selected file.
+    ///  The file then disappears from both lists (git stops reporting it), which is
+    ///  the whole point of the bit — and why the menu also carries the restore entry.
+    /// </summary>
+    private void SetIndexFlag(ListBox list, bool skipWorktree)
+    {
+        if (SingleRow(list) is not { } row || row.Status == "new")
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        string path = row.Path;
+        bool skip = skipWorktree;
+        SetStatus(string.Format(
+            T("Running {0} …"),
+            $"git update-index {(skip ? "--skip-worktree" : "--assume-unchanged")} -- {path}"));
+        RunGitResult(
+            () => _service.SetIndexFlag(repo, path, skip, on: true),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? string.Format(
+                        skip
+                            ? T("git now skips the work tree for '{0}'; it is hidden until restored.")
+                            : T("git now assumes '{0}' unchanged; it is hidden until restored."),
+                        path)
+                    : FirstLine(result.Output));
+                Reload();
+            });
+    }
+
+    private void RestoreHiddenFiles()
+    {
+        string repo = _repoPath;
+        SetStatus(string.Format(T("Running {0} …"), "git update-index --no-skip-worktree --no-assume-unchanged"));
+        RunGitResult(
+            () => _service.RestoreHiddenByIndexFlag(repo),
+            result =>
+            {
+                SetStatus(FirstLine(result.Output));
+                Reload();
+            });
     }
 
     private static WorkingDirFileRow? SingleRow(ListBox list)
@@ -2567,7 +2725,11 @@ public sealed class CommitDialog : Window
     }
 
     // Everything one Reload needs, gathered in a single off-UI-thread pass.
-    private sealed record ReloadSnapshot(WorkingDirStatus Status, bool Merging, string MergeMessage);
+    private sealed record ReloadSnapshot(
+        WorkingDirStatus Status,
+        bool Merging,
+        string MergeMessage,
+        int HiddenByIndexFlag);
 
     // True when the repository has an in-progress merge, i.e. MERGE_HEAD exists in
     // the REAL git directory. That is not always "<repo>/.git": in a linked worktree
@@ -2654,10 +2816,25 @@ public sealed class CommitDialog : Window
             }
 
             (bool merging, string mergeMessage) = ReadMergeState(repo);
-            return new ReloadSnapshot(status, merging, mergeMessage);
+
+            // Files hidden by skip-worktree / assume-unchanged are in NEITHER list
+            // (git status does not report them), so the count is read here, off the
+            // UI thread, and only used to caption/enable the restore entry.
+            int hidden;
+            try
+            {
+                hidden = _service.ListHiddenByIndexFlag(repo).Count;
+            }
+            catch
+            {
+                hidden = 0;
+            }
+
+            return new ReloadSnapshot(status, merging, mergeMessage, hidden);
         }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
         {
             WorkingDirStatus status = t.Result.Status;
+            _hiddenByIndexFlag = t.Result.HiddenByIndexFlag;
             ApplyMergeState(t.Result);
 
             // Unmerged paths are shown inside the unstaged list with a "U" status,
