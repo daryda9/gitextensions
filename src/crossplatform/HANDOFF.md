@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M58,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M60,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `5a7a4b707` (… + M50–M51 + **round 9: M52 correttezza · M53 menu/griglia/file history/toolbar · M54 albero+File tree+GPG · M55 barra menu+stash+dashboard · M56 fix re-entrancy+persistenza+impostazioni · M57 push rifiutato+blame+link · M58 chiusura finestra+banner**) |
+| HEAD al momento dell'handoff | `c901e1aec` (… + **round 9 completo: M52–M60**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M59**), tiene il contatore iterazione.
+  libera: **M61**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
