@@ -104,6 +104,7 @@ public sealed class MainWindow : Window
     // upstream's FormBrowse hotkeys; see InstallHotkeys for what each one runs.
     private readonly HotkeyService _hotkeys = new();
     private readonly RepositoryStateService _repositoryState = new();
+    private readonly Views.RepositoryProgressBanner _progressBanner = new();
 
     // Left-panel width remembered across a Ctrl+Alt+C collapse/expand.
     private double _treeWidthBeforeCollapse;
@@ -581,6 +582,11 @@ public sealed class MainWindow : Window
     private void WireWatcher()
     {
         _watcher.Changed += _ => Dispatcher.UIThread.Post(AutoRefresh);
+
+        // The in-progress banner suspends the watcher around its own git calls and
+        // asks for a refresh once an operation ends (e.g. "Stop bisect").
+        _progressBanner.SuspendWatcher = () => _watcher.Suspend();
+        _progressBanner.RepositoryChanged += RefreshAll;
         _watcher.Degraded += message => Dispatcher.UIThread.Post(() => _statusBar.SetText(message));
     }
 
@@ -721,6 +727,7 @@ public sealed class MainWindow : Window
         Detach(_detail);
         Detach(_diff);
         Detach(_bottom);
+        Detach(_progressBanner);
 
         // The Commit tab hosts the commit detail only when the commit info sits
         // below the graph; otherwise the detail moves beside the grid and the tab
@@ -738,6 +745,9 @@ public sealed class MainWindow : Window
         // Preserve the current star sizes across the rebuild.
         _revRow = new RowDefinition(new GridLength(_revRow.Height.Value, GridUnitType.Star));
         _bottomRow = new RowDefinition(new GridLength(_bottomRow.Height.Value, GridUnitType.Star));
+        // Row 0 is the "a git operation is in progress" banner; it collapses to
+        // nothing when the repository is idle.
+        _right.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         _right.RowDefinitions.Add(_revRow);
         _right.RowDefinitions.Add(new RowDefinition(new GridLength(4, GridUnitType.Pixel)));
         _right.RowDefinitions.Add(_bottomRow);
@@ -745,9 +755,11 @@ public sealed class MainWindow : Window
         Control top = detailBelow ? _revisions : BuildGraphWithSideDetail();
 
         GridSplitter rightSplit = new() { Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
-        Grid.SetRow(top, 0);
-        Grid.SetRow(rightSplit, 1);
-        Grid.SetRow(_bottom, 2);
+        Grid.SetRow(_progressBanner, 0);
+        Grid.SetRow(top, 1);
+        Grid.SetRow(rightSplit, 2);
+        Grid.SetRow(_bottom, 3);
+        _right.Children.Add(_progressBanner);
         _right.Children.Add(top);
         _right.Children.Add(rightSplit);
         _right.Children.Add(_bottom);
@@ -2624,6 +2636,7 @@ public sealed class MainWindow : Window
         _statusBar.LoadRepository(_repoPath);
         // No-op while no file is shown in the history tab.
         _fileHistory.Reload();
+        _progressBanner.Refresh();
         RefreshToolbarState();
 
         // Tell the watcher the window is now up to date: it drops the events that
@@ -3775,6 +3788,7 @@ public sealed class MainWindow : Window
     {
         _repoPath = repoPath;
         _console.RepoPath = repoPath;
+        _progressBanner.SetRepository(repoPath);
         ShowRepositoryView();
         WarmUpCore(repoPath);
 
