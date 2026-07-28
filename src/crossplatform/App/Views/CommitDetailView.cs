@@ -75,6 +75,10 @@ public sealed class CommitDetailView : UserControl
     // under the pointer. Rebuilt by every Render.
     private readonly Dictionary<Control, string> _linkTargets = [];
 
+    // The hash spans inside the message pane, in ascending order. Kept apart from
+    // _linkTargets because these are ranges of one control's text, not controls.
+    private readonly List<CommitMessageLink> _messageLinks = [];
+
     // Last rendered commit, kept so a language switch can re-label the panel
     // without another git round-trip.
     private CommitDetailInfo? _rendered;
@@ -219,6 +223,15 @@ public sealed class CommitDetailView : UserControl
         // menu hit). Getting in ahead of them also leaves any highlight alone.
         AddHandler(PointerPressedEvent, OnPreviewPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
 
+        // Hash links inside the message are runs, not controls, so their click and
+        // their hand cursor are resolved against the text layout. Tunnelling for the
+        // press: the SelectableTextBlock would otherwise start a selection drag and
+        // mark the event handled before it ever bubbles here.
+        _message.AddHandler(PointerPressedEvent, OnMessagePointerPressed, RoutingStrategies.Tunnel);
+        _message.PointerMoved += (_, e) =>
+            _message.Cursor = MessageLinkAt(e.GetPosition(_message)) is null ? null : HandCursor;
+        _message.PointerExited += (_, _) => _message.Cursor = null;
+
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
@@ -264,6 +277,26 @@ public sealed class CommitDetailView : UserControl
     private static string MenuHeader(string caption)
         => RevisionFilterDialog.StripMnemonic(caption).Replace("_", "__", StringComparison.Ordinal);
 
+    // One shared instance: a Cursor is a small unmanaged handle, and re-creating it
+    // on every pointer move over the message would churn one per frame.
+    private static readonly Cursor HandCursor = new(StandardCursorType.Hand);
+
+    private void OnMessagePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        // The right button belongs to the context menu (handled by the tunnelling
+        // handler on the panel), which offers "Copy link" for the same span.
+        if (!e.GetCurrentPoint(_message).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        if (MessageLinkAt(e.GetPosition(_message)) is { } hash)
+        {
+            e.Handled = true;
+            CommitNavigated?.Invoke(hash);
+        }
+    }
+
     private void OnPreviewPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (!e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
@@ -289,6 +322,14 @@ public sealed class CommitDetailView : UserControl
     /// </summary>
     private string? LinkAt(Point position)
     {
+        // A hash inside the message body is a text range, not a control, so it is
+        // asked first — the walk below would only ever reach the message block itself.
+        if (_message.GetVisualRoot() is not null
+            && MessageLinkAt(this.TranslatePoint(position, _message) ?? default) is { } messageLink)
+        {
+            return messageLink;
+        }
+
         if (_linkTargets.Count == 0)
         {
             return null;
@@ -729,10 +770,41 @@ public sealed class CommitDetailView : UserControl
         {
             if (!string.IsNullOrEmpty(detail.DescribeTag))
             {
-                _details.Children.Add(SectionLabel(string.Format(
-                    "{0} {1}",
-                    T("CommitInfo/_derivesFromTag.Text", "Derives from tag:"),
-                    detail.DescribeTag)));
+                // Upstream prints "Derives from tag: <tag link> + N commits"
+                // (CommitInfo.cs:575-590) — the raw "v1.0-5-gabc1234" git hands back
+                // is a describe expression, not something a reader should have to
+                // decode. The count is a separate label so its plural word stays
+                // translatable on its own.
+                StackPanel line = new()
+                {
+                    Orientation = Orientation.Horizontal,
+                    Margin = new Thickness(14, 8, 14, 2),
+                };
+                line.Children.Add(new TextBlock
+                {
+                    Text = T("CommitInfo/_derivesFromTag.Text", "Derives from tag:"),
+                    Foreground = B("App.TextDim"),
+                    FontWeight = FontWeight.SemiBold,
+                    Margin = new Thickness(0, 0, 6, 0),
+                });
+                line.Children.Add(RefLink(detail.DescribeTag, isTag: true));
+
+                if (!string.IsNullOrEmpty(detail.DescribeCommitCount))
+                {
+                    line.Children.Add(new TextBlock
+                    {
+                        Text = string.Format(
+                            T("+ {0} {1}"),
+                            detail.DescribeCommitCount,
+                            T("CommitInfo/_plusCommits.Text", "commits")),
+                        Foreground = B("App.TextDim"),
+                        FontWeight = FontWeight.SemiBold,
+                        Margin = new Thickness(6, 0, 0, 0),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    });
+                }
+
+                _details.Children.Add(line);
             }
             else
             {
@@ -749,7 +821,95 @@ public sealed class CommitDetailView : UserControl
             _details.Children.Add(notes);
         }
 
-        _message.Text = detail.Message;
+        RenderMessage(detail);
+    }
+
+    /// <summary>
+    ///  Fills the message pane, turning every abbreviated hash the service could
+    ///  resolve into a link (upstream <c>CommitDataBodyRenderer.cs:44,50-65</c>).
+    ///
+    ///  <para>The links are <see cref="Run"/>s, not controls: an inline control would
+    ///  break the pane's text selection and its wrapping. A run cannot carry a click
+    ///  handler, so the spans are remembered in <see cref="_messageLinks"/> and a hit
+    ///  is resolved against the block's own text layout — which is also what lets
+    ///  <see cref="LinkAt"/> offer "Copy link" over them.</para>
+    /// </summary>
+    private void RenderMessage(CommitDetailInfo detail)
+    {
+        _messageLinks.Clear();
+        _message.Inlines?.Clear();
+
+        string text = detail.Message;
+        IReadOnlyList<CommitMessageLink> links = detail.Links;
+        if (links.Count == 0)
+        {
+            // No inlines at all in the common case: a plain Text keeps selection and
+            // wrapping on the fast path.
+            _message.Text = text;
+            return;
+        }
+
+        _message.Text = null;
+        InlineCollection inlines = _message.Inlines ??= [];
+
+        int cursor = 0;
+        foreach (CommitMessageLink link in links)
+        {
+            if (link.Start < cursor || link.Start + link.Length > text.Length)
+            {
+                continue;
+            }
+
+            if (link.Start > cursor)
+            {
+                inlines.Add(new Run(text[cursor..link.Start]));
+            }
+
+            inlines.Add(new Run(text.Substring(link.Start, link.Length))
+            {
+                Foreground = B("App.Accent"),
+                TextDecorations = TextDecorations.Underline,
+            });
+
+            _messageLinks.Add(link);
+            cursor = link.Start + link.Length;
+        }
+
+        if (cursor < text.Length)
+        {
+            inlines.Add(new Run(text[cursor..]));
+        }
+    }
+
+    /// <summary>
+    ///  The commit a point inside the message pane is over, or <see langword="null"/>.
+    ///  The point is in <see cref="_message"/>'s own coordinates.
+    /// </summary>
+    private string? MessageLinkAt(Point inMessage)
+    {
+        if (_messageLinks.Count == 0)
+        {
+            return null;
+        }
+
+        // Outside the laid-out text the hit test still snaps to the nearest character,
+        // which would make the empty space past the end of a line "a link".
+        TextHitTestResult hit = _message.TextLayout.HitTestPoint(inMessage);
+        if (!hit.IsInside)
+        {
+            return null;
+        }
+
+        int index = hit.TextPosition;
+        foreach (CommitMessageLink link in _messageLinks)
+        {
+            if (index >= link.Start && index < link.Start + link.Length)
+            {
+                return link.FullHash;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -783,6 +943,8 @@ public sealed class CommitDetailView : UserControl
         _avatarHost.Child = null;
         _details.Children.Clear();
         _linkTargets.Clear();
+        _messageLinks.Clear();
+        _message.Inlines?.Clear();
         _message.Text = string.Empty;
     }
 
@@ -965,8 +1127,13 @@ public sealed class CommitDetailView : UserControl
         TextWrapping = TextWrapping.Wrap,
     };
 
-    /// <summary>Renders ref names (branches/tags) as small tinted pill labels.</summary>
-    private static WrapPanel TagWrap(IReadOnlyList<string> names, IBrush accent)
+    /// <summary>
+    ///  Renders ref names (branches/tags) as small tinted pill labels. A pill whose
+    ///  ref the repository still has resolves to a commit and becomes clickable —
+    ///  upstream renders both kinds as links (<c>RefsFormatter.cs:30,41</c>) — which
+    ///  is also what gives "Copy link" something to copy over a branch name.
+    /// </summary>
+    private WrapPanel TagWrap(IReadOnlyList<string> names, IBrush accent)
     {
         WrapPanel panel = new()
         {
@@ -976,6 +1143,13 @@ public sealed class CommitDetailView : UserControl
 
         foreach (string name in names)
         {
+            TextBlock caption = new()
+            {
+                Text = name,
+                Foreground = B("App.Text"),
+                FontSize = 12,
+            };
+
             Border pill = new()
             {
                 Background = B("App.Control"),
@@ -984,17 +1158,69 @@ public sealed class CommitDetailView : UserControl
                 CornerRadius = new CornerRadius(3),
                 Padding = new Thickness(6, 1, 6, 2),
                 Margin = new Thickness(0, 2, 6, 2),
-                Child = new TextBlock
-                {
-                    Text = name,
-                    Foreground = B("App.Text"),
-                    FontSize = 12,
-                },
+                Child = caption,
             };
+
+            // Only a ref that still resolves is made to look clickable: a dead name
+            // dressed as a link would be a button that does nothing.
+            if (_rendered?.Refs.TryGetValue(name, out string? hash) is true && hash.Length > 0)
+            {
+                caption.Foreground = B("App.Accent");
+                pill.Cursor = HandCursor;
+                pill.PointerPressed += (_, e) =>
+                {
+                    if (e.GetCurrentPoint(pill).Properties.IsLeftButtonPressed)
+                    {
+                        e.Handled = true;
+                        CommitNavigated?.Invoke(hash);
+                    }
+                };
+                _linkTargets[pill] = hash;
+            }
+
             panel.Children.Add(pill);
         }
 
         return panel;
+    }
+
+    /// <summary>
+    ///  A ref name rendered as a bare link (no pill), used for the describe tag.
+    ///  Falls back to plain text when the ref does not resolve.
+    /// </summary>
+    private Control RefLink(string name, bool isTag)
+    {
+        if (_rendered?.Refs.TryGetValue(name, out string? hash) is not true || hash.Length == 0)
+        {
+            return new TextBlock
+            {
+                Text = name,
+                Foreground = B("App.Text"),
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+        }
+
+        TextBlock link = new()
+        {
+            Text = name,
+            Foreground = isTag ? B("App.Accent") : B("App.GraphGreen"),
+            FontWeight = FontWeight.SemiBold,
+            TextDecorations = TextDecorations.Underline,
+            Cursor = HandCursor,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        link.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(link).Properties.IsLeftButtonPressed)
+            {
+                e.Handled = true;
+                CommitNavigated?.Invoke(hash);
+            }
+        };
+
+        _linkTargets[link] = hash;
+        return link;
     }
 
     private static void AddRow(Grid grid, ref int row, string label, Control value)
