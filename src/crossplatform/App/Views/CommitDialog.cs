@@ -40,6 +40,9 @@ public sealed class CommitDialog : Window
     private readonly CheckBox _amendBox;
     private readonly SelectableTextBlock _diffView;
     private readonly ScrollViewer _diffScroll;
+    private readonly TextBlock _gutterView;
+    private readonly ScrollViewer _gutterScroll;
+    private readonly Border _gutterBorder;
     private readonly TextBlock _statusText;
 
     // ---- status bar (upstream's statusStrip, FormCommit.Designer.cs:805-909) ----
@@ -298,6 +301,33 @@ public sealed class CommitDialog : Window
             ClipToBounds = true,
         };
 
+        // The two-column line-number gutter the original diff viewer shows (old line /
+        // new line). It is a control of its OWN, deliberately not part of _diffView's
+        // text: the line-staging code maps SelectionStart/End of that text onto byte
+        // offsets in the patch, so prefixing the rendered lines with numbers would
+        // shift every offset and break `git apply` (PORTING 12.A.4).
+        _gutterView = new TextBlock
+        {
+            FontFamily = Monospace,
+            TextWrapping = TextWrapping.NoWrap,
+            TextAlignment = TextAlignment.Right,
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            Margin = new Thickness(6, 6, 6, 6),
+        };
+
+        // Pinned horizontally (it must not scroll away with a wide diff) and driven
+        // vertically by the diff's own offset.
+        _gutterScroll = new ScrollViewer
+        {
+            Content = _gutterView,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            Background = Brush("App.Panel", Brushes.Black),
+            ClipToBounds = true,
+        };
+        _diffScroll.ScrollChanged += (_, _) =>
+            _gutterScroll.Offset = _gutterScroll.Offset.WithY(_diffScroll.Offset.Y);
+
         // ---- LEFT: unstaged / buttons / staged ----
         _unstagedList.SelectionChanged += (_, _) => OnSelected(_unstagedList, staged: false);
         _stagedList.SelectionChanged += (_, _) => OnSelected(_stagedList, staged: true);
@@ -514,9 +544,23 @@ public sealed class CommitDialog : Window
         GridSplitter splitter = new() { Width = 4, Background = Brush("App.Border", Brushes.Gray) };
         Grid.SetColumn(splitter, 1);
         splitter.HorizontalAlignment = HorizontalAlignment.Left;
+        _gutterBorder = new Border
+        {
+            Child = _gutterScroll,
+            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderThickness = new Thickness(0, 0, 1, 0),
+            ClipToBounds = true,
+        };
+
+        Grid diffWithGutter = new() { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        Grid.SetColumn(_gutterBorder, 0);
+        Grid.SetColumn(_diffScroll, 1);
+        diffWithGutter.Children.Add(_gutterBorder);
+        diffWithGutter.Children.Add(_diffScroll);
+
         Border diffBorder = new()
         {
-            Child = _diffScroll,
+            Child = diffWithGutter,
             BorderBrush = Brush("App.Border", Brushes.Gray),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(6, 0, 0, 0),
@@ -1506,6 +1550,15 @@ public sealed class CommitDialog : Window
         int sourcePos = 0;
         int hunkIndex = -1;
 
+        // Gutter numbers, one pair per rendered line, 0 meaning "no number on this
+        // side". They are PARSED from the @@ -a,b +c,d @@ headers and then counted per
+        // line, which is the only way to get them right: a context line advances both
+        // sides, a '+' line only the new one, a '-' line only the old one.
+        List<(int Old, int New)> numbers = [];
+        int oldNo = 0;
+        int newNo = 0;
+        bool inHunk = false;
+
         foreach (string rawLine in text.Split('\n'))
         {
             // The '\r' of a CRLF file is hidden on screen but kept in the source
@@ -1517,14 +1570,43 @@ public sealed class CommitDialog : Window
             {
                 color = hunk;
                 hunkIndex++;
+
+                // A two-sided header restarts both counters. A COMBINED diff (@@@ …,
+                // produced for an unmerged path) does not match and leaves the gutter
+                // empty from there on: wrong numbers would be worse than none.
+                if (ParseHunkStart(shown) is (int oldStart, int newStart))
+                {
+                    oldNo = oldStart;
+                    newNo = newStart;
+                    inHunk = true;
+                }
+                else
+                {
+                    inHunk = false;
+                }
+
+                numbers.Add((0, 0));
             }
             else if (shown.StartsWith('+') && !shown.StartsWith("+++", StringComparison.Ordinal))
             {
                 color = add;
+                numbers.Add((0, inHunk ? newNo++ : 0));
             }
             else if (shown.StartsWith('-') && !shown.StartsWith("---", StringComparison.Ordinal))
             {
                 color = del;
+                numbers.Add((inHunk ? oldNo++ : 0, 0));
+            }
+            else if (!inHunk || shown.Length == 0 || shown[0] == '\\')
+            {
+                // The file headers, the "\ No newline at end of file" marker and the
+                // empty tail Split leaves behind are on neither side of the file.
+                numbers.Add((0, 0));
+            }
+            else
+            {
+                // A context line: it exists on both sides, so it carries both numbers.
+                numbers.Add((oldNo++, newNo++));
             }
 
             inlines.Add(new Run(shown + "\n") { Foreground = color });
@@ -1537,6 +1619,7 @@ public sealed class CommitDialog : Window
             sourcePos += rawLine.Length + 1;
         }
 
+        RenderGutter(numbers);
         _diffSpans = mapped && _diffText.Length > 0 ? [.. spans] : [];
         _lastSelStart = 0;
         _lastSelLength = 0;
@@ -1547,6 +1630,60 @@ public sealed class CommitDialog : Window
         _diffView.SelectionStart = 0;
         _diffView.SelectionEnd = 0;
         _diffScroll.Offset = default;
+    }
+
+    /// <summary>
+    ///  The <c>-a</c> / <c>+c</c> starting lines of a <c>@@ -a,b +c,d @@</c> header, or
+    ///  <see langword="null"/> when the header is not a plain two-sided one.
+    /// </summary>
+    private static (int Old, int New)? ParseHunkStart(string header)
+    {
+        Match m = HunkHeader.Match(header);
+        return m.Success
+            ? (int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value))
+            : null;
+    }
+
+    private static readonly Regex HunkHeader =
+        new(@"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", RegexOptions.Compiled);
+
+    /// <summary>
+    ///  Fills the gutter: one line per rendered diff line, old number then new number,
+    ///  right-aligned in fixed-width columns so both stay in line with a monospace
+    ///  font. A zero means the line does not exist on that side of the file.
+    /// </summary>
+    private void RenderGutter(List<(int Old, int New)> numbers)
+    {
+        int oldWidth = 1;
+        int newWidth = 1;
+        foreach ((int old, int @new) in numbers)
+        {
+            oldWidth = Math.Max(oldWidth, Digits(old));
+            newWidth = Math.Max(newWidth, Digits(@new));
+        }
+
+        System.Text.StringBuilder text = new();
+        for (int i = 0; i < numbers.Count; i++)
+        {
+            (int old, int @new) = numbers[i];
+            if (i > 0)
+            {
+                text.Append('\n');
+            }
+
+            text.Append(Cell(old, oldWidth)).Append(' ').Append(Cell(@new, newWidth));
+        }
+
+        _gutterView.Text = text.ToString();
+
+        // No numbers at all (a blank panel, an error message, a combined diff): the
+        // column would just be an empty stripe, so it goes away entirely.
+        _gutterBorder.IsVisible = numbers.Any(n => n.Old > 0 || n.New > 0);
+
+        static string Cell(int value, int width)
+            => value > 0 ? value.ToString().PadLeft(width) : new string(' ', width);
+
+        static int Digits(int value) => value <= 0 ? 1 : value.ToString().Length;
     }
 
     // ---------- per-hunk / per-line staging (the port's `git add -p`) ----------
