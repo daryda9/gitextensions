@@ -7,6 +7,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using GitCommands;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -72,6 +73,16 @@ public sealed class CloneDialog : Window
     private readonly RadioButton _personal;
     private readonly RadioButton _central;
 
+    /// <summary>Normal colour of the destination preview.</summary>
+    private readonly IBrush _dim;
+
+    /// <summary>
+    ///  Colour of a destination preview that is incomplete or points at a non-empty
+    ///  directory — upstream paints that label red. <c>App.DiffRemoved</c> is the
+    ///  port's registered themed red; a hard-coded one would not follow the theme.
+    /// </summary>
+    private readonly IBrush _warning;
+
     private readonly TextBox _output;
     private readonly TextBlock _status;
     private readonly Button _clone;
@@ -89,6 +100,8 @@ public sealed class CloneDialog : Window
         IBrush text = Brush("App.Text", "#DCDCDC");
         IBrush dim = Brush("App.TextDim", "#9B9B9B");
         IBrush border = Brush("App.Border", "#3F3F46");
+        _dim = dim;
+        _warning = Brush("App.DiffRemoved", "#E06C6C");
 
         Title = T("FormClone/$this.Text", "Clone repository");
         Width = 680;
@@ -103,7 +116,13 @@ public sealed class CloneDialog : Window
             ResetBranches();
         };
 
-        _parentDir = new TextBox { Watermark = T("Directory to clone into") };
+        // Upstream seeds the destination with the configured default clone destination
+        // (FormClone.cs:64). Unset by default, in which case the field starts empty.
+        _parentDir = new TextBox
+        {
+            Watermark = T("Directory to clone into"),
+            Text = AppSettings.DefaultCloneDestinationPath,
+        };
         _parentDir.TextChanged += (_, _) => UpdateDestinationPreview();
 
         _subdirectory = new TextBox { Watermark = T("Subdirectory to create") };
@@ -345,20 +364,52 @@ public sealed class CloneDialog : Window
     // Upstream's destination preview (FormClone.cs:333-361): show the exact path and
     // say whether it already exists, because cloning into an existing directory
     // behaves very differently from creating a new one.
+    //
+    // Two details taken from upstream that the first port version got wrong:
+    //  * a missing field is shown as a PLACEHOLDER inside the path ("[Destination]"),
+    //    so the shape of the final path is visible before it is complete, instead of
+    //    the preview blanking out into unrelated advice;
+    //  * "already exists" is a warning only when the directory is NON-EMPTY. Cloning
+    //    into an existing but empty directory is normal and git allows it, so warning
+    //    about it trains the user to ignore the line. Both warning cases are coloured,
+    //    as upstream colours the label red.
     private void UpdateDestinationPreview()
     {
-        string destination = DestinationPath;
-        if (destination.Length == 0)
+        string parent = (_parentDir.Text ?? string.Empty).Trim();
+        string sub = (_subdirectory.Text ?? string.Empty).Trim();
+
+        bool unfilled = parent.Length == 0 || sub.Length == 0;
+        string shown = Path.Combine(
+            parent.Length == 0 ? $"[{T("Destination")}]" : parent,
+            sub.Length == 0 ? $"[{T("Subdirectory to create")}]" : sub);
+
+        if (unfilled)
         {
-            _destinationPreview.Text = T("Choose a destination and a subdirectory.");
+            _destinationPreview.Text = shown;
+            _destinationPreview.Foreground = _warning;
             return;
         }
 
-        string state = Directory.Exists(destination)
-            ? T("FormClone/_infoDirectoryExists.Text", "(Directory already exists)")
-            : T("FormClone/_infoNewDirectory.Text", "(New directory)");
+        bool existsNonEmpty = Directory.Exists(shown) && EnumerateSafely(shown);
 
-        _destinationPreview.Text = $"{destination}  {state}";
+        _destinationPreview.Text = existsNonEmpty
+            ? $"{shown}  {T("FormClone/_infoDirectoryExists.Text", "(Directory already exists)")}"
+            : $"{shown}  {T("FormClone/_infoNewDirectory.Text", "(New directory)")}";
+        _destinationPreview.Foreground = existsNonEmpty ? _warning : _dim;
+    }
+
+    // Whether the directory holds anything. An unreadable directory counts as
+    // "something is there": it is certainly not a clean target for a clone.
+    private static bool EnumerateSafely(string path)
+    {
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(path).Any();
+        }
+        catch (Exception)
+        {
+            return true;
+        }
     }
 
     // A new URL invalidates whatever the previous remote answered.
