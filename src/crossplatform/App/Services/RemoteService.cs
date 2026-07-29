@@ -319,9 +319,16 @@ public sealed class RemoteService
     ///    the short name.</item>
     ///  </list>
     ///
-    ///  <para>Order matters: the remote is applied first, exactly like upstream's two
-    ///  <c>Validated</c> handlers fire, so the explicit merge-with the user chose wins
-    ///  over the auto-seed instead of being overwritten by it.</para>
+    ///  <para><b>Only fields the user actually CHANGED are written, and the remote goes
+    ///  first.</b> This is not an optimisation, it is required for correctness. Upstream
+    ///  writes each field from its own <c>Validated</c> handler, so leaving the
+    ///  "Default merge with" box untouched never calls the <c>MergeWith</c> setter at
+    ///  all and the auto-seed above survives. Assigning both fields unconditionally
+    ///  instead — as this method first did — sets <c>branch.&lt;x&gt;.remote</c> (which
+    ///  seeds <c>.merge</c>) and then immediately UNSETS <c>.merge</c> again with the
+    ///  still-empty box value, so picking a remote produced a half-configured branch
+    ///  that git cannot pull from. Verified against a real repo: the seeded
+    ///  <c>branch.main.merge</c> was missing until this comparison was added.</para>
     /// </summary>
     public RemoteOpResult SetBranchPullConfiguration(string repoPath, string branch, string trackingRemote, string mergeWith)
     {
@@ -342,8 +349,24 @@ public sealed class RemoteService
                 return new RemoteOpResult(false, $"No local branch named '{name}'.", AuthFailed: false);
             }
 
-            head.TrackingRemote = trackingRemote?.Trim() ?? string.Empty;
-            head.MergeWith = mergeWith?.Trim() ?? string.Empty;
+            string wantRemote = trackingRemote?.Trim() ?? string.Empty;
+            string wantMerge = mergeWith?.Trim() ?? string.Empty;
+
+            // Snapshot BEFORE writing anything: the getters read git config, so reading
+            // them after the remote write would already show the auto-seeded merge ref
+            // and the comparison below would be meaningless.
+            string hadRemote = head.TrackingRemote ?? string.Empty;
+            string hadMerge = head.MergeWith ?? string.Empty;
+
+            if (!string.Equals(wantRemote, hadRemote, StringComparison.Ordinal))
+            {
+                head.TrackingRemote = wantRemote;
+            }
+
+            if (!string.Equals(wantMerge, hadMerge, StringComparison.Ordinal))
+            {
+                head.MergeWith = wantMerge;
+            }
 
             return new RemoteOpResult(true, string.Empty, AuthFailed: false);
         }

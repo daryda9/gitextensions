@@ -747,8 +747,14 @@ public sealed class RemotesDialog : Window
         if (result.Success)
         {
             Changed = true;
+
+            // Do NOT claim which keys were removed: only the fields the user changed are
+            // written (see RemoteService.SetBranchPullConfiguration), so clearing just
+            // the remote leaves branch.<x>.merge in place — exactly as upstream leaves
+            // it, since its merge-with handler never fires. The refreshed grid below is
+            // the authoritative report.
             _branchStatus.Text = remote.Length == 0
-                ? $"'{branch}': branch.{branch}.remote / .merge removed."
+                ? $"'{branch}': saved — no default pull remote."
                 : $"'{branch}': pulls from '{remote}'.";
             ReloadBranches();
         }
