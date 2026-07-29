@@ -61,6 +61,22 @@ public sealed class AppPreferences
     ///  shows what is about to be committed while the message is typed.
     /// </summary>
     public bool CommitDialogSelectStagedOnEnterMessage { get; set; }
+
+    /// <summary>
+    ///  Skip the "There are unresolved merge conflicts, solve conflicts now?"
+    ///  question and go straight to the resolve dialog
+    ///  (<c>AppSettings.DontConfirmResolveConflicts</c>). Read by
+    ///  <see cref="ConflictFlow.HandleAsync"/>.
+    ///
+    ///  <para>File-only for now. Upstream drives it from the <b>Confirmations</b>
+    ///  settings page (<c>ConfirmationsSettingsPage.cs:36</c>, inverted:
+    ///  <c>chkResolveConflicts</c> checked = ask), and the port has <b>no</b>
+    ///  Confirmations page at all — none of that page's seventeen checkboxes is
+    ///  ported. Adding this one alone would be a page of one, so the flag lives in
+    ///  <c>app-settings.json</c> until that page exists. Off by default, i.e. the
+    ///  question is asked, exactly like upstream.</para>
+    /// </summary>
+    public bool DontConfirmResolveConflicts { get; set; }
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
