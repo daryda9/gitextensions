@@ -68,6 +68,15 @@
     <AvaloniaResource Include="..\..\..\setup\assets\Logo\GitExtensionsLogoWide.png">
       <Link>Assets/Icons/%(Filename)%(Extension)</Link>
     </AvaloniaResource>
+    <!-- The square product logo for the About dialog, upstream's
+         logoPictureBox / Properties.Images.GitExtensionsLogo256. The icon glob
+         above covers only src/app/GitUI/Resources/Icons, which has no square
+         product logo, so AboutDialog's IconLoader.Image("GitExtensions", 48) was
+         logging "did not resolve" on every start and silently rendering no icon.
+         Linked under the name the dialog asks for. -->
+    <AvaloniaResource Include="..\..\..\setup\assets\Logo\git-extensions-logo-128px.png">
+      <Link>Assets/Icons/GitExtensions.png</Link>
+    </AvaloniaResource>
   </ItemGroup>
 
   <ItemGroup>
