@@ -374,7 +374,11 @@ public static class ConflictFlow
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
             ShowInTaskbar = false,
-            Background = Brush("App.Window", Brushes.Black),
+            // App.Panel, not App.Window: the modal is usually shown straight over the
+            // main window, and matching its background made the question look like it
+            // was floating loose on the grid (there is no WM frame to separate them
+            // on a bare X server, and Xfce/GNOME draw only a thin one).
+            Background = Brush("App.Panel", Brushes.Black),
         };
 
         primary.Click += (_, _) =>
@@ -411,7 +415,13 @@ public static class ConflictFlow
         StackPanel content = new() { Margin = new Thickness(20) };
         content.Children.Add(row);
         content.Children.Add(buttons);
-        dialog.Content = content;
+
+        dialog.Content = new Border
+        {
+            BorderBrush = Brush("App.Border", Brushes.DimGray),
+            BorderThickness = new Thickness(1),
+            Child = content,
+        };
 
         DialogKeys.InstallEscapeClose(dialog);
         DialogKeys.EnsureFocusRoute(dialog);
