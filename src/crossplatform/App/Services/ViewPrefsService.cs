@@ -201,7 +201,12 @@ public sealed class RevisionFilterMruEntry : IEquatable<RevisionFilterMruEntry>
     /// <summary>
     ///  True when no criterion is set — the neutral filter, which is never worth
     ///  remembering (it is what "Reset revision filters" produces).
+    ///
+    ///  <para><see cref="JsonIgnoreAttribute"/> because it is derived: System.Text.Json
+    ///  serialises get-only properties too, and a computed flag written into the file
+    ///  would read as state that can disagree with the criteria next to it.</para>
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool IsEmpty =>
         Author.Length == 0
         && Committer.Length == 0
