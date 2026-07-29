@@ -82,8 +82,14 @@ public sealed record BisectSession(
     /// </summary>
     public bool Finished => Ready && Candidates == 1;
 
-    /// <summary>True when there is a remaining-work figure worth displaying.</summary>
-    public bool HasProgress => Ready && !Finished && Candidates > 1;
+    /// <summary>
+    ///  True when there is a remaining-work figure worth displaying. Requires
+    ///  <see cref="RevisionsLeft"/> above zero: git's last step reports
+    ///  "0 revisions left to test after this (roughly 0 steps)", which is accurate but
+    ///  reads as if nothing were left to do — a surface should say "this is the last
+    ///  commit to test" instead.
+    /// </summary>
+    public bool HasProgress => Ready && !Finished && RevisionsLeft > 0;
 }
 
 /// <summary>
@@ -175,38 +181,54 @@ public sealed class BisectService
             // good. Enumerated rather than globbed because the arguments never go
             // through a shell — a literal "refs/bisect/good-*" would reach git
             // unexpanded.
+            //
+            // The format asks for the ref NAME ONLY, deliberately. Every argument
+            // built here is flattened into a single ProcessStartInfo.Arguments string
+            // (Executable.cs:59,136), so an argument that contains a space is split
+            // back into two by the runtime's parser: "--format=%(refname)
+            // %(objectname)" arrives as two arguments, git reads the second as
+            // another ref pattern, and the hash column silently never appears. The
+            // bad commit's hash is therefore resolved on its own, below.
             ExecutionResult refs = module.GitExecutable.Execute(
                 new GitArgumentBuilder("for-each-ref")
                 {
-                    "--format=%(refname) %(objectname)",
+                    "--format=%(refname)",
                     "refs/bisect",
                 },
                 throwOnErrorExit: false);
 
             bool badKnown = false;
-            string? bad = null;
             List<string> goodRefs = [];
 
             foreach (string raw in refs.StandardOutput.Split('\n'))
             {
-                string line = raw.Trim();
-                if (line.Length == 0)
+                string name = raw.Trim();
+                if (name.Length == 0)
                 {
                     continue;
                 }
 
-                int space = line.IndexOf(' ', StringComparison.Ordinal);
-                string name = space < 0 ? line : line[..space];
-                string hash = space < 0 ? string.Empty : line[(space + 1)..].Trim();
-
                 if (name.Equals("refs/bisect/bad", StringComparison.Ordinal))
                 {
                     badKnown = true;
-                    bad = hash;
                 }
                 else if (name.StartsWith("refs/bisect/good-", StringComparison.Ordinal))
                 {
                     goodRefs.Add(name);
+                }
+            }
+
+            string? bad = null;
+            if (badKnown)
+            {
+                ExecutionResult resolved = module.GitExecutable.Execute(
+                    new GitArgumentBuilder("rev-parse") { "refs/bisect/bad" },
+                    throwOnErrorExit: false);
+
+                if (resolved.ExitedSuccessfully)
+                {
+                    string hash = resolved.StandardOutput.Trim();
+                    bad = hash.Length > 0 ? hash : null;
                 }
             }
 
