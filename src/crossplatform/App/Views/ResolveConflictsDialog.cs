@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -358,7 +359,22 @@ public sealed class ResolveConflictsDialog : Window
         ReportMergeToolState();
 
         DialogKeys.InstallEscapeClose(this);
-        KeyDown += OnKeyDown;
+
+        // BOTH strategies, deliberately. Tunnel alone never fired: with focus on the
+        // list there is a route to tunnel down, but on a freshly opened window the
+        // focused element is the window itself and only the bubbling pass runs
+        // (measured headlessly — Escape worked, B/L/R/M did not). Tunnel is still
+        // needed for the opposite case, where the focused ListBox would otherwise
+        // swallow bare letters as type-to-search.
+        // Bubbling on the window, handledEventsToo so a focused ListBox that claimed
+        // the key for type-to-search cannot swallow the shortcut. Registered ONCE:
+        // adding a second subscription on the list made the handler run twice per
+        // press, which would apply a resolution twice.
+        AddHandler(InputElement.KeyDownEvent, OnKeyDown, RoutingStrategies.Bubble, handledEventsToo: true);
+
+        // Give the list keyboard focus, as upstream's grid has it: without this the
+        // arrow keys do nothing until the user tabs into the list.
+        Opened += (_, _) => _files.Focus();
     }
 
     /// <summary>
@@ -594,7 +610,9 @@ public sealed class ResolveConflictsDialog : Window
     // B/L/R choose a side, M merges, F5 rescans.
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.KeyModifiers != KeyModifiers.None)
+        // handledEventsToo means already-handled presses arrive here too; a shortcut
+        // this dialog has itself acted on must not be acted on a second time.
+        if (e.Handled || e.KeyModifiers != KeyModifiers.None)
         {
             return;
         }
