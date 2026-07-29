@@ -266,21 +266,43 @@ public sealed class BranchTagPanel : UserControl
         }
     }
 
-    private void DoMerge()
+    private void DoMerge() => _ = DoMergeAsync();
+
+    // Opens the merge configuration dialog (port of FormMergeBranch) rather than
+    // merging with hard-wired options. The dialog runs git itself through the process
+    // dialog, so RunMutation must not wrap it or the merge would run twice.
+    private async Task DoMergeAsync()
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (_repoPath is not { Length: > 0 } repo)
+            {
+                return;
+            }
 
-        if (SelectedRow() is not { IsTag: false } row)
+            if (SelectedRow() is not { IsTag: false } row)
+            {
+                _status.Text = "Select a branch to merge.";
+                return;
+            }
+
+            MergeDialogResult? result = await MergeDialog.ShowAsync(
+                (TopLevel.GetTopLevel(this) as Window)!, repo, row.Name);
+
+            if (result is null)
+            {
+                return;
+            }
+
+            _status.Text = result.Success
+                ? $"Merged {result.Branch}."
+                : $"Merge of {result.Branch} did not complete.";
+            RefreshRefs();
+        }
+        catch
         {
-            _status.Text = "Select a branch to merge.";
-            return;
+            // Never throw from an interaction handler.
         }
-
-        _status.Text = $"Merging {row.Name}…";
-        RunMutation(() => _service.MergeBranch(repo, row.Name));
     }
 
     private void DoRebase()

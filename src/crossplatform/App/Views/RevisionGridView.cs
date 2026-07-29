@@ -6008,14 +6008,24 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
-        if (!await ConfirmAsync(string.Format(T("Merge '{0}' into '{1}'?"), name, _currentBranch)))
+        // The merge configuration dialog (port of FormMergeBranch) replaces both the
+        // bare confirmation and the hard-wired options, and runs `git merge` itself
+        // through the process dialog — hence no RunRefOp wrapper here, which would
+        // merge a second time.
+        if (TopLevel.GetTopLevel(this) is not Window owner)
         {
             return;
         }
 
-        RunRefOp(
-            string.Format(T("Merging {0}…"), name),
-            repo => _branchTags.MergeBranch(repo, name));
+        MergeDialogResult? result = await MergeDialog.ShowAsync(owner, _repoPath, name);
+        if (result is null)
+        {
+            return;
+        }
+
+        AfterRefOp(result.Success
+            ? string.Format(T("Merged {0}."), result.Branch)
+            : string.Format(T("Merge of {0} did not complete."), result.Branch));
     }
 
     private async Task RebaseOnSelectedAsync()

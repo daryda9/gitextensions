@@ -1237,7 +1237,7 @@ public sealed class RepoObjectsTree : UserControl
             : MenuItem(T("BranchMenuItemsStrings/Checkout.Text", "Checkout branch…"), "BranchCheckout", () => DoCheckout(row));
         menu.Items.Add(checkout);
 
-        MenuItem merge = MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name)));
+        MenuItem merge = MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => _ = DoMergeAsync(row.Name));
         menu.Items.Add(merge);
 
         MenuItem rebase = MenuItem(
@@ -1296,7 +1296,7 @@ public sealed class RepoObjectsTree : UserControl
         // HEAD, which is the expected "checkout tag revision" behaviour. Reuses
         // the same BranchTagService.Checkout used for branches/revisions.
         menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Checkout.Text", "Checkout tag revision…"), "BranchCheckout", () => DoCheckout(row)));
-        menu.Items.Add(MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => RunMutation(() => _branchTagService.MergeBranch(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => _ = DoMergeAsync(row.Name)));
         menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Rebase.Text", "Rebase current branch on this tag revision…"), "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
         menu.Items.Add(MenuItem(T("MenuItemsStrings/CreateBranch.Text", "Create branch…"), "BranchCreate", () => _ = DoCreateBranchAsync(row.Name, prefix: string.Empty)));
         menu.Items.Add(ResetCurrentBranchItem(row.Name));
@@ -1925,6 +1925,33 @@ public sealed class RepoObjectsTree : UserControl
     ///  filled in, as upstream's BranchPathNode.CreateBranch passes
     ///  <c>newBranchNamePrefix</c> (BranchPathNode.cs:24-28).
     /// </param>
+    // "Merge into current branch…" opens the merge configuration dialog (the port of
+    // FormMergeBranch) instead of merging straight away with hard-wired options. The
+    // dialog runs `git merge` itself through the process dialog, so this must NOT be
+    // wrapped in RunMutation — that helper would run git a second time.
+    private async Task DoMergeAsync(string name)
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || _busy)
+            {
+                return;
+            }
+
+            MergeDialogResult? result = await MergeDialog.ShowAsync(
+                (TopLevel.GetTopLevel(this) as Window)!, repo, name);
+
+            if (result is not null)
+            {
+                OperationCompleted?.Invoke();
+            }
+        }
+        catch
+        {
+            // Never throw from an interaction handler.
+        }
+    }
+
     private async Task DoCreateBranchAsync(string startPoint = "HEAD", string prefix = "")
     {
         try
