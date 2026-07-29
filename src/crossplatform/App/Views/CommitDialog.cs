@@ -291,6 +291,13 @@ public sealed class CommitDialog : Window
             TextWrapping = TextWrapping.NoWrap,
             Foreground = Brush("App.Foreground", Brushes.Gainsboro),
             Margin = new Thickness(6),
+
+            // Pinned to the top and given an EXPLICIT line height, both shared with the
+            // gutter next to it. Left to their defaults the two blocks lay out at a
+            // different pitch — measured on :215, 19.0 px per line here against 17.9 in
+            // the gutter — so the numbers drifted a full line away over 15 lines.
+            VerticalAlignment = VerticalAlignment.Top,
+            LineHeight = DiffLineHeight,
         };
         _diffScroll = new ScrollViewer
         {
@@ -313,6 +320,8 @@ public sealed class CommitDialog : Window
             TextAlignment = TextAlignment.Right,
             Foreground = Brush("App.TextDim", Brushes.Gray),
             Margin = new Thickness(6, 6, 6, 6),
+            VerticalAlignment = VerticalAlignment.Top,
+            LineHeight = DiffLineHeight,
         };
 
         // Pinned horizontally (it must not scroll away with a wide diff) and driven
@@ -1662,16 +1671,12 @@ public sealed class CommitDialog : Window
             newWidth = Math.Max(newWidth, Digits(@new));
         }
 
+        // One line per rendered diff line, each closed by '\n' exactly as the diff's
+        // Runs are, so both blocks lay out the same number of lines and stay in step.
         System.Text.StringBuilder text = new();
-        for (int i = 0; i < numbers.Count; i++)
+        foreach ((int old, int @new) in numbers)
         {
-            (int old, int @new) = numbers[i];
-            if (i > 0)
-            {
-                text.Append('\n');
-            }
-
-            text.Append(Cell(old, oldWidth)).Append(' ').Append(Cell(@new, newWidth));
+            text.Append(Cell(old, oldWidth)).Append(' ').Append(Cell(@new, newWidth)).Append('\n');
         }
 
         _gutterView.Text = text.ToString();
@@ -3808,6 +3813,10 @@ public sealed class CommitDialog : Window
     // ---------- ui helpers ----------
 
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+
+    // The pitch the diff panel and its gutter BOTH lay out at. It has to be stated:
+    // the two controls compute different default line heights for the same font.
+    private const double DiffLineHeight = 19;
 
     private static ListBox MakeList() => new()
     {
