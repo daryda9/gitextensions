@@ -11,6 +11,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using GitCommands;
+using GitCommands.Git;
 using GitExtensions.Avalonia.Plugins;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Views;
@@ -2537,11 +2538,10 @@ public sealed class MainWindow : Window
             return;
         }
 
-        IReadOnlyList<BranchTagRow> branches;
+        CheckoutBranchChoice? choice;
         try
         {
-            branches = await Task.Run(() => new BranchTagService().LoadRefs(_repoPath!)
-                .Branches.Where(b => !b.IsRemote).ToList());
+            choice = await CheckoutBranchForm.AskAsync(this, _repoPath!);
         }
         catch (Exception ex)
         {
@@ -2549,22 +2549,29 @@ public sealed class MainWindow : Window
             return;
         }
 
-        if (branches.Count == 0)
+        if (choice is not { } c)
         {
-            _statusBar.SetText(T("No local branches to compare against."));
             return;
         }
 
-        BranchTagRow? chosen = await PickBranchAsync(
-            branches,
-            T("FormCheckoutBranch/$this.Text", "Checkout branch"),
-            T("FormCheckoutBranch/Ok.Text", "Checkout"),
-            T("FormCheckoutBranch/LocalBranch.Text", "Local branch"));
-
-        if (chosen is not null)
+        // Upstream warns before a `-B` that is not a fast-forward: the commits between the
+        // merge base and the current tip of the local branch would be dropped.
+        if (c.NewBranchMode == CheckoutNewBranchMode.Reset && c.NewBranchName is { Length: > 0 } localName)
         {
-            await CheckoutBranchAsync(chosen.Name);
+            ResetFastForwardInfo info = await Task.Run(
+                () => new BranchTagService().GetResetFastForwardInfo(_repoPath!, localName, c.BranchName));
+            if (!info.IsFastForward && !await ConfirmAsync(TF(
+                    "You are going to reset the \"{0}\" branch to a new location discarding ALL the commited changes since the {1} revision.\n\nAre you sure?",
+                    localName, info.MergeBaseDisplay)))
+            {
+                return;
+            }
         }
+
+        RunOp(
+            T("FormCheckoutBranch/$this.Text", "Checkout branch"),
+            () => new BranchTagService().CheckoutBranch(
+                _repoPath!, c.BranchName, c.IsRemote, c.LocalChanges, c.NewBranchMode, c.NewBranchName).Success);
     }
 
     // Ctrl+P — select the first parent of the current revision in the grid.
