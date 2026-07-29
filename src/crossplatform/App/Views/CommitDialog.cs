@@ -42,6 +42,30 @@ public sealed class CommitDialog : Window
     private readonly ScrollViewer _diffScroll;
     private readonly TextBlock _statusText;
 
+    // ---- status bar (upstream's statusStrip, FormCommit.Designer.cs:805-909) ----
+    // Four independent readings, each with its own refresh trigger:
+    //  • committer      = the EFFECTIVE user.name / user.email (FormCommit.cs:2236);
+    //  • branch → push  = the branch and where it would be pushed (:833-869);
+    //  • Staged x/y     = the two lists' counts (:1820);
+    //  • Ln / Col       = the caret, exactly as upstream reports it (:2428-2429).
+    private readonly TextBlock _committerText = MakeStatusLabel();
+    private readonly TextBlock _branchStatusText = MakeStatusLabel();
+    private readonly TextBlock _remoteStatusText = MakeStatusLabel();
+    private readonly TextBlock _stagedCountText = MakeStatusLabel();
+    private readonly TextBlock _lnColText = MakeStatusLabel();
+    private readonly Border _statusBar;
+
+    // Cached readings so a re-caption (language switch) or a list reload can redraw
+    // the bar without shelling out to git again.
+    private string _committerName = string.Empty;
+    private string _committerEmail = string.Empty;
+    private string _pushTarget = string.Empty;
+
+    // The caret the bar is reporting. Zero means "no caret yet", which is what
+    // upstream's labels are initialised to (Designer.cs:894/908).
+    private int _caretLine;
+    private int _caretColumn;
+
     // Conflict (unmerged) support, mirroring the original commit form: unmerged
     // files show up in the unstaged list with a "U" status and get their own
     // context-menu entries, plus a banner while the merge is unresolved.
@@ -557,8 +581,12 @@ public sealed class CommitDialog : Window
             Children = { _messageBox, buttonRow, _statusText },
         };
 
+        _statusBar = BuildStatusBar();
+
         DockPanel root = new();
+        DockPanel.SetDock(_statusBar, Dock.Bottom);
         DockPanel.SetDock(bottom, Dock.Bottom);
+        root.Children.Add(_statusBar);
         DockPanel.SetDock(_conflictBanner, Dock.Top);
         root.Children.Add(bottom);
         root.Children.Add(_conflictBanner);
@@ -567,6 +595,7 @@ public sealed class CommitDialog : Window
         DialogKeys.EnsureFocusRoute(this);
 
         InstallShortcuts();
+        TrackCaret();
         ApplyTranslations();
 
         // A language switch while the dialog is open re-captions it in place
@@ -1590,6 +1619,8 @@ public sealed class CommitDialog : Window
                     // No layout yet — fall back to whatever is selected.
                 }
 
+                SetDiffCaret(_pointerCaret);
+
                 // State is settled BEFORE the popup is shown: mutating Items (or
                 // even sizes) from Opening leaves it unmeasured — HANDOFF §3.
                 UpdateDiffMenuState();
@@ -1615,6 +1646,11 @@ public sealed class CommitDialog : Window
                 _lastSelStart = start;
                 _lastSelLength = end - start;
             }
+
+            // The status bar follows the caret here too: while line-staging, the diff
+            // panel is where the user's "cursor" actually is. The END of the highlight
+            // is reported, which is where the caret sits after a drag.
+            SetDiffCaret(_diffView.SelectionEnd);
         };
     }
 
@@ -2940,24 +2976,246 @@ public sealed class CommitDialog : Window
         }
     }
 
+    // ---------- status bar ----------
+
+    /// <summary>
+    ///  Upstream's status strip, rebuilt as a bar docked below the button column:
+    ///  <c>Committer &lt;name&gt; &lt;mail&gt;</c> · <c>branch → origin/branch</c> ·
+    ///  <c>Staged x/y  Ln n  Col n</c> (FormCommit.Designer.cs:805-909).
+    /// </summary>
+    private Border BuildStatusBar()
+    {
+        StackPanel branchPanel = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _branchStatusText, _remoteStatusText },
+        };
+        _branchStatusText.Margin = new Thickness(0, 0, 6, 0);
+
+        StackPanel counters = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _stagedCountText, _lnColText },
+        };
+        _stagedCountText.Margin = new Thickness(0, 0, 12, 0);
+
+        Grid grid = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+        };
+        Grid.SetColumn(_committerText, 0);
+        Grid.SetColumn(branchPanel, 1);
+        Grid.SetColumn(counters, 2);
+        branchPanel.Margin = new Thickness(12, 0, 18, 0);
+        grid.Children.Add(_committerText);
+        grid.Children.Add(branchPanel);
+        grid.Children.Add(counters);
+
+        return new Border
+        {
+            Background = Brush("App.Panel", Brushes.Black),
+            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(8, 3),
+            ClipToBounds = true,
+            Child = grid,
+        };
+    }
+
+    // The caret the bar reports. Upstream reads it off the commit message box
+    // (FormCommit.cs:2428-2429); the port also reports the DIFF panel's caret, which
+    // is the one that matters while line-staging — whichever moved last wins.
+    private void TrackCaret()
+    {
+        _messageBox.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == TextBox.CaretIndexProperty || e.Property == TextBox.TextProperty)
+            {
+                SetCaret(_messageBox.Text ?? string.Empty, _messageBox.CaretIndex);
+            }
+        };
+    }
+
+    // Line / column of <paramref name="caret"/> inside <paramref name="text"/>, both
+    // 1-based; an empty surface reports 0 / 0, the value upstream's labels start at.
+    private void SetCaret(string text, int caret)
+    {
+        if (text.Length == 0)
+        {
+            _caretLine = 0;
+            _caretColumn = 0;
+            RenderStatusBar();
+            return;
+        }
+
+        int clamped = Math.Clamp(caret, 0, text.Length);
+        int line = 1;
+        int lineStart = 0;
+        for (int i = 0; i < clamped; i++)
+        {
+            if (text[i] == '\n')
+            {
+                line++;
+                lineStart = i + 1;
+            }
+        }
+
+        _caretLine = line;
+        _caretColumn = clamped - lineStart + 1;
+        RenderStatusBar();
+    }
+
+    // The diff panel's caret, expressed in the coordinates the user sees: the line
+    // index within the rendered diff (1-based) and the column inside that line.
+    private void SetDiffCaret(int renderOffset)
+    {
+        if (_diffSpans.Length == 0 || renderOffset < 0)
+        {
+            return;
+        }
+
+        int line = LineAt(renderOffset);
+        if (line < 0)
+        {
+            return;
+        }
+
+        _caretLine = line + 1;
+        _caretColumn = Math.Max(0, renderOffset - _diffSpans[line].RenderStart) + 1;
+        RenderStatusBar();
+    }
+
+    private void RenderStatusBar()
+    {
+        // Upstream's committer line, with the same "/<key> not configured/" filler it
+        // uses when the setting is missing (FormCommit.cs:2236-2246).
+        string name = _committerName.Length > 0 ? _committerName : NotConfigured("user.name");
+        string mail = _committerEmail.Length > 0 ? _committerEmail : NotConfigured("user.email");
+        _committerText.Text = $"{T("FormCommit/_commitCommitterInfo.Text", "Committer")} {name} <{mail}>";
+
+        // "<branch> →" / "<push target>", left empty when HEAD is not on a local
+        // branch — exactly what upstream leaves behind (FormCommit.cs:843-849).
+        _branchStatusText.Text = _titleBranch.Length > 0 && _pushTarget.Length > 0
+            ? _titleBranch + " →"
+            : _titleBranch;
+        _remoteStatusText.Text = _pushTarget;
+
+        string counts = string.Format(
+            "{0} {1}/{2}",
+            T("FormCommit/commitStagedCountLabel.Text", "Staged"),
+            _stagedList.Items.Count,
+            _stagedList.Items.Count + _unstagedList.Items.Count);
+        _stagedCountText.Text = counts;
+        _lnColText.Text = string.Format(
+            "{0} {1} {2} {3}",
+            T("FormCommit/commitCursorLineLabel.Text", "Ln"),
+            _caretLine,
+            T("FormCommit/commitCursorColumnLabel.Text", "Col"),
+            _caretColumn);
+    }
+
+    private static string NotConfigured(string key)
+        => "/" + string.Format(T("TranslatedStrings/_notConfigured.Text", "{0} not configured"), key) + "/";
+
+    private static TextBlock MakeStatusLabel() => new()
+    {
+        VerticalAlignment = VerticalAlignment.Center,
+        Foreground = Brush("App.Foreground", Brushes.Gainsboro),
+        TextTrimming = TextTrimming.CharacterEllipsis,
+    };
+
+    // Everything the status bar needs from git, read in ONE off-UI-thread pass.
+    private sealed record StatusBarInfo(string Branch, string PushTarget, string UserName, string UserEmail);
+
     private void RefreshBranchCaption()
     {
         string repo = _repoPath;
-        _ = Task.Run(() =>
-        {
-            try
+        _ = Task.Run(() => ReadStatusBarInfo(repo))
+            .ContinueWith(t => Dispatcher.UIThread.Post(() =>
             {
-                return _actions.CurrentBranch(repo);
-            }
-            catch
-            {
-                return string.Empty;
-            }
-        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+                StatusBarInfo info = t.Result;
+                _titleBranch = info.Branch;
+                _pushTarget = info.PushTarget;
+                _committerName = info.UserName;
+                _committerEmail = info.UserEmail;
+                UpdateTitle();
+                RenderStatusBar();
+            }), TaskScheduler.Default);
+    }
+
+    /// <summary>
+    ///  The branch, where it would be pushed, and the effective committer identity.
+    ///  <para>The push target follows upstream's rules exactly
+    ///  (<c>FormCommit.UpdateBranchNameDisplayAsync</c>, :833-869): the configured
+    ///  upstream when there is one; otherwise <c>&lt;origin-or-first-remote&gt;/&lt;branch&gt;
+    ///  (untracked)</c>; <c>(remote not configured)</c> when the repository has no
+    ///  remote at all; and NOTHING when HEAD is not on a local branch — no invented
+    ///  string in any of the four cases.</para>
+    /// </summary>
+    private StatusBarInfo ReadStatusBarInfo(string repo)
+    {
+        string branch;
+        try
         {
-            _titleBranch = t.Result;
-            UpdateTitle();
-        }), TaskScheduler.Default);
+            branch = _actions.CurrentBranch(repo);
+        }
+        catch
+        {
+            branch = string.Empty;
+        }
+
+        try
+        {
+            GitModule module = GitContext.CreateModule(repo);
+            string name = GitOutput(module, "config --get user.name");
+            string mail = GitOutput(module, "config --get user.email");
+
+            // One call answers both questions: an empty result means HEAD is not on a
+            // local branch (detached, or a name git does not know), in which case
+            // upstream shows no push target at all.
+            string refInfo = branch.Length > 0
+                ? GitOutput(module, $"for-each-ref --format=%(refname:short)%09%(upstream:short) refs/heads/{branch}")
+                : string.Empty;
+            if (refInfo.Length == 0)
+            {
+                return new StatusBarInfo(branch, string.Empty, name, mail);
+            }
+
+            string[] parts = refInfo.Split('\t');
+            string upstreamRef = parts.Length > 1 ? parts[1].Trim() : string.Empty;
+            if (upstreamRef.Length > 0)
+            {
+                return new StatusBarInfo(branch, upstreamRef, name, mail);
+            }
+
+            string[] remotes = GitOutput(module, "remote")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string? chosen = remotes.FirstOrDefault(r => r == "origin")
+                ?? remotes.OrderBy(r => r, StringComparer.Ordinal).FirstOrDefault();
+            string target = chosen is not null
+                ? $"{chosen}/{branch} {T("FormCommit/_untrackedRemote.Text", "(untracked)")}"
+                : T("FormCommit/_statusBarBranchWithoutRemote.Text", "(remote not configured)");
+            return new StatusBarInfo(branch, target, name, mail);
+        }
+        catch
+        {
+            return new StatusBarInfo(branch, string.Empty, string.Empty, string.Empty);
+        }
+    }
+
+    private static string GitOutput(GitModule module, string arguments)
+    {
+        try
+        {
+            var result = module.GitExecutable.Execute(arguments, throwOnErrorExit: false);
+            return result.ExitedSuccessfully ? (result.StandardOutput ?? string.Empty).Trim() : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     // "Commit to <branch> (<repo>)" — the same format string the original form uses,
@@ -3331,24 +3589,26 @@ public sealed class CommitDialog : Window
 
     private void RenderStatus()
     {
-        // "<Staged> 1/4": the label is upstream's status-bar caption, the ratio is
-        // appended to it exactly as the original form's status strip does.
-        string counts = string.Format(
-            "{0} {1}/{2}",
-            T("FormCommit/commitStagedCountLabel.Text", "Staged"),
-            _stagedList.Items.Count,
-            _stagedList.Items.Count + _unstagedList.Items.Count);
+        // "Staged x/y" now lives in the status bar, where upstream keeps it; this line
+        // is the action log plus the two repository states that have no upstream slot.
+        List<string> parts = [];
+        if (_statusHint.Length > 0)
+        {
+            parts.Add(_statusHint);
+        }
+
         if (_conflictPaths.Count > 0)
         {
-            counts += "   —   " + string.Format(T("{0} conflict(s)"), _conflictPaths.Count);
+            parts.Add(string.Format(T("{0} conflict(s)"), _conflictPaths.Count));
         }
 
         if (_mergeInProgress)
         {
-            counts += "   —   " + T("merge in progress");
+            parts.Add(T("merge in progress"));
         }
 
-        _statusText.Text = _statusHint.Length > 0 ? $"{_statusHint}   —   {counts}" : counts;
+        _statusText.Text = string.Join("   —   ", parts);
+        RenderStatusBar();
 
         // Upstream enables the two reset buttons only when there is something to
         // reset: "Reset unstaged changes" on a non-empty work-tree list
