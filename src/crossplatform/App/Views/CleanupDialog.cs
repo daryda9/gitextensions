@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GitCommands;
 using GitExtensions.Avalonia.Services;
@@ -27,7 +28,8 @@ namespace GitExtensions.Avalonia.Views;
 ///   <item>"Clean submodules", repeating the clean via
 ///    <c>submodule foreach --recursive</c>;</item>
 ///   <item>a multi-line <b>include</b> pathspec filter and a multi-line
-///    <b>exclude</b> filter (one <c>--exclude=</c> per line);</item>
+///    <b>exclude</b> filter (one <c>--exclude=</c> per line), each with upstream's
+///    "Add a path…" picker beside it;</item>
 ///   <item>a repeatable <b>Preview</b> (a real <c>--dry-run</c>) and a persistent
 ///    log panel that keeps every run's output.</item>
 ///  </list>
@@ -62,6 +64,8 @@ public sealed class CleanupDialog : Window
     private readonly TextBox _includePaths;
     private readonly CheckBox _useExcludeFilter;
     private readonly TextBox _excludePaths;
+    private readonly Button _addIncludePath;
+    private readonly Button _addExcludePath;
 
     private readonly TextBox _log;
     private readonly Border _logFrame;
@@ -104,16 +108,22 @@ public sealed class CleanupDialog : Window
             text,
             dim);
         _removeNonIgnored = Radio(
-            T("FormCleanupRepository/RemoveNonIgnored.Text", "Remove non-ignored files only"),
+            T("FormCleanupRepository/RemoveNonIgnored.Text", "Remove only non-ignored untracked files"),
             "git clean",
             text,
             dim);
         _removeIgnored = Radio(
-            T("FormCleanupRepository/RemoveIgnored.Text", "Remove ignored files only"),
+            T("FormCleanupRepository/RemoveIgnored.Text", "Remove only ignored untracked files"),
             "git clean -X",
             text,
             dim);
-        _removeNonIgnored.IsChecked = true;
+
+        // Upstream's default is the WIDEST mode (FormCleanupRepository.Designer.cs:147
+        // sets RemoveAll.Checked = true), not git's own default. Keep it: a dialog whose
+        // preselected mode differs from the original silently changes what a user who
+        // just presses the main button gets. Safe here because Clean never runs blind —
+        // CleanAsync always dry-runs first and asks (see the class remarks).
+        _removeAll.IsChecked = true;
 
         _removeDirectories = new CheckBox
         {
@@ -131,15 +141,36 @@ public sealed class CleanupDialog : Window
         {
             Content = T("FormCleanupRepository/checkBoxIncludePathFilter.Text", "Only clean these paths"),
             Foreground = text,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         _includePaths = FilterBox(border);
         _useExcludeFilter = new CheckBox
         {
             Content = T("FormCleanupRepository/checkBoxExcludePathFilter.Text", "Do not clean these paths"),
             Foreground = text,
-            Margin = new Thickness(0, 8, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
         };
         _excludePaths = FilterBox(border);
+
+        // Upstream's two "Add a path..." buttons (AddInclusivePath / AddExclusivePath):
+        // a folder picker for the include filter, a file picker for the exclude filter.
+        // They only ever APPEND — the boxes stay typeable, which is the only way to
+        // enter a path on a desktop whose XDG portal is missing or broken.
+        _addIncludePath = new Button
+        {
+            Content = T("FormCleanupRepository/AddInclusivePath.Text", "Add a path…"),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _addIncludePath.Click += (_, _) => _ = AddIncludePathAsync();
+
+        _addExcludePath = new Button
+        {
+            Content = T("FormCleanupRepository/AddExclusivePath.Text", "Add a path…"),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _addExcludePath.Click += (_, _) => _ = AddExcludePathAsync();
 
         _useIncludeFilter.IsCheckedChanged += (_, _) => SyncFilterBoxes();
         _useExcludeFilter.IsCheckedChanged += (_, _) => SyncFilterBoxes();
@@ -267,9 +298,9 @@ public sealed class CleanupDialog : Window
         root.Children.Add(options);
 
         StackPanel filters = new() { Margin = new Thickness(0, 14, 0, 0) };
-        filters.Children.Add(_useIncludeFilter);
+        filters.Children.Add(FilterHeader(_useIncludeFilter, _addIncludePath));
         filters.Children.Add(_includePaths);
-        filters.Children.Add(_useExcludeFilter);
+        filters.Children.Add(FilterHeader(_useExcludeFilter, _addExcludePath, topMargin: 8));
         filters.Children.Add(_excludePaths);
         filters.Children.Add(new TextBlock
         {
@@ -403,6 +434,10 @@ public sealed class CleanupDialog : Window
             "{0} entries listed above will be deleted permanently. Continue?",
             wouldRemove);
         _confirmBar.IsVisible = true;
+
+        // The dry run is over; leaving "Previewing…" on screen next to a live question
+        // reads as "still working" and invites a blind click on Delete.
+        _status.Text = T("Waiting for confirmation…");
         _confirm = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         bool go = await _confirm.Task;
         _confirm = null;
@@ -519,6 +554,116 @@ public sealed class CleanupDialog : Window
         _log.CaretIndex = _log.Text.Length;
     }
 
+    /// <summary>
+    ///  Upstream's <c>AddIncludePath_Click</c>: pick a directory and add it to the
+    ///  include filter. Upstream refuses anything outside the working directory and
+    ///  refuses the <c>.git</c> directory itself — a clean scoped to <c>.git</c> is
+    ///  never what anyone means. Unlike upstream, the path is stored RELATIVE to the
+    ///  repository root, because the hint under the boxes promises exactly that and
+    ///  the two filters would otherwise disagree with each other.
+    /// </summary>
+    private async Task AddIncludePathAsync()
+    {
+        string? picked = await PickAsync(folder: true);
+        if (picked is null)
+        {
+            return;
+        }
+
+        string? relative = RelativeToRepo(picked);
+        if (relative is null || relative.Length == 0 || relative == ".git")
+        {
+            _status.Text = T("Pick a directory inside the repository.");
+            return;
+        }
+
+        _useIncludeFilter.IsChecked = true;
+        _includePaths.Text = AppendLine(_includePaths.Text, relative);
+    }
+
+    /// <summary>
+    ///  Upstream's <c>AddExcludePath_Click</c>: pick a file and add it to the exclude
+    ///  filter, with the working-directory prefix stripped off (upstream does the same
+    ///  by <c>path.Replace(Module.WorkingDir, "")</c>).
+    /// </summary>
+    private async Task AddExcludePathAsync()
+    {
+        string? picked = await PickAsync(folder: false);
+        if (picked is null)
+        {
+            return;
+        }
+
+        string? relative = RelativeToRepo(picked);
+        if (relative is null || relative.Length == 0)
+        {
+            _status.Text = T("Pick a file inside the repository.");
+            return;
+        }
+
+        _useExcludeFilter.IsChecked = true;
+        _excludePaths.Text = AppendLine(_excludePaths.Text, relative);
+    }
+
+    // The one place that talks to the XDG portal. It can legitimately come back empty
+    // (a cancelled dialog, or no portal at all), which is not an error: the caller then
+    // leaves the filter boxes untouched and the user types the path instead.
+    private async Task<string?> PickAsync(bool folder)
+    {
+        try
+        {
+            IStorageFolder? start = await StorageProvider.TryGetFolderFromPathAsync(_repoPath);
+
+            if (folder)
+            {
+                IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(
+                    new FolderPickerOpenOptions
+                    {
+                        AllowMultiple = false,
+                        Title = T("Choose a directory to clean"),
+                        SuggestedStartLocation = start,
+                    });
+
+                return folders.Count == 0 ? null : folders[0].TryGetLocalPath();
+            }
+
+            IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(
+                new FilePickerOpenOptions
+                {
+                    AllowMultiple = false,
+                    Title = T("Choose a file to keep"),
+                    SuggestedStartLocation = start,
+                });
+
+            return files.Count == 0 ? null : files[0].TryGetLocalPath();
+        }
+        catch (Exception ex)
+        {
+            _status.Text = T("Error: ") + ex.Message;
+            return null;
+        }
+    }
+
+    // Path relative to the repository root, or null when it points outside it.
+    private string? RelativeToRepo(string absolute)
+    {
+        try
+        {
+            string relative = Path.GetRelativePath(_repoPath, absolute);
+            return relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                || Path.IsPathRooted(relative)
+                ? null
+                : relative;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static string AppendLine(string? existing, string line)
+        => string.IsNullOrEmpty(existing) ? line : existing + Environment.NewLine + line;
+
     private void SyncFilterBoxes()
     {
         _includePaths.IsEnabled = _useIncludeFilter.IsChecked == true;
@@ -532,6 +677,21 @@ public sealed class CleanupDialog : Window
         _busy = busy;
         _preview.IsEnabled = !busy;
         _clean.IsEnabled = !busy;
+        _addIncludePath.IsEnabled = !busy;
+        _addExcludePath.IsEnabled = !busy;
+    }
+
+    // One filter's header line: its checkbox on the left, its "Add a path…" button
+    // right next to it, the way upstream stacks them.
+    private static Control FilterHeader(CheckBox toggle, Button add, double topMargin = 0)
+    {
+        StackPanel row = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, topMargin, 0, 0),
+            Children = { toggle, add },
+        };
+        return row;
     }
 
     private static TextBox FilterBox(IBrush border) => new()
