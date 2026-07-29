@@ -614,6 +614,11 @@ public sealed class MainWindow : Window
         // "More" on the bisect bar opens the full panel, exactly as upstream's own
         // bar does (InteractiveGitActionControl.cs:242-254).
         _progressBanner.BisectDetailsRequested += () => _ = ShowBisectDialogAsync();
+
+        // "Resolve…" on the merge bar opens the conflict dialog, the port of
+        // FormResolveConflicts. Without a subscriber the banner hides the button
+        // rather than showing one that does nothing.
+        _progressBanner.ResolveConflictsRequested += () => _ = ShowResolveConflictsDialogAsync();
         _watcher.Degraded += message => Dispatcher.UIThread.Post(() => _statusBar.SetText(message));
     }
 
@@ -1488,6 +1493,27 @@ public sealed class MainWindow : Window
     ///  notification bar's "More" button, and from the grid's "Start bisect…". The
     ///  grid selection is handed over so the panel can offer upstream's range seeding.
     /// </summary>
+    // Opens the conflict-resolution dialog. Returns true when nothing is left
+    // unmerged, which is what lets a caller go straight on to the commit dialog
+    // (upstream's MergeConflictHandler does the same after solving conflicts).
+    private async Task<bool> ShowResolveConflictsDialogAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return false;
+        }
+
+        bool resolved;
+        using (IDisposable watch = SuspendWatcher())
+        {
+            resolved = await ResolveConflictsDialog.ShowAsync(this, _repoPath);
+        }
+
+        RefreshAll();
+        return resolved;
+    }
+
     private async Task ShowBisectDialogAsync()
     {
         if (_repoPath is null)
