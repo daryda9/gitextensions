@@ -381,6 +381,7 @@ public sealed class RepositoryProgressBanner : UserControl
             _actionStripe.Background = fill;
             _actionText.Foreground = ink;
             _actionHint.Foreground = ink;
+            PaintMergeButtons(onFill: true);
             return;
         }
 
@@ -388,7 +389,50 @@ public sealed class RepositoryProgressBanner : UserControl
         _actionStripe.Background = Brush("App.Accent", "#007ACC");
         _actionText.Foreground = Brush("App.Text", "#DCDCDC");
         _actionHint.Foreground = Brush("App.TextDim", "#9B9B9B");
+        PaintMergeButtons(onFill: false);
     }
+
+    /// <summary>
+    ///  Keeps the merge buttons readable on the filled strip. A <see cref="Button"/> in
+    ///  the Fluent theme paints its face from a <i>translucent</i> overlay resolved
+    ///  through <c>ButtonBackground*</c>, so over an orange parent it turns into pale
+    ///  orange carrying the dark theme's near-white label — measured at 1.4:1, i.e.
+    ///  invisible. Upstream has the same bar with ordinary system buttons on it (light
+    ///  face, dark label), so the fix is to give these three an opaque control face.
+    ///  <para>The face has to be pinned through the theme's own per-state resource keys,
+    ///  set on this instance only: a plain local <c>Background</c> is beaten by the
+    ///  control theme's style setters in <c>:pointerover</c> / <c>:pressed</c>, the same
+    ///  trap <c>Theming/TextBoxSurface</c> exists for. Keys the theme in use does not
+    ///  consume are simply inert.</para>
+    /// </summary>
+    private void PaintMergeButtons(bool onFill)
+    {
+        if (!onFill)
+        {
+            // Back to whatever the control theme wants: the bar is a normal panel again.
+            _mergeButtons.Resources.Clear();
+            return;
+        }
+
+        IBrush face = Brush("App.Panel", "#252526");
+        IBrush hover = Brush("App.Selection", "#094771");
+        IBrush label = Brush("App.Text", "#DCDCDC");
+        IBrush edge = Brush("App.Border", "#3F3F46");
+        IBrush dim = Brush("App.TextDim", "#9B9B9B");
+
+        foreach (string state in ButtonStates)
+        {
+            bool disabled = state == "Disabled";
+            _mergeButtons.Resources[$"ButtonBackground{state}"] = disabled ? face : Hovered(state) ? hover : face;
+            _mergeButtons.Resources[$"ButtonForeground{state}"] = disabled ? dim : label;
+            _mergeButtons.Resources[$"ButtonBorderBrush{state}"] = edge;
+        }
+
+        static bool Hovered(string state) => state is "PointerOver" or "Pressed";
+    }
+
+    // The suffixes the Fluent button theme appends to its brush keys.
+    private static readonly string[] ButtonStates = ["", "PointerOver", "Pressed", "Disabled"];
 
     /// <summary>
     ///  Black or white, whichever has the higher WCAG contrast ratio against
