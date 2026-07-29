@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M70,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M72,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `6b5dff330` (**round 11 completo: M67–M70**, + drop di NOTES.md) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
-| Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
+| HEAD al momento dell'handoff | `963e99119` (**round 12 completo: M71–M72**) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
-| Fedeltà UX/visiva | **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
+| Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **origin NON allineato: 52 commit locali non pushati** (`origin/linux-avalonia-port` = `757742ce8`, cioè la chiusura del round 10) al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: ~75 commit locali non pushati** (`origin/linux-avalonia-port` = `757742ce8`, cioè la chiusura del round 10) al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M71**), tiene il contatore iterazione.
+  libera: **M73**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -89,8 +89,9 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON usare subagent Codex con worktree** (perde il lavoro).
 - **Regola anti-conflitto**: un solo subagent per iterazione tocca ciascun file *hub*:
   `MainWindow`, `MainMenu`, `MainToolbar`, `RepoObjectsTree`, `RevisionGridView`,
-  `DiffView`, `StashPanel`, `CommitDialog`, `PushDialog`,
-  `GitProcessDialog`, `ConsoleView`.
+  `DiffView`, `StashPanel`, `CommitDialog`, `PushDialog`, `PullDialog`,
+  `GitProcessDialog`, `ConsoleView`, `RepositoryProgressBanner`, `MergeDialog`,
+  `ResolveConflictsDialog`.
 - **Istruire ogni subagent a COMMITTARE PRESTO E SPESSO**, un commit per tema, senza aspettare la
   fine dell'unità: un limite di sessione ha ucciso tre agent con ~1100 righe non committate
   ciascuno. Se un agent viene interrotto, **riprenderlo con `SendMessage`** (riparte dal suo
@@ -144,6 +145,12 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
   che contiene quella stringa). Usare un pattern auto-escluso (`Xvf[b] :151`) o `kill <PID>`.
 - Per chiudere l'app passando dal salvataggio dello stato usare `Start → Exit` **oppure** la "X"
   / un `WM_DELETE_WINDOW` sintetico (funziona da M58); `kill` invece salta sempre `PersistLayout()`.
+- **La sessione esporta `WAYLAND_DISPLAY` e `XDG_SESSION_TYPE=wayland`**: un processo figlio Qt
+  (kdiff3, mergetool) **gira ma non mappa nessuna finestra** sotto Xvfb, oppure si apre sul
+  desktop reale. Lanciare l'app con
+  `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE QT_QPA_PLATFORM=xcb` (M72).
+- **Un'azione distruttiva può avere una conferma in attesa**: una misura "non ha funzionato" può
+  essere solo un dialogo non ancora premuto. **Guardare lo screenshot prima di concludere** (M72).
 - Repo di prova già pronti: `/tmp/r9repo` (4 commit, remote locale `/tmp/r9remote`, worktree
   `/tmp/r9wt`), `/tmp/r10repo` (branch `side`, per il merge base), `/tmp/g1repo` (rename),
   `/tmp/v4repo` (blame a bande).
@@ -200,6 +207,23 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
   in M50 su `RebindRows`, colpiva tutti i toggle basati su `RefreshView`).
 - Il ripristino dello scroll va riapplicato a `DispatcherPriority.Background`: al primo
   tentativo (`Loaded`) l'extent del pannello è ancora corto e l'offset viene clampato.
+- **Fluent dipinge i `Button` con un overlay `ButtonBackground*` traslucido**: su un fondo
+  colorato (il banner arancione) il testo può crollare a ~2:1 e diventare invisibile, e un
+  `Background` locale **perde** contro gli style setter del `ControlTheme` in `:pointerover`.
+  Rimedio: pinnare le chiavi di stato nelle `Resources` dell'istanza (tecnica di
+  `TextBoxSurface`, M62) — vedi M72.
+- **`SelectableTextBlock` e `TextBlock` non impaginano lo stesso font allo stesso passo**
+  (19,0 vs 17,9 px/riga misurati): affiancarli, come per un gutter di numeri di riga, richiede
+  un `LineHeight` esplicito uguale; `VerticalAlignment=Top` non basta (M72).
+- **Sottoscrivere `ComboBox.TextProperty` spara subito**: un'eccezione dal costruttore lascia
+  un dialogo che **non si apre mai**, con log pulito e finestra X non mappata (M72).
+- **`isNewFile` di `PatchManager` significa "nuovo nell'INDICE", non "untracked"**: riscrive
+  `--- /dev/null` in `--- a/<name>` e toglie `new file mode`, rendendo il patch inapplicabile a
+  un path assente dall'indice. Per il line-staging su untracked serve un'altra strada (M71).
+- **`FirstLine()` su output streaming pesca l'header del comando**, non l'errore (M71).
+- **Path in `GitArgumentBuilder` vanno quotati** (`.Quote()`): gli argomenti finiscono in
+  un'unica command line che git ri-splitta, quindi un path con uno spazio arriva come **due**
+  argomenti e l'operazione **fallisce in silenzio** (M72, take-ours sui conflitti).
 - Per output git live usare `Services/GitStreamRunner.cs` (Process diretto, stdout+stderr
   async): il core `IExecutable`/`IProcess` **bufferizza stderr**, dove git scrive il
   progress.
@@ -216,7 +240,30 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ►► PRIORITÀ UTENTE del 29/07/2026 — **APERTE, hanno precedenza su tutto** (round 12)
+> ### ► ROUND 12 (2026-07-29) — **CHIUSO** (M71–M72). Prossima milestone libera: **M73**
+> Le priorità dell'utente del 29/07/2026 (commit dialog + flusso di merge) sono **tutte chiuse in due
+> iterazioni** su dieci concesse, sei subagent Claude in worktree isolati. Dettaglio in `PORTING.md` →
+> "ROUND 12". Il flusso degli screenshot è stato percorso end-to-end dal loop: merge → process dialog
+> → conferma → resolve → **kdiff3 vero** → `--continue` → banner spento.
+>
+> **Cosa c'è ora**: `MergeDialog` (port di `FormMergeBranch`, opzioni avanzate tutte cablate a
+> `Commands.MergeBranch`), il merge nel `GitProcessDialog`, `ConflictFlow` (port di
+> `MergeConflictHandler`: la domanda "solve conflicts now?" su merge/pull/cherry-pick/revert/stash
+> apply-pop/`git am`), `ResolveConflictsDialog` + `ConflictService` (sei tipi di conflitto da
+> `ls-files -u`, `Open in <merge.tool>` che apre davvero kdiff3), il banner del merge con
+> `Resolve…`/`Continue`/`Abort` + `MergeSessionService`, il commit dentro il process dialog (output
+> degli hook visibile), `ResetChangesDialog`, il diff dei file untracked, e la chrome del commit dialog
+> (status bar upstream, gutter a due colonne, toolbar e filtro per lista).
+>
+> **Residui registrati, nessuno bloccante**: lo stato "conflitti senza operazione in corso" non è nel
+> banner (costerebbe un `git diff` a ogni refresh); rebase/`am`/cherry-pick/revert non hanno pulsanti
+> di continue nel banner (nessun service dietro); la scelta fast-forward del `MergeDialog` è ricordata
+> globalmente e non per repo; `AvaloniaGitUICommands.StartResolveConflictsDialog` resta
+> `NotSupported` (firma sincrona `bool`, decisione semantica); `DontConfirmResolveConflicts` è un flag
+> senza UI perché il port non ha la pagina Confirmations; i commenti stantii in
+> `ApplyPatchDialog.cs:51` e `PullDialog.cs:718`.
+
+> ### ►► Le voci originali della priorità utente (tutte chiuse, tenute per riferimento)
 > Lista operativa completa, con `file:riga` verificati al `6b5dff330` e la descrizione degli
 > screenshot: `PORTING.md` → **"Coda round 12 — PRIORITÀ UTENTE del 29/07/2026"**.
 > Screenshot in `~/Documents/images avalonia/` (letti e verificati: 00–03 merge, commit window,
@@ -532,9 +579,9 @@ infine A/B con e senza fix.
 **Round 11 (M67–M70) è chiuso, e con esso la "Coda round 9": non resta nessuna voce `- [ ]` né
 `- [~]`.** HEAD alla chiusura: `c11c183a9`, poi `6b5dff330` (drop di NOTES.md).
 
-> **Il round 12 ha già il suo tema, deciso dall'utente il 29/07/2026: commit dialog + flusso di
-> merge.** Le voci sono in §4 (blocco "PRIORITÀ UTENTE") e in dettaglio in `PORTING.md` → "Coda
-> round 12". **Vengono prima di tutto il materiale qui sotto**, che resta valido come riserva.
+> **Il round 12 è CHIUSO** (M71–M72): commit dialog e flusso di merge completi, verificati end-to-end
+> in GUI. Prossima milestone libera: **M73**. Non c'è una coda aperta: il prossimo round deve prima
+> **decidere cosa vale la pena fare**. Materiale noto sotto, più i residui del round 12 in §4.
 
 Materiale noto e già motivato, dietro le priorità:
 

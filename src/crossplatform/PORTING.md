@@ -2060,7 +2060,17 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
   vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
 
-## ROUND 12 — commit dialog e flusso di merge — IN CORSO
+## ROUND 12 — commit dialog e flusso di merge — **CHIUSO** (M71–M72)
+
+> **Esito del round**: la "Coda round 12" non ha più **nessuna** voce `- [ ]`. Tutte e nove le voci
+> chiuse in **due iterazioni** invece delle dieci concesse, con sei subagent Claude in worktree
+> isolati. Il flusso degli screenshot dell'utente esiste ora per intero e **è stato percorso dal
+> loop dall'inizio alla fine**: merge → process dialog → conferma → resolve → kdiff3 → commit →
+> banner spento.
+>
+> **Le premesse erano vere in tutti i casi tranne una** (nessuna voce stantia come nel round 11, dove
+> tre unità su tre di un'iterazione erano già fatte): la sola correzione è che `PullDialog.ShowAsync`
+> aveva **già** il parametro `solveConflicts`, mai passato da nessuno.
 
 > **Iterazione 1 / 10.** Tre subagent Claude in worktree isolati su file disgiunti (A commit dialog,
 > B MergeDialog, C ResolveConflictsDialog), più il cablaggio dei call-site fatto dal loop. Base
@@ -2132,6 +2142,119 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
 - **Nota sul rumore di build**: 31 warning al netto (VSTHRD/CS pre-esistenti). Nessuno viene dai file
   nuovi né dal cablaggio: verificato elencando i `file:riga` di ogni warning.
 
+> **Iterazione 2 / 10.** Tre subagent Claude in worktree isolati su file disgiunti (D `ConflictFlow`,
+> E banner del merge, F chrome del commit dialog), più tutto il cablaggio fatto dal loop. Base
+> `efe3b4ed7`/`69daf4295`, build `Errori: 0` dopo ognuno dei 9 cherry-pick.
+
+**M72** (2026-07-29) — **12.A.4, 12.B.3, 12.B.4 e 12.B.5 chiuse: il round è finito**. Nove commit
+dei subagent più tre di integrazione (`54f04843d`, `dbae1f842`, `963e99119`).
+
+- **`ResolveConflictsDialog` + `ConflictService`** (`27f5f4234`, `aa1b250d9`, `4cf888eb4`) portano
+  `FormResolveConflicts`. Distingue **sei** tipi di conflitto letti da `git ls-files --unmerged -z`
+  e **mai** dai messaggi di git (che qui sono in italiano): both-modified, both-added,
+  deleted-by-them, deleted-by-us più **added-by-us/added-by-them**, che upstream non copre — il suo
+  `switch` cade in fondo e lascia in schermo il testo del file precedente.
+  Il pulsante `Open in <tool>` prende il nome da `merge.tool` (dinamico, "Open in kdiff3" qui) e
+  lancia `git mergetool --no-prompt -- <path>`, non la sostituzione manuale di `mergetool.<tool>.cmd`
+  di upstream, che deriva l'eseguibile spezzando `cmd` su `.exe` — Windows-only, come dice il
+  commento di upstream stesso.
+  *kdiff3 VERO verificato due volte*: dal subagent (tre pane, scelta di B, salvataggio, chiusura, e
+  il dialogo che si ri-scansiona da sé facendo sparire il file dalla lista) e **dal loop**
+  (`README.md (Base) <-> (Local) <-> (Remote) - KDiff3`, pannello risultato su
+  `<Conflitto di fusione>`, "conflitti non ancora risolti: 1").
+- **Il banner del merge ha i pulsanti veri** (`7b6fccdc5`, `9267e096e`, `2b3187f00`, cablaggio
+  `dbae1f842`). Premessa **vera**: `RepositoryProgressBanner.cs:335-336` era un `TextBlock` dim che
+  *consigliava* `git merge --abort`, cioè mandava l'utente in terminale, e `RepositoryProgress` non
+  portava alcun dato sui conflitti. Ora i due stati di upstream sono distinti — arancione *"Merge is
+  currently in progress with merge conflicts."* con `Resolve…`/`Abort`, grigio *"Merge is currently
+  in progress."* con `Continue`/`Abort` — e `MergeSessionService` sta dietro `--abort`/`--continue`.
+  **Difetto trovato e corretto**: Fluent dipinge la faccia dei `Button` da un overlay `ButtonBackground*`
+  **traslucido**, quindi sull'arancione `Abort` misurava **1,99:1** ed era invisibile. Risolto pinnando
+  le chiavi di stato sulle `Resources` dell'istanza (la tecnica di `TextBoxSurface`, M62), perché un
+  `Background` locale perde contro gli style setter del `ControlTheme` in hover. Dopo: 7,70:1 (scuro) e
+  5,97:1 (chiaro); il fondo dà 10,56:1 / 5,88:1 con l'inchiostro derivato dal fondo in un solo punto.
+  Deviazioni: `Abort` chiede conferma (upstream no, ma riscrive il working tree senza reflog);
+  `--continue` gira con `GIT_EDITOR=true`, perché il port non ha un editor cablato a git e un `vi`
+  ereditato pianterebbe il process dialog per sempre.
+- **`ConflictFlow`: la conferma di upstream, e la prima modale Sì/No riusabile del port**
+  (`1316c258b`, `74a139d74`, cablaggio `963e99119`). Premessa **vera**:
+  `grep MergeConflictHandler|DontConfirmResolveConflicts` dava 0 hit, e
+  `ResolveConflictsDialog.ShowAsync`/`HasConflicts` esistevano con **zero call-site** — il dialogo era
+  raggiungibile da niente. Il subagent ha censito i punti di cablaggio uno per uno verificando se il
+  conflitto è davvero possibile lì; il loop ha cablato: i tre call-site del merge, il pull da toolbar
+  (`RunRemoteOp`), il `PullDialog`, cherry-pick e stash pop (`RunOp`), revert, `stash apply/pop` dal
+  pannello e dall'albero, e `git am` (`ApplyPatchDialog`, dove `_state.InConflictedMerge` era già
+  calcolato e usato solo per abilitare i pulsanti).
+  **Correzione alla premessa**: `PullDialog.ShowAsync` aveva **già** il parametro `solveConflicts`
+  (`:341-346`) e l'unico chiamante lo ometteva, quindi "Solve conflicts" ricadeva su un mergetool
+  nudo: il gancio era a costo zero.
+  Non cablati, con motivo: il **rebase** (il conflitto è possibilissimo, ma il port non ha né dialogo
+  di rebase né un solo `git rebase --continue` — la domanda da sola lascerebbe l'utente col rebase a
+  metà e nessun pulsante), i **merge di submodulo** (il conflitto vive dentro il submodulo, l'indice
+  del super-repo resta pulito), `StashDrop` e `PatchService` (non lasciano conflitti), e
+  `AvaloniaGitUICommands.StartResolveConflictsDialog`, che è un punto reale ma con firma sincrona
+  `bool` e nessun riferimento a una `Window`: decisione semantica, non un gancio.
+  `DontConfirmResolveConflicts` esiste come flag ma **non** ha UI: il port non ha la pagina
+  Confirmations (nessuna delle 17 checkbox di upstream è portata).
+- **La chrome del commit dialog** (`91c58cd89`, `3195ed6bf`, `1ef18ad35`, `219056c39`): tutte e quattro
+  le divergenze chiuse. Status bar con `Committer` dai valori effettivi (col filler
+  `/user.name not configured/` di upstream), `branch → push target` con le regole esatte di
+  `FormCommit.UpdateBranchNameDisplayAsync` (upstream configurato → `origin/branch (untracked)` →
+  `(remote not configured)` → niente se HEAD non è su un branch locale: **nessuna stringa inventata**),
+  `Staged x/y` reale e `Ln/Col`. Gutter a **due colonne** parsato dagli header `@@ -a,b +c,d @@`
+  (contesto entrambi, `+` solo nuovo, `-` solo vecchio; diff combinato `@@@` → gutter **vuoto**
+  anziché numeri sbagliati). Toolbar e casella filtro regex **per lista**.
+  Scoperte: upstream prende `Ln/Col` dal caret del **messaggio** (`FormCommit.cs:2428-2429`), non dal
+  diff — il port segue entrambi, vince l'ultimo mosso; e `SelectableTextBlock` e `TextBlock` impaginano
+  lo stesso font a **passi diversi** (19,0 vs 17,9 px/riga), quindi i numeri scivolavano di una riga
+  intera e `VerticalAlignment=Top` non bastava: serve un `LineHeight` esplicito uguale.
+  **Il line-staging su untracked è stato riverificato due volte** (dopo il gutter e dopo le toolbar):
+  nell'indice finisce solo la riga scelta. Contrasti: status bar 11,17:1 / 16,67:1, numeri del gutter
+  5,51:1 / 5,41:1.
+  `FileStatusListView` **non** riusato, con misura: la sua superficie è tutta su `DiffFileRow`, mentre
+  il line-staging dipende da `WorkingDirFileRow.Status`/`IsStaged` — la conversione sarebbe stata
+  lossy proprio lì. Escluso per non fare pulsanti finti: albero/lista piatta, `git grep` find-in-files,
+  righe skip-worktree/assume-unchanged, file ignorati (nel port nulla fa `git status --ignored`).
+- **Difetto trovato dall'unità C in un file di un'altra unità, corretto dal loop** (`54f04843d`): i
+  path dei conflitti arrivavano a `GitArgumentBuilder` **senza quote**, quindi take-ours / take-theirs /
+  mark-resolved del `CommitDialog` **fallivano in silenzio** su un nome con lo spazio. *Verificato in
+  GUI* su un merge che conflitta su `a file.txt`: prima il clic non faceva nulla, dopo il file resta col
+  contenuto nostro e sparisce dagli unmerged.
+- **Collaudo end-to-end del loop** (screenshot in `/tmp/r12e2e-*.png`, tutti guardati): merge di
+  `branch1` → dialogo con `branch1` preselezionato e `Into current branch master` → process dialog con
+  `git merge --no-edit branch1` e `CONFLICT (content): Merge conflict in README.md` → **la domanda**
+  *"There are unresolved merge conflicts, solve conflicts now?"* con Sì/No → `ResolveConflictsDialog`
+  → `Choose local/current (ours)` → il dialogo **si chiude da sé** e il banner **passa da solo** allo
+  stato grigio con `Continue` → `git merge --continue` ⇒ `[master 3c2da511] Merge branch 'branch1'` →
+  banner **spento**, merge visibile nel grafo, tree pulito, nessun `MERGE_HEAD`.
+
+**Trappole nuove di questo round, da NON riscoprire**
+- **`isNewFile` di `PatchManager` significa "nuovo nell'INDICE", non "untracked"**: riscrive
+  `--- /dev/null` in `--- a/<name>` e toglie `new file mode`, rendendo il patch inapplicabile a un path
+  assente dall'indice (upstream per gli untracked usa un builder diverso che scrive un blob).
+- **`FirstLine()` su output streaming pesca l'header del comando**, non l'errore.
+- **Sottoscrivere `ComboBox.TextProperty` spara subito**: l'eccezione dal costruttore faceva sì che il
+  `MergeDialog` **non si aprisse mai**, con log pulito e finestra X non mappata.
+- **Fluent dipinge i `Button` con un overlay traslucido**: su un fondo colorato il testo può crollare a
+  2:1 e sparire, e un `Background` locale non basta (serve pinnare le chiavi di stato).
+- **`SelectableTextBlock` e `TextBlock` non impaginano allo stesso passo** con lo stesso font.
+- **Ambiente**: la sessione esporta `WAYLAND_DISPLAY` **e** `XDG_SESSION_TYPE=wayland`, quindi un figlio
+  Qt come kdiff3 gira ma **non mappa nessuna finestra** sotto Xvfb: lanciare l'app con
+  `env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE QT_QPA_PLATFORM=xcb`. Non è un difetto del port, che
+  lancia solo `git mergetool`.
+- **Un'azione distruttiva può avere una conferma in attesa**: una misura "non ha funzionato" era in
+  realtà un dialogo di conferma non ancora premuto. Guardare lo screenshot **prima** di concludere.
+
+**Residui aperti registrati** (nessuno bloccante): lo stato "conflitti senza operazione in corso"
+(dopo uno `stash pop` conflittuale) non è nel banner, perché rilevarlo costerebbe un `git diff` a ogni
+refresh anche su repo inerti — servirebbe una cache dello stato dell'indice; rebase/`am`/cherry-pick/
+revert non hanno pulsanti nel banner (nessun service dietro il loro `--continue`/`--skip`); la scelta
+fast-forward del `MergeDialog` è ricordata **globalmente** e non per repository
+(`GetEffectiveSettings().Detached()` è uno store condiviso); "Open/Save `<side>` as" e la file history
+del dialogo dei conflitti non sono portati; la persistenza di sort-key e toggle untracked delle nuove
+toolbar richiederebbe campi in `AppPreferences`; i due commenti ora stantii in `ApplyPatchDialog.cs:51`
+e `PullDialog.cs:718` dicono ancora che il port non ha `FormResolveConflicts`.
+
 ## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
 
 > Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno
@@ -2181,7 +2304,7 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
       (`WorkingDirectoryService.ResetChanges`, `:377-395`). Fix: portare `FormResetChanges`
       (conferma + scelta sugli untracked), applicare alle **righe della lista** come upstream,
       e gestire l'abilitazione.
-- [ ] **12.A.4 — la chrome del dialogo è ancora lontana da `FormCommit`.** Divergenze misurate
+- [x] **12.A.4 — la chrome del dialogo è ancora lontana da `FormCommit`.** Divergenze misurate ✅ M72
       contro `commit window dialog.png`: le due liste sono `ListBox` nude
       (`CommitDialog.cs:37-38`, `MakeList()` `:3292`) **senza la toolbar di icone per lista**
       e con **una sola** casella filtro (`:689`) invece di una per lista; **nessun gutter di
@@ -2212,7 +2335,7 @@ scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMer
       dei flag cablati.
 - [x] **12.B.2 — il merge passa dal `GitProcessDialog`** ✅ M71 (img 01), come già fanno
       fetch/pull/push: comando, output live, `Keep dialog open`, `OK`/`Abort`.
-- [ ] **12.B.3 — conferma "Merge conflicts" dopo un merge fallito** (img 02): port di
+- [x] **12.B.3 — conferma "Merge conflicts" dopo un merge fallito** (img 02): port di ✅ M72
       `MergeConflictHandler.HandleMergeConflicts`
       (`src/app/GitUI/CommandsDialogs/MergeConflictHandler.cs:9-27`) — se
       `module.InTheMiddleOfConflictedMerge()` chiedere *"There are unresolved merge conflicts,
@@ -2220,7 +2343,7 @@ scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMer
       bypass `AppSettings.DontConfirmResolveConflicts`. Il gancio va messo su **tutti** i
       chiamanti che possono generare conflitti (merge, pull, cherry-pick, revert, rebase,
       stash apply), non solo sul merge.
-- [ ] **12.B.4 — `ResolveConflictsDialog` (port di `FormResolveConflicts`)** (img 03): lista
+- [x] **12.B.4 — `ResolveConflictsDialog` (port di `FormResolveConflicts`)** (img 03): lista ✅ M72
       dei conflitti (`WorkingDirectoryService.ListConflicts`, `:110-118`, esiste già:
       `git diff --name-only --diff-filter=U`), pulsanti **Open in \<mergetool\>** con il nome
       del tool **letto da `merge.tool`** (dinamico: "Open in kdiff3" nello screenshot) e
@@ -2230,7 +2353,7 @@ scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMer
       ours/base/theirs. `WorkingDirectoryService.cs:134-173` sa già lanciare
       `git mergetool --no-prompt -- <path>` detached, quindi il pulsante apre **davvero** il
       tool configurato (kdiff3, meld, …) come chiesto.
-- [ ] **12.B.5 — banner del merge con `Resolve…` e `Abort`** (img `unresolved merge conflict UI
+- [x] **12.B.5 — banner del merge con `Resolve…` e `Abort`** (img `unresolved merge conflict UI ✅ M72
       from home.png`): `RepositoryProgressBanner.cs:300`/`:335` oggi mostra il testo
       *"A merge is in progress."* e come *suggerimento testuale* "…or run: git merge --abort",
       cioè **dice all'utente di andare in terminale**. Vanno aggiunti i due pulsanti veri
