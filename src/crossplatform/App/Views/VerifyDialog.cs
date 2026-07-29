@@ -168,7 +168,11 @@ public sealed class VerifyDialog : Window
         _createTag = new Button { Content = "Create tag…" };
         _createBranch = new Button { Content = "Create branch…" };
         _saveToLostFound = new Button { Content = "Save objects to .git/lost-found" };
-        _deleteTags = new Button { Content = "Delete all LOST_AND_FOUND tags" };
+
+        // The caption MUST NOT be a bare string: a Button treats "_" in string content as
+        // an access-key marker and swallows it, so "LOST_AND_FOUND" rendered as
+        // "LOSTAND_FOUND" on screen. A TextBlock child is not access-key processed.
+        _deleteTags = new Button { Content = new TextBlock { Text = "Delete all LOST_AND_FOUND tags" } };
         _prune = new Button { Content = "Remove all dangling objects" };
 
         _rescan.Click += (_, _) => _ = RescanAsync();
@@ -474,7 +478,10 @@ public sealed class VerifyDialog : Window
     {
         if (Selected is not { } row)
         {
-            _preview.Text = "Select an object to preview it.";
+            // Deliberately LEAVE the pane alone. Every action ends with a rescan, which
+            // drops the selection and used to land here — wiping the recovery / prune /
+            // lost-found report the user had just triggered and replacing it with the
+            // placeholder. The initial placeholder is set in the constructor instead.
             return;
         }
 
