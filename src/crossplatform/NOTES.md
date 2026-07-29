@@ -116,3 +116,31 @@ istanziata due volte (tab History di `MainWindow` e finestra autonoma di `Commit
 `CommitDialog.cs:1015-1029`) e leggere il file alla costruzione dà all'istanza nuova lo
 stato corrente senza plumbing fra istanze. `LoadPersistedOptions` non può eccepire (un
 field initializer che lancia porterebbe giù la view).
+
+## 4. (c) Filtri del left panel — fatto
+
+`App/Views/RepoObjectsTree.cs`. Persistiti **otto** valori: la visibilità delle 6 categorie
+(`_showBranches`…`_showStashes`, `RepoObjectsTree.cs:49-55`) e la coppia di ordinamento
+(`_sortKey`/`_sortOrder`, `:112-113`), cioè esattamente ciò che i 6 `ToggleButton` della
+barra e il menu "Sort by …" cambiano.
+
+- **Ripristino**: `RestoreFilterPrefs()`, prima istruzione del costruttore
+  (`RepoObjectsTree.cs:230+`), quindi **prima** di `BuildToolbar()` (`:303`): ogni
+  `CategoryToggle` prende `IsChecked` dal campo mentre viene creato (`:363-390`) e il menu
+  di ordinamento legge i due campi quando si apre, così la UI riparte nello stato salvato
+  senza altro codice.
+- **Scrittura**: `PersistFilterPrefs()` in due soli punti — il `Click` di `CategoryToggle`
+  (unico handler per tutte e 6 le categorie) e `SetSort` (unico funnel dei 4 item di
+  ordinamento).
+
+**Cosa NON ho persistito qui, deliberatamente**:
+
+- il **testo della casella di ricerca** (`_search`/`_filter`, `:45`/`:58`): non è una
+  preferenza, è un cursore transitorio sopra l'albero — Escape lo azzera (`:428-431`),
+  Enter/F3 ciclano i match (`:439-460`). Ripristinarlo riaprirebbe l'app su un albero
+  **potato** senza causa visibile, cioè esattamente il tipo di stato persistito che
+  sembra un bug;
+- l'insieme dei **nodi espansi** (`_expandedKeys`, `:80`): stato di navigazione, non un
+  filtro, e già conservato fra i rebuild della sessione;
+- larghezza / collasso / **ordine** delle categorie: già persistiti dall'host in `UiState`
+  (vedi §1), li ho lasciati lì.

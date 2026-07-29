@@ -46,7 +46,9 @@ public sealed class RepoObjectsTree : UserControl
 
     // Per-category visibility, driven by the toolbar toggles exactly like
     // upstream's tsbShow* buttons (which add/remove the whole root subtree).
-    // Session-local: the port has no equivalent of AppSettings.RepoObjectsTreeShow*.
+    // Since M69 these are persisted (view-prefs.json → LeftPanel), the port's stand-in
+    // for upstream's AppSettings.RepoObjectsTreeShow* family: RestoreFilterPrefs()
+    // seeds them before the toolbar is built and PersistFilterPrefs() writes them back.
     private bool _showBranches = true;
     private bool _showRemotes = true;
     private bool _showWorktrees = true;
@@ -227,6 +229,11 @@ public sealed class RepoObjectsTree : UserControl
 
     public RepoObjectsTree()
     {
+        // Before BuildToolbar() below: the six category toggles take their IsChecked
+        // from these fields as they are created, and the sort menu reads the two sort
+        // fields when it opens, so seeding them here is all the restore needs.
+        RestoreFilterPrefs();
+
         _tree = new TreeView
         {
             Background = Brushes.Transparent,
@@ -377,6 +384,7 @@ public sealed class RepoObjectsTree : UserControl
         toggle.Click += (_, _) =>
         {
             apply(toggle.IsChecked == true);
+            PersistFilterPrefs();
             if (_snapshot is { } snapshot)
             {
                 BuildTree(snapshot);
@@ -384,6 +392,50 @@ public sealed class RepoObjectsTree : UserControl
         };
         return toggle;
     }
+
+    // ------------------------------------------- persisted filters (view-prefs.json)
+
+    // The panel's WIDTH, its collapsed flag and its category ORDER are NOT here: those
+    // are layout owned by the host window, which already saves them into UiState from
+    // MainWindow.PersistLayout(). Only what the toolbar toggles and the sort menu change
+    // lives in this file — see ViewPrefsService for why a second file exists at all.
+    private static readonly ViewPrefsService PrefsService = new();
+
+    private void RestoreFilterPrefs()
+    {
+        try
+        {
+            LeftPanelPrefs prefs = PrefsService.Load().LeftPanel;
+            _showBranches = prefs.ShowBranches;
+            _showRemotes = prefs.ShowRemotes;
+            _showWorktrees = prefs.ShowWorktrees;
+            _showTags = prefs.ShowTags;
+            _showSubmodules = prefs.ShowSubmodules;
+            _showStashes = prefs.ShowStashes;
+            _sortKey = prefs.SortKey == "CommitDate" ? RefSortKey.CommitDate : RefSortKey.Name;
+            _sortOrder = prefs.SortOrder == "Descending" ? RefSortOrder.Descending : RefSortOrder.Ascending;
+        }
+        catch
+        {
+            // Never let a preference file stop the panel from being built; the fields
+            // keep the defaults they were declared with.
+        }
+    }
+
+    // Update(), not Save(): the file also carries the diff options, the file-history
+    // switches and the revision-filter MRU.
+    private void PersistFilterPrefs() =>
+        PrefsService.Update(prefs => prefs.LeftPanel = new LeftPanelPrefs
+        {
+            ShowBranches = _showBranches,
+            ShowRemotes = _showRemotes,
+            ShowWorktrees = _showWorktrees,
+            ShowTags = _showTags,
+            ShowSubmodules = _showSubmodules,
+            ShowStashes = _showStashes,
+            SortKey = _sortKey.ToString(),
+            SortOrder = _sortOrder.ToString(),
+        });
 
     private void CollapseAll()
     {
@@ -1530,6 +1582,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         _sortKey = key;
         _sortOrder = order;
+        PersistFilterPrefs();
 
         if (_snapshot is not { } snapshot)
         {
