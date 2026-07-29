@@ -106,7 +106,12 @@ public sealed class MergeDialog : Window
         _execute = execute;
 
         Width = 640;
-        Height = 420;
+
+        // Tall enough for the whole advanced panel (strategy, squash, unrelated
+        // histories, --log count and the merge message box) to be visible when it is
+        // revealed; the ScrollViewer below stays as the safety net for translations
+        // that wrap the long radio captions onto extra lines.
+        Height = 620;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
@@ -137,7 +142,6 @@ public sealed class MergeDialog : Window
         }
 
         _branchCombo.SelectionChanged += (_, _) => UpdateEnabledState();
-        _branchCombo.GetObservable(ComboBox.TextProperty).Subscribe(new AnonymousObserver(() => UpdateEnabledState()));
 
         _currentBranchCaption = Label(string.Empty);
         _currentBranchValue = Label(_currentBranch);
@@ -188,7 +192,9 @@ public sealed class MergeDialog : Window
             Maximum = 999,
             Increment = 1,
             Value = data.Prefs.LogMessagesCount,
-            Width = 100,
+            // Wide enough that a three-digit count is not clipped by the two spinner
+            // buttons (at 100 px even the default "20" lost its second digit).
+            Width = 140,
             FormatString = "0",
             VerticalAlignment = VerticalAlignment.Center,
             IsEnabled = data.Prefs.AddLogMessages,
@@ -284,6 +290,14 @@ public sealed class MergeDialog : Window
         _mergeBtn.HorizontalAlignment = HorizontalAlignment.Right;
         _mergeBtn.Margin = new Thickness(0, 10, 0, 0);
         _mergeBtn.Click += (_, _) => _ = OnMergeAsync();
+
+        // Subscribed HERE, not where the combo is built: Avalonia pushes the property's
+        // CURRENT value at subscribe time, so an earlier subscription ran
+        // UpdateEnabledState() before _mergeBtn existed — a NullReferenceException
+        // thrown from the constructor, which the caller's try/catch swallowed and which
+        // therefore looked like "the dialog simply never opens".
+        _branchCombo.GetObservable(ComboBox.TextProperty)
+            .Subscribe(new AnonymousObserver(UpdateEnabledState));
 
         DockPanel body = new() { Margin = new Thickness(12) };
         DockPanel.SetDock(_mergeBtn, Dock.Bottom);
