@@ -6,6 +6,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using GitCommands;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -59,7 +60,14 @@ public sealed class InitDialog : Window
 
         Title = T("FormInit/$this.Text", "Create new repository");
         Width = 600;
-        SizeToContent = SizeToContent.Height;
+
+        // An explicit height, NOT SizeToContent.Height: a window manager that ignores
+        // the resize request that SizeToContent issues leaves the window at its old
+        // size while Avalonia only paints the measured content, and the rest of the
+        // surface stays unpainted (a white band under the buttons — visible on every
+        // screenshot of this dialog before this change). Every other dialog in the port
+        // sizes itself explicitly for the same reason.
+        Height = 290;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", "#1E1E1E");
 
@@ -68,7 +76,13 @@ public sealed class InitDialog : Window
             Watermark = T("Directory for the new repository"),
             FilterMode = AutoCompleteFilterMode.StartsWithOrdinalCaseSensitive,
             MinimumPrefixLength = 0,
-            Text = initialDirectory ?? string.Empty,
+
+            // Upstream's fallback when no directory is handed in (FormInit.cs:45):
+            // the configured default clone destination. Unset by default, in which
+            // case the field simply starts empty as before.
+            Text = string.IsNullOrEmpty(initialDirectory)
+                ? AppSettings.DefaultCloneDestinationPath
+                : initialDirectory,
         };
         _directory.TextChanged += (_, _) => RefreshCompletions();
 
