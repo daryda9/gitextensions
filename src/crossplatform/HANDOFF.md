@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `c4b366347` (round 11 iterazione 1 = **M67**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M67**), tiene il contatore iterazione.
+  libera: **M68**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -216,7 +216,37 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 10 (2026-07-28) — in corso. Prossima milestone libera: **M67**
+> ### ► ROUND 11 (2026-07-29) — in corso. Prossima milestone libera: **M68**
+> **M67** ha chiuso **4.1** (checkout di rami remoti: `App/Views/CheckoutBranchForm.cs`, port completo
+> di `FormCheckoutBranch`, su `Commands.CheckoutBranch` del core via `BranchTagService.CheckoutBranch`),
+> i tre banali (warm-up del `Lazy<Encoding>` in `Program.cs`; Ctrl+Shift+N che ora **lega** davvero
+> `AddNotesDialog`; la **terna** delle pill ref tematizzata, da 3 fallimenti WCAG su 6 a 0) e
+> l'**auth-failure indipendente dalla locale**. Restano i `[~]` 4.11 (dialoghi) e 3.2 (persistenza),
+> più la palette di syntax highlighting per il tema chiaro.
+>
+> Cose scoperte in M67 da NON riscoprire:
+> - **`LC_ALL` sovrascrive `LC_MESSAGES`**: per avere diagnostiche git in inglese non basta
+>   `LC_MESSAGES=C`, va **rimosso `LC_ALL`** (col suo valore travasato in `LC_CTYPE`, per non perdere
+>   l'encoding) e azzerato `LANGUAGE`. Fatto in `App/Services/GitEnvironment.cs`, applicato ai git
+>   *del port* — **non** alla Console incorporata, dove `PtyProcess.Start` ripristina la locale vera
+>   dell'utente.
+> - **Sul path PTY l'output di git NON arriva a `onLine`**: va al terminale come byte grezzi, quindi
+>   ogni matcher di testo su fetch/pull/push del process dialog era cieco **anche in inglese**. Il
+>   segnale robusto sono i **verbi del credential helper** (`get`/`store`/`erase`): `erase` va a
+>   *tutti* gli helper (a differenza di `get`, dove un helper `-c` è consultato ultimo), quindi la
+>   sonda vede sempre il rifiuto (`App/Services/GitAuthProbe.cs`, verdetto trasportato da
+>   `GitAuthSignal` via `AsyncLocal`).
+> - **Le pill ref non erano un problema di una tinta**: la riga selezionata scambiava il fondo con un
+>   **bianco opaco hard-coded**, e nessuna singola tinta può superare 4,5:1 sia su `#252526` sia su
+>   bianco (serve luminanza ≥ 0,254 e ≤ 0,183). Va rimosso il fondo hard-coded, non ritoccata la
+>   tinta. Chiavi nuove: `App.RefPillBg`, `App.RefBranch`, `App.RefRemote`, `App.RefTag`.
+> - **Voci di parità spuntate su mezze verità**: 1.10 (AddNotes) risultava fatta perché la gesture
+>   era *dichiarata* in `HotkeyService` — ma `InstallHotkeys` non la legava. Quando una voce dice
+>   "hotkey X fatta", verificare il **binding**, non la dichiarazione.
+> - **4.1 era in parte già fatta** da round 10 (voce nell'albero e in testa al dropdown branch): il
+>   residuo era il dialogo e il fatto che toolbar/`Ctrl+.` andassero a un picker solo-locale.
+>
+> ### ► ROUND 10 (2026-07-28) — CHIUSO. Milestone M63–M66
 > **M63** ha chiuso le nove voci banali (0.17, 0.33–0.39, 1.24); **M64** le **tre leve**: 1.14b
 > (modalità worktree/index in `DiffService` + contenuto nei quattro tab per le righe artificiali),
 > 4.8 (`GitProcessDialog` su **PTY**: progress dai `\r`, prompt interattivi rispondibili, Abort che
@@ -234,10 +264,15 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 >   rename, e `--skip` oltre quel commit dà una pagina vuota. Un solo commit di partenza, date
 >   order, paging per allargamento della finestra.
 > - **`ExecutableExtensions.cs:15` del core**: `Lazy<Encoding>(isThreadSafe: false)` → le prime due
->   chiamate git **concorrenti** di un processo lanciano `InvalidOperationException`. Un warm-up di
->   una riga in `Program.Main` la chiuderebbe.
+>   chiamate git **concorrenti** di un processo lanciano `InvalidOperationException`. ✅ **RISOLTO in
+>   M67** con un warm-up di una riga in `Program.Main` (`ExecutableExtensions.GetOutput` con
+>   `outputEncoding: null` è l'unico membro pubblico che materializza il Lazy prima di avviare il
+>   processo). Misurato: 40/40 fallimenti a freddo → 0/40. Il core non è stato toccato.
 > - **Rilevamento auth-failure solo inglese** (`LooksLikeAuthFailure`, marker in `RemoteService`/
->   `PushRefsService`): con git in italiano il fallback `CredentialsDialog` non si apre. Aperto.
+>   `PushRefsService`): con git in italiano il fallback `CredentialsDialog` non si apre. ✅ **RISOLTO
+>   in M67** (pinning di `LC_MESSAGES` + sonda sui verbi del credential helper; A/B verificato in
+>   GUI). Compromesso accettato: le diagnostiche git nella console del process dialog sono ora
+>   inglesi anche per un utente italiano.
 > - `MainWindow.OpenRepository` → `RecordRecentAsync` non fa attecchire un repo appena clonato nella
 >   MRU (coperto lato `CloneDialog`). Aperto, meccanismo dentro il core.
 >

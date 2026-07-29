@@ -1414,7 +1414,11 @@ nel port, manca il punto d'accesso)
 
 **BLOCCO 4 — media/alta, da valutare dopo i primi tre**
 
-- [~] 4.1 **Checkout di rami remoti impossibile**: `CheckoutBranchDialog` è solo il gruppo "Local
+- [x] 4.1 **Checkout di rami remoti impossibile** — CHIUSA in **M67**: `CheckoutBranchForm` è il
+      port completo di `FormCheckoutBranch` (tre modalità new-branch + Local changes) su
+      `Commands.CheckoutBranch`; toolbar, `Ctrl+.` e nodi remoti dell'albero ci passano tutti.
+      Nota: l'esclusione in `RepoObjectsTree` non esisteva più. Testo originale della voce:
+      `CheckoutBranchDialog` è solo il gruppo "Local
       changes" e `RepoObjectsTree` omette Checkout sui remoti. **Non bloccato**:
       `Commands.CheckoutBranch(branch, isRemote, localChanges, newBranchMode, newBranchName)`
       esiste già nel core (`Commands.cs:10`), `BranchTagService.cs:166` usa solo `Commands.Checkout`.
@@ -2044,6 +2048,103 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   (`a3aae6d0b`) e **non era cherry-pickabile** — i file erano cambiati troppo nel frattempo. È stato
   riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
   vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
+
+## ROUND 11 — i parziali
+
+> **Iterazione 1 / 15.** Tre subagent Claude in worktree isolati su file disgiunti (A checkout
+> remoti, B tre banali, C auth-failure indipendente dalla locale), più il cablaggio in `MainWindow`
+> fatto dal loop. Base `537990dc6`, build `Errori: 0` dopo ognuno degli 11 cherry-pick.
+
+**M67** (2026-07-29) — **4.1 chiusa, i tre banali del punto 2 chiusi, l'i18n mirato del punto 4
+chiuso**. Undici commit (`f0c451eba`…`c4b366347`).
+
+- **4.1 — checkout di rami remoti, ora possibile dalla GUI** (`d38d64427`, `77f8c2e9e`,
+  `4f7a5fe65`, `c4b366347`). `App/Views/CheckoutBranchForm.cs` è il port completo di
+  `FormCheckoutBranch`: radio Local/Remote, casella branch con autocompletamento, contatore
+  ahead/behind, le **tre modalità new-branch** (create-with-custom-name / reset-local-branch /
+  detached) e il gruppo "Local changes" mostrato **solo** su tree sporco.
+  `BranchTagService.CheckoutBranch` passa per `Commands.CheckoutBranch` del core
+  (`src/app/GitCommands/Git/Commands.cs`) con `LocalChangesAction` + `CheckoutNewBranchMode`;
+  `Stash` fa un pre-stash perché il builder del core non ha il flag.
+  **Correzione alla voce di coda**: l'esclusione di Checkout sui nodi remoti in `RepoObjectsTree`
+  *non esisteva più* (round 10 l'aveva già rimossa) e `MainToolbar` aveva già `Checkout branch...`
+  in testa al dropdown: il residuo vero era il **dialogo**, più il fatto che il picker della
+  toolbar e `Ctrl+.` andavano a un picker **solo-locale** (`MainWindow.CheckoutBranchPickerAsync`),
+  ora instradati sul form con la conferma upstream sul reset non-fast-forward.
+  *Verificato in GUI* (display privato, repo `/tmp/r11int` con un ramo `solo-remoto` presente solo
+  sul remote): dropdown → `Checkout branch…` → Remote branch → autocompletamento →
+  `(+0-1)` e l'etichetta che passa a "Create local branch with same name: 'solo-remoto'" → Checkout
+  ⇒ `* solo-remoto 93fbed3 [origin/solo-remoto]`, **branch locale tracciante, non detached**, albero
+  e status bar aggiornati (`↑0↓0`). Il subagent aveva già dimostrato le altre due modalità e il
+  warning di reset su merge base.
+- **Punto 2a — warm-up del `Lazy<Encoding>` del core** (`f0c451eba`). Il difetto è in
+  `src/app/GitCommands/Git/ExecutableExtensions.cs:15` (`isThreadSafe: false`), dereferenziato a
+  `:97` e `:291` come **prima** istruzione: le prime due chiamate git concorrenti di un processo
+  lanciano `InvalidOperationException: ValueFactory attempted to access the Value property`.
+  Misurato con una sonda a `Barrier`: **40/40 fallimenti a freddo, 0/40 col warm-up** — deterministico,
+  non flaky. Il warm-up è una riga in `App/Program.cs` che chiama
+  `ExecutableExtensions.GetOutput` con `outputEncoding: null` (unico membro pubblico che materializza
+  il Lazy prima di avviare il processo; `git --version` è solo la scusa più economica). Il core
+  **non è stato toccato**. Ipotesi scartata con misura: `SystemEncodingReader.cs:41` passa
+  `Encoding.UTF8` esplicito, quindi non rientra nel Lazy — il difetto è puramente cross-thread, ed
+  è per questo che un warm-up single-thread basta.
+- **Punto 2b — `AddNotesDialog` raggiungibile** (`29766eb3e`). La voce di parità 1.10 era spuntata
+  su una mezza verità: `CommitDetailView.cs:184` chiamava già `EditNotes()` dal menu contestuale del
+  commit-info, ma `HotkeyService.cs:180` **dichiarava** Ctrl+Shift+N senza che `InstallHotkeys` la
+  legasse — gesture pubblicizzata (e rimappabile in Settings) e inerte. Ora è cablata come upstream
+  (`FormBrowse.AddNotes` + l'etichetta di `CommitInfo.cs:113`). *Verificato in GUI*: la finestra si
+  è renderizzata **per la prima volta** e la nota fa round-trip
+  (`git notes show 93fbed3b…` → `nota round 11 integrazione`). NON aggiunta al menu contestuale
+  della griglia: upstream non ce l'ha.
+- **Punto 2c — la terna delle pill ref, non la sola pillola tag** (`a97ef36cd`). A fallire erano
+  **tre casi su sei**, non uno: tag in chiaro 3,25 e **branch/remote in scuro 2,99 / 2,82**. Il
+  blocco strutturale era la riga selezionata, che scambiava il fondo con un **bianco opaco
+  hard-coded**: per superare 4,5:1 serve luminanza ≥ 0,254 su `#252526` e ≤ 0,183 su bianco, quindi
+  nessuna singola tinta poteva servire i due fondi finché quel bianco c'era. Rimosso, non
+  ri-tematizzato. Quattro chiavi nuove in `ThemeManager` (`Keys`+`Dark`+`Light`):
+  `App.RefPillBg`, `App.RefBranch`, `App.RefRemote`, `App.RefTag`.
+  Contrasti prima → dopo: branch chiaro 5,13→6,53 · remote chiaro 5,44→6,67 · **tag chiaro
+  3,25→6,40** · **branch scuro 2,99→6,67** · **remote scuro 2,82→6,56** · tag scuro 4,71→6,67.
+  Tutte e sei in 6,40–6,67, nessuna è più l'anello debole. *Ricontrollato dal loop* sui pixel di uno
+  screenshot indipendente in tema chiaro: branch 6,53 e remote 6,67, coincidenti.
+  Effetto collaterale voluto: passando i brush **per riferimento** le pill seguono ora il cambio
+  tema a caldo (le vecchie copie `SolidColorBrush` no). Lasciata fuori la pill **note**
+  (`BuildNotesBadge`, misurata 5,34, passa AA; resta un chip scuro in tema chiaro, incoerenza
+  estetica da guardare un giorno).
+- **Punto 4 — auth-failure indipendente dalla locale** (`deac4ae2d`, `b9155207a`, `66e0a8bb5`,
+  `0a26785b7`). Scelte **entrambe** le strade, in quest'ordine:
+  1. *Pinning della locale dei figli*: `App/Services/GitEnvironment.cs` imposta `LC_MESSAGES=C`,
+     **rimuove `LC_ALL`** portandone il valore in `LC_CTYPE` e azzera `LANGUAGE`. La rimozione di
+     `LC_ALL` non è opzionale — misurato: `LC_ALL=it_IT.UTF-8 LC_MESSAGES=C` stampa **ancora**
+     italiano, perché `LC_ALL` sovrascrive la categoria. Scartato `LC_ALL=C`/`C.UTF-8` per non
+     toccare l'encoding. Applicato al path pipe e a quello PTY, a `PushRefsService.Capture`, a
+     `ApproveCredentials` e — a livello di processo e temporaneamente — attorno a
+     `module.GitExecutable.Execute`, che è core condiviso e non offre hook di env per comando.
+     **NON** applicato alla Console incorporata: `PtyProcess.Start` ripristina esplicitamente la
+     locale vera dell'utente, perché quella shell è sua.
+  2. *Segnale strutturale*: `App/Services/GitAuthProbe.cs` registra i **verbi del credential
+     helper** (`get`/`store`/`erase`), che sono token di protocollo e non messaggi. `erase` = il
+     server ha rifiutato le credenziali; `get` + exit ≠ 0 = il comando serviva credenziali ed è
+     fallito. Misura chiave: un helper `-c` è consultato **ultimo** per `get`, ma **`erase` va a
+     tutti gli helper**, quindi la sonda vede sempre il rifiuto. `GitAuthSignal` (holder
+     `AsyncLocal`) porta il verdetto fino al dialogo senza cablaggio.
+  **Difetto più profondo trovato per strada**: sul path PTY interattivo — quello che usano *tutti*
+  fetch/pull/push del process dialog — l'output di git non arriva mai a `onLine`, va al terminale
+  come byte grezzi, quindi i matcher di testo ricevevano una stringa vuota ed erano ciechi
+  **anche in inglese**. È la sonda che sistema davvero quel path.
+  *A/B verificato in GUI* con un server locale che risponde sempre `401` e un credential helper che
+  fornisce credenziali sbagliate, app e git in italiano: **prima** console
+  `fatal: Autenticazione non riuscita per 'http://127.0.0.1:8791/x.git/'`, stato Failed, nessun
+  `CredentialsDialog` nemmeno 8 s dopo; **dopo** il process dialog si chiude e il
+  `CredentialsDialog` si apre, e il retry stampa `fatal: Authentication failed for …` in inglese
+  mentre l'app resta in italiano. Console tab: `LC_MESSAGES="it_IT.UTF-8"`, `git status` italiano,
+  accenti corretti, ramo `perché-àèìòù-日本` reso bene.
+  Già sicuri e lasciati stare: `! [rejected]` (la tabella di stato di push non è tradotta),
+  `%(upstream:track)`/`gone`, il prompt `Username for '…'` (non tradotto in git 2.43) e i prompt di
+  ssh (non localizzati). **Compromesso accettato e registrato**: le diagnostiche git nella console
+  del process dialog sono ora inglesi anche per un utente italiano. Nessuna stringa tradotta
+  aggiunta, come chiesto. Fuori dall'unità e ancora inglese: `CleanupDialog.cs:509` (prefisso
+  `fatal:`).
 
 ## ROUND 10 — chiusura della coda
 
