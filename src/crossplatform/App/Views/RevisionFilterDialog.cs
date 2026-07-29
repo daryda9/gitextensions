@@ -42,6 +42,11 @@ public sealed class RevisionFilterDialog : Window
     private readonly CheckBox _firstParent;
     private readonly CheckBox _simplifyByDecoration;
 
+    private static readonly ViewPrefsService PrefsService = new();
+
+    // Snapshot of the persisted MRU, newest first, taken when the dialog opens.
+    private readonly List<RevisionFilterMruEntry> _mru;
+
     /// <summary>True when the user pressed OK (not Cancel / window close).</summary>
     public bool Confirmed { get; private set; }
 
@@ -146,10 +151,27 @@ public sealed class RevisionFilterDialog : Window
             Margin = new Thickness(0, 12, 0, 0),
         };
 
+        // The MRU of previously confirmed filters. Loaded once here (not on every
+        // click) so the flyout can be populated before ShowAt — a MenuFlyout filled
+        // from its Opening handler is not re-measured and shows as a thin sliver
+        // (HANDOFF §3).
+        _mru = PrefsService.Load().RevisionFilterMru;
+
+        Button recent = new()
+        {
+            Content = T("Recent filters") + "  ▾",
+            MinWidth = 120,
+            // A real control, disabled while there is nothing to offer, rather than a
+            // button that opens an empty popup.
+            IsEnabled = _mru.Count > 0,
+        };
+        recent.Click += (_, _) => ShowRecentMenu(recent);
+
         Button reset = new()
         {
             Content = StripMnemonic(T("FormBrowse/tsmiResetAllFilters.Text", "&Reset revision filters")),
             MinWidth = 120,
+            Margin = new Thickness(8, 0, 0, 0),
         };
         reset.Click += (_, _) => ResetFields();
 
@@ -164,6 +186,7 @@ public sealed class RevisionFilterDialog : Window
         {
             Result = Collect();
             Confirmed = true;
+            RememberFilter(Result);
             Close();
         };
 
@@ -181,7 +204,7 @@ public sealed class RevisionFilterDialog : Window
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 16, 0, 0),
-            Children = { reset, ok, cancel },
+            Children = { recent, reset, ok, cancel },
         };
 
         Border box = new()
@@ -253,6 +276,158 @@ public sealed class RevisionFilterDialog : Window
             SimplifyByDecoration = _simplifyByDecoration.IsChecked == true,
         };
     }
+
+    // ------------------------------------------------- the recently used filters
+
+    // Items are added before ShowAt (HANDOFF §3). Labels are DATA — user-typed
+    // patterns — so they are never fed to the translation lookup, and any "_" in them
+    // is doubled so Avalonia's access-key parser does not eat it.
+    private void ShowRecentMenu(Control anchor)
+    {
+        MenuFlyout flyout = new();
+
+        foreach (RevisionFilterMruEntry entry in _mru)
+        {
+            MenuItem item = new() { Header = Describe(entry).Replace("_", "__") };
+            RevisionFilterMruEntry captured = entry;
+            item.Click += (_, _) => ApplyFilter(ToFilter(captured));
+            flyout.Items.Add(item);
+        }
+
+        flyout.ShowAt(anchor);
+    }
+
+    // Pushes the confirmed filter onto the MRU. Update(), not Save(): view-prefs.json
+    // also carries the diff options, the file-history switches and the left panel
+    // filters, and a plain save of a stale copy would revert them. The neutral filter
+    // is dropped by PushMru — "no filter" is not worth a slot, and pressing OK on an
+    // empty dialog is how the full history comes back.
+    private static void RememberFilter(RevisionFilter filter)
+    {
+        try
+        {
+            RevisionFilterMruEntry entry = ToEntry(filter);
+            PrefsService.Update(prefs => ViewPrefsService.PushMru(prefs.RevisionFilterMru, entry));
+        }
+        catch
+        {
+            // Remembering is a convenience; it must never stop the dialog closing or
+            // the filter being applied.
+        }
+    }
+
+    // Puts a remembered filter back into the controls: the inverse of Collect(), and
+    // the reason the MRU is worth having at all — a persisted list nothing reapplies
+    // would be dead weight.
+    private void ApplyFilter(RevisionFilter f)
+    {
+        _author.Set(f.Author);
+        _committer.Set(f.Committer);
+        _message.Set(f.Message);
+        _diffContent.Set(f.DiffContent);
+        _since.Set(f.DateFrom);
+        _until.Set(f.DateTo);
+        _pathFilter.Set(f.PathFilter);
+        _limit.Set(f.CommitsLimit > 0
+            ? f.CommitsLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : string.Empty);
+
+        _diffRegex.IsChecked = f.DiffContentIsRegex;
+        _diffLiteral.IsChecked = !f.DiffContentIsRegex;
+        _ignoreCase.IsChecked = !f.CaseSensitive;
+        _useRegex.IsChecked = f.UseRegex;
+        _hideMerges.IsChecked = f.HideMergeCommits;
+        _firstParent.IsChecked = f.FirstParentOnly;
+        _simplifyByDecoration.IsChecked = f.SimplifyByDecoration;
+    }
+
+    // A one-line summary of a remembered filter, in the shape of the git options it
+    // stands for, so the list is readable without opening each entry. Long patterns
+    // are elided; the switches are appended as bare flags.
+    private static string Describe(RevisionFilterMruEntry e)
+    {
+        List<string> parts = [];
+        Add("--grep", e.Message);
+        Add("--author", e.Author);
+        Add("--committer", e.Committer);
+        Add(e.DiffContentIsRegex ? "-G" : "-S", e.DiffContent);
+        Add("--since", e.DateFrom);
+        Add("--until", e.DateTo);
+        Add("--", e.PathFilter);
+
+        if (e.CommitsLimit > 0)
+        {
+            parts.Add("-n " + e.CommitsLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        if (e.HideMergeCommits)
+        {
+            parts.Add("--no-merges");
+        }
+
+        if (e.FirstParentOnly)
+        {
+            parts.Add("--first-parent");
+        }
+
+        if (e.SimplifyByDecoration)
+        {
+            parts.Add("--simplify-by-decoration");
+        }
+
+        return parts.Count == 0 ? T("(no criteria)") : string.Join("  ", parts);
+
+        void Add(string flag, string value)
+        {
+            if (value.Length > 0)
+            {
+                parts.Add(flag + " " + Elide(value));
+            }
+        }
+    }
+
+    private static string Elide(string value)
+        => value.Length <= 28 ? value : string.Concat(value.AsSpan(0, 27), "…");
+
+    // The two mappings between the walk's filter record and the serialisable entry.
+    // Only the criteria the dialog edits cross over: RevisionFilter's rename/history
+    // members (FollowRenames, FullHistory, …) belong to file-history mode, are set by
+    // that view alone, and must not be resurrected from a remembered dialog filter.
+    private static RevisionFilterMruEntry ToEntry(RevisionFilter f) => new()
+    {
+        Author = f.Author,
+        Committer = f.Committer,
+        Message = f.Message,
+        DiffContent = f.DiffContent,
+        DiffContentIsRegex = f.DiffContentIsRegex,
+        DateFrom = f.DateFrom,
+        DateTo = f.DateTo,
+        PathFilter = f.PathFilter,
+        CommitsLimit = f.CommitsLimit,
+        CaseSensitive = f.CaseSensitive,
+        UseRegex = f.UseRegex,
+        HideMergeCommits = f.HideMergeCommits,
+        FirstParentOnly = f.FirstParentOnly,
+        SimplifyByDecoration = f.SimplifyByDecoration,
+    };
+
+    private static RevisionFilter ToFilter(RevisionFilterMruEntry e) => new()
+    {
+        Author = e.Author,
+        Committer = e.Committer,
+        Message = e.Message,
+        DiffContent = e.DiffContent,
+        DiffContentIsRegex = e.DiffContentIsRegex,
+        DateFrom = e.DateFrom,
+        DateTo = e.DateTo,
+        PathFilter = e.PathFilter,
+        CommitsLimit = e.CommitsLimit,
+        CaseSensitive = e.CaseSensitive,
+        UseRegex = e.UseRegex,
+        HideMergeCommits = e.HideMergeCommits,
+        FirstParentOnly = e.FirstParentOnly,
+        SimplifyByDecoration = e.SimplifyByDecoration,
+    };
 
     // "Reset all filters": clears every criterion in place, leaving the dialog open
     // so the user can immediately build a new filter (or press OK on an empty one,
@@ -352,6 +527,17 @@ public sealed class RevisionFilterDialog : Window
         {
             Gate.IsChecked = false;
             Editor.Text = string.Empty;
+        }
+
+        /// <summary>
+        ///  Puts a value in and ticks the gate iff there is one — the same rule
+        ///  <c>AddRow</c> applies to the filter the dialog opens with, so a remembered
+        ///  filter lands in exactly the state it would have had if typed.
+        /// </summary>
+        public void Set(string value)
+        {
+            Editor.Text = value;
+            Gate.IsChecked = !string.IsNullOrWhiteSpace(value);
         }
     }
 }

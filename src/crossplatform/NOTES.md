@@ -144,3 +144,32 @@ barra e il menu "Sort by …" cambiano.
   filtro, e già conservato fra i rebuild della sessione;
 - larghezza / collasso / **ordine** delle categorie: già persistiti dall'host in `UiState`
   (vedi §1), li ho lasciati lì.
+
+## 5. (d) MRU dei filtri di revisione (avanzati) — fatto
+
+`App/Views/RevisionFilterDialog.cs` + `ViewPrefsService.PushMru`.
+
+Lista con **tetto 15** (`ViewPrefsService.MaxRevisionFilterMru`), **la più recente in
+testa**, **senza duplicati**: `PushMru` fa `RemoveAll(equal)` e poi `Insert(0, …)`, così
+riusare un filtro lo **promuove** invece di duplicarlo, e taglia la coda. L'uguaglianza è
+`RevisionFilterMruEntry.Equals`, che confronta esattamente i 14 criteri che l'utente
+edita. Il filtro **neutro** non entra mai (`IsEmpty`): "nessun filtro" non merita uno slot
+ed è ciò che produce "Reset revision filters".
+
+- **Scrittura**: sul click di OK, dopo `Collect()` (`RememberFilter`).
+- **Riapplicazione** (il punto che la voce chiede di dimostrare): nuovo pulsante
+  **"Recent filters ▾"** nella riga dei bottoni, con `MenuFlyout` popolato **prima** di
+  `ShowAt` (trappola HANDOFF §3), una voce per entry con etichetta = riassunto in forma di
+  opzioni git (`--grep …  --author …  -S …  --no-merges`, valori elisi a 28 caratteri).
+  Cliccando una voce, `ApplyFilter` rimette **tutti** i 14 criteri nei controlli — è
+  l'inverso esatto di `Collect()`, aggiungendo `Row.Set` (valore + gate spuntato solo se
+  non vuoto, la stessa regola di `AddRow`). Il pulsante è **disabilitato** quando la MRU è
+  vuota: nessun pulsante finto, nessun popup vuoto.
+- Le etichette sono **dati** (pattern scritti dall'utente): non passano dalla lookup di
+  traduzione e gli `_` sono raddoppiati per l'access-key parser.
+- Nel mapping `RevisionFilter` ⇄ entry passano **solo** i criteri del dialogo: i membri
+  `FollowRenames`/`ExactRenamesAndCopiesOnly`/`FullHistory`/`SimplifyMerges` di
+  `RevisionFilter` appartengono alla modalità file-history (`RevisionGridView.cs:2030-2038`
+  li preserva) e **non** devono essere resuscitati da un filtro ricordato.
+- **Non** ho toccato la MRU del *quick filter* della griglia: esisteva già persistita
+  (§0) e `RevisionGridView.cs` è fuori dai miei file.
