@@ -24,16 +24,28 @@ namespace GitExtensions.Avalonia.Views;
 ///  two: a bisect is orthogonal to the rest and can be open while something else is
 ///  stopped.</para>
 ///
-///  <para><b>Which buttons are real.</b> Only the bisect bar gets action buttons —
-///  good, bad, skip and stop — because <see cref="BisectService"/> is the one service
-///  of this port that actually implements them. There is deliberately <i>no</i>
-///  continue/abort button for rebase, merge, cherry-pick, revert or <c>git am</c>:
-///  the port has no service behind them (the only two <c>--abort</c> calls in
-///  <c>App/Services</c> are private clean-up paths inside
+///  <para><b>Which buttons are real.</b> The bisect bar gets good, bad, skip and stop
+///  from <see cref="BisectService"/>, and the <b>merge</b> state gets upstream's own
+///  three — <c>Resolve...</c>, <c>Continue</c> and <c>Abort</c>
+///  (<c>InteractiveGitActionControl.cs:148-152</c>) — now that
+///  <see cref="MergeSessionService"/> implements the two commands behind them. There is
+///  still deliberately <i>no</i> continue/abort button for rebase, cherry-pick, revert
+///  or <c>git am</c>: the port has no service behind those (the only <c>--abort</c>
+///  calls left in <c>App/Services</c> are private clean-up paths inside
 ///  <c>CommitEditService</c> and <c>PatchService</c>, not an API), and a button that
 ///  cannot do its job is worse than no button. Those states show what is going on
 ///  and name the git command that finishes or undoes it, which is honest and still
 ///  removes the "why is my repository behaving strangely" dead end.</para>
+///
+///  <para><b>The two merge states.</b> Upstream splits a stopped merge in two by asking
+///  <c>Module.InTheMiddleOfConflictedMerge()</c> (<c>InteractiveGitActionControl.cs:82</c>):
+///  with unresolved paths it says "… with merge conflicts." and offers
+///  <c>Resolve...</c>; with a clean index the merge itself is done and only the commit
+///  is missing, so it offers <c>Continue</c>. Both states offer <c>Abort</c>. This port
+///  reads the same fact from the index
+///  (<see cref="MergeSessionService.HasUnresolvedConflicts"/>), and pays for that one
+///  extra git process <i>only</i> while a merge is actually in progress — an idle
+///  repository still costs nothing.</para>
 ///
 ///  <para><b>Refreshing.</b> The banner never polls. <see cref="Refresh"/> re-reads
 ///  the state on a thread-pool thread and marshals the result back, and the host
@@ -50,6 +62,7 @@ public sealed class RepositoryProgressBanner : UserControl
 {
     private readonly RepositoryStateService _state = new();
     private readonly BisectService _bisect = new();
+    private readonly MergeSessionService _merge = new();
 
     private readonly Border _bisectBar;
     private readonly TextBlock _bisectText;
@@ -64,8 +77,20 @@ public sealed class RepositoryProgressBanner : UserControl
     private BisectSession _session = BisectSession.None;
 
     private readonly Border _actionBar;
+    private readonly Border _actionStripe;
     private readonly TextBlock _actionText;
     private readonly TextBlock _actionHint;
+
+    // Upstream's three merge buttons. Resolve and Continue share one slot — which of
+    // the two is up depends on whether the index still has unmerged paths.
+    private readonly StackPanel _mergeButtons;
+    private readonly Button _resolve;
+    private readonly Button _continue;
+    private readonly Button _abort;
+
+    // True while the bar is showing a merge that still has unresolved conflicts: the
+    // one state upstream paints orange instead of blue.
+    private bool _conflicted;
 
     private string? _repoPath;
 
@@ -107,7 +132,7 @@ public sealed class RepositoryProgressBanner : UserControl
             Children = { _good, _bad, _skip, _stop, _more },
         };
 
-        _bisectBar = MakeBar(_bisectText, bisectButtons);
+        _bisectBar = MakeBar(_bisectText, bisectButtons, out _);
 
         _actionText = new TextBlock
         {
@@ -117,8 +142,9 @@ public sealed class RepositoryProgressBanner : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
-        // The command that finishes or undoes the operation. Dim, because it is a
-        // hint and not an offer — see the class remarks on why there is no button.
+        // The command that finishes or undoes the operation, for the states that still
+        // have no button. Dim, because it is a hint and not an offer — see the class
+        // remarks on which states those are.
         _actionHint = new TextBlock
         {
             Foreground = Brush("App.TextDim", "#9B9B9B"),
@@ -127,7 +153,39 @@ public sealed class RepositoryProgressBanner : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
-        _actionBar = MakeBar(_actionText, _actionHint);
+        _resolve = MakeButton(
+            T("InteractiveGitActionControl/ResolveButton.Text", "Resolve..."),
+            T("Open the conflict resolution dialog"),
+            OnResolve);
+
+        _continue = MakeButton(
+            T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
+            T("Record the merge commit (git merge --continue)"),
+            OnContinue);
+
+        _abort = MakeButton(
+            T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
+            T("Discard the merge and restore the working tree (git merge --abort)"),
+            OnAbort);
+
+        _mergeButtons = new StackPanel
+        {
+            IsVisible = false,
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _resolve, _continue, _abort },
+        };
+
+        StackPanel actionTrailing = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _actionHint, _mergeButtons },
+        };
+
+        _actionBar = MakeBar(_actionText, actionTrailing, out _actionStripe);
 
         Content = new StackPanel
         {
@@ -152,6 +210,27 @@ public sealed class RepositoryProgressBanner : UserControl
     ///  so it is hidden in that case.
     /// </summary>
     public event Action? BisectDetailsRequested;
+
+    /// <summary>
+    ///  Raised, on the UI thread, by the merge bar's <c>Resolve...</c> button —
+    ///  upstream's own entry point from the notification bar into the conflict
+    ///  resolution dialog (<c>InteractiveGitActionControl.cs:180</c>,
+    ///  <c>StartResolveConflictsDialog</c>). The banner deliberately does <b>not</b> own
+    ///  that dialog: like the bisect panel, it belongs to the host, which is the one
+    ///  that can refresh the rest of the shell afterwards.
+    ///
+    ///  <para><b>Contract for the host.</b> Subscribe before (or at any time after) the
+    ///  first <see cref="SetRepository"/>; the handler runs on the UI thread and takes
+    ///  no argument — the repository is the one the host already gave the banner. Open
+    ///  the dialog modally, then call the banner's <see cref="Refresh"/> (or just
+    ///  refresh the shell, which does) so the bar re-reads the index: resolving the last
+    ///  conflict turns "… with merge conflicts." into the plain "in progress" state with
+    ///  a <c>Continue</c> button, and committing the merge makes the bar disappear.
+    ///  <b>With nothing subscribed the button is hidden</b> and the bar falls back to a
+    ///  one-line hint pointing at the commit dialog, which is where this port's conflict
+    ///  resolution lives today — an inert button would be a lie.</para>
+    /// </summary>
+    public event Action? ResolveConflictsRequested;
 
     /// <summary>
     ///  Supplied by the host so the banner's own git commands do not trip the
@@ -183,7 +262,7 @@ public sealed class RepositoryProgressBanner : UserControl
 
         if (repo is null)
         {
-            Apply(RepositoryProgress.None, BisectSession.None);
+            Apply(RepositoryProgress.None, BisectSession.None, false);
             return;
         }
 
@@ -213,11 +292,18 @@ public sealed class RepositoryProgressBanner : UserControl
                 session = new BisectSession(progress.BisectInProgress);
             }
 
+            // Same discipline as the bisect probe above: the index is only inspected
+            // while a merge is actually stopped, so an idle repository still costs no
+            // git process. Upstream asks on every refresh instead
+            // (InteractiveGitActionControl.cs:82).
+            bool hasConflicts = progress.Operation == RepositoryOperation.Merge
+                && _merge.HasUnresolvedConflicts(repo);
+
             Dispatcher.UIThread.Post(() =>
             {
                 if (generation == _generation)
                 {
-                    Apply(progress, session);
+                    Apply(progress, session, hasConflicts);
                 }
             });
         });
@@ -225,7 +311,7 @@ public sealed class RepositoryProgressBanner : UserControl
 
     // ---- rendering the state ---------------------------------------------------------
 
-    private void Apply(RepositoryProgress progress, BisectSession session)
+    private void Apply(RepositoryProgress progress, BisectSession session, bool hasConflicts)
     {
         _session = session;
         _bisectBar.IsVisible = progress.BisectInProgress;
@@ -241,11 +327,103 @@ public sealed class RepositoryProgressBanner : UserControl
         _actionBar.IsVisible = progress.Operation != RepositoryOperation.None;
         if (_actionBar.IsVisible)
         {
-            _actionText.Text = DescribeOperation(progress);
-            _actionHint.Text = HintFor(progress.Operation);
+            bool merge = progress.Operation == RepositoryOperation.Merge;
+            bool canResolve = ResolveConflictsRequested is not null;
+
+            _actionText.Text = DescribeOperation(progress, hasConflicts);
+
+            string hint = HintFor(progress.Operation, hasConflicts, canResolve);
+            _actionHint.Text = hint;
+            _actionHint.IsVisible = hint.Length > 0;
+
+            _mergeButtons.IsVisible = merge;
+            if (merge)
+            {
+                // Upstream puts Resolve and Continue in the same slot and picks by the
+                // index (InteractiveGitActionControl.cs:150); Abort is offered in both
+                // states. No subscriber means no dialog to open, so Resolve stays down
+                // and the hint above takes over.
+                _resolve.IsVisible = hasConflicts && canResolve;
+                _continue.IsVisible = !hasConflicts;
+                EnableMergeButtons(true);
+            }
+
+            _conflicted = merge && hasConflicts;
+            PaintActionBar(_conflicted);
         }
 
         IsVisible = progress.IsActive;
+    }
+
+    /// <summary>
+    ///  Repaints the action bar for the state it is showing. Upstream fills the whole
+    ///  strip orange when there are unresolved conflicts and light blue otherwise, and
+    ///  picks the ink from the fill (<c>InteractiveGitActionControl.cs:130-132</c>,
+    ///  <c>SetForeColorForBackColor</c>). Ported as: the themed
+    ///  <c>App.RepoStateDirty</c> as the fill (the port's existing "this repository needs
+    ///  attention" orange, see <c>MainToolbar.cs:1000</c>), and the ink chosen by
+    ///  measured contrast, because the port has no on-accent foreground key.
+    ///  <para>Called from <see cref="Apply"/>, so the brushes are re-read from the
+    ///  application resources on every refresh instead of being cached in the
+    ///  constructor: a theme switch is picked up by the next refresh.</para>
+    /// </summary>
+    private void PaintActionBar(bool conflicted)
+    {
+        if (conflicted)
+        {
+            IBrush fill = Brush("App.RepoStateDirty", "#FFA07A");
+            IBrush ink = InkFor(fill);
+
+            _actionBar.Background = fill;
+
+            // The leading accent stripe would read as a stray blue notch inside a filled
+            // strip; upstream's filled bar has no stripe at all.
+            _actionStripe.Background = fill;
+            _actionText.Foreground = ink;
+            _actionHint.Foreground = ink;
+            return;
+        }
+
+        _actionBar.Background = Brush("App.Panel", "#252526");
+        _actionStripe.Background = Brush("App.Accent", "#007ACC");
+        _actionText.Foreground = Brush("App.Text", "#DCDCDC");
+        _actionHint.Foreground = Brush("App.TextDim", "#9B9B9B");
+    }
+
+    /// <summary>
+    ///  Black or white, whichever has the higher WCAG contrast ratio against
+    ///  <paramref name="fill"/> — the port of upstream's <c>SetForeColorForBackColor</c>.
+    ///  These two are not theme colours and must not come from a theme key: the point is
+    ///  that the ink is derived from the fill, so it stays legible in both themes
+    ///  (<c>App.RepoStateDirty</c> is a light salmon in dark and a dark rust in light,
+    ///  which need opposite inks). Falls back to the normal body ink for a fill this
+    ///  cannot measure (a gradient, or a missing key).
+    /// </summary>
+    private static IBrush InkFor(IBrush fill)
+    {
+        if (fill is not ISolidColorBrush solid)
+        {
+            return Brush("App.Text", "#DCDCDC");
+        }
+
+        double luminance = RelativeLuminance(solid.Color);
+        double onBlack = (luminance + 0.05) / 0.05;
+        double onWhite = 1.05 / (luminance + 0.05);
+        return onBlack >= onWhite ? Brushes.Black : Brushes.White;
+    }
+
+    /// <summary>WCAG 2.1 relative luminance of a colour (alpha ignored).</summary>
+    private static double RelativeLuminance(Color color)
+    {
+        static double Channel(byte raw)
+        {
+            double v = raw / 255.0;
+            return v <= 0.03928 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4);
+        }
+
+        return (0.2126 * Channel(color.R))
+            + (0.7152 * Channel(color.G))
+            + (0.0722 * Channel(color.B));
     }
 
     /// <summary>
@@ -293,11 +471,21 @@ public sealed class RepositoryProgressBanner : UserControl
     ///  "&lt;operation&gt; in progress", plus git's own step counter and target branch
     ///  when it recorded them — the same facts upstream's bar shows.
     /// </summary>
-    private static string DescribeOperation(RepositoryProgress progress)
+    private static string DescribeOperation(RepositoryProgress progress, bool hasConflicts)
     {
         string headline = progress.Operation switch
         {
-            RepositoryOperation.Merge => T("A merge is in progress."),
+            // Upstream's own two merge sentences, with its own operation noun
+            // (InteractiveGitActionControl.cs:13,15,19) — so the wording, and the
+            // translations behind it, are the ones the user already knows. The states
+            // below keep this port's phrasing: upstream has no sentence for a stopped
+            // cherry-pick or revert, and none of them has buttons to describe yet.
+            RepositoryOperation.Merge => string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                hasConflicts
+                    ? T("{0} is currently in progress with merge conflicts.")
+                    : T("{0} is currently in progress."),
+                T("Merge")),
             RepositoryOperation.Rebase => T("A rebase is in progress."),
             RepositoryOperation.RebaseInteractive => T("An interactive rebase is in progress."),
             RepositoryOperation.ApplyMailbox => T("A patch series is being applied (git am)."),
@@ -327,13 +515,19 @@ public sealed class RepositoryProgressBanner : UserControl
     }
 
     /// <summary>
-    ///  Names the command that finishes or undoes the operation. Not a button: this
-    ///  port has no service behind any of them (see the class remarks).
+    ///  Names the command that finishes or undoes the operation, for the states that
+    ///  have no button because this port has no service behind them (see the class
+    ///  remarks). Merge has buttons now, so it contributes a hint only in the one case
+    ///  where a button is missing: unresolved conflicts with no host wired to
+    ///  <see cref="ResolveConflictsRequested"/>. That hint points at the commit dialog,
+    ///  which really does resolve conflicts today (<c>CommitDialog.cs:2267</c>), rather
+    ///  than sending the user to a terminal.
     /// </summary>
-    private static string HintFor(RepositoryOperation operation) => operation switch
+    private static string HintFor(RepositoryOperation operation, bool hasConflicts, bool canResolve) => operation switch
     {
-        RepositoryOperation.Merge =>
-            T("Resolve the conflicts and commit, or run: git merge --abort"),
+        RepositoryOperation.Merge => hasConflicts && !canResolve
+            ? T("Resolve the conflicts from the Commit tab, then use Continue.")
+            : string.Empty,
         RepositoryOperation.Rebase or RepositoryOperation.RebaseInteractive =>
             T("Resolve the conflicts, then run: git rebase --continue / --skip / --abort"),
         RepositoryOperation.ApplyMailbox =>
@@ -421,6 +615,141 @@ public sealed class RepositoryProgressBanner : UserControl
         _more.IsEnabled = enabled;
     }
 
+    // ---- merge actions ----------------------------------------------------------------
+
+    // The host owns the conflict dialog, for the same reason it owns the bisect panel.
+    private void OnResolve() => ResolveConflictsRequested?.Invoke();
+
+    private void OnContinue() => _ = RunMergeAsync(
+        T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
+        "merge --continue",
+        confirm: null,
+        (service, repo, emit) => service.Continue(repo, emit));
+
+    private void OnAbort() => _ = RunMergeAsync(
+        T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
+        "merge --abort",
+        // Upstream aborts straight away (InteractiveGitActionControl.cs:221). This port
+        // asks first: the command throws the merge away AND rewrites the working tree,
+        // so a mis-click costs work that git keeps no reflog of. Same reasoning as the
+        // other destructive paths of this port (ResetChangesDialog, force-delete branch).
+        confirm: T("Abort the merge?\n\nThe merge is discarded and every file goes back to the state it had before the merge started. Conflict resolutions you have not committed are lost."),
+        (service, repo, emit) => service.Abort(repo, emit));
+
+    /// <summary>
+    ///  Runs one merge-session command through the port's process dialog — the same
+    ///  surface every other git command of this port reports through, and upstream's own
+    ///  choice for these two (<c>FormProcess.ShowDialog</c>,
+    ///  <c>InteractiveGitActionControl.cs:196,221</c>). Non-interactive: neither command
+    ///  can ever ask a question, and <c>--continue</c> is pinned to a no-op editor by
+    ///  <see cref="MergeSessionService"/>.
+    ///  <para>Whatever happens, the banner re-reads the repository afterwards and tells
+    ///  the host to refresh, so the bar shows the new state (or disappears) without the
+    ///  user touching anything. Never throws: this runs from a click handler.</para>
+    /// </summary>
+    private async Task RunMergeAsync(
+        string label,
+        string command,
+        string? confirm,
+        Func<MergeSessionService, string, Action<string>, MergeCommandResult> operation)
+    {
+        if (_repoPath is not { Length: > 0 } repo
+            || TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return;
+        }
+
+        try
+        {
+            if (confirm is { Length: > 0 } prompt && !await ConfirmAsync(owner, prompt, label))
+            {
+                return;
+            }
+
+            EnableMergeButtons(false);
+
+            await GitProcessDialog.RunStreamingAsync(
+                owner,
+                $"{label} (git {command})",
+                emit =>
+                {
+                    using IDisposable? guard = SuspendWatcher?.Invoke();
+                    MergeCommandResult result = operation(_merge, repo, emit);
+                    return new GitProcessOutcome(result.Success, result.Output);
+                },
+                interactive: false);
+        }
+        catch (Exception ex)
+        {
+            // A throw here would be a port bug, not a git failure (git failures come
+            // back as an exit code the process dialog already shows). Say it in the bar
+            // rather than taking the app down from a click handler.
+            _actionHint.Text = FirstLine(ex.Message);
+            _actionHint.IsVisible = _actionHint.Text.Length > 0;
+        }
+        finally
+        {
+            EnableMergeButtons(true);
+            Refresh();
+            RepositoryChanged?.Invoke();
+        }
+    }
+
+    private void EnableMergeButtons(bool enabled)
+    {
+        _resolve.IsEnabled = enabled;
+        _continue.IsEnabled = enabled;
+        _abort.IsEnabled = enabled;
+    }
+
+    // A yes/no modal, the same hand-built shape the rest of this port uses (Avalonia
+    // ships no message box) — modelled on BisectDialog.ConfirmAsync:456.
+    private async Task<bool> ConfirmAsync(Window owner, string message, string caption)
+    {
+        TaskCompletionSource<bool> tcs = new();
+
+        Button yes = new() { Content = T("Confirm"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("FormCommit/Cancel.Text", "Cancel"), IsCancel = true };
+
+        Window dialog = new()
+        {
+            Title = caption,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Panel", "#252526"),
+        };
+
+        yes.Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
+        no.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+        dialog.Closed += (_, _) => tcs.TrySetResult(false);
+
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(16),
+            Spacing = 12,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = message,
+                    Foreground = Brush("App.Text", "#DCDCDC"),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Children = { yes, no },
+                },
+            },
+        };
+
+        DialogKeys.InstallEscapeClose(dialog);
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
     /// <summary>First non-empty line of git's output, trimmed for a one-line bar.</summary>
     private static string FirstLine(string? text)
     {
@@ -447,7 +776,7 @@ public sealed class RepositoryProgressBanner : UserControl
     ///  One notification bar: an accent stripe down the leading edge, the message,
     ///  and whatever trails on the right.
     /// </summary>
-    private static Border MakeBar(Control message, Control trailing)
+    private static Border MakeBar(Control message, Control trailing, out Border accentStripe)
     {
         Grid row = new()
         {
@@ -458,6 +787,8 @@ public sealed class RepositoryProgressBanner : UserControl
         {
             Background = Brush("App.Accent", "#007ACC"),
         };
+
+        accentStripe = stripe;
 
         message.Margin = new Thickness(8, 0, 8, 0);
         trailing.Margin = new Thickness(0, 0, 4, 0);
@@ -504,6 +835,9 @@ public sealed class RepositoryProgressBanner : UserControl
         _skip.Content = T("Skip");
         _stop.Content = T("Stop bisect");
         _more.Content = T("InteractiveGitActionControl/MoreButton.Text", "More");
+        _resolve.Content = T("InteractiveGitActionControl/ResolveButton.Text", "Resolve...");
+        _continue.Content = T("InteractiveGitActionControl/ContinueButton.Text", "Continue");
+        _abort.Content = T("InteractiveGitActionControl/AbortButton.Text", "Abort");
         Refresh();
     });
 
