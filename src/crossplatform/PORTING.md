@@ -1387,10 +1387,13 @@ nel port, manca il punto d'accesso)
       branch only, non-relatives gray, page size — tutti session-local
       (`RevisionGridView.cs:210-238`). È il gruppo più visibile: l'utente ri-configura la griglia a
       ogni avvio. *media*
-- [~] 3.2 **Posizione del commit-info** e **ultimo repo aperto** non persistiti (la feature a 3
-      posizioni esiste, riparte sempre da `BelowGraph`); più le opzioni del **diff viewer**, gli
-      **switch della file history**, i **filtri del left panel** e la **MRU dei filtri di
-      revisione**. *banale ciascuno*
+- [x] 3.2 **Persistenza** — **CHIUSA in M69** per il residuo: opzioni del **diff viewer** (11),
+      **switch della file history** (4), **filtri e ordinamento del left panel** (8) e **MRU del
+      dialogo dei filtri avanzati** (cap 15) vivono in un `view-prefs.json` separato
+      (`App/Services/ViewPrefsService.cs`), sul precedente di `commit-info.json`, perché
+      `MainWindow` riscrive la sua istanza di `UiState` alla chiusura. La MRU del **quick filter**
+      era già persistita. Testo di ricerca e nodi espansi del left panel volutamente fuori (stato di
+      navigazione, non filtri).
 - [x] 3.3 **Dashboard: menu contestuale** (Show in folder / Categories ▸ / Remove from list /
       Remove missing projects) — serve `RemoveRecentAsync` in `RecentRepositoriesService`, che oggi
       ha solo Load/Add. Nota: il port **elimina in silenzio** le voci morte
@@ -1466,7 +1469,7 @@ nel port, manca il punto d'accesso)
       3 posizioni con icona dinamica), **icona di Commit dallo stato del repo** (7 stati upstream),
       **behind** sul pulsante Push, visibilità condizionale dei Worktrees, filtri **branch** e
       **revision** della seconda toolstrip. *banale→media, molte voci*
-- [~] 4.11 Dialoghi, resto — **il grosso CHIUSO in M68**, resta una coda breve.
+- [x] 4.11 Dialoghi, resto — **CHIUSA**: il grosso in **M68**, la coda in **M69**.
       ✅ **dialogo bisect + gating su `InTheMiddleOfBisect`** (M68: `BisectDialog`, l'auto-start
       silenzioso non c'è più, banner con conteggi veri da `--bisect-vars`);
       ✅ **macchina a stati `git am`** (M68: `AmSessionService` + `ApplyPatchDialog`, PatchGrid,
@@ -1478,11 +1481,12 @@ nel port, manca il punto d'accesso)
       ✅ `CloneDialog` — le quattro cose (submodule-init, depth, branch picker, preview) **c'erano
       già**; verificate in M68 (ramo scelto checkoutato, shallow, submodule) e corretta la semantica
       della preview.
-      **Restano**: `RemotesDialog` senza il tab **"Default pull behavior"** né **push URL
-      separata**; `FormVerify` ("Recover lost objects") ridotto a un dump di `git fsck`;
-      `ArchiveDialog` senza filtro path/revisione; `SparseDialog` su cone mode (**niente negazione
-      `!`**, upstream pilota il legacy); `AboutDialog` senza versione git/build sha né attribuzione
-      icone.
+      ✅ **CHIUSA in M69** anche la coda: `RemotesDialog` ha il tab **"Default pull behavior"** e la
+      **push URL separata**; `FormVerify` è portato come `VerifyDialog` con recupero vero degli
+      oggetti perduti; `ArchiveDialog` ha la scelta della revisione e il tar semplice (il filtro
+      path/revisione c'era già); `SparseDialog` è allineato al **legacy** di upstream, quindi la
+      **negazione `!` funziona** (il cone mode non può esprimerla); `AboutDialog` mostra versione,
+      build sha, versione git, copyright e attribuzione icone.
 
 **Rinviati con motivo** (registrati per non riaprirli a ogni round)
 
@@ -2255,6 +2259,107 @@ e i tre dialoghi clean/init/clone chiusi contro upstream. Dieci commit
   separato (un solo radio pilota entrambi i flag); `LoadSSHKey` (solo PuTTY, upstream lo nasconde).
   **Trappola**: git **ignora `--depth` per i cloni da path locale**, lo shallow si vede solo con un
   URL `file://`.
+
+> **Iterazione 3 / 15.** Tre subagent Claude in worktree isolati su file disgiunti (G RemotesDialog +
+> FormVerify, H Archive/Sparse/About, I persistenza 3.2), più il cablaggio fatto dal loop. Base
+> `6aa8ffb4b`, build `Errori: 0` dopo ognuno dei 14 cherry-pick.
+
+**M69** (2026-07-29) — **4.11 chiusa** e **3.2 chiusa**. Sedici commit
+(`68a961498`…`2ec65b7f3`).
+
+- **`RemotesDialog`: tab "Default pull behavior" e push URL separata** (`0b69d94ee`, `565e8e901`,
+  `68e6366a5`). Qui la premessa **non** era stantia: `RemotesDialog.cs` non aveva nulla di
+  `pushurl`/`branch.`/default-pull. Due dettagli del prompt erano invece sbagliati: la chiave PuTTY
+  è `remote.<name>.puttykeyfile` (non `puttysshkey`) e upstream la nasconde quando
+  `GitSshHelpers.IsPlink` è false — **non** "fuori da Windows". Su Linux è sempre false, quindi
+  ometterla **è** il comportamento di upstream.
+  *Bug trovato e corretto*: il setter `TrackingRemote` del core **auto-semina `branch.<x>.merge`**,
+  e la riga successiva riassegnava la casella merge ancora vuota, **cancellandola**. Misurato: dopo
+  "scegli origin + Save" esisteva solo `branch.main.remote`, cioè un ramo su cui `git pull` non
+  funziona. Ora si scrivono solo i campi che l'utente ha cambiato (semantica per-`Validated` di
+  upstream) e le due chiavi restano coerenti (`.merge` = `refs/heads/main`).
+  Verificato con `git config --get-regexp`: `remote.origin.pushurl` scritta, rimossa quando si
+  toglie la spunta **e** quando la si imposta uguale alla fetch URL (regola di ridondanza
+  case-insensitive di upstream: la checkbox si stoglie da sé).
+- **`FormVerify` → `VerifyDialog`** (`8b3e7b0b5`, `f55a19cc8`, `41e018370`, cablaggio `2ec65b7f3`).
+  `MaintenanceService.cs:39` era letteralmente `new GitArgumentBuilder("fsck")`. Ora
+  `App/Services/VerifyService.cs` + `App/Views/VerifyDialog.cs` portano il dialogo vero: opzioni
+  `--unreachable` / `--full` / `--no-reflogs`, filtri commit-e-tag / blob-e-tree, lista con
+  Date/Type/Subject/Author/Hash/Parent, pannello di preview, e le azioni di upstream (recover in
+  `LOST_FOUND_*`, create tag/branch, "Save objects to .git/lost-found", "Delete all LOST_AND_FOUND
+  tags", prune dietro conferma).
+  *Difetto trovato che la build non può vedere*: **l'output di `git fsck` è localizzato** — git
+  italiano dice `commit non raggiungibile`, quindi la regex inglese di upstream parsa **zero
+  oggetti uscendo con 0**, indistinguibile da un repo sano. Ogni chiamata fsck gira ora dentro
+  `GitEnvironment.DiagnosticLocaleScope()` (l'infrastruttura di M67 che torna utile una seconda
+  volta). Secondo difetto: **`Button.Content` come stringa mangia `_` come access key**, quindi
+  "LOST_AND_FOUND" si leggeva "LOSTAND_FOUND"; risolto con un `TextBlock` figlio.
+  *Verificato in GUI dal loop*, con app e git in **italiano**, su un repo con oggetti realmente
+  irraggiungibili (branch cancellato + `reflog expire --expire=now --all`): la griglia elenca
+  `dangling commit — lost commit 2` (quindi il parsing regge l'italiano), la spunta +
+  "Recover selected objects" crea `LOST_FOUND_1`, e **`git log LOST_FOUND_1` mostra entrambi i
+  commit perduti** mentre `git fsck --no-reflogs` non riporta più nulla: il recupero **rende
+  davvero raggiungibile** l'oggetto. Il menu `Repository → Git maintenance → Recover lost objects…`
+  ora apre questo dialogo (prima ricadeva su `MaintenanceDialog`).
+- **`ArchiveDialog`: revisione, tar semplice, filtri mutuamente esclusivi** (`68a961498`,
+  `262250266`, `f70d76faf`). Premessa **stantia**: il filtro path e quello per revisione c'erano
+  già. Aggiunti la scelta della **revisione** (casella "Choose another revision" + Load, risolta con
+  `rev-parse`) e il formato **tar** semplice, e resi i due filtri mutuamente esclusivi come upstream.
+  Upstream **non espone `--prefix`**, quindi non è stato inventato; e non ha un commit picker
+  riusabile nel port (`FormChooseCommit` non è portato), quindi la revisione si digita.
+  *Verificato dal loop*: retarget su `1813d997` (c1) + formato `tar` ⇒ `tar -tf` elenca **esattamente**
+  i tre file di c1 (`docs/d.txt`, `gamma/g.txt`, `src/a.txt`), senza `src/b.txt` di c2 né
+  `docs/c.txt` di c3. Cablato anche il **difetto di rendicontazione**: `MainWindow` costruiva lo
+  stato post-archive dall'hash della **riga di griglia**, quindi scegliendo un'altra revisione
+  diceva "Archived <riga>" mentre l'archivio conteneva un altro commit; ora `ArchivedRevision`
+  riporta il commit vero (verificato: status bar `Archived 1813d997 → /tmp/r11a3out.tar`).
+  *Difetto che solo lo screenshot ha rivelato*: la riga della revisione era costruita ma **mai
+  aggiunta al pannello** — build verde, controllo assente.
+- **`SparseDialog`: allineato al legacy di upstream, la negazione `!` funziona** (`782bc0f4f`,
+  `75ffe19aa`). Decisione: **allinearsi a upstream**, perché il cone mode **non può esprimere la
+  negazione** — `git sparse-checkout set --cone '!gamma'` fallisce con *"Specify directories rather
+  than patterns"*. Il legacy è ora il default, il cone resta opt-in (rimuovere una feature che
+  funziona sarebbe una regressione).
+  *Verificato dal loop*: regole `/*` + `!gamma/` ⇒ `gamma/` sparisce dal working tree, `docs` e `src`
+  restano, `core.sparsecheckout=true`; Disable ⇒ `gamma` torna, `core.sparsecheckout` sparisce,
+  **zero** voci `skip-worktree` in `git ls-files -v`.
+  *Due difetti misurati e corretti*: (1) **il Disable era un no-op silenzioso** — nell'ordine di
+  upstream, con `core.sparsecheckout=false` già scritto, `read-tree -m -u HEAD` non ricalcola
+  `skip-worktree`, e su git 2.43.0 `ls-files -v` mostrava ancora `S gamma/g.txt` dopo un "successo";
+  ora il refresh avviene mentre il flag è ancora attivo. (2) **`.git/config.worktree` batte
+  `.git/config`**: dopo un uso del cone mode il dialogo dichiarava "enabled" su un tree ripristinato;
+  ora viene azzerato anche quello.
+- **`AboutDialog` completo** (`af6fcca0b`, `363ebe4ad`). Premessa **stantia**: versione git, build
+  sha e attribuzione Kamiyamane c'erano già (il build sha via il target `StampBuildProvenance` del
+  csproj, perché il pacchetto `GitInfo` di upstream non è restorabile offline). Aggiunti copyright e
+  la clausola di non-garanzia. *Difetto pre-esistente trovato leggendo il log delle icone come
+  prescrive l'HANDOFF*: **il logo dell'About non risolveva** e si renderizzava vuoto in silenzio.
+  *Verificato dal loop*: logo presente, `Version 5.0.0-linux1`, `Build 363ebe4ad0 (Dirty)` che
+  segue l'HEAD vero, `Git 2.43.0` rilevato a runtime.
+- **3.2 CHIUSA: la persistenza residua vive in `view-prefs.json`** (`21215958a`, `f42edc609`,
+  `676e55172`, `5209c2616`, `8ab02f41c`). Strada scelta per il conflitto di scrittura su `UiState`:
+  **file separato**, il precedente di `commit-info.json`, e non l'instradamento sull'host. Motivi:
+  tre dei quattro editor **non sono posseduti da `MainWindow`** (`DiffView` e `FileHistoryView` hanno
+  una seconda istanza dentro le finestre autonome del `CommitDialog`; la MRU la scrive un modale che
+  non esiste più quando l'host salva), le scritture sono **immediate** quindi lo stato sopravvive
+  anche a un kill che salta `PersistLayout()`, e ogni scrittura passa da `Update(mutate)` così un
+  gruppo non annulla quello di un'altra superficie. Il layout (larghezza/collapse/ordine) resta in
+  `UiState`.
+  Correzione alla voce: la MRU del **quick filter** era **già** persistita
+  (`filterMru:<rank>:<text>` in `UiState.GridViewOptions`, `RevisionGridView.cs:3364`); quella che
+  non esisteva era la MRU del **dialogo dei filtri avanzati**, ed è quella che è stata fatta (cap 15,
+  più recente in testa, senza duplicati, pulsante "Recent filters ▾" **disabilitato quando è vuota**
+  — nessun pulsante finto). Il left panel era parziale: larghezza/collapse/*ordine* delle categorie
+  erano già persistiti dall'host, la **visibilità** e l'**ordinamento** no.
+  *Prove del ciclo cambia → Start→Exit (exit code 0, non `kill`) → riapri*: 11 opzioni del diff
+  viewer (riverificato dal loop: `-b -w` accesi e riga di comando `--find-renames -b -w -U5` **dopo**
+  la riapertura, cioè le opzioni ripristinate arrivano davvero a git); 4 switch della file history;
+  8 valori del left panel; la MRU avanzata che dopo il ciclo elenca due voci e ricompila tutti i
+  criteri, e che ri-confermando una voce resta a 2 promuovendola in testa.
+  Non fatti, con motivo: testo della casella di ricerca e insieme dei nodi espansi (stato di
+  navigazione, non filtri: ripristinare la ricerca riaprirebbe l'app su un albero potato senza causa
+  visibile), sync di `IsChecked` fra istanze di `DiffView` (pre-esistente, i valori erano già
+  condivisi via singleton).
 
 ## ROUND 10 — chiusura della coda
 

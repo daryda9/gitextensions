@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `d553a318f` (round 11 iterazioni 1-2 = **M67**+**M68**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `2ec65b7f3` (round 11 iterazioni 1-3 = **M67**–**M69**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M69**), tiene il contatore iterazione.
+  libera: **M70**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -216,7 +216,42 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 11 (2026-07-29) — in corso. Prossima milestone libera: **M69**
+> ### ► ROUND 11 (2026-07-29) — in corso. Prossima milestone libera: **M70**
+> **M69** (iterazione 3) ha chiuso **4.11** e **3.2**, cioè **le ultime `[~]` della coda round 9: ora
+> sono ZERO**. `RemotesDialog` ha il tab "Default pull behavior" + push URL separata; `FormVerify` è
+> portato come `App/Views/VerifyDialog.cs` (+ `VerifyService`) con recupero vero in `LOST_FOUND_*`;
+> `ArchiveDialog` sceglie la revisione e fa tar semplice; `SparseDialog` è allineato al **legacy** di
+> upstream così la **negazione `!` funziona**; `AboutDialog` è completo; e la persistenza residua
+> (diff viewer, file history, filtri del left panel, MRU dei filtri avanzati) vive in un
+> **`view-prefs.json` separato** (`App/Services/ViewPrefsService.cs`).
+> Resta solo la voce nuova **palette di syntax highlighting per il tema chiaro** (da valutare) e la
+> nota estetica sui managed dialog che non seguono il tema.
+>
+> Cose scoperte in M69 da NON riscoprire:
+> - **`git fsck` è localizzato** (`commit non raggiungibile`): la regex inglese parsa **zero oggetti
+>   uscendo con 0**, indistinguibile da un repo sano. Ogni fsck gira dentro
+>   `GitEnvironment.DiagnosticLocaleScope()` — l'infrastruttura di M67 serve anche qui, e servirà a
+>   chiunque parsi output di git.
+> - **Il setter `TrackingRemote` del core auto-semina `branch.<x>.merge`**: scrivere subito dopo la
+>   casella merge (vuota) la **cancella**, lasciando un ramo su cui `git pull` non funziona. Scrivere
+>   solo i campi che l'utente ha cambiato.
+> - **`Button.Content` come stringa mangia `_` come access key** (`LOST_AND_FOUND` →
+>   `LOSTAND_FOUND`): usare un `TextBlock` figlio.
+> - **Il cone mode non può esprimere la negazione**: `sparse-checkout set --cone '!x'` fallisce con
+>   *"Specify directories rather than patterns"*. Per la parità serve il legacy.
+> - **Disabilitare lo sparse nell'ordine di upstream è un no-op silenzioso** su git 2.43.0: con
+>   `core.sparsecheckout=false` già scritto, `read-tree -m -u HEAD` non ricalcola `skip-worktree`.
+>   E **`.git/config.worktree` batte `.git/config`**, quindi va azzerato anche quello.
+> - **Chi scrive stato da una view non posseduta da `MainWindow`** (una seconda istanza di `DiffView`
+>   nel `CommitDialog`, un modale già chiuso) deve usare un **file separato** come
+>   `view-prefs.json`/`commit-info.json`: l'host riserializza `UiState` alla chiusura e lo
+>   sovrascriverebbe.
+> - **Ambiente**: gli Xvfb orfani si accumulano fra i round (25 vivi a un certo punto, 31/46 GB
+>   occupati → app uccise dall'OOM senza eccezione né exit file). Ripulirli fa parte del metodo. E
+>   `import -window root` subito dopo la chiusura di un `MenuFlyout` può restituire un PNG **tutto
+>   nero** da ~290 byte con l'app viva: ricontrollare, non concludere che sia crashata.
+>
+> ### ► ROUND 11 iterazione 2 — **M68**
 > **M68** (iterazione 2) ha chiuso il grosso di **4.11**: **bisect** (`App/Views/BisectDialog.cs`,
 > gating su `InTheMiddleOfBisect`, banner con conteggi veri, **niente più auto-start silenzioso**),
 > la **macchina a stati `git am`** (`AmSessionService` + `ApplyPatchDialog`, PatchGrid,
