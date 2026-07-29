@@ -75,16 +75,20 @@ internal static class ManagedFileChooserTheming
         // themselves are unaffected — a local value beats a ControlTheme setter.)
         Map(app, "SystemRegionBrush", "App.Window");
 
-        // Quick-links sidebar. Chooser-only. Note this is a no-op upstream: the
-        // setter's selector is ListBox#QuickLinks while the element is actually
-        // named PART_QuickLinks, so Fluent never applies it either and the sidebar
-        // keeps taking its background from the plain ListBox theme. Mapped anyway,
-        // so the day Avalonia fixes the name the sidebar lands on the palette.
+        // Quick-links sidebar. Chooser-only, and a no-op upstream: the setter's
+        // selector is ListBox#QuickLinks while the element is actually named
+        // PART_QuickLinks, so Fluent never applies it either and the sidebar keeps
+        // taking its background from the plain ListBox theme (hence the explicit
+        // style further down). Mapped anyway, so the day Avalonia fixes the name
+        // the sidebar lands on the palette rather than drifting off it.
         Map(app, "SystemControlBackgroundChromeMediumBrush", "App.PanelAlt");
 
-        // Nav bar (up / location / refresh), the bottom bar that carries
-        // "Show hidden files" + OK + Cancel, and the GridSplitter. Chooser-only.
-        Map(app, "SystemControlHighlightAltBaseMediumLowBrush", "App.Toolbar");
+        // Three 1px-high Rectangles used as rules — under the nav bar, above the
+        // button bar — plus the GridSplitter between sidebar and list. These are
+        // hairlines, not bar backgrounds (the template binds the key to
+        // Shape.Fill on a Rectangle with Height=1), so the palette value they want
+        // is the border colour. Chooser-only.
+        Map(app, "SystemControlHighlightAltBaseMediumLowBrush", "App.Border");
 
         // Quick-link entry, :pointerover and :selected. Chooser-only.
         Map(app, "SystemControlBackgroundAltMediumBrush", "App.PanelAlt");
@@ -94,17 +98,26 @@ internal static class ManagedFileChooserTheming
         // its indicator — which wants the accent too.
         Map(app, "SystemControlHighlightAccentBrush", "App.Accent");
 
-        // The file list itself. Fluent leaves it Transparent over the chooser
-        // background; giving it App.Panel makes it read as a content pane, the way
-        // every other list in the app does, and separates it from the two bars.
-        Style files = new(x => x.OfType<ManagedFileChooser>()
-                                .Template()
-                                .OfType<ListBox>()
-                                .Name("PART_Files"));
-        if (B("App.Panel") is { } panel)
+        // The quick-links sidebar, for real this time: because the theme's own
+        // ListBox#QuickLinks setter never matches (see above), the sidebar takes
+        // Fluent's plain ListBox background — #2B2B2B dark / #F2F2F2 light, i.e.
+        // near-misses of App.PanelAlt. A style in Application.Styles outranks a
+        // ControlTheme setter, so this one lands.
+        //
+        // The file list (PART_Files) is deliberately NOT styled the same way: the
+        // chooser's ControlTemplate assigns its Background directly, which lands at
+        // BindingPriority.Template (2) and therefore outranks any Style (3) — a
+        // setter here is silently dead (measured: the list stayed on the chooser
+        // background). It is Transparent upstream, so it already shows App.Window
+        // through, which is the coherent result anyway.
+        Style quickLinks = new(x => x.OfType<ManagedFileChooser>()
+                                     .Template()
+                                     .OfType<ListBox>()
+                                     .Name("PART_QuickLinks"));
+        if (B("App.PanelAlt") is { } panelAlt)
         {
-            files.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, panel));
-            app.Styles.Add(files);
+            quickLinks.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, panelAlt));
+            app.Styles.Add(quickLinks);
         }
     }
 

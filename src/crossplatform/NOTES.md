@@ -173,3 +173,209 @@ ed è ciò che produce "Reset revision filters".
   li preserva) e **non** devono essere resuscitati da un filtro ricordato.
 - **Non** ho toccato la MRU del *quick filter* della griglia: esisteva già persistita
   (§0) e `RevisionGridView.cs` è fuori dai miei file.
+
+---
+---
+
+# Unità M70 — i file picker "managed" seguono il tema dell'app
+
+Base: `1affc7341`. File toccati: `App/App.cs` (+6 righe),
+`App/ManagedFileChooserTheming.cs` (nuovo). **Nessuna** modifica a `Program.cs`,
+`App/Theming/*`, o a qualunque view.
+
+## 0. La premessa era **in parte falsa** — misurata prima di toccare
+
+L'unità dice «fondo nero e icone ambra, **indipendente** dal tema chiaro/scuro
+dell'app». Misurato sul binario di base, display `:224`, tema forzato da
+`$XDG_CONFIG_HOME/GitExtensions.Avalonia/ui-state.json`:
+
+| superficie del picker | tema scuro (prima) | tema chiaro (prima) |
+|---|---|---|
+| superficie principale / lista file | `#000000` | `#FFFFFF` |
+| sidebar quick-links | `#2B2B2B` | `#F2F2F2` |
+| icone cartella | ambra | ambra (identiche) |
+
+Quindi il picker **segue** già la variante Fluent (perché `ThemeManager.Apply`
+imposta `app.RequestedThemeVariant`, `App/Theming/ThemeManager.cs:186`): non è
+theme-blind. Il difetto vero è che usa le superfici **base di Fluent**
+(`#000000`/`#FFFFFF`) invece della palette `App.*` — nello scuro un lastrone nero
+contro `App.Window` `#1E1E1E`, cioè il caso che si nota. Solo le **icone** sono
+davvero invarianti.
+
+Screenshot: `/tmp/mfc/b_dark_02_picker.png`, `/tmp/mfc/b_light_02_picker.png`.
+
+## 1. Come è fatto il picker (letto, non indovinato)
+
+`Avalonia.Dialogs.dll` 11.3.9 decompilato con `ilspycmd` (serve
+`DOTNET_ROOT=$HOME/.dotnet`, altrimenti l'apphost net10 non trova il runtime):
+
+- `ManagedFileChooser` è un **`TemplatedControl`** e `Avalonia.Dialogs.dll` **non
+  contiene stili per esso**: le sue uniche risorse embedded sono un font e
+  `/AboutAvaloniaDialog.xaml` (`!AvaloniaResourceXamlInfo` elenca solo quella).
+- Il suo `ControlTheme` sta in **`Avalonia.Themes.Fluent.dll`**, registrato con la
+  chiave `typeof(ManagedFileChooser)` nelle `Resources` del `FluentTheme`.
+- Opzioni pubbliche utili: `ManagedFileDialogOptions { AllowDirectorySelection,
+  CustomVolumeInfoProvider, ContentRootFactory }`. `UseManagedSystemDialogs()`
+  esiste anche in overload generico `<TWindow>`.
+
+**Le chiavi brush usate dal ControlTheme del chooser sono esattamente sei**, tutte
+via `DynamicResource` (estratte dal XAML compilato,
+`CompiledAvaloniaXaml.!AvaloniaResources`, il `ControlTheme` con
+`TargetType == ManagedFileChooser`):
+
+| chiave Fluent | cosa dipinge | mappata a |
+|---|---|---|
+| `SystemRegionBrush` | `Background` del chooser = tutta la superficie | `App.Window` |
+| `SystemControlBackgroundChromeMediumBrush` | sidebar quick-links | `App.PanelAlt` |
+| `SystemControlHighlightAltBaseMediumLowBrush` | **3 `Rectangle` alti 1px** (righelli) + `GridSplitter` | `App.Border` |
+| `SystemControlBackgroundAltMediumBrush` | quick-link `:pointerover` | `App.PanelAlt` |
+| `SystemControlBackgroundAltMediumHighBrush` | quick-link `:selected` | `App.Selection` |
+| `SystemControlHighlightAccentBrush` | riga `SelectedLine` | `App.Accent` |
+
+## 2. Strada scelta: ridefinire quelle chiavi in `Application.Resources`
+
+`Application.TryGetResource` cerca in `Resources` **prima** di `Styles` (dov'è il
+`FluentTheme`), e sono `DynamicResource`, quindi la ridefinizione vince.
+`ManagedFileChooserTheming.Install(app)` è chiamato da `App/App.cs:27` subito dopo
+`ThemeManager.Initialize`, e passa i **brush per riferimento**, così il cambio
+tema a caldo continua a funzionare.
+
+**Raggio d'azione dello "spill", contato**: su tutto il tema Fluent quelle sei
+chiavi hanno 11 usi, 8 dentro il chooser. I 3 fuori sono: `SystemRegionBrush` nei
+`ControlTheme` di **`Window`** e **`EmbeddableControlRoot`** (loro `Background` di
+default) e `SystemControlHighlightAccentBrush` nel `ControlTheme` di
+**`ProgressBar`** (indicatore). Tutti e tre vogliono *esattamente* il valore di
+palette che gli ho dato — e le view che impostano il proprio `Background` non sono
+toccate (un valore locale batte un setter di `ControlTheme`). **Prova**: la
+finestra principale è **pixel-identica** prima/dopo in entrambi i temi (0 pixel
+differenti, `PIL.ImageChops`).
+
+### Scartata: `ContentRootFactory` (sarebbe stata più pulita, non è raggiungibile)
+
+`ManagedStorageProvider.PrepareRoot` usa `ManagedFileDialogOptions.ContentRootFactory`
+e ripiega su `new Window()` solo se è null; `UseManagedSystemDialogs` legge le
+opzioni da `AvaloniaLocator` nel callback `AfterSetup`, e `AppBuilder.SetupUnsafe`
+esegue `Instance.Initialize()` **prima** di `AfterSetupCallback` — quindi il timing
+da `App.Initialize()` sarebbe andato bene. Blocco reale: in 11.3.9
+`AvaloniaLocator.CurrentMutable` e `Bind<T>()` sono **`internal` nella reference
+assembly** (`ref/net8.0/Avalonia.Base.dll`), pubblici solo
+nell'implementazione → servirebbe reflection su una API privata, oppure una riga in
+`Program.cs`. Provato e ritirato (`error CS0117: 'AvaloniaLocator' non contiene una
+definizione per 'CurrentMutable'`).
+
+**Cablaggio richiesto all'integratore — solo se si vuole lo scoping.** Nessuno è
+necessario: la soluzione committata è completa. Se in futuro si preferisse
+limitare le override al solo picker, l'unica riga da aggiungere in
+`Program.BuildAvaloniaApp()` sarebbe:
+
+```csharp
+.With(new Avalonia.Dialogs.ManagedFileDialogOptions
+{
+    ContentRootFactory = () => new ManagedFileChooserRoot(),  // Window con le 6 chiavi nelle sue Resources
+})
+```
+
+## 3. Due trappole trovate
+
+- **`BindingPriority.Template` (2) batte `Style` (3)**: la lista file `PART_Files`
+  ha il `Background` assegnato *dentro* il `ControlTemplate`, quindi un setter di
+  `Style` su `ManagedFileChooser /template/ ListBox#PART_Files` è **silenziosamente
+  morto** (misurato: la lista è rimasta sul background del chooser). L'ho rimosso.
+  È il caso *opposto* alla nota HANDOFF su `TextBoxSurface` (là lo style batte un
+  valore locale su un figlio di template). Upstream `PART_Files` è `Transparent`,
+  quindi mostra già `App.Window`: risultato coerente comunque.
+- **Selettore morto in Avalonia**: il setter Fluent per la sidebar seleziona
+  `ListBox#QuickLinks` mentre l'elemento si chiama **`PART_QuickLinks`** → non
+  matcha mai, e la sidebar prendeva il background dal `ControlTheme` di `ListBox`.
+  Perciò `SystemControlBackgroundChromeMediumBrush` da solo non basta: serve uno
+  `Style` esplicito su `PART_QuickLinks` (uno `Style` in `Application.Styles` batte
+  un setter di `ControlTheme`, e quello **funziona**: `#2B2B2B → #2D2D30`).
+  La mappatura della chiave resta comunque, per il giorno che Avalonia corregge il nome.
+
+## 4. Vicolo cieco registrato con la prova: le **icone ambra**
+
+Non sono sovrascrivibili e **non le ho toccate**. I glifi cartella/file/volume
+sono `DrawingGroup` a gradiente ambra **hard-coded** dentro le `Resources` del
+`ControlTheme` Fluent, sotto la chiave `Icons` — un `ResourceSelectorConverter`
+(che *è* un `ResourceDictionary`, `Avalonia.Dialogs.Internal`) — e il template li
+raggiunge con **`StaticResource`**. Uno `StaticResource` si risolve sul parent
+stack **a build time**, e il dizionario del `ControlTheme` stesso è il primo
+elemento di quello stack: nessun dizionario esterno può vincere. Il view model
+sceglie la chiave con `ManagedFileChooserItemViewModel.IconKey` →
+`"Icon_Folder"` / `"Icon_File"` / `"Icon_Volume"`.
+
+**Alternativa valutata e NON implementata**: replicare il `ControlTheme` del
+chooser (≈700 righe di template ricostruite dall'IL compilato, più i 3 gruppi di
+`DrawingGroup`), da rifare a ogni bump di Avalonia. Costo alto, beneficio basso:
+sono **contenuto non testuale**, quindi la soglia 4,5:1 non li riguarda, e restano
+leggibili su entrambi i fondi. Il picker funzionante ma con icone ambra è meglio
+di un picker reimplementato.
+
+## 5. Verifica — contrasto WCAG (luminanza relativa, `python3` + PIL)
+
+Fondo = colore modale del box; inchiostro = pixel a massima distanza di luminanza
+(nucleo del glifo). Soglia richiesta: **4,5:1**. Script: `/tmp/mfc/wcag.py`.
+
+### Tema scuro (`b_dark_02_picker.png` → `a2_dark_02_picker.png`)
+
+| elemento | prima (fondo → contrasto) | dopo (fondo → contrasto) |
+|---|---|---|
+| riga file "eng" | `#000000` → 21,00:1 | `#1E1E1E` → **16,67:1** |
+| header colonna "Name" | `#000000` → 21,00:1 | `#1E1E1E` → **16,67:1** |
+| "Show hidden files" | `#000000` → 21,00:1 | `#1E1E1E` → **16,67:1** |
+| voce sidebar "Desktop" | `#2B2B2B` → 14,16:1 | `#2D2D30` → **13,73:1** |
+| barra indirizzo | `#000000` → 21,00:1 | `#121212` → **18,73:1** |
+| pulsanti OK / Cancel | `#333333` → 12,63:1 | `#4B4B4B` → **8,72:1** |
+
+Fondo dell'app nello **stesso** screenshot: `App.Window` `#1E1E1E`,
+`App.PanelAlt` `#2D2D30`, `App.Border` `#3F3F46` → il picker ora **coincide**
+esattamente con la palette, dove prima era `#000000`.
+
+### Tema chiaro (`b_light_02_picker.png` → `a2_light_02_picker.png`)
+
+| elemento | prima | dopo |
+|---|---|---|
+| riga file "eng" | `#FFFFFF` → 21,00:1 | `#F3F3F3` → **18,93:1** |
+| header colonna "Name" | `#FFFFFF` → 21,00:1 | `#F3F3F3` → **18,93:1** |
+| "Show hidden files" | `#FFFFFF` → 21,00:1 | `#F3F3F3` → **18,93:1** |
+| voce sidebar "Desktop" | `#F2F2F2` → 18,76:1 | `#ECECEC` → **17,78:1** |
+| barra indirizzo | `#FFFFFF` → 21,00:1 | `#F8F8F8` → **19,77:1** |
+| pulsanti OK / Cancel | `#CCCCCC` → 13,08:1 | `#C3C3C3` → **11,91:1** |
+
+Superficie del picker = `App.Window` `#F3F3F3`, identica al fondo della finestra
+principale nello stesso screenshot; sidebar = `App.PanelAlt` `#ECECEC`;
+righelli = `App.Border` `#C4C4C4`. **Ogni testo supera 4,5:1 in entrambi i temi**
+(minimo misurato 8,72:1, i pulsanti nello scuro).
+
+Il contrasto scende leggermente rispetto a prima (21:1 → ~17-19:1) ed è
+intenzionale: 21:1 era il sintomo, cioè nero/bianco puri invece delle superfici
+dell'app.
+
+## 6. Verifica — nessuna regressione funzionale
+
+- `Ctrl+O` → `Browse…` → digitato `/tmp/mfc/openme` nella barra indirizzo →
+  `Return` → `OK`: **l'app ha aperto il repo** (toolbar `/tmp/mfc/openme`, header
+  `/tmp/mfc/openme — 5 commits`, status bar `openme — master`).
+  `/tmp/mfc/a2_light_03_navigated.png`, `/tmp/mfc/a2_light_04_after_ok.png`.
+- Ripetuto in tema **scuro** verso `/tmp/mfc/repo`: aperto.
+  `/tmp/mfc/a2_10_dark_after_ok.png`.
+- **Cambio tema a caldo**: `View → Appearance → Dark theme` con l'app in chiaro →
+  la finestra passa a scuro e il picker aperto **dopo** nasce già
+  `App.Window #1E1E1E` / `App.PanelAlt #2D2D30`.
+  `/tmp/mfc/a2_08_hotswitch_dark.png`, `/tmp/mfc/a2_09_hotswitch_picker.png`.
+- Il dialogo `Ctrl+O` differisce prima/dopo per **618 pixel in un solo bbox**
+  `(404,371)-(514,384)`: è la nuova voce `/tmp/mfc/openme` nei "Recent
+  repositories", cioè la prova che il picker ha restituito il path.
+- Log runtime pulito (nessuna eccezione, nessun asset non risolto).
+- Build: `Errori: 0`.
+
+## 7. Cosa NON ho fatto
+
+- Non ho reimplementato il file chooser (vedi §4).
+- Non ho ricolorato le icone ambra (non sovrascrivibili, §4).
+- Non ho stilizzato `PART_Files` (impossibile via `Style`, §3) né i `TextBox`
+  editabili del picker: la barra indirizzo è un **input editabile** e per la nota
+  HANDOFF §3 il riempimento al focus è un'affordance voluta — `TextBoxSurface` va
+  applicato solo alle superfici di sola lettura. Misura comunque 18,73:1 / 19,77:1.
+- Non ho toccato `Program.cs`, `App/Theming/*`, né chiesto nuove chiavi `App.*`:
+  tutte e sei le mappature usano chiavi già registrate in `ThemeManager.Keys`.
