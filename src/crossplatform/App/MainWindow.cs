@@ -3445,8 +3445,9 @@ public sealed class MainWindow : Window
         }
     }
 
-    // Picks a .patch/.diff file and applies it (git am, falling back to git apply).
-    // Surfaces git's output; on failure shows the full message in a modal.
+    // Opens the full git am dialog (upstream FormApplyPatch): file/directory choice, the
+    // patch grid, and Resolved / Skip / Abort while a session is in progress. The old body
+    // was a bare file picker + apply, which left a stopped `am` session unreachable.
     private async Task ApplyPatchAsync()
     {
         if (_repoPath is null)
@@ -3455,35 +3456,12 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? file = await PickPatchFileAsync(T("Choose a patch file to apply"));
-        if (file is null)
-        {
-            return;
-        }
+        Views.ApplyPatchDialog dialog = new(_repoPath);
+        await dialog.ShowDialog(this);
 
-        _statusBar.SetText(T("Applying patch…"));
-
-        PatchResult result;
-        try
+        if (dialog.RepositoryChanged)
         {
-            result = await Task.Run(() => new PatchService().ApplyPatch(_repoPath!, file));
-        }
-        catch (Exception ex)
-        {
-            _statusBar.SetText(TF("{0} failed: {1}", ApplyPatchCaption, ex.Message));
-            return;
-        }
-
-        RefreshAll();
-
-        if (result.Success)
-        {
-            _statusBar.SetText(TF("Applied patch {0}", Path.GetFileName(file)));
-        }
-        else
-        {
-            _statusBar.SetText(TF("Apply patch failed for {0} — see output.", Path.GetFileName(file)));
-            await new PatchOutputWindow(TF("{0} — {1}", ApplyPatchCaption, T("failed")), result.Output).ShowDialog(this);
+            RefreshAll();
         }
     }
 
