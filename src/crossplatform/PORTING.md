@@ -1466,16 +1466,23 @@ nel port, manca il punto d'accesso)
       3 posizioni con icona dinamica), **icona di Commit dallo stato del repo** (7 stati upstream),
       **behind** sul pulsante Push, visibilità condizionale dei Worktrees, filtri **branch** e
       **revision** della seconda toolstrip. *banale→media, molte voci*
-- [~] 4.11 Dialoghi, resto (media ciascuno): `RemotesDialog` senza il tab **"Default pull
-      behavior"** né **push URL separata**; `FormVerify` ("Recover lost objects") ridotto a un dump
-      di `git fsck`; `FormCleanupRepository` ridotto a un confirm inline (la modalità
-      **solo-ignorati `clean -X` è irraggiungibile**); **dialogo bisect** + gating su
-      `InTheMiddleOfBisect` (oggi il port auto-avvia in silenzio alla prima marcatura);
-      **macchina a stati `git am`** (Resolved/Skip/Abort, `PatchGrid`); `FormInit` inesistente
-      (solo folder picker, nessun `--bare`/`--shared`); `CloneDialog` senza submodule-init,
-      depth, branch picker, preview della destinazione; `ArchiveDialog` senza filtro path/revisione;
-      `SparseDialog` su cone mode (**niente negazione `!`**, upstream pilota il legacy);
-      `AboutDialog` senza versione git/build sha né attribuzione icone.
+- [~] 4.11 Dialoghi, resto — **il grosso CHIUSO in M68**, resta una coda breve.
+      ✅ **dialogo bisect + gating su `InTheMiddleOfBisect`** (M68: `BisectDialog`, l'auto-start
+      silenzioso non c'è più, banner con conteggi veri da `--bisect-vars`);
+      ✅ **macchina a stati `git am`** (M68: `AmSessionService` + `ApplyPatchDialog`, PatchGrid,
+      Resolved/Skip/Abort con le regole di abilitazione di upstream);
+      ✅ `FormCleanupRepository` — la premessa era stantia, `clean -X` **era già** raggiungibile:
+      in M68 verificato end-to-end (tre modi → 2/2/4 voci, Preview == dry-run) e chiusi i residui;
+      ✅ `FormInit` — **esisteva già**; verificato bare + `core.sharedRepository`. Upstream non ha
+      un controllo `--shared` separato, quindi non è stato aggiunto;
+      ✅ `CloneDialog` — le quattro cose (submodule-init, depth, branch picker, preview) **c'erano
+      già**; verificate in M68 (ramo scelto checkoutato, shallow, submodule) e corretta la semantica
+      della preview.
+      **Restano**: `RemotesDialog` senza il tab **"Default pull behavior"** né **push URL
+      separata**; `FormVerify` ("Recover lost objects") ridotto a un dump di `git fsck`;
+      `ArchiveDialog` senza filtro path/revisione; `SparseDialog` su cone mode (**niente negazione
+      `!`**, upstream pilota il legacy); `AboutDialog` senza versione git/build sha né attribuzione
+      icone.
 
 **Rinviati con motivo** (registrati per non riaprirli a ogni round)
 
@@ -2164,6 +2171,90 @@ chiuso**. Undici commit (`f0c451eba`…`c4b366347`).
   del process dialog sono ora inglesi anche per un utente italiano. Nessuna stringa tradotta
   aggiunta, come chiesto. Fuori dall'unità e ancora inglese: `CleanupDialog.cs:509` (prefisso
   `fatal:`).
+
+> **Iterazione 2 / 15.** Tre subagent Claude in worktree isolati su file disgiunti (D bisect,
+> E macchina a stati `git am`, F clean/init/clone), più il cablaggio in `MainWindow` fatto dal loop.
+> Base `c4b366347`, build `Errori: 0` dopo ognuno dei 10 cherry-pick.
+
+**M68** (2026-07-29) — **il grosso di 4.11**: bisect con gating, `git am` come macchina a stati,
+e i tre dialoghi clean/init/clone chiusi contro upstream. Dieci commit
+(`efacf8d9d`…`d553a318f`) più il cablaggio `17b0987bb`.
+
+- **Bisect: il port non avvia più una sessione dietro le spalle** (`46a40f255`, `12275d46d`,
+  `31cc7ab01`, `da44268fe`, `d8b2f84ab`, `d553a318f`). Il difetto era in `MainWindow.cs:1509-1516`:
+  `git bisect start` partiva **in silenzio** ogni volta che non c'era sessione, e la griglia
+  abilitava le marcature senza altra condizione che `ctx.SingleCommit` — un clic sbagliato
+  staccava HEAD. Ora l'auto-start non c'è più, le quattro voci in-sessione richiedono una sessione
+  aperta (come upstream, `RevisionGridControl.cs:2256-2261`), e avviare è un atto esplicito nel
+  nuovo `App/Views/BisectDialog.cs` (port di `FormBisect`, gating come `FormBisect.cs:27-35`). Il
+  `RepositoryProgressBanner` mostra lo stato reale con i pulsanti Good/Bad/Skip/Stop/More di
+  upstream.
+  *Verificato in GUI dal loop, oltre alla sessione completa del subagent*: senza sessione il
+  sottomenu `Other actions` ha **solo** `Start bisect…` attivo e le quattro marcature spente;
+  aperta la sessione, esattamente **invertito**. Sessione: `Mark bad` su c09 → banner
+  *"Bisecting — a bad commit is known; mark a good one to bound the search."* con pill `bisect/bad`
+  sul commit → `Mark revision as good` su c02 → banner **"3 revisions left to test, roughly 2 more
+  steps."** e `git bisect log` coerente → `Stop bisect` ⇒ ritorno a `main`, nessun `BISECT_START`.
+  Il subagent aveva già portato una sessione intera a convergere sul colpevole piantato
+  (`11e5f254`), confermato da `git bisect log`.
+  **I conteggi sono veri, non raschiati dall'output**: vengono da `git rev-list --bisect-vars`,
+  perché la riga di progresso di git è **localizzata** (qui git parla italiano). Nota: le stringhe
+  non sono pluralizzate ("1 revisions left"); servirebbe un formatter plural-aware in
+  `TranslationService`.
+  **Trappola nuova e riusabile**: gli argomenti di `GitArgumentBuilder` finiscono appiattiti in
+  un'unica stringa `ProcessStartInfo.Arguments`, quindi **un argomento che contiene uno spazio viene
+  ri-splittato**. `--format=%(refname) %(objectname)` arrivava a git come due argomenti: exit 0 e
+  colonna hash **assente in silenzio**. Trovata solo guardando lo screenshot e notando che il bisect
+  finito non nominava ciò che aveva trovato.
+  Non fatti, con motivo: `git bisect run`, `bisect terms`, barra di progresso determinata (nessun
+  dato/servizio dietro).
+- **`git am` come macchina a stati** (`efacf8d9d`, cablaggio `17b0987bb`).
+  `App/Services/AmSessionService.cs` + `App/Views/ApplyPatchDialog.cs` portano `FormApplyPatch`:
+  scelta file/directory, **PatchGrid** con lo stato per patch, e Resolved / Skip / Abort con le
+  regole di abilitazione di upstream. Stato letto dalle API vere del core
+  (`GitModule.InTheMiddleOfPatch()` `:1975`, `InTheMiddleOfConflictedMerge()` `:511`,
+  `GetRebaseDir()` `:1639`); griglia dalle copie numerate in `.git/rebase-apply` + `next`, cioè il
+  port di `PatchGrid.GetRebasePatchFiles()` (`:199-320`) con la precedenza di `PatchFile.Status`
+  intatta; argomenti byte-identici a `Commands.Arguments.cs` (tutti con `--3way`).
+  `GetInteractivePatchesFromFolder`/`FromReverseFolder` **non esistono** in questo albero.
+  Il vecchio corpo di `MainWindow.ApplyPatchAsync` era un file picker + un apply, quindi una
+  sessione `am` fermata non aveva **nessuna** superficie.
+  *Verificato in GUI dal loop, dopo l'integrazione*: directory `/tmp/r11am/pset` su un repo
+  divergente → conflitto su 0002, il `GitProcessDialog` mostra
+  `CONFLICT (content) … Patch failed at 0002`, la griglia mostra `0001 Applied / 0002 Applying… /
+  0003`, Apply spento, **Conflicts resolved spento** perché l'indice è conflittato, Stage all /
+  Skip / Abort accesi, e il banner del repository dice *"A patch series is being applied (git am).
+  Step 2 of 3."* → `Abort` ⇒ HEAD torna indietro, tree pulito, `.git/rebase-apply` inesistente.
+  Il subagent aveva già coperto anche Resolved (con `git add -A` dalla GUI) e Skip (griglia con i
+  tre stati insieme).
+  Deviazioni registrate: la directory di patch passa come **argomenti** e non su stdin (il path
+  dell'output live chiude stdin), ordinata per nome; riga corrente evidenziata con la chiave
+  tematica `App.RepoStateDirty` invece del `OrangeRed` hard-coded di upstream. Non fatti: modalità
+  rebase interattivo della griglia (è di `FormRebase`), "Solve conflicts"/"Add files" come dialoghi
+  (`FormResolveConflicts`/`FormAddFiles` non esistono nel port → nessun pulsante finto, "Add files"
+  è un onesto `git add -A`).
+- **clean / init / clone: la premessa era stantia** (`f54d81c79`, `688822486`, `c4623e3fa`). Alla
+  base assegnata tutte e tre le unità erano **già portate** (`f7bede515`, `8090d2a19` e seguiti):
+  `clean -X` **era** raggiungibile, `FormInit` **esisteva**, e il clone aveva già le quattro cose.
+  Il lavoro utile è stato verificarle end-to-end e chiudere i residui contro upstream.
+  *Prove*: i tre modi di clean danno tre risultati **diversi e corretti** sulla fixture
+  tracked/untracked/ignored/untracked-dir — `-X -d` → 2 voci, default `-d` → 2, `-x -d` → 4 (il
+  tracciato resta sempre); il Preview coincide **esattamente** col dry-run della CLI (riverificato
+  dal loop: `build/` + `debug.log`, "2 entries would be removed"); Clean fa sempre dry-run e chiede
+  conferma, Cancel non cancella nulla. Init: Central → `is-bare-repository=true` +
+  `core.sharedRepository=2`; Personal → `false`. Clone: branch picker popolato da `ls-remote`
+  **fuori dal thread UI**, ramo scelto davvero checkoutato (riverificato dal loop:
+  `## feature...origin/feature`), shallow provato con `is-shallow-repository=true`, submodule
+  inizializzato.
+  Residui chiusi: modo preselezionato + wording dei radio + i due picker "Add a path…" mancanti +
+  la riga di stato che diceva "Previewing…" sotto un prompt di cancellazione vero; la **banda bianca
+  non dipinta** della finestra di init (`SizeToContent.Height` è solo una *richiesta* che un WM può
+  ignorare); la preview della destinazione del clone con la semantica di upstream ("already exists"
+  solo se la directory è **non vuota** — clonare in una directory esistente e vuota è normale).
+  Non fatti perché **upstream non li ha**: campo numerico per il depth e controllo `--shared`
+  separato (un solo radio pilota entrambi i flag); `LoadSSHKey` (solo PuTTY, upstream lo nasconde).
+  **Trappola**: git **ignora `--depth` per i cloni da path locale**, lo shallow si vede solo con un
+  URL `file://`.
 
 ## ROUND 10 — chiusura della coda
 

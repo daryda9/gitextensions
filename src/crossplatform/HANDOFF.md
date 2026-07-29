@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `c4b366347` (round 11 iterazione 1 = **M67**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `d553a318f` (round 11 iterazioni 1-2 = **M67**+**M68**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
 | Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M68**), tiene il contatore iterazione.
+  libera: **M69**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -216,7 +216,28 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 11 (2026-07-29) — in corso. Prossima milestone libera: **M68**
+> ### ► ROUND 11 (2026-07-29) — in corso. Prossima milestone libera: **M69**
+> **M68** (iterazione 2) ha chiuso il grosso di **4.11**: **bisect** (`App/Views/BisectDialog.cs`,
+> gating su `InTheMiddleOfBisect`, banner con conteggi veri, **niente più auto-start silenzioso**),
+> la **macchina a stati `git am`** (`AmSessionService` + `ApplyPatchDialog`, PatchGrid,
+> Resolved/Skip/Abort) e la verifica end-to-end di **clean/init/clone**, le cui voci di coda erano
+> **stantie** (erano già portate: `clean -X` raggiungibile, `FormInit` esistente, il clone completo).
+> Restano di 4.11: `RemotesDialog` (tab "Default pull behavior" + push URL), `FormVerify`,
+> `ArchiveDialog` (filtro path/revisione), `SparseDialog` (cone mode), `AboutDialog`.
+>
+> Cose scoperte in M68 da NON riscoprire:
+> - **`GitArgumentBuilder` ri-splitta gli argomenti che contengono spazi**: finiscono appiattiti in
+>   un'unica `ProcessStartInfo.Arguments`, quindi `--format=%(refname) %(objectname)` arriva a git
+>   come **due** argomenti — exit 0 e colonna mancante **in silenzio**. Quotare o evitare gli spazi.
+> - **La riga di progresso di `git bisect` è localizzata**: i conteggi vanno presi da
+>   `git rev-list --bisect-vars`, non raschiati dall'output.
+> - **git ignora `--depth` per i cloni da path locale**: lo shallow si vede solo con un URL `file://`.
+> - **`SizeToContent.Height` è una richiesta**, non una garanzia: un WM può ignorarla e lascia una
+>   banda non dipinta (era il difetto della finestra di init).
+> - **Le voci di coda invecchiano**: tre unità su tre dell'iterazione 2 (clean/init/clone) erano già
+>   fatte. **Prima di delegare, verificare la premessa** contro il codice all'HEAD vero.
+>
+> ### ► ROUND 11 iterazione 1 — **M67**
 > **M67** ha chiuso **4.1** (checkout di rami remoti: `App/Views/CheckoutBranchForm.cs`, port completo
 > di `FormCheckoutBranch`, su `Commands.CheckoutBranch` del core via `BranchTagService.CheckoutBranch`),
 > i tre banali (warm-up del `Lazy<Encoding>` in `Program.cs`; Ctrl+Shift+N che ora **lega** davvero
