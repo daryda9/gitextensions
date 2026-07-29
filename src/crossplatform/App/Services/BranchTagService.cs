@@ -1,8 +1,11 @@
+using System.Text;
 using GitCommands;
 using GitCommands.Git;
 using GitCommands.Git.Tag;
+using GitCommands.Settings;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
+using GitExtensions.Extensibility.Settings;
 using GitExtUtils;
 
 namespace GitExtensions.Avalonia.Services;
@@ -42,6 +45,63 @@ public sealed record BranchTagListing(
 ///  Result of a mutating branch/tag operation.
 /// </summary>
 public sealed record BranchTagResult(bool Success, string Output);
+
+/// <summary>
+///  The choices <c>FormMergeBranch</c> offers, one field per parameter of
+///  <see cref="Commands.MergeBranch"/> — so nothing here is a fake option:
+///  <list type="bullet">
+///   <item><see cref="AllowFastForward"/> — the two radios ("keep a single branch
+///    line if possible" vs "always create a new merge commit", <c>--no-ff</c>);</item>
+///   <item><see cref="NoCommit"/> — "Do not commit" (<c>--no-commit</c>);</item>
+///   <item><see cref="Squash"/>, <see cref="Strategy"/>,
+///    <see cref="AllowUnrelatedHistories"/>, <see cref="MergeMessage"/> and
+///    <see cref="LogMessages"/> — the advanced options (<c>--squash</c>,
+///    <c>--strategy=</c>, <c>--allow-unrelated-histories</c>, <c>-F &lt;file&gt;</c>,
+///    <c>--log=N</c>).</item>
+///  </list>
+///  <see cref="Default"/> is the behaviour the port's silent menu merge had before
+///  the dialog existed, which is why the old one-argument
+///  <see cref="BranchTagService.MergeBranch(string, string)"/> can keep working.
+/// </summary>
+public sealed record MergeOptions(
+    bool AllowFastForward = true,
+    bool Squash = false,
+    bool NoCommit = false,
+    string Strategy = "",
+    bool AllowUnrelatedHistories = false,
+    string? MergeMessage = null,
+    int? LogMessages = null)
+{
+    /// <summary>Fast-forward allowed, auto-commit, default strategy.</summary>
+    public static readonly MergeOptions Default = new();
+}
+
+/// <summary>
+///  The merge dialog's remembered state: upstream keeps the fast-forward choice per
+///  repository (detached <c>NoFastForwardMerge</c>) and the rest globally
+///  (<c>AppSettings.DontCommitMerge</c>, <c>AppSettings.AlwaysShowAdvOpt</c>,
+///  <c>DetailedSettings.AddMergeLogMessages</c> / <c>MergeLogMessagesCount</c>).
+/// </summary>
+public sealed record MergePrefs(
+    bool NoFastForward,
+    bool NoCommit,
+    bool ShowAdvanced,
+    bool AddLogMessages,
+    int LogMessagesCount);
+
+/// <summary>
+///  Everything the merge dialog needs, read off the UI thread in one call
+///  (<see cref="BranchTagService.LoadMergeData"/>).
+/// </summary>
+public sealed record MergeDialogData(
+    string CurrentBranch,
+    IReadOnlyList<string> MergeableRefs,
+    string DefaultBranch,
+    MergePrefs Prefs)
+{
+    public static readonly MergeDialogData Empty =
+        new(string.Empty, [], string.Empty, new MergePrefs(false, false, false, false, 20));
+}
 
 /// <summary>
 ///  Snapshot of the working tree taken before a checkout: whether it is dirty
@@ -627,23 +687,236 @@ public sealed class BranchTagService
     }
 
     /// <summary>
-    ///  Merges <paramref name="name"/> into the current branch (auto-commit,
-    ///  no editor prompt).
+    ///  Merges <paramref name="name"/> into the current branch with the port's
+    ///  historical defaults (fast-forward allowed, auto-commit, no editor prompt).
+    ///  <para>Kept as an overload so the existing menu call-sites compile unchanged;
+    ///  new code should pass an explicit <see cref="MergeOptions"/> — that is what
+    ///  the merge dialog collects.</para>
     /// </summary>
     public BranchTagResult MergeBranch(string repoPath, string name)
+        => MergeBranch(repoPath, name, MergeOptions.Default);
+
+    /// <summary>
+    ///  Merges <paramref name="name"/> into the current branch with the options the
+    ///  merge dialog collected (fast-forward, squash, no-commit, strategy, unrelated
+    ///  histories, an explicit merge message and <c>--log=N</c>) — exactly the
+    ///  parameter set of <see cref="Commands.MergeBranch"/>, which
+    ///  <c>FormMergeBranch.OkClick</c> fills in the same way.
+    ///  <para>Non-streaming: the whole output arrives at once. Synchronous — call it
+    ///  off the UI thread.</para>
+    /// </summary>
+    public BranchTagResult MergeBranch(string repoPath, string name, MergeOptions options)
     {
         GitModule module = GitContext.CreateModule(repoPath);
+        string? messageFile = null;
+        try
+        {
+            string args = BuildMergeArguments(module, name, options, ref messageFile);
+            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+            return new BranchTagResult(result.ExitedSuccessfully, result.AllOutput);
+        }
+        finally
+        {
+            DeleteMergeMessageFile(messageFile);
+        }
+    }
+
+    /// <summary>
+    ///  Streaming counterpart of <see cref="MergeBranch(string, string, MergeOptions)"/>:
+    ///  every line git writes (stdout AND stderr — where <c>CONFLICT (content): …</c>
+    ///  and <c>Auto-merging …</c> go) is handed to <paramref name="onOutput"/> the
+    ///  instant git produces it, so the merge can run inside the shared
+    ///  <c>GitProcessDialog</c> the way fetch/pull/push already do. The core
+    ///  <c>IExecutable</c> buffers stderr, hence <see cref="GitStreamRunner"/>.
+    /// </summary>
+    public BranchTagResult MergeBranchStreaming(string repoPath, string name, MergeOptions options, Action<string> onOutput)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        string? messageFile = null;
+        try
+        {
+            string args = BuildMergeArguments(module, name, options, ref messageFile);
+            StringBuilder sb = new();
+            int exit = GitStreamRunner.Run(repoPath: module.WorkingDir, arguments: args, onLine: line =>
+            {
+                sb.AppendLine(line);
+                onOutput(line);
+            });
+
+            return new BranchTagResult(exit == 0, sb.ToString());
+        }
+        finally
+        {
+            DeleteMergeMessageFile(messageFile);
+        }
+    }
+
+    /// <summary>
+    ///  Everything the merge dialog needs, read in ONE go off the UI thread: the
+    ///  current branch, the refs that may be merged (local + remote branches and
+    ///  tags, upstream's <c>Heads | Remotes | Tags</c>), the branch to preselect
+    ///  (the current branch's configured upstream, as <c>FormMergeBranchLoad</c>
+    ///  does) and the persisted option state.
+    /// </summary>
+    public MergeDialogData LoadMergeData(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string current = module.GetSelectedBranch();
+        string currentBranch = current.StartsWith('(') ? string.Empty : current;
+
+        BranchTagListing listing = LoadRefs(repoPath);
+        List<string> refs = [];
+        foreach (BranchTagRow row in listing.Branches)
+        {
+            // The current branch cannot be merged into itself.
+            if (!row.IsCurrent)
+            {
+                refs.Add(row.Name);
+            }
+        }
+
+        foreach (BranchTagRow row in listing.Tags)
+        {
+            refs.Add(row.Name);
+        }
+
+        string defaultBranch = string.Empty;
+        if (currentBranch.Length > 0)
+        {
+            try
+            {
+                defaultBranch = module.GetRemoteBranch(currentBranch) ?? string.Empty;
+            }
+            catch (Exception)
+            {
+                defaultBranch = string.Empty;
+            }
+        }
+
+        return new MergeDialogData(currentBranch, refs, defaultBranch, LoadMergePrefs(module));
+    }
+
+    /// <summary>
+    ///  Persists the merge dialog's remembered option state, the way
+    ///  <c>FormMergeBranch.OkClick</c> does: the fast-forward choice is per
+    ///  repository (detached settings, upstream's <c>NoFastForwardMerge</c>), the
+    ///  rest global. Best-effort — a settings store that refuses to write must not
+    ///  fail the merge.
+    /// </summary>
+    public void SaveMergePrefs(string repoPath, MergePrefs prefs)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            SettingsSource effective = module.GetEffectiveSettings();
+            effective.Detached().NoFastForwardMerge = prefs.NoFastForward;
+            DetailedSettings.AddMergeLogMessages[effective] = prefs.AddLogMessages;
+            DetailedSettings.MergeLogMessagesCount[effective] = prefs.LogMessagesCount;
+        }
+        catch (Exception)
+        {
+            // Not worth failing the merge over.
+        }
+
+        try
+        {
+            AppSettings.DontCommitMerge = prefs.NoCommit;
+            AppSettings.AlwaysShowAdvOpt = prefs.ShowAdvanced;
+        }
+        catch (Exception)
+        {
+            // Ditto.
+        }
+    }
+
+    private static MergePrefs LoadMergePrefs(GitModule module)
+    {
+        bool noFastForward = false;
+        bool addLog = false;
+        int logCount = 20;
+        try
+        {
+            SettingsSource effective = module.GetEffectiveSettings();
+            noFastForward = effective.Detached().NoFastForwardMerge;
+            addLog = DetailedSettings.AddMergeLogMessages.ValueOrDefault(effective);
+            logCount = DetailedSettings.MergeLogMessagesCount.ValueOrDefault(effective);
+        }
+        catch (Exception)
+        {
+            // Fall back to git's own defaults.
+        }
+
+        bool noCommit = false;
+        bool advanced = false;
+        try
+        {
+            noCommit = AppSettings.DontCommitMerge;
+            advanced = AppSettings.AlwaysShowAdvOpt;
+        }
+        catch (Exception)
+        {
+            // Ditto.
+        }
+
+        return new MergePrefs(noFastForward, noCommit, advanced, addLog, logCount);
+    }
+
+    // Builds the `git merge …` argument string for the given options, reusing the
+    // core builder so the switches are spelled exactly as upstream spells them.
+    //
+    // The merge message (upstream's "Specify merge message") is passed to git as a
+    // FILE (`-F`), which is the only way `Commands.MergeBranch` takes it. Upstream
+    // writes .git/MERGE_MSG through its CommitMessageManager; the port writes a
+    // private temp file instead and deletes it afterwards, so it can never be
+    // confused with the MERGE_MSG git itself maintains during a conflicted merge.
+    private static string BuildMergeArguments(GitModule module, string name, MergeOptions options, ref string? messageFile)
+    {
+        string? message = string.IsNullOrWhiteSpace(options.MergeMessage) ? null : options.MergeMessage;
+        if (message is not null)
+        {
+            try
+            {
+                messageFile = Path.Combine(Path.GetTempPath(), $"gitext-merge-msg-{Guid.NewGuid():N}.txt");
+                File.WriteAllText(messageFile, message);
+            }
+            catch (Exception)
+            {
+                // Unwritable temp dir → merge with git's auto-generated message
+                // rather than failing outright.
+                messageFile = null;
+            }
+        }
+
         ArgumentString args = Commands.MergeBranch(
             branch: name,
-            allowFastForward: true,
-            squash: false,
-            noCommit: false,
-            strategy: string.Empty,
-            allowUnrelatedHistories: false,
-            mergeCommitFilePath: null,
+            allowFastForward: options.AllowFastForward,
+            squash: options.Squash,
+            noCommit: options.NoCommit,
+            strategy: options.Strategy ?? string.Empty,
+            allowUnrelatedHistories: options.AllowUnrelatedHistories,
+            mergeCommitFilePath: messageFile,
             getPathForGitExecution: module.GetPathForGitExecution,
-            log: null);
-        return Run(module, args);
+            log: options.LogMessages);
+
+        return args.Arguments ?? string.Empty;
+    }
+
+    private static void DeleteMergeMessageFile(string? path)
+    {
+        if (path is null)
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception)
+        {
+            // A leftover temp file is harmless.
+        }
     }
 
     /// <summary>
