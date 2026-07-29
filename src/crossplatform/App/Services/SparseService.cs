@@ -61,6 +61,144 @@ public sealed class SparseService
     public SparseResult Disable(string repoPath)
         => Run(repoPath, new GitArgumentBuilder("sparse-checkout") { "disable" });
 
+    // ---------------------------------------------------------------------
+    // Legacy (non-cone) mode — what upstream's FormSparseWorkingCopy does.
+    //
+    // Upstream never calls `git sparse-checkout` at all: it sets
+    // `core.sparsecheckout`, writes `.git/info/sparse-checkout` by hand and
+    // refreshes with `read-tree -m -u HEAD`
+    // (FormSparseWorkingCopyViewModel.cs: GetPathToSparseCheckoutFile / SaveChanges /
+    // RefreshWorkingCopy). That is the only mode that accepts the full .gitignore
+    // pattern language, negation included — cone mode rejects it outright:
+    //   $ git sparse-checkout set --cone '!gamma'
+    //   fatal: Specify directories rather than patterns. …
+    // so `!` cannot be expressed in cone mode at all, and the port's cone-only
+    // implementation could not reach upstream parity.
+    // ---------------------------------------------------------------------
+
+    /// <summary>The rules file upstream edits: <c>&lt;git-dir&gt;/info/sparse-checkout</c>.</summary>
+    public static string RulesFilePath(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        return Path.Join(module.ResolveGitInternalPath("info"), "sparse-checkout");
+    }
+
+    /// <summary>The <c>core.sparsecheckout</c> key, spelled as upstream writes it.</summary>
+    public const string CoreSparseCheckout = "core.sparsecheckout";
+
+    /// <summary>
+    ///  Whether legacy sparse checkout is switched on for this repository, i.e.
+    ///  <c>core.sparsecheckout</c> is effectively true.
+    /// </summary>
+    public bool IsLegacyEnabled(string repoPath)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            return string.Equals(
+                module.GetEffectiveSetting(CoreSparseCheckout).Trim(),
+                bool.TrueString,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///  Reads the rules file verbatim, or an empty string when it does not exist
+    ///  (a repository that has never used sparse checkout). Decoded with the same
+    ///  encoding upstream writes it in.
+    /// </summary>
+    public string ReadRules(string repoPath)
+    {
+        try
+        {
+            string path = RulesFilePath(repoPath);
+            return File.Exists(path)
+                ? GitModule.SystemEncoding.GetString(File.ReadAllBytes(path))
+                : string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    ///  Applies the legacy sparse configuration in upstream's order: rules file first,
+    ///  then <c>core.sparsecheckout</c>, then the working-copy refresh. The refresh is
+    ///  what actually adds or removes files, so it runs last and its output is what the
+    ///  caller sees.
+    /// </summary>
+    /// <param name="rules">
+    ///  The full text of the rules file, in <c>.gitignore</c> syntax: matched paths are
+    ///  <i>included</i>, a leading <c>!</c> excludes and <c>#</c> comments a line.
+    /// </param>
+    /// <param name="enabled">The value to write to <c>core.sparsecheckout</c>.</param>
+    public SparseResult ApplyLegacy(string repoPath, string rules, bool enabled)
+    {
+        try
+        {
+            string path = RulesFilePath(repoPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, GitModule.SystemEncoding.GetBytes(rules));
+
+            GitModule module = GitContext.CreateModule(repoPath);
+            module.SetSetting(CoreSparseCheckout, enabled ? "true" : "false");
+        }
+        catch (Exception ex)
+        {
+            return new SparseResult(false, ex.Message);
+        }
+
+        return RefreshWorkingCopy(repoPath);
+    }
+
+    /// <summary>
+    ///  Re-applies the tree to the index and the working copy
+    ///  (<c>git read-tree -m -u HEAD</c>) — upstream's
+    ///  <c>RefreshWorkingCopyCommandName</c>. Nothing appears or disappears in the
+    ///  working copy until this has run.
+    /// </summary>
+    public SparseResult RefreshWorkingCopy(string repoPath)
+        => Run(repoPath, new GitArgumentBuilder("read-tree") { "-m", "-u", "HEAD" });
+
+    /// <summary>
+    ///  Upstream's <c>SaveChangesTurningOffSparseSpecialCase</c>: simply flipping
+    ///  <c>core.sparsecheckout</c> to false is not enough, because git keeps honouring
+    ///  the rules still in the file and the working copy stays truncated. So the rules
+    ///  are rewritten to <c>/*</c> followed by every previous rule commented out, which
+    ///  matches everything and is reversible, and only then is the flag cleared.
+    /// </summary>
+    /// <returns>The rewritten rules text alongside the refresh outcome.</returns>
+    public (SparseResult Result, string Rules) DisableLegacy(string repoPath)
+    {
+        string rules = ReadRules(repoPath);
+        string[] lines = rules.Split('\n');
+        string[] effective = lines
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && l[0] != '#')
+            .ToArray();
+
+        // An empty or all-commented rules file is *not* "already full": it is exactly
+        // upstream's "with the sparse pass-filter empty or missing" case, so still write
+        // the explicit "/*" rather than leave git nothing to match.
+        bool alreadyFull = effective.Length > 0 && effective.All(l => l == "/*");
+
+        string newRules = alreadyFull
+            ? rules
+            : string.Join(
+                Environment.NewLine,
+                new[] { "/*" }.Concat(lines
+                    .Select(l => l.TrimEnd('\r'))
+                    .Where(l => l.Length > 0)
+                    .Select(l => string.IsNullOrWhiteSpace(l) || l[0] == '#' ? l : "#" + l)));
+
+        return (ApplyLegacy(repoPath, newRules, enabled: false), newRules);
+    }
+
     private static SparseResult Run(string repoPath, GitArgumentBuilder args)
     {
         try
