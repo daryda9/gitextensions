@@ -159,7 +159,7 @@ public sealed class PatchService
     // tell a raw diff from a mailbox-formatted patch. Never throws; on any problem
     // it returns false, i.e. the file is treated as a mailbox (git am), exactly
     // like upstream.
-    private static bool IsDiffFile(string path)
+    public static bool IsDiffFile(string path)
     {
         try
         {
