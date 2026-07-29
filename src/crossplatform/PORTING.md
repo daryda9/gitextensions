@@ -2060,7 +2060,14 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
   vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
 
-## ROUND 11 — i parziali
+## ROUND 11 — i parziali — **CHIUSO** (M67–M70)
+
+> **Esito del round**: la "Coda round 9" non ha più **nessuna** voce `- [ ]` né `- [~]`. Chiuse 4.1,
+> 4.11 (tutta), 3.2 (tutta), i tre banali, l'i18n mirato dell'auth-failure, i file picker (il vicolo
+> cieco storico era una diagnosi sbagliata) e la voce nuova della palette di sintassi. Restano solo
+> gli SKIP consapevoli dichiarati (repository-host GitHub, colonna build status, script utente) e le
+> note estetiche registrate qui sotto.
+
 
 > **Iterazione 1 / 15.** Tre subagent Claude in worktree isolati su file disgiunti (A checkout
 > remoti, B tre banali, C auth-failure indipendente dalla locale), più il cablaggio in `MainWindow`
@@ -2360,6 +2367,71 @@ e i tre dialoghi clean/init/clone chiusi contro upstream. Dieci commit
   navigazione, non filtri: ripristinare la ricerca riaprirebbe l'app su un albero potato senza causa
   visibile), sync di `IsChecked` fra istanze di `DiffView` (pre-esistente, i valori erano già
   condivisi via singleton).
+
+> **Iterazione 4 / 15 — ultima.** Due subagent Claude in worktree isolati su file disgiunti
+> (J palette dei token, K tema dei managed dialog). Base `1affc7341`, build `Errori: 0` dopo ognuno
+> dei 3 cherry-pick.
+
+**M70** (2026-07-29) — **la palette di syntax highlighting a due temi e i file picker tematizzati**.
+Tre commit (`80c8a3170`, `e64344fb1`, `c11c183a9`).
+
+- **Palette di syntax highlighting: il lavoro ANDAVA fatto, e il presupposto era più forte del
+  previsto** (`80c8a3170`). La via d'uscita "forse è un percorso morto" è **misurabilmente falsa**:
+  `FileTreeView.cs:534` chiama `RenderContent(text, path, highlight: !binary)` e il tab **File tree
+  non ha alcun toggle** per la sintassi — colora ogni file di testo che apre. Quindi in tema chiaro
+  l'inchiostro pensato per il fondo scuro era lo **stato di default**, senza modo di spegnerlo.
+  Seconda scoperta della rimisura: l'highlighter ridipinge le righe `+`/`-` sopra una **tinta** di
+  fondo (alpha `0x28`), quindi il fondo vero è `#2A392C`/`#3C2A2A` in scuro e `#DEECDF`/`#F0DEDE` in
+  chiaro — e contro quelli **anche il tema scuro** falliva AA (commento 4,55; preprocessor 4,45).
+  Il vincolo che lega i valori chiari è `#F0DEDE`, non `#FFFFFF`.
+  Cinque chiavi nuove in `ThemeManager` (`Keys`+`Dark`+`Light`):
+  `App.TokenKeyword`, `App.TokenString`, `App.TokenComment`, `App.TokenNumber`,
+  `App.TokenPreprocessor`. I valori chiari **conservano la tinta scura** (±5° di tonalità) e
+  scuriscono; in scuro keyword/string/number sono intatti, comment e preprocessor alzati in modo
+  impercettibile (ΔE*ab 4,8 e 3,1) per superare AA sulle tinte. Le due view **cachano l'istanza** del
+  brush di risorsa, quindi la mutazione in-place del `Color` da `ThemeManager` ridipinge a caldo.
+  Contrasti letti sui pixel (nucleo del glifo): **tab Diff scuro** min 4,45 FAIL → **4,76**; **tab
+  Diff chiaro** min 1,31 → **4,64**; **tab File tree chiaro** min 1,70 → **6,01**.
+  *Riverificato dal loop in modo indipendente*, su un `.cs` con tutti e cinque i tipi di token:
+  chiaro 5,89–10,79 (keyword 7,09 · string 5,89 · comment 6,24 · number 10,79 · preprocessor 6,93),
+  scuro 5,67–9,01 — tutti sopra 4,5:1, e le cinque tinte restano distinte a vista in entrambi i temi.
+  **La distinguibilità è stata ottimizzata, non assunta**: la distanza CIE L*a*b* a coppie, simulando
+  anche deuteranopia e protanopia, è **ΔE ≥ 17,6** per la famiglia chiara, contro **2,4** della
+  vecchia coppia string↔comment in scuro. È per questo che *number* è il più scuro dei cinque: il
+  grappolo verde/oliva/rust collassa in tonalità per chi non distingue rosso e verde, quindi la
+  separazione deve venire dalla **luminosità** (che conserva anche l'identità: number era il token a
+  contrasto più alto anche in scuro).
+  Non fatto, con motivo: nessun ridisegno della famiglia scura (l'ottimizzazione libera spingeva
+  *string* verso il bianco `#F0E4DB` — passa AA ma una stringa che sembra testo normale perde la sua
+  identità); la coppia scura string↔comment resta la più debole per un protanope, **registrata col
+  suo numero** invece di lasciata in silenzio; nessun toggle della sintassi aggiunto al tab File tree
+  (upstream non ce l'ha e ora l'inchiostro è leggibile in entrambi i temi).
+- **I managed dialog seguono la palette dell'app** (`e64344fb1`, `c11c183a9`). Anche qui la premessa
+  era **in parte falsa**: il picker **non** è cieco al tema, perché `ThemeManager.Apply` imposta
+  `app.RequestedThemeVariant` (`App/Theming/ThemeManager.cs:186`) — misurato prima di toccare, il
+  fondo era `#000000` in scuro ma `#FFFFFF` in chiaro. Il difetto vero è che usa le **superfici base
+  di Fluent** invece della palette `App.*`: in scuro un lastrone nero contro `App.Window #1E1E1E`.
+  *Prova strutturale* (`ilspycmd`, richiede `DOTNET_ROOT=$HOME/.dotnet`): `Avalonia.Dialogs.dll`
+  **non contiene stili** per `ManagedFileChooser` (uniche risorse: un font e
+  `AboutAvaloniaDialog.xaml`); il suo `ControlTheme` sta in `Avalonia.Themes.Fluent.dll` sotto la
+  chiave `typeof(ManagedFileChooser)` e usa **esattamente sei** chiavi brush, tutte
+  `DynamicResource` → ridefinibili. Fix in `App/ManagedFileChooserTheming.cs` (nuovo) + 6 righe in
+  `App/App.cs`: nessuna riga in `Program.cs`, nessuna chiave `App.*` nuova.
+  Contrasti (soglia 4,5:1): riga file scuro `#000000` → `App.Window #1E1E1E` **16,67**; chiaro
+  `#FFFFFF` → `#F3F3F3` **18,93**; sidebar → `App.PanelAlt`; OK/Cancel min **8,72**. Il calo da 21:1
+  è **voluto**: 21:1 *era* il sintomo (nero e bianco puri). *Riverificato dal loop*: il fondo della
+  lista del picker misura `#1E1E1E`, **identico** al fondo della finestra principale nello stesso
+  screenshot, testo a 16,67:1; e il picker **funziona ancora** (`Ctrl+O` → `Browse…` → path digitato
+  → OK ⇒ `/tmp/r11int` aperto, 2 commit). Finestra principale **pixel-identica** prima/dopo nei due
+  temi (0 pixel differenti), quindi lo spill di `SystemRegionBrush` è innocuo.
+  **Vicolo cieco circoscritto e documentato: le icone ambra.** Sono `DrawingGroup` hard-coded nelle
+  `Resources` **del ControlTheme stesso** sotto la chiave `Icons`, raggiunte con `StaticResource`,
+  che si risolve sul parent stack a build time e quel dizionario è il primo elemento: **nessun
+  dizionario esterno può vincere**. L'alternativa (replicare ~700 righe di ControlTheme ricostruite
+  dall'IL, da rifare a ogni bump di Avalonia) è stata valutata e **non** implementata. Sono contenuto
+  non testuale, la soglia 4,5:1 non li riguarda.
+  Nota: la via più pulita (`ManagedFileDialogOptions.ContentRootFactory`) è bloccata perché
+  `AvaloniaLocator.CurrentMutable`/`Bind<T>` sono `internal` nella reference assembly di 11.3.9.
 
 ## ROUND 10 — chiusura della coda
 

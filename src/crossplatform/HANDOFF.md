@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M62,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M70,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `2ec65b7f3` (round 11 iterazioni 1-3 = **M67**–**M69**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `c11c183a9` (**round 11 completo: M67–M70**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
-| Parità voci UI/funzionali | la vecchia conta 157/160 **non è più la misura giusta**: l'audit del round 9 ha mostrato che contava le *voci*, non la profondità. La misura attuale è la **"Coda round 9"** in `PORTING.md`, area per area |
-| Fedeltà UX/visiva | round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
+| Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
+| Fedeltà UX/visiva | **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **origin NON allineato: 37 commit locali non pushati** al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: 50 commit locali non pushati** (`origin/linux-avalonia-port` = `757742ce8`, cioè la chiusura del round 10) al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M70**), tiene il contatore iterazione.
+  libera: **M71**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -216,7 +216,34 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► ROUND 11 (2026-07-29) — in corso. Prossima milestone libera: **M70**
+> ### ► ROUND 11 (2026-07-29) — **CHIUSO** (M67–M70). Prossima milestone libera: **M71**
+> **Esito**: nella "Coda round 9" non resta **nessuna** voce `- [ ]` né `- [~]`. Il round ha chiuso
+> 4.1, 4.11 per intero, 3.2 per intero, i tre banali, l'auth-failure indipendente dalla locale, i
+> file picker e la palette di sintassi.
+> **M70** (iterazione 4) ha aggiunto le cinque chiavi `App.Token*` per **entrambi** i temi (chiaro
+> 5,89–10,79 · scuro 5,67–9,01, e la separazione a coppie sale da ΔE 2,4 a ≥17,6 anche in
+> simulazione deuteranope/protanope) e ha portato i **managed file picker** sulla palette dell'app
+> (`App/ManagedFileChooserTheming.cs`, fondo = `App.Window` misurato identico alla finestra
+> principale).
+>
+> Cose scoperte in M70 da NON riscoprire:
+> - **Il tab File tree colora SEMPRE** (`FileTreeView.cs:534`, `highlight: !binary`) e **non ha un
+>   toggle**: in tema chiaro l'inchiostro scuro era lo stato di default, non un caso limite.
+> - **L'highlighter dipinge sopra una tinta di fondo** (alpha `0x28`): il fondo vero delle righe
+>   `+`/`-` è `#2A392C`/`#3C2A2A` in scuro e `#DEECDF`/`#F0DEDE` in chiaro. Misurare il contrasto
+>   contro `#FFFFFF`/`#1E1E1E` dà il numero **sbagliato** e nasconde due fallimenti AA in scuro.
+> - **La distinguibilità dei token va verificata in simulazione daltonica**: il grappolo
+>   verde/oliva/rust collassa in tonalità, quindi la separazione deve venire dalla **luminosità**.
+> - **`BindingPriority.Template` (2) batte `Style` (3)**: un setter di stile su un figlio di template
+>   può essere **silenziosamente morto** — è il caso *opposto* alla nota su `TextBoxSurface`.
+> - **Le icone del `ManagedFileChooser` non sono sovrascrivibili**: sono `DrawingGroup` nelle
+>   `Resources` del ControlTheme stesso, raggiunte con `StaticResource` (parent stack a build time,
+>   e quel dizionario è il primo elemento). Il resto sì: sei chiavi brush, tutte `DynamicResource`.
+>   `ManagedFileDialogOptions.ContentRootFactory` non è una via: `AvaloniaLocator.CurrentMutable` è
+>   `internal` in 11.3.9. Selettore morto in Fluent: seleziona `ListBox#QuickLinks` ma l'elemento è
+>   `PART_QuickLinks`.
+>
+> ### ► ROUND 11 iterazione 3 — **M69**
 > **M69** (iterazione 3) ha chiuso **4.11** e **3.2**, cioè **le ultime `[~]` della coda round 9: ora
 > sono ZERO**. `RemotesDialog` ha il tab "Default pull behavior" + push URL separata; `FormVerify` è
 > portato come `App/Views/VerifyDialog.cs` (+ `VerifyService`) con recupero vero in `LOST_FOUND_*`;
@@ -460,123 +487,100 @@ infine A/B con e senza fix.
 
 ## 5. Prompt pronto per riprendere
 
-Round 10 (M63–M66) è chiuso: nella "Coda round 9" **non resta nessuna voce `- [ ]`**. Quello che
-resta sono i **parziali `[~]`** (4.1, 4.11, 3.2), una voce nuova (palette di syntax highlighting per
-il tema chiaro) e due cose da cablare. HEAD alla chiusura del round 10: `757742ce8`. Prompt
-riutilizzabile (incollabile in `/loop`):
+**Round 11 (M67–M70) è chiuso, e con esso la "Coda round 9": non resta nessuna voce `- [ ]` né
+`- [~]`.** HEAD alla chiusura: `c11c183a9`. Quello che resta è *fuori* dalla vecchia coda, quindi il
+prossimo round deve prima **decidere cosa vale la pena fare**, non pescare da una lista. Materiale
+noto e già motivato:
+
+- **SKIP consapevoli, non riaprire senza una ragione nuova**: repository-host GitHub (fork / PR /
+  add upstream — sarebbe un plugin repository-host), colonna **build status** (serve un build server),
+  **script utente** (`ScriptsManager`/`ScriptInfo` + hook Before/After: è un sottosistema a sé, la
+  voce più grossa fra i rinviati), le **~35 impostazioni** che sarebbero pulsanti finti (censite nel
+  cappello della coda round 9), i **6 scope hotkey** oltre a `FormBrowse`.
+- **Note estetiche aperte, piccole**: le **icone ambra** del file picker managed non sono
+  sovrascrivibili (prova strutturale in M70) e stonano in tema chiaro; la pill **note** del grafo è un
+  chip scuro in tema chiaro (5,34:1, passa AA); la coppia scura **string↔comment** della sintassi
+  resta la più debole per un protanope (ΔE 2,4 → misurata, non risolta); le stringhe dei conteggi del
+  bisect non sono **pluralizzate** ("1 revisions left") — servirebbe un formatter plural-aware in
+  `TranslationService`.
+- **Debito noto**: `TranslationService` è applicato a `MainMenu` e a parte delle view, non a tutte
+  (convenzione in §4); i due `CollapseHome` duplicati; `PushDialog.cs:95` che stampa il path assoluto
+  nel titolo; la guardia "Nothing staged to commit." che può rifiutare un merge commit legittimo
+  (servirebbe rilevare `MERGE_HEAD`); il discard solo mono-file.
+- **Idee di valore vero, se si vuole continuare**: un **giro di collaudo end-to-end** su un repo
+  grosso e reale (prestazioni del grafo, paging, memoria) invece di nuove feature; oppure alzare la
+  copertura del layer di traduzione; oppure il sottosistema **script utente**, che è l'unica lacuna
+  funzionale grossa rimasta.
+
+Prima di aprire un round nuovo, rileggere in `PORTING.md` le milestone **M67–M70** e in questo file
+le sezioni **3** e **4**: il round 11 ha aggiunto una dozzina di trappole riusabili (output di git
+localizzato, `GitArgumentBuilder` che ri-splitta gli argomenti, priorità `Template` > `Style`,
+`.git/config.worktree`, e il fatto che **le voci di coda invecchiano**: nell'iterazione 2 tre unità
+su tre erano già state fatte).
+
+Scheletro di prompt per `/loop`, da riempire con le voci scelte:
 
 ```
-Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 11: I PARZIALI.
-Branch: linux-avalonia-port (verificare l'HEAD VERO all'avvio con git rev-parse HEAD: il branch puo'
-essere molto piu' avanti di quanto sembri, e la base dei subagent va allineata a quello). NON push.
-NON firmare i commit (git -c commit.gpgsign=false). NON refactor multi-target. NON toccare la build
-Windows: lavorare SOLO in src/crossplatform/.
+Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 12: <TEMA>.
+Branch: linux-avalonia-port (verificare l'HEAD VERO con git rev-parse HEAD). NON push. NON firmare i
+commit (git -c commit.gpgsign=false). NON refactor multi-target. NON toccare la build Windows:
+lavorare SOLO in src/crossplatform/.
 
-LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 (convenzioni, trappole, classe di bug del
-core condiviso, ricetta GUI headless) e in PORTING.md le milestone M63-M66 piu' la sezione "Coda
-round 9". Le voci `- [ ]` sono ZERO: NON riaprirle. Il lavoro di questo round sono le `- [~]` e le
-voci nuove elencate sotto. Leggere anche il cappello della coda: elenca dove gli audit hanno
-stabilito che NON c'e' lavoro e le ~35 impostazioni che sarebbero pulsanti finti.
+LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 e in PORTING.md le milestone M67-M70. La "Coda
+round 9" e' ESAURITA: non ci sono piu' voci aperte da pescare. Le voci di questo round sono elencate
+sotto; tutto il resto e' SKIP dichiarato (repository-host GitHub, colonna build status, script utente,
+le ~35 impostazioni senza consumatore).
 
-DIREZIONE DELL'UTENTE: lingue solo inglese e italiano (traduzioni CHIUSE). Contano feature, fedelta'
-all'originale e integrazione nella GUI. NIENTE pulsanti finti: se dietro una voce non c'e' il dato,
-non metterla e registrare perche'. Fuori scope: repository-host GitHub, colonna build status.
+DIREZIONE DELL'UTENTE: lingue solo inglese e italiano. Contano feature, fedelta' all'originale e
+integrazione nella GUI. NIENTE pulsanti finti: se dietro una voce non c'e' il dato, non metterla e
+registrare perche'.
 
-## PRIORITA', in quest'ordine
+## VOCI DI QUESTO ROUND
+1. <voce> — <perche' vale, e dove sta il dato/API che la sblocca>
+2. ...
 
-1. [LEVA] 4.1 **checkout di rami remoti**, oggi impossibile dalla GUI. NON e' bloccato:
-   `Commands.CheckoutBranch(branch, isRemote, localChanges, newBranchMode, newBranchName)` esiste
-   gia' nel core (`Commands.cs:10`) mentre `BranchTagService.cs:166` usa solo `Commands.Checkout`.
-   Con esso arrivano reset-local-branch, create-with-custom-name e detached. Serve anche togliere
-   l'esclusione esplicita di Checkout sui remoti in `RepoObjectsTree` (era `:677`) e completare
-   `CheckoutBranchDialog`, che oggi e' solo il gruppo "Local changes". *media/alta*
-2. [BANALI, insieme] cablare `CommitDetailView.EditNotes()` / `AddNotesDialog`, che ha **zero
-   chiamanti** (finestra irraggiungibile, mai vista renderizzata: la voce 1.10 dava AddNotes
-   Ctrl+Shift+N per fatta, RIVERIFICARLA); la pillola **tag** del grafo a 3,25:1 in tema chiaro
-   (va rifatta come terna con le altre due pillole ref, non da sola); e un **warm-up di una riga**
-   per il difetto del core `ExecutableExtensions.cs:15` (`Lazy<Encoding>(isThreadSafe: false)` →
-   le prime due chiamate git CONCORRENTI di un processo lanciano InvalidOperationException).
-3. [BLOCCO] 4.11 dialoghi, resto — in ordine di valore, non tutti obbligatori:
-   **dialogo bisect** + gating su `InTheMiddleOfBisect` (oggi il port auto-avvia in silenzio alla
-   prima marcatura); **macchina a stati `git am`** (Resolved/Skip/Abort, PatchGrid);
-   `FormCleanupRepository` ridotto a un confirm inline, quindi la modalita' **solo-ignorati
-   `clean -X` e' irraggiungibile**; `FormInit` inesistente (solo folder picker: niente
-   `--bare`/`--shared`); `CloneDialog` senza submodule-init, depth, branch picker, preview della
-   destinazione; `ArchiveDialog` senza filtro path/revisione; `RemotesDialog` senza il tab "Default
-   pull behavior" ne' push URL separata; `FormVerify` ("Recover lost objects") ridotto a un dump di
-   `git fsck`; `SparseDialog` su cone mode (niente negazione `!`, upstream pilota il legacy).
-4. [I18N MIRATO] il rilevamento del fallimento di autenticazione e' **solo inglese**: con git in
-   italiano il PTY stampa `fatal: Autenticazione non riuscita per …`, che non matcha ne'
-   `GitProcessDialog.LooksLikeAuthFailure` ne' i marker di `RemoteService`/`PushRefsService`, quindi
-   dopo credenziali sbagliate il fallback `CredentialsDialog` NON si apre (con `LC_ALL=C` matcha:
-   verificato). Cercare il segnale robusto (exit code + prompt ripetuto, o forzare la locale dei
-   figli) invece di aggiungere stringhe tradotte.
-5. [PERSISTENZA] 3.2, il residuo: opzioni del **diff viewer**, switch della **file history**, filtri
-   del **left panel**, MRU dei **filtri di revisione**. Attenzione: `MainWindow` riserializza la sua
-   unica istanza di `UiState` alla chiusura, quindi chi scrive da un'altra view va instradato
-   sull'host (o su un file separato, come fece commit-info.json).
-6. [ULTIMA, forse fuori scope] palette di **syntax highlighting per il tema chiaro**: 5 tinte
-   duplicate in `DiffView:78-82` e `FileTreeView:52-56`, da 1,53:1 a 2,67:1 su fondo chiaro.
-   Servono 5 chiavi `App.Token*` x 2 temi, cioe' PROGETTARE un tema di sintassi: valutare se ne vale
-   la pena e, se no, registrare il perche' invece di improvvisare tinte.
-7. [DA FARE SOLO SU DISPLAY REALE, chiedere prima all'utente] i **file picker** (`Browse…` di
-   Open/Clone/Init/Archive): un portal XDG e' attivo e il bus DBus e' ereditato, ma
-   `OpenFolderPickerAsync` torna a mani vuote SENZA eccezione e nessuna finestra appare ne' su Xvfb
-   ne' sul display reale. Per accertarlo serve lanciare l'app sul display dell'utente (finestre sulla
-   sua scrivania): NON farlo senza il suo ok. Il clipboard invece FUNZIONA anche headless (misurato
-   in M65 con xclip): non ri-testarlo come se fosse un limite.
-
-METODO: il loop NON scrive codice a mano tranne il cablaggio minimo in MainWindow. Delega a subagent
-CLAUDE in worktree isolati (isolation: worktree), 2-3 in parallelo, un'unita' per subagent, file
-DISGIUNTI; mai subagent Codex con worktree. Ogni iterazione: cherry-pick dei tip UNO ALLA VOLTA +
+METODO: il loop NON scrive codice a mano tranne il cablaggio minimo in MainWindow/MainMenu. Delega a
+subagent CLAUDE in worktree isolati (isolation: worktree), 2-3 in parallelo, un'unita' per subagent,
+file DISGIUNTI; mai subagent Codex con worktree. Ogni iterazione: cherry-pick dei tip UNO ALLA VOLTA +
 build check dopo ognuno, integrazione minima, verifica GUI con screenshot GUARDATI davvero, commit,
-cleanup worktree+branch, spunta della voce in PORTING.md.
+cleanup worktree+branch, spunta della voce in PORTING.md. I commit docs-only dei subagent (solo
+NOTES.md) NON vanno cherry-pickati: NOTES.md non entra nel branch.
 REGOLA ANTI-CONFLITTO: un solo subagent per iterazione tocca ciascun file hub (MainWindow, MainMenu,
 MainToolbar, RepoObjectsTree, RevisionGridView, DiffView, FileStatusListView, CommitDetailView,
 StashPanel, CommitDialog, PushDialog, PullDialog, GitProcessDialog, ConsoleView, SettingsWindow,
 DashboardView, ThemeManager, Theming/*).
-REGOLA subagent: primo step `git reset --hard <SHA HEAD CORRENTE>` — passargli l'HEAD vero;
-verificare che App/GitContext.cs ESISTA; VIETATO git checkout/switch/branch -f nel repo principale;
-committare presto e spesso; **NOTES.md incrementale nel worktree** con misure e file:riga (in round
-10 un subagent e' stato ucciso da un watchdog a lavoro quasi finito e il NOTES ha salvato tutto);
-delegare a sub-subagent SOLO ricerche read-only (`Explore`), mai scrittura di codice; commit
-Conventional senza firma; NON scrivere fuori da src/crossplatform/ (in round 10 un NOTES.md di
-scratch e' finito nella root del repo con un cherry-pick).
-REGOLA loop: la cwd di Bash PERSISTE fra le chiamate — usare percorsi assoluti e verificare
-`git branch --show-current` == linux-avalonia-port e `git rev-parse HEAD^` == commit atteso PRIMA di
-ogni commit. Se un subagent supera ~150k di contesto, farlo chiudere (commit + NOTES) e spawnarne
-uno nuovo sul residuo, invece di lasciarlo compattare a metà unità.
+REGOLA subagent: primo step `git reset --hard <SHA HEAD CORRENTE>` — passargli l'HEAD vero; verificare
+che App/GitContext.cs ESISTA; VIETATO git checkout/switch/branch -f nel repo principale; committare
+presto e spesso; NOTES.md incrementale in src/crossplatform/ con misure e file:riga; delegare a
+sub-subagent SOLO ricerche read-only (Explore); commit Conventional senza firma; NON scrivere fuori da
+src/crossplatform/; **VERIFICARE LA PREMESSA prima di scrivere codice** (le voci di coda invecchiano:
+in round 11 tre unita' su tre di un'iterazione erano gia' fatte); spegnere il proprio Xvfb alla fine.
+REGOLA loop: la cwd di Bash PERSISTE — percorsi assoluti, e verificare `git branch --show-current` ==
+linux-avalonia-port e `git rev-parse HEAD^` == commit atteso PRIMA di ogni commit.
 Ambiente: export PATH="$HOME/.dotnet:$PATH"; da src/crossplatform:
 dotnet build App/GitExtensions.Avalonia.csproj -v q -> Errori: 0.
-Verifica GUI headless: Xvfb su display privato (uno per agent, es. :205+) con
-"-screen 0 1400x900x24 +extension XINPUTEXTENSION", XDG_CONFIG_HOME isolato (per forzare stati
-scrivere $XDG_CONFIG_HOME/GitExtensions.Avalonia/ui-state.json, chiavi Theme/Language), mini-WM
-python-Xlib per i MODALI, import -window root, e GUARDARE davvero l'immagine col tool Read; misurare
-i colori con python/PIL + formula WCAG, non a occhio. Niente xdotool: python-Xlib fake_input (XTEST).
-Script pronti in /tmp/loop-verify/ (click.py, rclick.py, dclick.py, esc.py, miniwm.py, g2_type.py;
-in r8/: altclick.py, ctrlkey.py). Avviare Xvfb e app con `nohup … & disown` in chiamate Bash
-SEPARATE (xvfb-run muore quando lo script finisce).
-Le sleep di shell vengono UCCISE dall'harness (exit 144): usare python3 -c "import time;time.sleep(N)".
-`pkill -f "<pattern>"` uccide la shell che lo lancia se il pattern compare nella propria riga di
-comando: usare un pattern auto-escluso (Xvf[b] :205) o kill <PID>. Controllare l'mtime dello
-screenshot prima di leggerlo.
-Repo di prova /tmp/r10loop (con remote locale /tmp/r10remote), /tmp/r9repo, /tmp/g1repo; per il
-grafo costruire una topologia nota in /tmp; operazioni distruttive SOLO su repo in /tmp, mai su
-git_ext_mod (in sola lettura va bene).
-Aggiornare PORTING.md (prossima milestone libera: M67) e HANDOFF.md a ogni iterazione, e la memoria
+Verifica GUI headless: Xvfb su display privato (uno per agent) con
+"-screen 0 1400x900x24 +extension XINPUTEXTENSION", XDG_CONFIG_HOME isolato (Theme/Language in
+ui-state.json; opzioni del diff viewer, file history, left panel e MRU dei filtri avanzati in
+view-prefs.json), mini-WM python-Xlib per i MODALI, import -window root, e GUARDARE davvero
+l'immagine col tool Read; misurare i colori con python/PIL + formula WCAG, non a occhio. Niente
+xdotool: python-Xlib fake_input (XTEST). Script in /tmp/loop-verify/ (click.py con coordinate "X,Y",
+rclick.py, dclick.py, esc.py, closewin.py, miniwm.py, g2_type.py "c:X,Y t:testo k:Return s:1.5"; in
+r8/: altclick.py, ctrlkey.py). Avviare Xvfb e app con `nohup … & disown` in chiamate Bash SEPARATE.
+Le sleep di shell vengono UCCISE dall'harness (exit 144): python3 -c "import time;time.sleep(N)".
+`pkill -f` uccide la shell che lo lancia: pattern auto-escluso (Xvf[b] :205) o kill <PID>. Controllare
+l'mtime dello screenshot. `kill` sull'app salta PersistLayout(): per provare la persistenza chiudere
+da Start -> Exit o con closewin.py. Sul display REALE (Wayland/XWayland) XTEST tastiera funziona ma il
+puntatore NO, e gli screenshot vanno presi per finestra (import -window <id>).
+Repo di prova in /tmp: r11int (+remote r11intrem), r9repo, g1repo, r11bs (bisect), r11am (patch set),
+r11a3 (archive/sparse), r11v (oggetti perduti), r11tok (sintassi). Distruttivo SOLO in /tmp.
+Aggiornare PORTING.md (prossima milestone libera: M71) e HANDOFF.md a ogni iterazione, e la memoria
 avalonia-port-state.md a fine blocco.
-STOP quando le voci sopra sono chiuse o dichiarate, oppure a 15 iterazioni, oppure se una strada si
-rivela impraticabile (documentare il vicolo cieco invece di forzare).
-
-Tre note su come l'ho tarato:
-- 4.1 e' prima perche' e' l'ultima azione quotidiana ancora impossibile dalla GUI, ed e' sbloccata da
-  un'API del core che esiste gia': costo basso, valore alto.
-- Le voci del punto 2 sono feature GIA' SCRITTE e irraggiungibili (AddNotesDialog) o difetti misurati
-  in round 10: chiuderle costa poco e toglie debito.
-- Il punto 6 potrebbe essere una non-voce: se progettare un tema di sintassi chiaro non vale il
-  costo, la risposta giusta e' registrarlo come rinviato con motivo, non inventare cinque tinte.
+STOP quando le voci sono chiuse o dichiarate, oppure a 15 iterazioni, oppure se una strada si rivela
+impraticabile (documentare il vicolo cieco invece di forzare).
 ```
 
-### Prompt storico (round 10, chiuso)
+### Prompt storici (round 10 e 11, chiusi)
 
-Il prompt del round 10 e' conservato nella storia di questo file (`git log -p src/crossplatform/HANDOFF.md`); non serve piu' come riferimento operativo.
+I prompt dei round 10 e 11 sono conservati nella storia di questo file
+(`git log -p src/crossplatform/HANDOFF.md`); non servono più come riferimento operativo.
