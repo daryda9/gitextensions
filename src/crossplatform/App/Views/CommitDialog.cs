@@ -129,27 +129,64 @@ public sealed class CommitDialog : Window
     private readonly MenuItem _selectAllLinesItem = new();
     private readonly MenuItem _copyDiffItem = new();
     private ContextMenu _diffMenu = new();
-    // Upstream's selectionFilter toolbar (FormCommit.Designer.cs:253-278): a regular
-    // expression that SELECTS the matching unstaged files, throttled by 250 ms, with
-    // the pattern error surfaced in a tooltip. The invalid-pattern outline sits on the
-    // COUNTER, not on the TextBox: Fluent's focus border draws over a TextBox's own
-    // border, so the red went invisible exactly while the user was typing.
-    private readonly TextBox _selectionFilterBox;
-    private readonly Border _selectionFilterCount;
-    private readonly TextBlock _selectionFilterCountText = new()
-    {
-        VerticalAlignment = VerticalAlignment.Center,
-        Margin = new Thickness(4, 0, 4, 0),
-    };
 
-    private readonly DispatcherTimer _selectionFilterTimer = new()
+    /// <summary>
+    ///  How a file list is ordered. Upstream's <c>FileStatusList</c> toolbar offers the
+    ///  same three keys (<c>btnByPath</c> / <c>btnByExtension</c> / <c>btnByStatus</c>,
+    ///  FileStatusList.Toolbar.cs:173-175); the tree/flat variants it pairs them with
+    ///  need a node model these flat lists do not have.
+    /// </summary>
+    private enum FileSortMode
     {
-        Interval = TimeSpan.FromMilliseconds(250),
-    };
+        Path,
+        Extension,
+        Status,
+    }
 
-    // The last applied pattern, empty when the filter is off. Non-empty ONLY while it
-    // compiles, so "filter active" and "pattern usable" are the same condition.
-    private string _selectionFilter = string.Empty;
+    /// <summary>
+    ///  One file list plus the toolbar above it. Upstream gives EACH list its own
+    ///  toolbar and its own "Filter files using a regular expression…" box; the port
+    ///  used to have a single box driving both sides (PORTING 12.A.4, divergences 1-2).
+    ///  <para>The filter is upstream's <c>selectionFilter</c>: a regular expression that
+    ///  SELECTS the matching rows, throttled by 250 ms, with the pattern error surfaced
+    ///  in a tooltip. The invalid-pattern outline sits on the COUNTER, not on the
+    ///  TextBox: Fluent's focus border draws over a TextBox's own border, so the red
+    ///  went invisible exactly while the user was typing.</para>
+    /// </summary>
+    private sealed class FileListPane(ListBox list, bool staged)
+    {
+        public readonly ListBox List = list;
+        public readonly bool Staged = staged;
+        public readonly TextBox FilterBox = new() { MinWidth = 90 };
+        public readonly TextBlock CountText = new()
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+        };
+
+        public Border CountBox = new();
+        public readonly DispatcherTimer Timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+
+        // The last applied pattern, empty when the filter is off. Non-empty ONLY while
+        // it compiles, so "filter active" and "pattern usable" are the same condition.
+        public string Pattern = string.Empty;
+
+        public FileSortMode Sort = FileSortMode.Path;
+        public Button SortButton = new();
+        public Button RefreshButton = new();
+        public Button? SettingsButton;
+
+        public bool FilterActive => Pattern.Length > 0;
+    }
+
+    private readonly FileListPane _unstagedPane;
+    private readonly FileListPane _stagedPane;
+
+    // Upstream's tsmiShowUntrackedFiles (FileStatusList.Toolbar.cs:355), which it backs
+    // with `git status -uno`. Here the rows are already loaded, so the toggle hides them
+    // from the unstaged list — and, because "Stage all" acts on the rows the list shows,
+    // an untracked file that is hidden is also not staged by it.
+    private bool _showUntracked = true;
 
     private readonly TextBlock _unstagedHeader = MakeHeaderLabel();
     private readonly TextBlock _stagedHeader = MakeHeaderLabel();
@@ -505,43 +542,19 @@ public sealed class CommitDialog : Window
             c.Margin = new Thickness(0, 0, 4, 4);
         }
 
-        _selectionFilterBox = new TextBox { MinWidth = 120 };
-        _selectionFilterBox.TextChanged += (_, _) =>
-        {
-            // Restart the window on every keystroke: upstream throttles the same way,
-            // so a regex is compiled once per pause and not once per character.
-            _selectionFilterTimer.Stop();
-            _selectionFilterTimer.Start();
-        };
-        _selectionFilterTimer.Tick += (_, _) =>
-        {
-            _selectionFilterTimer.Stop();
-            ApplySelectionFilter();
-        };
-
-        _selectionFilterCount = new Border
-        {
-            BorderThickness = new Thickness(1),
-            BorderBrush = Brushes.Transparent,
-            Padding = new Thickness(2, 0),
-            Child = _selectionFilterCountText,
-        };
-
-        DockPanel filterRow = new() { Margin = new Thickness(0, 0, 0, 2) };
-        DockPanel.SetDock(_selectionFilterCount, Dock.Right);
-        filterRow.Children.Add(_selectionFilterCount);
-        filterRow.Children.Add(_selectionFilterBox);
+        _unstagedPane = new FileListPane(_unstagedList, staged: false);
+        _stagedPane = new FileListPane(_stagedList, staged: true);
+        Control unstagedToolbar = BuildPaneToolbar(_unstagedPane);
+        Control stagedToolbar = BuildPaneToolbar(_stagedPane);
 
         Grid leftPanel = new()
         {
-            RowDefinitions = new RowDefinitions("Auto,*,Auto,*"),
+            RowDefinitions = new RowDefinitions("*,Auto,*"),
         };
-        Grid.SetRow(filterRow, 0);
-        leftPanel.Children.Add(filterRow);
-        leftPanel.Children.Add(WrapWithHeader(_unstagedHeader, _unstagedList, 1));
-        Grid.SetRow(stageButtons, 2);
+        leftPanel.Children.Add(WrapWithHeader(_unstagedHeader, unstagedToolbar, _unstagedList, 0));
+        Grid.SetRow(stageButtons, 1);
         leftPanel.Children.Add(stageButtons);
-        leftPanel.Children.Add(WrapWithHeader(_stagedHeader, _stagedList, 3));
+        leftPanel.Children.Add(WrapWithHeader(_stagedHeader, stagedToolbar, _stagedList, 2));
 
         // ---- top region: left | right split ----
         Grid split = new()
@@ -766,10 +779,8 @@ public sealed class CommitDialog : Window
         _unstageBtn.Content = UnstageCaption + " ▲";
         ApplyFilterCaptions();
 
-        _selectionFilterBox.Watermark = T(
-            "FileStatusList/cboFilterComboBox.Watermark",
-            "Filter files using a regular expression...");
-        ToolTip.SetTip(_selectionFilterBox, SelectionFilterTip);
+        CaptionPane(_unstagedPane);
+        CaptionPane(_stagedPane);
 
         _messageBox.Watermark = T("FormCommit/_enterCommitMessageHint.Text", "Enter commit message");
         _amendBox.Content = T("FormCommit/_amendCommitCaption.Text", "Amend commit");
@@ -786,6 +797,24 @@ public sealed class CommitDialog : Window
 
         UpdateTitle();
         RenderStatus();
+    }
+
+    // The captions of one pane's toolbar. Icon-only buttons, so everything the user can
+    // read about them is in the tooltips.
+    private void CaptionPane(FileListPane pane)
+    {
+        pane.FilterBox.Watermark = T(
+            "FileStatusList/cboFilterComboBox.Watermark",
+            "Filter files using a regular expression...");
+        ToolTip.SetTip(pane.FilterBox, SelectionFilterTip);
+        ToolTip.SetTip(pane.SortButton, T("Sort by"));
+        ToolTip.SetTip(pane.RefreshButton, T("FormBrowse/refreshToolStripMenuItem.Text", "Refresh"));
+        if (pane.SettingsButton is not null)
+        {
+            ToolTip.SetTip(
+                pane.SettingsButton,
+                T("FileStatusList/tsmiShowUntrackedFiles.Text", "Show untracked files"));
+        }
     }
 
     private static string StageCaption => T("FormCommit/toolStageItem.Text", "Stage");
@@ -832,23 +861,29 @@ public sealed class CommitDialog : Window
                 }
 
                 // Upstream's ToggleSelectionFilter hotkey (Ctrl+F). Upstream hides and
-                // shows the whole filter toolbar; here the box is always visible, so
+                // shows the whole filter toolbar; here the boxes are always visible, so
                 // the toggle is "focus it" / "clear it and hand focus back to the
-                // list", which is what the hotkey is actually used for.
+                // list", which is what the hotkey is actually used for. Now that each
+                // list has its own box, the key acts on the pane the user is in — the
+                // staged one only while the focus really sits there.
                 if (e.Key == Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Control))
                 {
                     e.Handled = true;
-                    if (_selectionFilterBox.IsFocused)
+                    FileListPane pane = _stagedPane.FilterBox.IsFocused
+                        || _stagedList.IsKeyboardFocusWithin
+                        ? _stagedPane
+                        : _unstagedPane;
+                    if (pane.FilterBox.IsFocused)
                     {
-                        _selectionFilterBox.Text = string.Empty;
-                        _selectionFilterTimer.Stop();
-                        ApplySelectionFilter();
-                        _unstagedList.Focus();
+                        pane.FilterBox.Text = string.Empty;
+                        pane.Timer.Stop();
+                        ApplyPaneFilter(pane);
+                        pane.List.Focus();
                     }
                     else
                     {
-                        _selectionFilterBox.Focus();
-                        _selectionFilterBox.SelectAll();
+                        pane.FilterBox.Focus();
+                        pane.FilterBox.SelectAll();
                     }
                 }
             },
@@ -2126,7 +2161,7 @@ public sealed class CommitDialog : Window
     // files only — upstream's StageAllAccordingToFilter.
     private void StageAll()
     {
-        List<WorkingDirFileRow> rows = [.. Filtered(_unstagedList)];
+        List<WorkingDirFileRow> rows = [.. Filtered(_unstagedPane)];
         if (rows.Count > 0)
         {
             RunGit(() => _service.Stage(_repoPath, rows));
@@ -2135,7 +2170,7 @@ public sealed class CommitDialog : Window
 
     private void UnstageAll()
     {
-        List<WorkingDirFileRow> rows = [.. Filtered(_stagedList)];
+        List<WorkingDirFileRow> rows = [.. Filtered(_stagedPane)];
         if (rows.Count > 0)
         {
             RunGit(() => _service.Unstage(_repoPath, rows));
@@ -2144,31 +2179,28 @@ public sealed class CommitDialog : Window
 
     // ---------- selection filter (regex) ----------
 
-    /// <summary>True while a usable (compiling, non-empty) pattern is applied.</summary>
-    private bool IsSelectionFilterActive => _selectionFilter.Length > 0;
-
-    private IEnumerable<WorkingDirFileRow> Filtered(ListBox list)
+    private IEnumerable<WorkingDirFileRow> Filtered(FileListPane pane)
     {
-        IEnumerable<WorkingDirFileRow> rows = list.Items.OfType<WorkingDirFileRow>();
-        return IsSelectionFilterActive
-            ? rows.Where(r => Regex.IsMatch(r.Path, _selectionFilter, RegexOptions.IgnoreCase))
+        IEnumerable<WorkingDirFileRow> rows = pane.List.Items.OfType<WorkingDirFileRow>();
+        return pane.FilterActive
+            ? rows.Where(r => Regex.IsMatch(r.Path, pane.Pattern, RegexOptions.IgnoreCase))
             : rows;
     }
 
-    // Compiles the pattern and, on success, SELECTS the matching unstaged rows the way
-    // upstream's FileStatusList.SetSelectionFilter does, so the plain "Stage" button
-    // acts on them. An invalid pattern leaves the previous selection alone and only
-    // reports itself.
-    private void ApplySelectionFilter()
+    // Compiles one pane's pattern and, on success, SELECTS the matching rows of THAT
+    // list the way upstream's FileStatusList.SetSelectionFilter does, so the plain
+    // Stage / Unstage button acts on them. An invalid pattern leaves the previous
+    // selection alone and only reports itself.
+    private void ApplyPaneFilter(FileListPane pane)
     {
-        string pattern = (_selectionFilterBox.Text ?? string.Empty).Trim();
+        string pattern = (pane.FilterBox.Text ?? string.Empty).Trim();
 
         if (pattern.Length == 0)
         {
-            _selectionFilter = string.Empty;
-            _selectionFilterCount.BorderBrush = Brushes.Transparent;
-            _selectionFilterCountText.Text = string.Empty;
-            ToolTip.SetTip(_selectionFilterBox, SelectionFilterTip);
+            pane.Pattern = string.Empty;
+            pane.CountBox.BorderBrush = Brushes.Transparent;
+            pane.CountText.Text = string.Empty;
+            ToolTip.SetTip(pane.FilterBox, SelectionFilterTip);
             ApplyFilterCaptions();
             return;
         }
@@ -2181,59 +2213,54 @@ public sealed class CommitDialog : Window
         }
         catch (ArgumentException ex)
         {
-            _selectionFilter = string.Empty;
-            _selectionFilterCount.BorderBrush = Brush("App.DiffRemoved", Brushes.OrangeRed);
-            _selectionFilterCountText.Text = "!";
+            pane.Pattern = string.Empty;
+            pane.CountBox.BorderBrush = Brush("App.DiffRemoved", Brushes.OrangeRed);
+            pane.CountText.Text = "!";
             ToolTip.SetTip(
-                _selectionFilterBox,
+                pane.FilterBox,
                 string.Format(T("FormCommit/_selectionFilterErrorToolTip.Text", "Error {0}"), ex.Message));
             ApplyFilterCaptions();
             return;
         }
 
-        _selectionFilter = pattern;
-        _selectionFilterCount.BorderBrush = Brushes.Transparent;
-        ToolTip.SetTip(_selectionFilterBox, SelectionFilterTip);
+        pane.Pattern = pattern;
+        pane.CountBox.BorderBrush = Brushes.Transparent;
+        ToolTip.SetTip(pane.FilterBox, SelectionFilterTip);
 
-        List<WorkingDirFileRow> matches = [.. Filtered(_unstagedList)];
-        _unstagedList.SelectedItems?.Clear();
+        List<WorkingDirFileRow> matches = [.. Filtered(pane)];
+        pane.List.SelectedItems?.Clear();
         foreach (WorkingDirFileRow row in matches)
         {
-            _unstagedList.SelectedItems?.Add(row);
+            pane.List.SelectedItems?.Add(row);
         }
 
-        _selectionFilterCountText.Text = string.Format(
-            "{0}/{1}",
-            matches.Count,
-            _unstagedList.Items.Count);
+        RefreshPaneCount(pane);
         ApplyFilterCaptions();
     }
 
-    // The two "all" buttons say what they will actually do. Upstream re-captions
-    // "Stage all" from the unstaged filter and "Unstage all" from the staged list's own
-    // filter widget; the port's dialog has a single filter box, so the one pattern
-    // drives both sides.
+    // The two "all" buttons say what they will actually do — each from ITS OWN list's
+    // filter box now, the way upstream re-captions them from the per-list filters.
     private void ApplyFilterCaptions()
     {
-        _stageAllBtn.Content = IsSelectionFilterActive
+        _stageAllBtn.Content = _unstagedPane.FilterActive
             ? T("FormCommit/_stageFiltered.Text", "Stage filtered")
             : T("FormCommit/_stageAll.Text", "Stage all");
-        _unstageAllBtn.Content = IsSelectionFilterActive
+        _unstageAllBtn.Content = _stagedPane.FilterActive
             ? T("FormCommit/_unstageFiltered.Text", "Unstage filtered")
             : T("FormCommit/_unstageAll.Text", "Unstage all");
     }
 
-    private void RefreshSelectionFilterCount()
+    private void RefreshPaneCount(FileListPane pane)
     {
-        if (!IsSelectionFilterActive)
+        if (!pane.FilterActive)
         {
             return;
         }
 
-        _selectionFilterCountText.Text = string.Format(
+        pane.CountText.Text = string.Format(
             "{0}/{1}",
-            Filtered(_unstagedList).Count(),
-            _unstagedList.Items.Count);
+            Filtered(pane).Count(),
+            pane.List.Items.Count);
     }
 
     private static string SelectionFilterTip => T(
@@ -3639,13 +3666,24 @@ public sealed class CommitDialog : Window
                 }
             }
 
-            _unstagedList.ItemsSource = unstaged;
+            // The untracked toggle hides rows git DID report; a hidden row is in the
+            // list's Items for nobody, so "Stage all" cannot reach it either.
+            if (!_showUntracked)
+            {
+                unstaged = [.. unstaged.Where(r => !IsUntrackedRow(r))];
+            }
+
+            // Each list is ordered by its own sort key, and a NEW list instance is
+            // handed to ItemsSource (M50).
+            _unstagedList.ItemsSource = SortRows(_unstagedPane, unstaged);
 
             // An unmerged path is reported by the index listing too; showing it in
             // both lists would be misleading, so it stays only in the unstaged one.
-            _stagedList.ItemsSource = _conflictPaths.Count == 0
-                ? status.Staged
-                : [.. status.Staged.Where(r => !_conflictPaths.Contains(r.Path))];
+            _stagedList.ItemsSource = SortRows(
+                _stagedPane,
+                _conflictPaths.Count == 0
+                    ? status.Staged
+                    : status.Staged.Where(r => !_conflictPaths.Contains(r.Path)));
             _conflictBanner.IsVisible = _conflictPaths.Count > 0;
             RestoreDiffSelection();
             RenderStatus();
@@ -3653,7 +3691,8 @@ public sealed class CommitDialog : Window
             // The lists are new objects, so the filter's match count is stale. Only the
             // COUNT is refreshed: re-selecting here would fight RestoreDiffSelection,
             // which has just put the user back on the file they were staging hunks of.
-            RefreshSelectionFilterCount();
+            RefreshPaneCount(_unstagedPane);
+            RefreshPaneCount(_stagedPane);
 
             // "Close dialog after all files committed": only now, on the snapshot
             // taken AFTER the commit, is it known whether anything is left to stage.
@@ -3834,10 +3873,11 @@ public sealed class CommitDialog : Window
         Margin = new Thickness(2, 0, 0, 2),
     };
 
-    private Control WrapWithHeader(TextBlock label, Control content, int row)
+    private Control WrapWithHeader(TextBlock label, Control toolbar, Control content, int row)
     {
         DockPanel panel = new() { Margin = new Thickness(0, 2) };
         DockPanel.SetDock(label, Dock.Top);
+        DockPanel.SetDock(toolbar, Dock.Top);
         Border box = new()
         {
             Child = content,
@@ -3846,10 +3886,157 @@ public sealed class CommitDialog : Window
             ClipToBounds = true,
         };
         panel.Children.Add(label);
+        panel.Children.Add(toolbar);
         panel.Children.Add(box);
         Grid.SetRow(panel, row);
         return panel;
     }
+
+    // ---------- per-list toolbar (upstream's FileStatusList.Toolbar) ----------
+
+    /// <summary>
+    ///  The toolbar above one file list. Only entries the port can really carry out are
+    ///  here: the sort key, a refresh, the untracked toggle (unstaged list only) and the
+    ///  regular-expression filter box with its match counter. What upstream also has and
+    ///  the port deliberately does NOT show is listed in <c>NOTES.md</c>.
+    /// </summary>
+    private Control BuildPaneToolbar(FileListPane pane)
+    {
+        pane.SortButton = IconButton("SortBy", "⇅", () => ShowSortMenu(pane));
+        pane.RefreshButton = IconButton("ReloadRevisions", "⟳", Reload);
+        if (!pane.Staged)
+        {
+            pane.SettingsButton = IconButton("Settings", "⚙", () => ShowPaneSettingsMenu(pane));
+        }
+
+        pane.FilterBox.TextChanged += (_, _) =>
+        {
+            // Restart the window on every keystroke: upstream throttles the same way,
+            // so a regex is compiled once per pause and not once per character.
+            pane.Timer.Stop();
+            pane.Timer.Start();
+        };
+        pane.Timer.Tick += (_, _) =>
+        {
+            pane.Timer.Stop();
+            ApplyPaneFilter(pane);
+        };
+
+        pane.CountBox = new Border
+        {
+            BorderThickness = new Thickness(1),
+            BorderBrush = Brushes.Transparent,
+            Padding = new Thickness(2, 0),
+            Child = pane.CountText,
+        };
+
+        DockPanel row = new() { Margin = new Thickness(0, 0, 0, 2) };
+        StackPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        buttons.Children.Add(pane.SortButton);
+        if (pane.SettingsButton is not null)
+        {
+            buttons.Children.Add(pane.SettingsButton);
+        }
+
+        buttons.Children.Add(pane.RefreshButton);
+
+        DockPanel.SetDock(buttons, Dock.Left);
+        DockPanel.SetDock(pane.CountBox, Dock.Right);
+        row.Children.Add(buttons);
+        row.Children.Add(pane.CountBox);
+        row.Children.Add(pane.FilterBox);
+        return row;
+    }
+
+    // A small icon-only toolbar button. The glyph is the fallback: IconLoader returns
+    // null for a name that does not resolve (the asset names are case-sensitive), and a
+    // button with no content at all would be an invisible click target.
+    private Button IconButton(string icon, string glyph, Action onClick)
+    {
+        Button b = new()
+        {
+            Padding = new Thickness(4, 2),
+            Margin = new Thickness(0, 0, 2, 0),
+            Background = Brush("App.Toolbar", Brushes.DimGray),
+            Content = (Control?)Theming.IconLoader.Image(icon, 16)
+                ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
+        };
+        b.Click += (_, _) => onClick();
+        return b;
+    }
+
+    // The sort menu. Items are added BEFORE ShowAt (HANDOFF §3) and each entry really
+    // re-orders the rows on screen.
+    private void ShowSortMenu(FileListPane pane)
+    {
+        MenuFlyout flyout = new();
+        // Upstream's own trans-units say "GROUP by file path/extension/diff status"
+        // (FileStatusList/btnByPath.ToolTipText …) because its list is a tree with group
+        // nodes. These lists are flat, so they get their own wording rather than a
+        // translated caption promising grouping that does not happen.
+        Add(FileSortMode.Path, T("Sort by path"));
+        Add(FileSortMode.Extension, T("Sort by extension"));
+        Add(FileSortMode.Status, T("Sort by status"));
+        flyout.ShowAt(pane.SortButton);
+
+        void Add(FileSortMode mode, string caption)
+        {
+            MenuItem item = new() { Header = (pane.Sort == mode ? "●  " : "○  ") + caption };
+            item.Click += (_, _) =>
+            {
+                pane.Sort = mode;
+                ResortPane(pane);
+            };
+            flyout.Items.Add(item);
+        }
+    }
+
+    // Upstream's per-list settings dropdown, reduced to the one toggle the port can
+    // honour on the work-tree list.
+    private void ShowPaneSettingsMenu(FileListPane pane)
+    {
+        MenuFlyout flyout = new();
+        MenuItem untracked = new()
+        {
+            Header = (_showUntracked ? "☑  " : "☐  ")
+                + T("FileStatusList/tsmiShowUntrackedFiles.Text", "Show untracked files"),
+        };
+        untracked.Click += (_, _) =>
+        {
+            _showUntracked = !_showUntracked;
+            Reload();
+        };
+        flyout.Items.Add(untracked);
+        flyout.ShowAt(pane.SettingsButton!);
+    }
+
+    /// <summary>
+    ///  Re-orders the rows a pane is showing. A NEW list instance is assigned: handing
+    ///  the same instance back to <c>ItemsSource</c> leaves the realised containers
+    ///  untouched and the visible rows keep their old visuals (HANDOFF §3 / M50).
+    /// </summary>
+    private void ResortPane(FileListPane pane)
+    {
+        List<WorkingDirFileRow> rows = [.. pane.List.Items.OfType<WorkingDirFileRow>()];
+        pane.List.ItemsSource = SortRows(pane, rows);
+        RefreshPaneCount(pane);
+    }
+
+    private static List<WorkingDirFileRow> SortRows(FileListPane pane, IEnumerable<WorkingDirFileRow> rows)
+        => pane.Sort switch
+        {
+            FileSortMode.Extension => [.. rows
+                .OrderBy(r => System.IO.Path.GetExtension(r.Path), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase)],
+            FileSortMode.Status => [.. rows
+                .OrderBy(r => r.Status, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase)],
+            _ => [.. rows.OrderBy(r => r.Path, StringComparer.OrdinalIgnoreCase)],
+        };
 
     private Button MakeButton(string text, Action onClick)
     {
