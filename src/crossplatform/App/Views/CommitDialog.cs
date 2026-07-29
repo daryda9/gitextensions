@@ -2400,39 +2400,54 @@ public sealed class CommitDialog : Window
             return;
         }
 
+        // Upstream runs the commit inside FormProcess (FormCommit.cs:1265) so the user
+        // sees the command line, git's output and — the reason this matters — whatever
+        // the pre-commit hook prints. Same surface the push already uses.
         SetStatus(string.Format(T("Running {0} …"), CommitActionsService.DescribeCommit(options)));
-        RunActionResult(
-            () => _actions.Commit(_repoPath, message, options),
-            async result =>
+        string repoPath = _repoPath;
+        CommitActionsService actions = _actions;
+        GitProcessOutcome outcome = await GitProcessDialog.RunStreamingAsync(
+            this,
+            T("FormCommit/_commitButton.Text", "Commit"),
+            emit =>
             {
-                if (!result.Success)
-                {
-                    SetStatus(string.Format(T("Commit failed: {0}"), FirstLine(result.Output)));
-                    return;
-                }
-
-                _messageBox.Text = string.Empty;
-                _amendBox.IsChecked = false;
-                Committed?.Invoke();
-                SetStatus(string.Format(T("Committed ({0})."), CommitActionsService.DescribeCommit(options)));
-
-                // Upstream only consults "after all files committed" when "after each
-                // commit" is off, and closes on the state AFTER the reload.
-                _closeIfNothingLeft = !options.CloseAfterCommit
-                    && _prefs.CloseCommitDialogAfterLastCommit
-                    && !push;
-                Reload();
-
-                if (push)
-                {
-                    await PushAsync();
-                }
-
-                if (options.CloseAfterCommit)
-                {
-                    Close();
-                }
+                CommitActionResult r = actions.Commit(repoPath, message, options, emit);
+                return new GitProcessOutcome(r.Success, r.Output);
             });
+
+        // Everything below is the POST-commit work: it must only run when git really
+        // committed. In particular a failing hook must leave the message alone, so the
+        // user can fix the problem and press Commit again.
+        if (!outcome.Success)
+        {
+            SetStatus(outcome.Aborted
+                ? T("Commit aborted.")
+                : string.Format(T("Commit failed: {0}"), LastLine(outcome.Output)));
+            Reload();
+            return;
+        }
+
+        _messageBox.Text = string.Empty;
+        _amendBox.IsChecked = false;
+        Committed?.Invoke();
+        SetStatus(string.Format(T("Committed ({0})."), CommitActionsService.DescribeCommit(options)));
+
+        // Upstream only consults "after all files committed" when "after each
+        // commit" is off, and closes on the state AFTER the reload.
+        _closeIfNothingLeft = !options.CloseAfterCommit
+            && _prefs.CloseCommitDialogAfterLastCommit
+            && !push;
+        Reload();
+
+        if (push)
+        {
+            await PushAsync();
+        }
+
+        if (options.CloseAfterCommit)
+        {
+            Close();
+        }
     }
 
     /// <summary>
@@ -3273,6 +3288,31 @@ public sealed class CommitDialog : Window
 
     // '_' in a menu header is an access-key marker in Avalonia; double it to show it.
     private static string Escape(string text) => text.Replace("_", "__");
+
+    /// <summary>
+    ///  The LAST line that carries text. Used for streamed output, whose first lines
+    ///  are the echoed command header ("Command to be executed:") — the reason a
+    ///  failure is worth reporting is always at the end (git's error, or the last
+    ///  thing a refusing hook printed).
+    /// </summary>
+    private static string LastLine(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+        {
+            return string.Empty;
+        }
+
+        string[] lines = s.Replace("\r\n", "\n").Split('\n');
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            if (lines[i].Trim().Length > 0)
+            {
+                return lines[i].Trim();
+            }
+        }
+
+        return string.Empty;
+    }
 
     private static string FirstLine(string s)
     {

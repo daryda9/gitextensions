@@ -51,7 +51,24 @@ public sealed class CommitActionsService
     ///  as bytes in that encoding, so writing it as UTF-8 unconditionally corrupted
     ///  every non-ASCII character whenever the repo used e.g. cp1251 or latin1.
     /// </summary>
-    public CommitActionResult Commit(string repoPath, string message, CommitOptions options)
+    /// <remarks>
+    ///  <para>
+    ///   Runs through <see cref="GitStreamRunner"/> rather than the core's
+    ///   <c>Execute</c>, because the caller shows the run in a
+    ///   <c>GitProcessDialog</c>: that is the only way the user gets to see what
+    ///   upstream's <c>FormProcess</c> shows them — the command line, git's own
+    ///   output, and above all <b>the output of the pre-commit hook</b>, which is
+    ///   otherwise swallowed whole (a hook that refuses the commit used to fail with
+    ///   nothing but a one-line status).
+    ///  </para>
+    ///  <para>
+    ///   <paramref name="emit"/> is called from the calling (background) thread for
+    ///   every output line as git produces it. The message file is deleted only after
+    ///   the process has exited, since <see cref="GitStreamRunner.Run"/> blocks.
+    ///  </para>
+    /// </remarks>
+    /// <param name="emit">Sink for every output line, including the command header.</param>
+    public CommitActionResult Commit(string repoPath, string message, CommitOptions options, Action<string> emit)
     {
         GitModule module = GitContext.CreateModule(repoPath);
         string messageFile = Path.GetTempFileName();
@@ -59,21 +76,22 @@ public sealed class CommitActionsService
         {
             File.WriteAllText(messageFile, message ?? string.Empty, CommitEncodingOf(module));
 
-            GitArgumentBuilder args = new("commit")
-            {
-                { options.Amend, "--amend" },
-                { options.SignOff, "--signoff" },
-                { options.NoVerify, "--no-verify" },
-                { options.ResetAuthor && options.Amend, "--reset-author" },
-                "-F",
-                module.GetPathForGitExecution(messageFile).Quote(),
-            };
+            string args = CommitArguments(module, options, messageFile).ToString();
+            StringBuilder log = new();
+            int exit = GitStreamRunner.Run(
+                repoPath,
+                args,
+                line =>
+                {
+                    log.AppendLine(line);
+                    emit(line);
+                });
 
-            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
-            return new CommitActionResult(result.ExitedSuccessfully, result.AllOutput);
+            return new CommitActionResult(exit == 0, log.ToString());
         }
         catch (Exception ex)
         {
+            emit(ex.Message);
             return new CommitActionResult(false, ex.Message);
         }
         finally
@@ -88,6 +106,22 @@ public sealed class CommitActionsService
             }
         }
     }
+
+    /// <summary>
+    ///  The <c>git commit</c> command line actually executed.
+    ///  <see cref="DescribeCommit"/> is its message-file-free echo for status text;
+    ///  the console shows this one verbatim.
+    /// </summary>
+    private static GitArgumentBuilder CommitArguments(GitModule module, CommitOptions options, string messageFile)
+        => new("commit")
+        {
+            { options.Amend, "--amend" },
+            { options.SignOff, "--signoff" },
+            { options.NoVerify, "--no-verify" },
+            { options.ResetAuthor && options.Amend, "--reset-author" },
+            "-F",
+            module.GetPathForGitExecution(messageFile).Quote(),
+        };
 
     /// <summary>
     ///  Returns the exact command line that <see cref="Commit"/> will run, for the
