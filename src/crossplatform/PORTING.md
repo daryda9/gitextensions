@@ -2060,6 +2060,118 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
   vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
 
+## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
+
+> Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno
+> precedenza su tutto il resto** (le idee di valore elencate in `HANDOFF.md` §5 restano dietro).
+> Screenshot di riferimento in `~/Documents/images avalonia/` — **letti e verificati**, contenuto
+> descritto qui sotto perché i file possono spostarsi:
+>
+> | File | Cosa mostra |
+> |---|---|
+> | `commit window dialog.png` | `FormCommit` reale: due liste con **toolbar di icone propria** + casella "Filter files using a regular expression…", pulsanti **Unstage ⬆ / Stage ⬇** sulla barra fra le due liste, diff a destra con **gutter a due colonne di numeri di riga** (old/new) e fondo verde sulle righe aggiunte, colonna pulsanti Commit / Commit & push / **checkbox Amend commit** / Stash staged changes / Reset all changes / Reset unstaged changes, riga superiore `Commit message ▾ · Commit templates ▾ · Options ▾` con overflow `»`, status bar `Committer <nome> <mail>` · `branch → origin/branch` · **`Staged 1/4 Ln 0 Col 0`** |
+> | `00_merge window.png` | `FormMergeBranch`: titolo "Merge branches", link **Hide help** + pannello illustrativo a sinistra, `Merge branch` (combo + pulsante picker commit), `Into current branch **master**` in sola lettura, radio **Keep a single branch line if possible (fast forward)** / **Always create a new merge commit**, checkbox **Do not commit** e **Show advanced options**, pulsante **Merge** in basso a destra |
+> | `01_merge windows with process and conflict.png` | il `Process` dialog **sopra** la merge window, con la riga di comando (`git.exe merge --no-commit branch1`), output `CONFLICT (content): Merge conflict in README.md` / `Automatic merge failed…` / `Done`, footer `Keep dialog open` + `OK` + `Abort` |
+> | `02_merge windows with process and conflict confirmation dialog.png` | modale **"Merge conflicts"** con icona `?`: *"There are unresolved merge conflicts, solve conflicts now?"* + Sì/No |
+> | `03_resolve merge conflict window dialog.png` | `FormResolveConflicts`: lista **Unresolved merge conflicts** (colonna Filename), colonna pulsanti **Open in kdiff3** (nome del mergetool configurato, dinamico) / **Start mergetool** / **Rescan merge conflicts** / **Reset**, riquadro informativo *"The file has been changed both locally (ours) and remotely (theirs). Merge the changes."* + pulsante **Merge**, e le tre righe `Local/current (ours)` · `Base` · `Remote/incoming (theirs)` con il nome file per lato, link **Help** in basso |
+> | `unresolved merge conflict UI from home.png` | la finestra principale durante il merge: **banner arancione** *"Merge is currently in progress with merge conflicts."* con i pulsanti **Resolve…** e **Abort** a destra |
+> | `create branch window dialog.png` | `FormCreateBranch` (riferimento collaterale, non richiesto): revisione + **Checkout after create**, riquadro col commit risolto (autore/data/**Branch(es)** evidenziati/Tag(s)), gruppo **Orphan** con `Create orphan` + `Clear working directory and index` |
+
+**BLOCCO 12.A — dialogo di commit** (`App/Views/CommitDialog.cs`, 3341 righe; upstream
+`src/app/GitUI/CommandsDialogs/FormCommit.cs` + `FormCommit.Designer.cs`)
+
+- [ ] **12.A.1 — un nuovo file selezionato mostra il pannello diff VUOTO.** Causa accertata:
+      `PatchStagingService.cs:76-92` esegue `git diff [--cached] -- <path>` e per un file
+      **untracked** git non produce nulla (non è nell'index, non c'è niente da diffare) →
+      `stdout` vuoto, il pannello resta bianco senza errore. Upstream mostra il **contenuto
+      intero** del file nuovo (`FileViewer` cade sul file grezzo). Fix: per una riga untracked
+      caricare il contenuto del file (o `git diff --no-index -- /dev/null <path>`, che dà un
+      patch vero con header `--- /dev/null` — coerente con `_diffFileIsNew`, già usato a
+      `CommitDialog.cs:1429`/`:1849` per il line-staging) e non l'output vuoto di `git diff`.
+      Attenzione a binari e file grandi: upstream tronca.
+- [ ] **12.A.2 — il commit non passa dal process dialog.** Upstream esegue il commit dentro
+      `FormProcess.ShowDialog` (`FormCommit.cs:1265`) e l'utente vede comando+output+hook.
+      Il port lo esegue in silenzio: `CommitActionsService.Commit` (`:54-79`) chiama
+      `module.GitExecutable.Execute` e `CommitDialog.DoCommit` (`:2331`) riporta solo una riga
+      di status (`SetStatus`), quindi hook pre-commit, warning e messaggi di git sono
+      **invisibili**. Fix: instradare il commit su `GitProcessDialog` (il port ha già
+      `GitProcessDialog.RunStreamingAsync`, usato per il push a `CommitDialog.cs:2556`) —
+      stessa superficie del push, con `Keep dialog open`.
+- [ ] **12.A.3 — `Reset all changes` / `Reset unstaged changes` fanno la cosa sbagliata.**
+      Upstream (`FormCommit.cs:2184-2198`) instrada **entrambi** su
+      `StartResetChangesDialog(..., onlyWorkTree)` = `FormResetChanges`, che chiede conferma
+      **e** decide cosa fare degli **untracked**; poi disabilita i pulsanti quando non c'è
+      niente da resettare (`:831`, `:2806`: abilitati solo se le liste non sono vuote).
+      Nel port `CommitDialog.DoReset` (`:2564-2575`): il ramo `includeStaged: true` fa un
+      `reset --hard HEAD` dietro una `ConfirmThen` generica, il ramo unstaged fa
+      `git checkout -- .` **senza alcuna conferma** — distruttivo e silenzioso — e nessuno dei
+      due tocca gli untracked né viene mai disabilitato
+      (`WorkingDirectoryService.ResetChanges`, `:377-395`). Fix: portare `FormResetChanges`
+      (conferma + scelta sugli untracked), applicare alle **righe della lista** come upstream,
+      e gestire l'abilitazione.
+- [ ] **12.A.4 — la chrome del dialogo è ancora lontana da `FormCommit`.** Divergenze misurate
+      contro `commit window dialog.png`: le due liste sono `ListBox` nude
+      (`CommitDialog.cs:37-38`, `MakeList()` `:3292`) **senza la toolbar di icone per lista**
+      e con **una sola** casella filtro (`:689`) invece di una per lista; **nessun gutter di
+      numeri di riga** nel pannello diff (è un `SelectableTextBlock`, `:261`); **manca la status
+      bar** in stile upstream (committer + `branch → remote` + **`Staged x/y Ln y Col x`**): oggi
+      c'è solo un `TextBlock` di status (`:548`). Nota: la toolbar ricca della lista file è la
+      voce **2d** già aperta (`FileStatusList.Toolbar.cs`) e il port ha già un
+      `Views/FileStatusListView.cs` da riusare invece di ricostruirla.
+      **Vincolo: niente pulsanti finti** — ogni icona aggiunta deve avere dietro un dato reale.
+
+**BLOCCO 12.B — flusso di merge completo** (oggi il merge è **muto**)
+
+Stato accertato al `6b5dff330`: `BranchTagService.MergeBranch` (`:633-647`) esegue
+`Commands.MergeBranch(... allowFastForward: true, squash: false, noCommit: false ...)` con i
+flag **cablati**, e tutti e quattro i chiamanti lo lanciano dentro un `RunMutation`
+(`RepoObjectsTree.cs:1240` e `:1299`, `BranchTagPanel.cs:283`, `RevisionGridView.cs:6018`):
+nessun dialogo, nessun process dialog, nessuna conferma, e in caso di conflitto l'utente
+scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMergeBranch`
+(187 righe) né di `FormResolveConflicts` (1571 righe).
+
+- [ ] **12.B.1 — `MergeDialog` (port di `FormMergeBranch`)**: combo del branch da mergiare,
+      `Into current branch <x>` in sola lettura, i due radio fast-forward / always-new-commit,
+      checkbox **Do not commit**, **Show advanced options** (squash / strategy /
+      allow-unrelated-histories: sono esattamente i parametri già presenti nella firma di
+      `Commands.MergeBranch`, quindi **non** sono pulsanti finti), link Hide help. Il pannello
+      illustrativo è **omettibile** (come l'illustrazione del Pull, decisa in M50/P3).
+      I quattro call-site vanno instradati qui; `MergeBranch` deve accettare le opzioni invece
+      dei flag cablati.
+- [ ] **12.B.2 — il merge passa dal `GitProcessDialog`** (img 01), come già fanno
+      fetch/pull/push: comando, output live, `Keep dialog open`, `OK`/`Abort`.
+- [ ] **12.B.3 — conferma "Merge conflicts" dopo un merge fallito** (img 02): port di
+      `MergeConflictHandler.HandleMergeConflicts`
+      (`src/app/GitUI/CommandsDialogs/MergeConflictHandler.cs:9-27`) — se
+      `module.InTheMiddleOfConflictedMerge()` chiedere *"There are unresolved merge conflicts,
+      solve conflicts now?"* e su Sì aprire il dialogo di risoluzione. Upstream ha anche il
+      bypass `AppSettings.DontConfirmResolveConflicts`. Il gancio va messo su **tutti** i
+      chiamanti che possono generare conflitti (merge, pull, cherry-pick, revert, rebase,
+      stash apply), non solo sul merge.
+- [ ] **12.B.4 — `ResolveConflictsDialog` (port di `FormResolveConflicts`)** (img 03): lista
+      dei conflitti (`WorkingDirectoryService.ListConflicts`, `:110-118`, esiste già:
+      `git diff --name-only --diff-filter=U`), pulsanti **Open in \<mergetool\>** con il nome
+      del tool **letto da `merge.tool`** (dinamico: "Open in kdiff3" nello screenshot) e
+      **Start mergetool**, **Rescan merge conflicts**, **Reset**, il riquadro che descrive il
+      tipo di conflitto (both-modified / deleted-by-us / deleted-by-them: sono gli stati che
+      `--diff-filter=U` + `ls-files -u` distinguono davvero) e le tre righe
+      ours/base/theirs. `WorkingDirectoryService.cs:134-173` sa già lanciare
+      `git mergetool --no-prompt -- <path>` detached, quindi il pulsante apre **davvero** il
+      tool configurato (kdiff3, meld, …) come chiesto.
+- [ ] **12.B.5 — banner del merge con `Resolve…` e `Abort`** (img `unresolved merge conflict UI
+      from home.png`): `RepositoryProgressBanner.cs:300`/`:335` oggi mostra il testo
+      *"A merge is in progress."* e come *suggerimento testuale* "…or run: git merge --abort",
+      cioè **dice all'utente di andare in terminale**. Vanno aggiunti i due pulsanti veri
+      (Resolve… → 12.B.4, Abort → `git merge --abort`), come già fatto per bisect e `git am` in
+      M68.
+
+**Trappole già note che valgono per questo round** (dettaglio in `HANDOFF.md` §3): i service
+bloccano su lavoro async → pre-caricare in `Task.Run` e non chiamarli dal thread UI (il
+deadlock di `PushDialog`); `MenuFlyout.Items` popolati **prima** di `ShowAt`; brush solo da
+`Application.Current.Resources`; nomi degli asset `IconLoader` **case-sensitive** con log
+all'avvio da leggere; **verificare la premessa** contro il codice all'HEAD vero prima di
+scrivere (i riferimenti `file:riga` qui sopra sono presi al `6b5dff330`).
+
 ## ROUND 11 — i parziali — **CHIUSO** (M67–M70)
 
 > **Esito del round**: la "Coda round 9" non ha più **nessuna** voce `- [ ]` né `- [~]`. Chiuse 4.1,

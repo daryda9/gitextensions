@@ -11,13 +11,13 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `c11c183a9` (**round 11 completo: M67–M70**) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `6b5dff330` (**round 11 completo: M67–M70**, + drop di NOTES.md) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (21 warning pre-esistenti VSTHRD/CS0067) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
-| Push su remote | **origin NON allineato: 50 commit locali non pushati** (`origin/linux-avalonia-port` = `757742ce8`, cioè la chiusura del round 10) al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
+| Push su remote | **origin NON allineato: 52 commit locali non pushati** (`origin/linux-avalonia-port` = `757742ce8`, cioè la chiusura del round 10) al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
 
 Tutto il codice del port vive in `src/crossplatform/` (albero separato + shim).
 La **build Windows non è toccata**; unica modifica al sorgente condiviso: guardie
@@ -215,6 +215,48 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 ---
 
 ## 4. Cosa resta da fare
+
+> ### ►► PRIORITÀ UTENTE del 29/07/2026 — **APERTE, hanno precedenza su tutto** (round 12)
+> Lista operativa completa, con `file:riga` verificati al `6b5dff330` e la descrizione degli
+> screenshot: `PORTING.md` → **"Coda round 12 — PRIORITÀ UTENTE del 29/07/2026"**.
+> Screenshot in `~/Documents/images avalonia/` (letti e verificati: 00–03 merge, commit window,
+> resolve conflicts, banner da home, create branch).
+>
+> **A — dialogo di commit** (`App/Views/CommitDialog.cs`):
+> 1. **Nuovo file → diff vuoto.** `PatchStagingService.cs:76-92` fa `git diff -- <path>`, che per
+>    un **untracked** non produce nulla: pannello bianco, nessun errore. Upstream mostra il
+>    contenuto intero del file.
+> 2. **Il commit non passa dal process dialog.** Upstream commita dentro `FormProcess`
+>    (`FormCommit.cs:1265`); il port esegue in silenzio (`CommitActionsService.Commit:54-79`,
+>    `CommitDialog.DoCommit:2331` → solo `SetStatus`) → hook e messaggi di git invisibili. Il
+>    `GitProcessDialog.RunStreamingAsync` è già usato per il push (`CommitDialog.cs:2556`).
+> 3. **`Reset all changes` / `Reset unstaged changes` sbagliati.** Upstream instrada entrambi su
+>    `FormResetChanges` (`FormCommit.cs:2184-2198`), che decide anche cosa fare degli
+>    **untracked**, e li disabilita quando le liste sono vuote (`:831`, `:2806`). Nel port
+>    `DoReset` (`:2564-2575`) fa `reset --hard HEAD` dietro una conferma generica e, sul ramo
+>    unstaged, `git checkout -- .` **senza conferma** — distruttivo e silenzioso.
+> 4. **Chrome lontana da `FormCommit`**: liste `ListBox` nude senza toolbar per lista, **una**
+>    sola casella filtro invece di due, nessun **gutter di numeri di riga** nel diff, manca la
+>    status bar `Committer · branch → remote · Staged x/y Ln y Col x`. Riusare
+>    `Views/FileStatusListView.cs`, non ricostruire. **Niente pulsanti finti.**
+>
+> **B — flusso di merge, oggi MUTO.** `BranchTagService.MergeBranch:633-647` ha i flag
+> **cablati** e i quattro call-site (`RepoObjectsTree.cs:1240`/`:1299`, `BranchTagPanel.cs:283`,
+> `RevisionGridView.cs:6018`) lo lanciano in un `RunMutation`: nessun dialogo, nessun process
+> dialog, nessuna conferma; in caso di conflitto l'utente lo scopre solo aprendo il commit
+> dialog. Nessun port di `FormMergeBranch` (187 righe) né di `FormResolveConflicts` (1571).
+> Serve la catena intera: **MergeDialog** (img 00) → **GitProcessDialog** (img 01) → conferma
+> **"solve conflicts now?"** (img 02, port di `MergeConflictHandler.cs:9-27`, da agganciare a
+> *tutti* i produttori di conflitti: merge/pull/cherry-pick/revert/rebase/stash apply) →
+> **ResolveConflictsDialog** (img 03) con **Open in \<mergetool letto da `merge.tool`\>** e
+> **Start mergetool** che aprono davvero kdiff3/meld (`WorkingDirectoryService.cs:134-173` sa
+> già lanciare `git mergetool --no-prompt --` detached) → **banner con `Resolve…`/`Abort`**
+> (`RepositoryProgressBanner.cs:300`/`:335` oggi si limita a *suggerire* `git merge --abort`,
+> cioè manda l'utente in terminale).
+>
+> I dati/API dietro ogni voce esistono già: `Commands.MergeBranch` accetta
+> fast-forward/squash/no-commit/strategy/unrelated-histories, e
+> `WorkingDirectoryService.ListConflicts:110-118` elenca i conflitti.
 
 > ### ► ROUND 11 (2026-07-29) — **CHIUSO** (M67–M70). Prossima milestone libera: **M71**
 > **Esito**: nella "Coda round 9" non resta **nessuna** voce `- [ ]` né `- [~]`. Il round ha chiuso
@@ -488,9 +530,13 @@ infine A/B con e senza fix.
 ## 5. Prompt pronto per riprendere
 
 **Round 11 (M67–M70) è chiuso, e con esso la "Coda round 9": non resta nessuna voce `- [ ]` né
-`- [~]`.** HEAD alla chiusura: `c11c183a9`. Quello che resta è *fuori* dalla vecchia coda, quindi il
-prossimo round deve prima **decidere cosa vale la pena fare**, non pescare da una lista. Materiale
-noto e già motivato:
+`- [~]`.** HEAD alla chiusura: `c11c183a9`, poi `6b5dff330` (drop di NOTES.md).
+
+> **Il round 12 ha già il suo tema, deciso dall'utente il 29/07/2026: commit dialog + flusso di
+> merge.** Le voci sono in §4 (blocco "PRIORITÀ UTENTE") e in dettaglio in `PORTING.md` → "Coda
+> round 12". **Vengono prima di tutto il materiale qui sotto**, che resta valido come riserva.
+
+Materiale noto e già motivato, dietro le priorità:
 
 - **SKIP consapevoli, non riaprire senza una ragione nuova**: repository-host GitHub (fork / PR /
   add upstream — sarebbe un plugin repository-host), colonna **build status** (serve un build server),
