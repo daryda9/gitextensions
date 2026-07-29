@@ -185,7 +185,10 @@ public sealed class WorkingDirectoryService
     public WorkingDirCommitResult MarkResolved(string repoPath, string path)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        GitArgumentBuilder args = new("add") { "--", path };
+        // Quoted: GitArgumentBuilder flattens its arguments into a single command
+        // line and git re-splits them, so a path containing a space would arrive as
+        // two arguments and the resolve would silently fail.
+        GitArgumentBuilder args = new("add") { "--", path.Quote() };
         ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
         return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
     }
@@ -212,7 +215,7 @@ public sealed class WorkingDirectoryService
         {
             ours ? "--ours" : "--theirs",
             "--",
-            path,
+            path.Quote(),
         };
         ExecutionResult checkout = module.GitExecutable.Execute(checkoutArgs, throwOnErrorExit: false);
         if (!checkout.ExitedSuccessfully)
@@ -220,7 +223,7 @@ public sealed class WorkingDirectoryService
             return new WorkingDirCommitResult(false, checkout.AllOutput);
         }
 
-        GitArgumentBuilder addArgs = new("add") { "--", path };
+        GitArgumentBuilder addArgs = new("add") { "--", path.Quote() };
         ExecutionResult add = module.GitExecutable.Execute(addArgs, throwOnErrorExit: false);
         return new WorkingDirCommitResult(add.ExitedSuccessfully, add.AllOutput);
     }
