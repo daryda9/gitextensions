@@ -23,6 +23,12 @@ public class App : Application
         // Palette brushes + dark/light theme switching (see Theming/ThemeManager).
         Theming.ThemeManager.Initialize(this);
 
+        // Make Avalonia's managed file pickers (UseManagedSystemDialogs, M67) paint
+        // themselves from the palette above instead of Fluent's raw #000000/#FFFFFF
+        // base surfaces. Must run after ThemeManager.Initialize, which is what
+        // registers the App.* brushes this reads. See ManagedFileChooserTheming.
+        ManagedFileChooserTheming.Install(this);
+
         // Normalize control sizing: Fluent's default tab headers are oversized
         // for a dense tool; keep them compact and consistent with the rest.
         Style tabItem = new(x => x.OfType<TabItem>());
