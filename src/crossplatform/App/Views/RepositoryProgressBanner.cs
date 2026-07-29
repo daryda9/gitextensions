@@ -57,6 +57,11 @@ public sealed class RepositoryProgressBanner : UserControl
     private readonly Button _bad;
     private readonly Button _skip;
     private readonly Button _stop;
+    private readonly Button _more;
+
+    // The last session state read, so the buttons can be restored to exactly the set
+    // the repository allows after a command finishes.
+    private BisectSession _session = BisectSession.None;
 
     private readonly Border _actionBar;
     private readonly TextBlock _actionText;
@@ -85,12 +90,21 @@ public sealed class RepositoryProgressBanner : UserControl
         _skip = MakeButton(T("Skip"), T("Skip the checked-out commit"), OnSkip);
         _stop = MakeButton(T("Stop bisect"), T("End the bisect session and restore HEAD"), OnStop);
 
+        // Upstream's bisect bar carries exactly one button, "More", which opens
+        // FormBisect (InteractiveGitActionControl.cs:138-141, :242-254). Kept as the
+        // way to the full panel — the four inline buttons above are this port's
+        // shortcut for the two marks you make on every step.
+        _more = MakeButton(
+            T("InteractiveGitActionControl/MoreButton.Text", "More"),
+            T("Open the bisect control panel"),
+            OnMore);
+
         StackPanel bisectButtons = new()
         {
             Orientation = Orientation.Horizontal,
             Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _good, _bad, _skip, _stop },
+            Children = { _good, _bad, _skip, _stop, _more },
         };
 
         _bisectBar = MakeBar(_bisectText, bisectButtons);
@@ -131,6 +145,15 @@ public sealed class RepositoryProgressBanner : UserControl
     public event Action? RepositoryChanged;
 
     /// <summary>
+    ///  Raised by the bar's "More" button — upstream's own entry point from the
+    ///  notification bar into <c>FormBisect</c>
+    ///  (<c>InteractiveGitActionControl.cs:242-254</c>). The host answers by opening
+    ///  <see cref="BisectDialog"/>; with nothing subscribed the button does nothing,
+    ///  so it is hidden in that case.
+    /// </summary>
+    public event Action? BisectDetailsRequested;
+
+    /// <summary>
     ///  Supplied by the host so the banner's own git commands do not trip the
     ///  repository watcher's change detection — set it to
     ///  <c>RepositoryWatcherService.Suspend</c>. Left null, the commands simply run
@@ -160,7 +183,7 @@ public sealed class RepositoryProgressBanner : UserControl
 
         if (repo is null)
         {
-            Apply(RepositoryProgress.None);
+            Apply(RepositoryProgress.None, BisectSession.None);
             return;
         }
 
@@ -176,11 +199,25 @@ public sealed class RepositoryProgressBanner : UserControl
                 progress = RepositoryProgress.None;
             }
 
+            // Only asked when the marker file says there is a session, so an idle
+            // repository still costs no git process (see BisectService.GetSession).
+            BisectSession session;
+            try
+            {
+                session = progress.BisectInProgress
+                    ? _bisect.GetSession(repo)
+                    : BisectSession.None;
+            }
+            catch
+            {
+                session = new BisectSession(progress.BisectInProgress);
+            }
+
             Dispatcher.UIThread.Post(() =>
             {
                 if (generation == _generation)
                 {
-                    Apply(progress);
+                    Apply(progress, session);
                 }
             });
         });
@@ -188,12 +225,17 @@ public sealed class RepositoryProgressBanner : UserControl
 
     // ---- rendering the state ---------------------------------------------------------
 
-    private void Apply(RepositoryProgress progress)
+    private void Apply(RepositoryProgress progress, BisectSession session)
     {
+        _session = session;
         _bisectBar.IsVisible = progress.BisectInProgress;
         if (progress.BisectInProgress)
         {
-            _bisectText.Text = T("Bisecting — mark the checked-out commit to narrow the search.");
+            _bisectText.Text = DescribeBisect(session);
+
+            // No subscriber means no panel to open: an inert button would be a lie.
+            _more.IsVisible = BisectDetailsRequested is not null;
+            EnableBisectButtons(true);
         }
 
         _actionBar.IsVisible = progress.Operation != RepositoryOperation.None;
@@ -204,6 +246,47 @@ public sealed class RepositoryProgressBanner : UserControl
         }
 
         IsVisible = progress.IsActive;
+    }
+
+    /// <summary>
+    ///  What the bisect bar says. Upstream says only "Bisect is currently in
+    ///  progress." (<c>InteractiveGitActionControl.cs:13,18</c>); the remaining-work
+    ///  figures added here are git's own, from
+    ///  <c>git rev-list --bisect-vars</c> via <see cref="BisectService.GetSession"/>,
+    ///  and are shown only in the states where git can actually compute them — with
+    ///  the range still unbounded the bar names the missing mark instead.
+    /// </summary>
+    private static string DescribeBisect(BisectSession session)
+    {
+        if (session.Finished)
+        {
+            return session.CulpritHash is { Length: > 0 } culprit
+                ? string.Format(
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    T("Bisect finished — {0} is the first bad commit. Stop the bisect to restore your branch."),
+                    culprit.Length > 8 ? culprit[..8] : culprit)
+                : T("Bisect finished — stop the bisect to restore your branch.");
+        }
+
+        if (!session.Ready)
+        {
+            return !session.BadKnown && !session.GoodKnown
+                ? T("Bisecting — mark the checked-out commit good or bad to bound the search.")
+                : session.BadKnown
+                    ? T("Bisecting — a bad commit is known; mark a good one to bound the search.")
+                    : T("Bisecting — a good commit is known; mark a bad one to bound the search.");
+        }
+
+        if (session.HasProgress)
+        {
+            return string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Bisecting — {0} revisions left to test, roughly {1} more steps."),
+                session.RevisionsLeft,
+                session.StepsLeft);
+        }
+
+        return T("Bisecting — this is the last commit to test.");
     }
 
     /// <summary>
@@ -272,6 +355,10 @@ public sealed class RepositoryProgressBanner : UserControl
 
     private void OnStop() => RunBisect(repo => _bisect.Reset(repo));
 
+    // The host owns the dialog: it is the one that knows the grid selection (for
+    // upstream's range seeding) and how to refresh the shell afterwards.
+    private void OnMore() => BisectDetailsRequested?.Invoke();
+
     /// <summary>
     ///  Runs one bisect command off the UI thread, with the buttons disabled for the
     ///  duration, then refreshes the banner and tells the host to refresh itself.
@@ -318,12 +405,20 @@ public sealed class RepositoryProgressBanner : UserControl
         });
     }
 
+    /// <summary>
+    ///  Enables the bar's buttons for what the session actually allows: once the
+    ///  search has converged there is nothing left to mark, so good / bad / skip go
+    ///  quiet and only the reset (and the panel) remain. Passing
+    ///  <see langword="false"/> disables everything for the duration of a command.
+    /// </summary>
     private void EnableBisectButtons(bool enabled)
     {
-        _good.IsEnabled = enabled;
-        _bad.IsEnabled = enabled;
-        _skip.IsEnabled = enabled;
+        bool markable = enabled && !_session.Finished;
+        _good.IsEnabled = markable;
+        _bad.IsEnabled = markable;
+        _skip.IsEnabled = markable;
         _stop.IsEnabled = enabled;
+        _more.IsEnabled = enabled;
     }
 
     /// <summary>First non-empty line of git's output, trimmed for a one-line bar.</summary>
@@ -408,10 +503,13 @@ public sealed class RepositoryProgressBanner : UserControl
         _bad.Content = T("Bad");
         _skip.Content = T("Skip");
         _stop.Content = T("Stop bisect");
+        _more.Content = T("InteractiveGitActionControl/MoreButton.Text", "More");
         Refresh();
     });
 
     private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     private static IBrush Brush(string key, string fallback)
         => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b
