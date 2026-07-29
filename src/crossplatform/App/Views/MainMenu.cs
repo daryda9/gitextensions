@@ -151,12 +151,17 @@ public sealed class MainMenu : UserControl
     public event Action? EditGitConfigRequested;
 
     /// <summary>
-    ///  "Recover lost objects…". Upstream opens <c>FormVerify</c>, a dedicated
-    ///  dangling-object browser this port does not have; the entry therefore opens
-    ///  the port's existing <c>MaintenanceDialog</c>, whose "Verify database" button
-    ///  runs the same <c>git fsck</c> and shows its output. See the class remarks.
+    ///  Opens the port's <c>MaintenanceDialog</c> (compress / verify / prune in one place).
     /// </summary>
     public event Action? GitMaintenanceRequested;
+
+    /// <summary>
+    ///  "Recover lost objects…" — opens <c>VerifyDialog</c>, the port of upstream's
+    ///  <c>FormVerify</c>: the lost-object list with recovery into tags/branches.
+    ///  Before M69 this entry fell back to <c>MaintenanceDialog</c> because the port had
+    ///  no dangling-object browser; it has one now.
+    /// </summary>
+    public event Action? RecoverLostObjectsRequested;
 
     // ---- Commands
     public event Action? FetchRequested;
@@ -615,13 +620,10 @@ public sealed class MainMenu : UserControl
     // (FormBrowse.Designer.cs:952-999), not the single "Git maintenance…" entry this
     // port had; the three that map onto MaintenanceService are direct actions here.
     //
-    // "Recover lost objects…" is the exception: upstream opens FormVerify, a browser
-    // of dangling objects with per-object restore, which this port does not have. It
-    // is neither omitted nor left dead — it opens the port's MaintenanceDialog, whose
-    // "Verify database" button runs the very same `git fsck` and prints the list of
-    // dangling objects. That is a strict subset of FormVerify (no restore), but it is
-    // the honest closest thing and it is the only way this dialog stays reachable now
-    // that the flat entry is gone.
+    // "Recover lost objects…" opens VerifyDialog, the port of upstream's FormVerify:
+    // the lost-object list with per-object recovery into tags/branches. Until M69 it
+    // fell back to MaintenanceDialog, whose "Verify database" button ran the same
+    // `git fsck` without any restore — that fallback comment is no longer true.
     private MenuItem BuildGitMaintenance()
     {
         MenuItem maintenance = new() { Header = T("FormBrowse/gitMaintenanceToolStripMenuItem.Text", "Git maintenance") };
@@ -631,7 +633,7 @@ public sealed class MainMenu : UserControl
         }
 
         maintenance.Items.Add(Item("FormBrowse/compressGitDatabaseToolStripMenuItem.Text", "Compress git database", "CompressGitDatabase", () => CompressDatabaseRequested?.Invoke()));
-        maintenance.Items.Add(Item("FormBrowse/recoverLostObjectsToolStripMenuItem.Text", "Recover lost objects…", "RecoverLostObjects", () => GitMaintenanceRequested?.Invoke()));
+        maintenance.Items.Add(Item("FormBrowse/recoverLostObjectsToolStripMenuItem.Text", "Recover lost objects…", "RecoverLostObjects", () => RecoverLostObjectsRequested?.Invoke()));
         maintenance.Items.Add(Item("FormBrowse/deleteIndexLockToolStripMenuItem.Text", "Delete index.lock", "DeleteIndexLock", () => DeleteIndexLockRequested?.Invoke()));
         maintenance.Items.Add(Item("FormBrowse/editLocalGitConfigToolStripMenuItem.Text", "Edit .git/config", "EditGitConfig", () => EditGitConfigRequested?.Invoke()));
         return maintenance;

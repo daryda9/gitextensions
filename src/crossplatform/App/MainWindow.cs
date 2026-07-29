@@ -1361,6 +1361,7 @@ public sealed class MainWindow : Window
         _menu.EditMailmapRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".mailmap")));
         _menu.EditInfoExcludeRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".git", "info", "exclude")));
         _menu.GitMaintenanceRequested += () => _ = OpenMaintenanceAsync();
+        _menu.RecoverLostObjectsRequested += () => _ = OpenVerifyAsync();
         _menu.SparseCheckoutRequested += () => _ = OpenSparseAsync();
         _menu.RepoSettingsRequested += () => _ = OpenSettingsAsync();
 
@@ -3962,6 +3963,23 @@ public sealed class MainWindow : Window
 
         await MaintenanceDialog.ShowAsync(this, _repoPath);
         RefreshAll();
+    }
+
+    // Repository → Git maintenance → "Recover lost objects…" (upstream's FormVerify).
+    // VerifyDialog creates and deletes recovery tags and branches, so a change there
+    // has to reach the graph and the ref tree.
+    private async Task OpenVerifyAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        if (await Views.VerifyDialog.ShowAsync(this, _repoPath))
+        {
+            RefreshAll();
+        }
     }
 
     // Confirmation dialog (Yes/No).
