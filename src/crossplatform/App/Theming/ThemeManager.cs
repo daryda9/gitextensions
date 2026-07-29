@@ -23,6 +23,8 @@ public static class ThemeManager
         "App.Text", "App.TextDim", "App.Accent", "App.Selection", "App.GraphGreen",
         "App.Control", "App.Foreground", "App.PanelBackground",
         "App.DiffAdded", "App.DiffRemoved",
+        "App.TokenKeyword", "App.TokenString", "App.TokenComment",
+        "App.TokenNumber", "App.TokenPreprocessor",
         "App.ConsoleBackground", "App.ConsoleForeground",
         "App.RepoStateClean", "App.RepoStateDirty", "App.RepoStateDirtySubmodules",
         "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
@@ -66,6 +68,39 @@ public static class ThemeManager
         // stops drifting to LimeGreen/OrangeRed and matches the real diff view.
         ["App.DiffAdded"] = Color.Parse("#6AC776"),
         ["App.DiffRemoved"] = Color.Parse("#E06C6C"),
+
+        // Syntax-highlighting ink (DiffView + FileTreeView). Both views carried the
+        // same five literals "in the same key as the diff colours", tuned for a dark
+        // background; the light theme therefore rendered highlighted code at
+        // 1.53–2.97:1. Registering them per theme is the fix — and it is not a
+        // toggle-only path: FileTreeView highlights unconditionally
+        // (RenderContent(..., highlight: !binary)), so on the light theme the File
+        // tree tab was unreadable by default with no way to turn it off.
+        //
+        // The dark trio+pair below are the ORIGINAL literals, except Comment and
+        // Preprocessor, which are lifted by a barely-perceptible amount (ΔE*ab 4.8
+        // and 3.1). Reason: the highlighter repaints +/- lines over a background
+        // TINT (AddedTint/RemovedTint, alpha 0x28), so the effective background is
+        // not #1E1E1E but #2A392C / #3C2A2A — and against those #7E9E7E measured
+        // 4.12:1 and #C586C0 4.39:1, i.e. the DARK theme also failed AA on exactly
+        // the lines syntax highlighting exists to colour. Every token now clears
+        // 4.6:1 against the worst of the five surfaces it can land on
+        // (App.Window, App.Panel, App.PanelAlt and the two diff tints).
+        //
+        // Kept apart on purpose, not just legible: the five are checked pairwise in
+        // CIE L*a*b* under normal, deuteranope and protanope simulation. The dark
+        // family's weakest pair was String↔Comment at ΔE 2.4 under protanopia (two
+        // tokens a red-blind reader could not tell apart); the light family below
+        // holds ΔE ≥ 17.6 across all three simulations, which is why Number is the
+        // darkest of the five — the green/olive/rust cluster collapses in hue for a
+        // colour-blind reader and has to separate by lightness instead. That also
+        // preserves each token's identity across themes: Number was the brightest
+        // (highest-contrast) token in the dark theme and stays the strongest here.
+        ["App.TokenKeyword"] = Color.Parse("#8AB4F8"),
+        ["App.TokenString"] = Color.Parse("#CE9178"),
+        ["App.TokenComment"] = Color.Parse("#8BA78B"),
+        ["App.TokenNumber"] = Color.Parse("#B5CEA8"),
+        ["App.TokenPreprocessor"] = Color.Parse("#C88DC4"),
 
         // Commit-button accents, one per upstream RepoState (RepoStateVisualiser). The
         // dark values ARE the upstream ones: on the dark toolbar they already read.
@@ -134,6 +169,25 @@ public static class ThemeManager
         // Measured on #FFFFFF: 5.08:1 and 5.98:1.
         ["App.DiffAdded"] = Color.Parse("#1E7D5A"),
         ["App.DiffRemoved"] = Color.Parse("#B03A3A"),
+
+        // Light-theme syntax ink (see the dark block for the whole story). Each value
+        // KEEPS its dark counterpart's hue (±5°) and darkens until it clears AA on the
+        // worst light surface it can land on — the removed-line tint #F0DEDE, which is
+        // darker than the white panel and is therefore the binding constraint, not
+        // #FFFFFF. Measured minimum over {#FFFFFF, #F3F3F3, #ECECEC, #DEECDF,
+        // #F0DEDE}: 5.48 keyword / 4.64 string / 4.82 comment / 8.33 number /
+        // 5.35 preprocessor, up from 1.63 / 2.04 / 2.29 / 1.31 / 2.15. (Full
+        // per-surface table in NOTES.md.)
+        //
+        // Comment stays the low-chroma grey-green it is in the dark theme, so it still
+        // reads as the recessed token; Number is the darkest, which is what buys the
+        // colour-blind separation described above.
+        ["App.TokenKeyword"] = Color.Parse("#1B47DA"),
+        ["App.TokenString"] = Color.Parse("#A94304"),
+        ["App.TokenComment"] = Color.Parse("#536556"),
+        ["App.TokenNumber"] = Color.Parse("#264517"),
+        ["App.TokenPreprocessor"] = Color.Parse("#9B18A0"),
+
         ["App.ConsoleBackground"] = Color.Parse("#ECECEC"),
         ["App.ConsoleForeground"] = Color.Parse("#1E1E1E"),
 

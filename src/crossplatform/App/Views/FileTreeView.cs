@@ -47,13 +47,32 @@ public sealed class FileTreeView : UserControl
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
-    // Token colours, in the same key as the diff viewer's (the palette has no
-    // token resources, so both views carry the literal values).
-    private static readonly IBrush KeywordBrush = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8));
-    private static readonly IBrush StringBrush = new SolidColorBrush(Color.FromRgb(0xCE, 0x91, 0x78));
-    private static readonly IBrush CommentBrush = new SolidColorBrush(Color.FromRgb(0x7E, 0x9E, 0x7E));
-    private static readonly IBrush NumberBrush = new SolidColorBrush(Color.FromRgb(0xB5, 0xCE, 0xA8));
-    private static readonly IBrush PreprocessorBrush = new SolidColorBrush(Color.FromRgb(0xC5, 0x86, 0xC0));
+    // Token colours, from App.Token* — shared with the diff viewer, which reads the
+    // same five keys, so the two panes cannot drift apart again.
+    //
+    // This view is why the keys exist: unlike the diff viewer it has NO highlighting
+    // toggle (RenderContent is called with highlight: !binary), so on the light theme
+    // every source file opened here was painted with dark-theme ink at 1.31–2.97:1
+    // and there was no way to turn it off.
+    //
+    // Cached by INSTANCE, never copied into a new SolidColorBrush: ThemeManager
+    // mutates the resource brush's Color in place, which is what makes a hot theme
+    // switch repaint the already-rendered Runs.
+    private static IBrush? _keyword;
+    private static IBrush? _string;
+    private static IBrush? _comment;
+    private static IBrush? _number;
+    private static IBrush? _preprocessor;
+
+    private static IBrush KeywordBrush => _keyword ??= B("App.TokenKeyword");
+
+    private static IBrush StringBrush => _string ??= B("App.TokenString");
+
+    private static IBrush CommentBrush => _comment ??= B("App.TokenComment");
+
+    private static IBrush NumberBrush => _number ??= B("App.TokenNumber");
+
+    private static IBrush PreprocessorBrush => _preprocessor ??= B("App.TokenPreprocessor");
 
     // Highlighting splits a line into several Runs, and every Run is its own text
     // layout box: past this many lines the file renders one Run per line, which is

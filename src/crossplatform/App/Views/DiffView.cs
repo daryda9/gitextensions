@@ -73,13 +73,33 @@ public sealed class DiffView : UserControl
     private static readonly IBrush AddedTint = new SolidColorBrush(Color.FromArgb(0x28, 0x6A, 0xC7, 0x76));
     private static readonly IBrush RemovedTint = new SolidColorBrush(Color.FromArgb(0x28, 0xE0, 0x6C, 0x6C));
 
-    // Token colours for the syntax highlighter, in the same key as the diff
-    // colours above (literal values: the palette has no token resources).
-    private static readonly IBrush KeywordBrush = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8));
-    private static readonly IBrush StringBrush = new SolidColorBrush(Color.FromRgb(0xCE, 0x91, 0x78));
-    private static readonly IBrush CommentBrush = new SolidColorBrush(Color.FromRgb(0x7E, 0x9E, 0x7E));
-    private static readonly IBrush NumberBrush = new SolidColorBrush(Color.FromRgb(0xB5, 0xCE, 0xA8));
-    private static readonly IBrush PreprocessorBrush = new SolidColorBrush(Color.FromRgb(0xC5, 0x86, 0xC0));
+    // Token colours for the syntax highlighter, from App.Token* — the same move the
+    // diff colours above already made, and for the same measured reason: as literals
+    // "tuned for the dark palette" the five scored 1.31:1 (number) to 2.29:1 (comment)
+    // on the light theme's surfaces. The dark values in ThemeManager are those very
+    // literals, except comment/preprocessor, which needed an imperceptible lift to
+    // clear AA on the +/- tints below (see the ThemeManager comment).
+    //
+    // Resolved lazily and cached, exactly like AddedBrush/RemovedBrush: the resource
+    // brush INSTANCE is what gets cached, and ThemeManager mutates its Color in place,
+    // so a hot theme switch repaints these without touching the cache. Copying into a
+    // new SolidColorBrush here would freeze them on the theme that happened to be
+    // active first.
+    private static IBrush? _keyword;
+    private static IBrush? _string;
+    private static IBrush? _comment;
+    private static IBrush? _number;
+    private static IBrush? _preprocessor;
+
+    private static IBrush KeywordBrush => _keyword ??= B("App.TokenKeyword");
+
+    private static IBrush StringBrush => _string ??= B("App.TokenString");
+
+    private static IBrush CommentBrush => _comment ??= B("App.TokenComment");
+
+    private static IBrush NumberBrush => _number ??= B("App.TokenNumber");
+
+    private static IBrush PreprocessorBrush => _preprocessor ??= B("App.TokenPreprocessor");
 
     // Search highlight: amber for every occurrence, a stronger amber for the one
     // the ▲/▼ navigation currently sits on. Literal colours (like the diff
