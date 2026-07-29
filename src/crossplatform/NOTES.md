@@ -84,3 +84,35 @@ pulsante finto aggiunto): `ShowEntireFile`, `IgnoreWhitespace` (`-w`), `ShowNonP
 - **Non** ho aggiunto la sincronizzazione dello stato `IsChecked` fra istanze `DiffView`
   diverse: i valori erano già condivisi via singleton e i pulsanti di una seconda istanza
   erano già stantii prima di questo lavoro. È preesistente, fuori unità.
+
+### Prova del ciclo (a) — cambia → Start→Exit → riapri
+
+`XDG_CONFIG_HOME=/tmp/p32work/xdg`, repo `/tmp/p32repo`, display `:222`.
+
+- **Prima**: `view-prefs.json` **non esiste** (nella dir solo `GitExtensions.settings`).
+- Cambiati 6 valori dalla barra del diff: `-w`, `-b`, `¶`, `{;}`, `U+` ×2, `A+` ×1.
+- **Dopo** (`/tmp/p32work/xdg/GitExtensions.Avalonia/view-prefs.json`):
+  `IgnoreWhitespace: true`, `IgnoreWhitespaceChange: true`, `ShowNonPrinting: true`,
+  `SyntaxHighlighting: true`, `ContextLines: 5`, `FontSize: 13` (gli altri 5 ai default).
+- Chiusa con **Start → Exit** (processo terminato; non `kill`).
+- Riaperta: i 4 toggle tornano **accesi** (`/tmp/p32work/a2_01_crop.png`) e la riga di
+  comando git nella status bar del diff legge
+  `… --find-renames -b -w -U5 0eb8c901…` (`/tmp/p32work/a2_01_diff.png`) — cioè le opzioni
+  ripristinate arrivano **davvero a git**, non solo ai pulsanti. Caratteri non stampabili
+  visibili come interpunti, font a 13 pt.
+
+## 3. (b) Switch della file history — fatto
+
+`App/Views/FileHistoryView.cs`. I quattro switch (`FullHistory`, `SimplifyMerges`,
+`FollowRenames`, `ExactRenamesAndCopiesOnly`) passano **tutti** da
+`SetOptions(FileHistoryOptions)` (`FileHistoryView.cs:328`), quindi c'è un solo punto di
+scrittura: `PersistOptions` chiamata lì.
+
+Ripristino nel *field initializer*: `_options = LoadPersistedOptions()` (era
+`new()`), perché il menu costruisce `IsChecked` da `_options` ogni volta che si apre il
+flyout (`FileHistoryView.cs:281,289,307,317`), quindi non serve altro per far ripartire la
+UI nello stato giusto. Il caricamento è **per istanza** (non un singleton): la view è
+istanziata due volte (tab History di `MainWindow` e finestra autonoma di `CommitDialog`,
+`CommitDialog.cs:1015-1029`) e leggere il file alla costruzione dà all'istanza nuova lo
+stato corrente senza plumbing fra istanze. `LoadPersistedOptions` non può eccepire (un
+field initializer che lancia porterebbe giù la view).

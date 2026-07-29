@@ -63,8 +63,17 @@ public sealed class FileHistoryView : UserControl
     private readonly Button _followButton;
     private readonly Button _reloadButton;
 
-    // The git log switches, session-local (upstream: AppSettings.*InFileHistory).
-    private FileHistoryOptions _options = new();
+    // The git log switches (upstream: AppSettings.*InFileHistory, which upstream also
+    // persists). Restored from view-prefs.json at construction and written back by
+    // SetOptions, so the four switches survive a restart.
+    //
+    // Loaded per instance rather than through a shared singleton: this view is
+    // instantiated twice (MainWindow's History tab and the standalone window
+    // CommitDialog opens), and each one reading the file at construction gives the
+    // newer instance the current state without any cross-instance plumbing.
+    private static readonly ViewPrefsService PrefsService = new();
+
+    private FileHistoryOptions _options = LoadPersistedOptions();
 
     // Last successful load, so a language switch can re-word the status line
     // without re-running git, and so a toggle can reload the same file.
@@ -325,15 +334,50 @@ public sealed class FileHistoryView : UserControl
         flyout.ShowAt(_followButton);
     }
 
+    // The single funnel for all four switches, hence the only place that has to write.
     private void SetOptions(FileHistoryOptions options)
     {
         _options = options;
+        PersistOptions(options);
 
         if (_repoPath is not null && _filePath is not null)
         {
             ShowHistory(_repoPath, _filePath);
         }
     }
+
+    // The persisted switches, or the record's own defaults when there is no file.
+    // Only the four the menus expose are read back: FileHistoryOptions carries no
+    // other member, and the walk-shaping flags of RevisionFilter are derived from
+    // these by ToRevisionFilter().
+    private static FileHistoryOptions LoadPersistedOptions()
+    {
+        try
+        {
+            FileHistoryPrefs prefs = PrefsService.Load().FileHistory;
+            return new FileHistoryOptions(
+                FollowRenames: prefs.FollowRenames,
+                ExactRenamesAndCopiesOnly: prefs.ExactRenamesAndCopiesOnly,
+                FullHistory: prefs.FullHistory,
+                SimplifyMerges: prefs.SimplifyMerges);
+        }
+        catch
+        {
+            // A field initialiser must never throw: it would take the whole view down.
+            return new FileHistoryOptions();
+        }
+    }
+
+    // Update(), not Save(): the same file carries the diff options, the left panel
+    // filters and the filter MRU, and a plain save of a stale copy would revert them.
+    private static void PersistOptions(FileHistoryOptions options) =>
+        PrefsService.Update(prefs => prefs.FileHistory = new FileHistoryPrefs
+        {
+            FollowRenames = options.FollowRenames,
+            ExactRenamesAndCopiesOnly = options.ExactRenamesAndCopiesOnly,
+            FullHistory = options.FullHistory,
+            SimplifyMerges = options.SimplifyMerges,
+        });
 
     // --------------------------------------------------------------- "Save as"
 
