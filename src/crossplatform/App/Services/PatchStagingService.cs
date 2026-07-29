@@ -189,6 +189,13 @@ public static class PatchStagingService
     ///  the header). <see cref="PatchManager"/> rewrites the header for it.
     /// </param>
     /// <param name="isRenamed">The file is a rename on the side being patched.</param>
+    /// <param name="isUntracked">
+    ///  The file is not in the index at all (an untracked work-tree file, diffed
+    ///  against <c>/dev/null</c> by <see cref="LoadDiff"/>). Its patch must KEEP the
+    ///  <c>--- /dev/null</c> / <c>new file mode</c> header so that <c>git apply
+    ///  --cached</c> creates the index entry, which is the opposite of what
+    ///  <paramref name="isNewFile"/> asks <see cref="PatchManager"/> to do.
+    /// </param>
     public static PatchStagingResult Apply(
         string repoPath,
         string diffText,
@@ -196,7 +203,8 @@ public static class PatchStagingService
         int selectionLength,
         PatchStagingAction action,
         bool isNewFile,
-        bool isRenamed)
+        bool isRenamed,
+        bool isUntracked = false)
     {
         if (string.IsNullOrEmpty(diffText) || !diffText.Contains("@@", StringComparison.Ordinal))
         {
@@ -217,6 +225,15 @@ public static class PatchStagingService
             return new PatchStagingResult(false, NoSelectionMessage);
         }
 
+        if (isUntracked && action != PatchStagingAction.Stage)
+        {
+            // There is nothing in the index to take lines back out of, and undoing
+            // part of a file git does not know about would need a blob written to the
+            // object database first (upstream's GetSelectedLinesAsNewPatch). Say so
+            // rather than letting `git apply` fail with "already exists".
+            return new PatchStagingResult(false, UntrackedOnlyStageMessage);
+        }
+
         byte[]? patch;
         try
         {
@@ -224,9 +241,15 @@ public static class PatchStagingService
             {
                 // Work tree -> index. The "a" side of the diff is the index, so the
                 // patch is built with isIndex: false and applied forward.
+                //
+                // isNewFile is deliberately NOT passed for an untracked file:
+                // PatchManager's new-file fix-up turns "--- /dev/null" into
+                // "--- a/<name>" and drops "new file mode", which is right when the
+                // INDEX already has the file (partial unstage) but produces a patch
+                // git refuses for a path that is in no index at all.
                 PatchStagingAction.Stage => PatchManager.GetSelectedLinesAsPatch(
                     diffText, selectionStart, selectionLength,
-                    isIndex: false, PatchEncoding, reset: false, isNewFile, isRenamed),
+                    isIndex: false, PatchEncoding, reset: false, isNewFile && !isUntracked, isRenamed),
 
                 // Index -> work tree. Built against the index side and applied in
                 // reverse, exactly like the WinForms viewer does.
@@ -251,9 +274,17 @@ public static class PatchStagingService
             return new PatchStagingResult(false, NoSelectionMessage);
         }
 
+        // `--index` makes git check the patch against the index entry as well, which
+        // is what keeps a partial stage honest — but an UNTRACKED file has no index
+        // entry at all, so it fails outright with "does not exist in index". Staging
+        // lines of a brand-new file therefore goes in with `--cached` only, which
+        // creates the entry (the file ends up "AM": part of it in the index, the rest
+        // still only in the work tree). Unstaging is unaffected: a file that is new on
+        // the index side IS in the index.
+        string index = isUntracked ? string.Empty : " --index";
         string args = action switch
         {
-            PatchStagingAction.Stage => "apply --cached --index --whitespace=nowarn",
+            PatchStagingAction.Stage => $"apply --cached{index} --whitespace=nowarn",
             PatchStagingAction.Unstage => "apply --cached --index --whitespace=nowarn --reverse",
             _ => "apply --whitespace=nowarn",
         };
@@ -282,6 +313,9 @@ public static class PatchStagingService
     public const string NoHunksMessage = "This file has no text hunks to patch (binary, or nothing changed).";
     public const string NotUtf8Message = "The diff is not valid UTF-8; line staging is not available for this file.";
     public const string NoSelectionMessage = "Select one or more diff lines first.";
+
+    public const string UntrackedOnlyStageMessage =
+        "This file is not tracked yet: only staging lines of it is possible.";
 
     /// <summary>Appended to a clamped whole-file view, like upstream's file viewer.</summary>
     public const string TruncatedMarker = "[Truncated]";

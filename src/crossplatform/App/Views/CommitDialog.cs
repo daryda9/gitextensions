@@ -1855,6 +1855,10 @@ public sealed class CommitDialog : Window
         bool staged = _diffStaged;
         bool isNew = _diffFileIsNew;
         bool isRenamed = _diffFileIsRenamed;
+
+        // "new" on the work-tree side means untracked: the patch has to create the
+        // index entry rather than modify one (see PatchStagingService.Apply).
+        bool isUntracked = isNew && !staged;
         int lines = last - first + 1;
 
         void Run()
@@ -1866,7 +1870,7 @@ public sealed class CommitDialog : Window
                 () =>
                 {
                     PatchStagingResult result = PatchStagingService.Apply(
-                        repo, diffText, selectionStart, selectionLength, action, isNew, isRenamed);
+                        repo, diffText, selectionStart, selectionLength, action, isNew, isRenamed, isUntracked);
                     return new WorkingDirCommitResult(result.Success, result.Output);
                 },
                 result =>
@@ -1898,6 +1902,8 @@ public sealed class CommitDialog : Window
         PatchStagingService.NoHunksMessage => T("This file has no text hunks to patch (binary, or nothing changed)."),
         PatchStagingService.NotUtf8Message => T("The diff is not valid UTF-8; line staging is not available for this file."),
         PatchStagingService.NoSelectionMessage => T("Select one or more diff lines first."),
+        PatchStagingService.UntrackedOnlyStageMessage =>
+            T("This file is not tracked yet: only staging lines of it is possible."),
         _ => message,
     };
 
