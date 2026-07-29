@@ -136,7 +136,7 @@ public sealed class ArchiveDialog : Window
         };
         _loadRevision = new Button
         {
-            Content = T("FormArchive/label2.Text", "Load"),
+            Content = T("Load"),
             Margin = new Thickness(8, 0, 0, 0),
         };
         _loadRevision.Click += (_, _) => _ = LoadRevisionAsync();
@@ -251,6 +251,13 @@ public sealed class ArchiveDialog : Window
                     Margin = new Thickness(0, 0, 0, 4),
                 },
                 revisionPanel,
+                new TextBlock
+                {
+                    Text = T("FormArchive/label2.Text", "Choose another revision:"),
+                    Foreground = dim,
+                    Margin = new Thickness(0, 12, 0, 0),
+                },
+                revisionRow,
                 new TextBlock { Text = T("Format:"), Foreground = text, Margin = new Thickness(0, 14, 0, 4) },
                 _format,
                 new TextBlock { Text = T("Output file:"), Foreground = text, Margin = new Thickness(0, 12, 0, 4) },

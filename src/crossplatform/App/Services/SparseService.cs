@@ -141,12 +141,8 @@ public sealed class SparseService
     {
         try
         {
-            string path = RulesFilePath(repoPath);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllBytes(path, GitModule.SystemEncoding.GetBytes(rules));
-
-            GitModule module = GitContext.CreateModule(repoPath);
-            module.SetSetting(CoreSparseCheckout, enabled ? "true" : "false");
+            WriteRules(repoPath, rules);
+            SetLegacyEnabled(repoPath, enabled);
         }
         catch (Exception ex)
         {
@@ -155,6 +151,17 @@ public sealed class SparseService
 
         return RefreshWorkingCopy(repoPath);
     }
+
+    private static void WriteRules(string repoPath, string rules)
+    {
+        string path = RulesFilePath(repoPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, GitModule.SystemEncoding.GetBytes(rules));
+    }
+
+    private static void SetLegacyEnabled(string repoPath, bool enabled)
+        => GitContext.CreateModule(repoPath)
+            .SetSetting(CoreSparseCheckout, enabled ? "true" : "false");
 
     /// <summary>
     ///  Re-applies the tree to the index and the working copy
@@ -171,6 +178,18 @@ public sealed class SparseService
     ///  the rules still in the file and the working copy stays truncated. So the rules
     ///  are rewritten to <c>/*</c> followed by every previous rule commented out, which
     ///  matches everything and is reversible, and only then is the flag cleared.
+    ///
+    ///  <para>
+    ///  <b>The order matters and is not upstream's.</b> Writing the rules, clearing the
+    ///  flag and only then refreshing leaves the working copy truncated while reporting
+    ///  success: with <c>core.sparsecheckout=false</c>, <c>read-tree -m -u HEAD</c> is a
+    ///  silent no-op that never clears the <c>skip-worktree</c> bits, so the excluded
+    ///  files stay missing and git still exits 0. Measured on git 2.43.0: after the
+    ///  refresh, <c>git ls-files -v</c> still reported <c>S gamma/g.txt</c> and the
+    ///  directory was still absent. The bits are only recomputed while sparse checkout
+    ///  is <i>still enabled</i>, so the refresh runs first, with the flag on and the
+    ///  all-inclusive rules already in place, and the flag is cleared afterwards.
+    ///  </para>
     /// </summary>
     /// <returns>The rewritten rules text alongside the refresh outcome.</returns>
     public (SparseResult Result, string Rules) DisableLegacy(string repoPath)
@@ -196,7 +215,22 @@ public sealed class SparseService
                     .Where(l => l.Length > 0)
                     .Select(l => string.IsNullOrWhiteSpace(l) || l[0] == '#' ? l : "#" + l)));
 
-        return (ApplyLegacy(repoPath, newRules, enabled: false), newRules);
+        SparseResult result;
+        try
+        {
+            // 1. all-inclusive rules on disk, 2. flag still ON so read-tree actually
+            // recomputes skip-worktree, 3. refresh restores the files, 4. flag off.
+            WriteRules(repoPath, newRules);
+            SetLegacyEnabled(repoPath, true);
+            result = RefreshWorkingCopy(repoPath);
+            SetLegacyEnabled(repoPath, false);
+        }
+        catch (Exception ex)
+        {
+            return (new SparseResult(false, ex.Message), newRules);
+        }
+
+        return (result, newRules);
     }
 
     private static SparseResult Run(string repoPath, GitArgumentBuilder args)
