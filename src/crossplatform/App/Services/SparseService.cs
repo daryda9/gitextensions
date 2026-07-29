@@ -164,6 +164,42 @@ public sealed class SparseService
             .SetSetting(CoreSparseCheckout, enabled ? "true" : "false");
 
     /// <summary>
+    ///  Clears the keys <c>git sparse-checkout init</c> writes into
+    ///  <c>.git/config.worktree</c>.
+    ///
+    ///  <para>
+    ///  Needed because the two modes share one repository. <c>git sparse-checkout</c>
+    ///  turns on <c>extensions.worktreeConfig</c> and writes <c>core.sparsecheckout</c>
+    ///  and <c>core.sparsecheckoutcone</c> to the <b>worktree</b> config, which outranks
+    ///  the <c>.git/config</c> entry <see cref="SetLegacyEnabled"/> writes. Measured
+    ///  after a cone-mode set followed by a legacy disable:
+    ///  </para>
+    ///  <code>
+    ///  file:.git/config           core.sparsecheckout=false
+    ///  file:.git/config.worktree  core.sparsecheckout=true   &lt;- wins
+    ///  </code>
+    ///  <para>
+    ///  so the dialog reported "enabled" over a fully restored tree. Failures are
+    ///  ignored: without <c>extensions.worktreeConfig</c> the <c>--worktree</c> scope
+    ///  does not exist and there is nothing to clear.
+    ///  </para>
+    /// </summary>
+    private static void ClearWorktreeSparseConfig(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        foreach (string key in new[] { CoreSparseCheckout, "core.sparsecheckoutcone" })
+        {
+            GitArgumentBuilder args = new("config")
+            {
+                "--worktree",
+                "--unset-all",
+                key,
+            };
+            module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        }
+    }
+
+    /// <summary>
     ///  Re-applies the tree to the index and the working copy
     ///  (<c>git read-tree -m -u HEAD</c>) — upstream's
     ///  <c>RefreshWorkingCopyCommandName</c>. Nothing appears or disappears in the
@@ -224,6 +260,10 @@ public sealed class SparseService
             SetLegacyEnabled(repoPath, true);
             result = RefreshWorkingCopy(repoPath);
             SetLegacyEnabled(repoPath, false);
+
+            // A previous cone-mode session would otherwise keep the feature effectively
+            // on from the worktree config, and the dialog would report "enabled".
+            ClearWorktreeSparseConfig(repoPath);
         }
         catch (Exception ex)
         {
