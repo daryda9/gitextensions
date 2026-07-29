@@ -115,6 +115,39 @@ public sealed class AboutDialog : Window
             TextWrapping = TextWrapping.Wrap,
         });
 
+        // The real copyright, read from the assembly rather than written out here:
+        // CommonAssemblyInfo.cs carries [assembly: AssemblyCopyright(…)] and
+        // Directory.Build.props:66 compiles it into every project, this one included.
+        // Upstream's FormAbout shows only "Proudly presented by…" and never surfaces
+        // the attribute, so the line is skipped rather than invented if it is absent.
+        string? copyright = typeof(AboutDialog).Assembly
+            .GetCustomAttribute<AssemblyCopyrightAttribute>()?.Copyright;
+        if (!string.IsNullOrWhiteSpace(copyright))
+        {
+            credits.Children.Add(new TextBlock
+            {
+                Text = copyright,
+                Foreground = dim,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        // Upstream's label1 (FormAbout.Designer.cs), verbatim — the GPL's
+        // no-warranty notice, which the port was dropping. "of FITNESS" is
+        // upstream's own typo for "or FITNESS"; corrected here since this is
+        // display text, not a string being matched.
+        credits.Children.Add(new TextBlock
+        {
+            Text = "This program is distributed in the hope that it will be useful, "
+                 + "but WITHOUT ANY WARRANTY; without even the implied warranty of "
+                 + "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+            Foreground = dim,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        });
+
         // Attribution required by the licence of the reused icon set. The URL is
         // upstream's verbatim string (FormAbout.cs:27, README.md:124): written without
         // its scheme it reads as a mangled address ("p.yusukekamiyamane.com" looks
