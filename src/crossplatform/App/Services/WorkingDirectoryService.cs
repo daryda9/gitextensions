@@ -362,36 +362,90 @@ public sealed class WorkingDirectoryService
             paths: options.IncludeArgument).ToString();
 
     /// <summary>
-    ///  Discards uncommitted modifications to TRACKED files. Destructive — callers
-    ///  MUST confirm first. Never touches untracked files (that is what
-    ///  <see cref="Clean"/> is for): a hard reset and <c>git checkout -- .</c> both
-    ///  leave files git is not tracking alone.
+    ///  Discards uncommitted modifications to TRACKED files, and — only when
+    ///  <paramref name="cleanUntracked"/> is set — removes untracked files too.
+    ///  Destructive: callers MUST go through <c>ResetChangesDialog</c> first, which is
+    ///  also where the untracked decision is made (upstream
+    ///  <c>GitUICommands.StartResetChangesDialog</c> / <c>GitModule.ResetAllChanges</c>).
     ///  <para>
-    ///  When <paramref name="includeStaged"/> is <see langword="true"/> (the primary
-    ///  action) this resets both the work tree and the index to <c>HEAD</c> via
-    ///  <c>git reset --hard HEAD</c>, so staged and unstaged tracked changes are all
-    ///  discarded. When <see langword="false"/>, only the work tree is reverted to
-    ///  the index (<c>git checkout -- .</c>), leaving anything already staged intact.
+    ///  When <paramref name="includeStaged"/> is <see langword="true"/> ("Reset all
+    ///  changes") this resets both the work tree and the index to <c>HEAD</c> via
+    ///  <c>git reset --hard HEAD</c>. When <see langword="false"/> ("Reset unstaged
+    ///  changes"), only the work tree is reverted to the index, leaving anything
+    ///  already staged intact.
+    ///  </para>
+    ///  <para>
+    ///  The work-tree revert names its paths EXPLICITLY instead of upstream's
+    ///  <c>git checkout -- .</c>: a bare <c>.</c> means "below the current directory",
+    ///  which is only equal to the whole repository as long as the process happens to
+    ///  sit at its root. <paramref name="trackedPaths"/> are repository-relative and
+    ///  come from the rows the dialog counted, so what runs is what the user was
+    ///  shown. <c>.</c> remains the fallback when no list is supplied or the list is
+    ///  too long for one command line.
     ///  </para>
     /// </summary>
-    public WorkingDirCommitResult ResetChanges(string repoPath, bool includeStaged)
+    /// <param name="cleanUntracked">Also run <c>git clean -f -d</c> afterwards.</param>
+    /// <param name="trackedPaths">Repository-relative paths of the tracked rows to revert.</param>
+    public WorkingDirCommitResult ResetChanges(
+        string repoPath,
+        bool includeStaged,
+        bool cleanUntracked = false,
+        IReadOnlyList<string>? trackedPaths = null)
     {
         GitModule module = GitContext.CreateModule(repoPath);
+        WorkingDirCommitResult result = includeStaged
+            ? ResetHard(module)
+            : RevertWorkTree(module, trackedPaths);
 
-        if (includeStaged)
+        if (!result.Success || !cleanUntracked)
         {
-            // reset --hard HEAD: discard tracked worktree + index changes, but never
-            // untracked files. Uses the core command builder (as UndoLastCommit does).
-            ArgumentString args = Commands.Reset(ResetMode.Hard, "HEAD");
-            ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
-            return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+            return result;
         }
 
-        // Work-tree only: restore tracked files from the index, leaving staged
-        // changes and untracked files untouched.
-        GitArgumentBuilder checkoutArgs = new("checkout") { "--", "." };
-        ExecutionResult checkout = module.GitExecutable.Execute(checkoutArgs, throwOnErrorExit: false);
+        // Upstream does the same second step (GitModule.ResetAllChanges): the reset
+        // itself can never remove a file git is not tracking.
+        WorkingDirCommitResult cleaned = Clean(repoPath);
+        return new WorkingDirCommitResult(
+            cleaned.Success,
+            Join(result.Output, cleaned.Output));
+    }
+
+    private static WorkingDirCommitResult ResetHard(GitModule module)
+    {
+        // reset --hard HEAD: discard tracked worktree + index changes. Uses the core
+        // command builder (as UndoLastCommit does).
+        ArgumentString args = Commands.Reset(ResetMode.Hard, "HEAD");
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>Maximum paths named on one <c>git checkout</c> command line.</summary>
+    private const int MaxExplicitPaths = 400;
+
+    private static WorkingDirCommitResult RevertWorkTree(GitModule module, IReadOnlyList<string>? trackedPaths)
+    {
+        GitArgumentBuilder args = new("checkout") { "--" };
+        if (trackedPaths is { Count: > 0 } and { Count: <= MaxExplicitPaths })
+        {
+            foreach (string path in trackedPaths)
+            {
+                args.Add(path.Quote());
+            }
+        }
+        else
+        {
+            args.Add(".");
+        }
+
+        ExecutionResult checkout = module.GitExecutable.Execute(args, throwOnErrorExit: false);
         return new WorkingDirCommitResult(checkout.ExitedSuccessfully, checkout.AllOutput);
+    }
+
+    private static string Join(string? first, string? second)
+    {
+        string a = (first ?? string.Empty).Trim();
+        string b = (second ?? string.Empty).Trim();
+        return a.Length == 0 ? b : b.Length == 0 ? a : a + "\n" + b;
     }
 
     /// <summary>

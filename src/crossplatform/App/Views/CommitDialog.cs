@@ -2589,18 +2589,83 @@ public sealed class CommitDialog : Window
         });
     }
 
-    private void DoReset(bool includeStaged)
+    /// <summary>
+    ///  "Reset all changes" / "Reset unstaged changes". Both go through
+    ///  <see cref="ResetChangesDialog"/>, exactly as upstream routes both buttons
+    ///  through <c>FormResetChanges</c> (<c>FormCommit.cs:2184-2198</c>): the
+    ///  unstaged branch used to run <c>git checkout -- .</c> with <b>no confirmation
+    ///  at all</b>, and neither branch ever said anything about untracked files, which
+    ///  a reset leaves behind.
+    ///  <para>
+    ///  The counts that drive the dialog come from the rows on screen — the same
+    ///  <c>Unstaged.AllItems</c> upstream passes — and the tracked paths it reverts are
+    ///  those rows, not a blind <c>.</c>.
+    ///  </para>
+    /// </summary>
+    private async void DoReset(bool includeStaged)
     {
+        // Upstream sizes the question from the WORK-TREE list only (it is the one
+        // passed to StartResetChangesDialog), because that is where untracked files
+        // can appear at all: an index entry is by definition tracked.
+        List<WorkingDirFileRow> unstagedRows = [.. _unstagedList.Items.OfType<WorkingDirFileRow>()];
+        List<string> untracked = [.. unstagedRows.Where(IsUntrackedRow).Select(r => r.Path)];
+
+        // Unmerged paths are left out of the checkout list on purpose: `git checkout --
+        // <path>` refuses an unmerged path ("path ... is unmerged"), and naming it would
+        // make the whole command fail and take the other files' revert down with it.
+        // A hard reset (includeStaged) clears them anyway, since it does not go through
+        // this list.
+        List<string> tracked =
+        [
+            .. unstagedRows
+                .Where(r => !IsUntrackedRow(r) && !_conflictPaths.Contains(r.Path))
+                .Select(r => r.Path)
+        ];
+
+        // A hard reset covers the index too, so its tracked count includes staged rows
+        // that have no work-tree counterpart.
+        int trackedCount = tracked.Count;
         if (includeStaged)
         {
-            ConfirmThen(
-                T("Reset ALL changes? This discards staged and unstaged tracked changes and cannot be undone."),
-                () => RunGit(() => _service.ResetChanges(_repoPath, includeStaged: true)));
+            HashSet<string> seen = [.. tracked];
+            foreach (WorkingDirFileRow row in _stagedList.Items.OfType<WorkingDirFileRow>())
+            {
+                if (seen.Add(row.Path))
+                {
+                    trackedCount++;
+                }
+            }
+        }
+
+        ResetChangesAction action = await ResetChangesDialog.ShowAsync(
+            this, trackedCount, untracked.Count, onlyWorkTree: !includeStaged);
+
+        if (action == ResetChangesAction.Cancel)
+        {
+            SetStatus(T("Reset cancelled."));
             return;
         }
 
-        RunGit(() => _service.ResetChanges(_repoPath, includeStaged: false));
+        bool clean = action == ResetChangesAction.ResetAndDelete;
+        string repo = _repoPath;
+        SetStatus(T("Resetting changes…"));
+        RunGitResult(
+            () => _service.ResetChanges(repo, includeStaged, clean, tracked),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? clean
+                        ? T("Changes reset and untracked files deleted.")
+                        : T("Changes reset.")
+                    : string.Format(T("Reset failed: {0}"), FirstLine(result.Output)));
+                Reload();
+            });
     }
+
+    // A row that git only knows from the work tree. Kept in one place: "new" on the
+    // index side means "added", which IS tracked.
+    private static bool IsUntrackedRow(WorkingDirFileRow row)
+        => !row.IsStaged && row.Status == "new";
 
     // ---------- stash staged ----------
 
@@ -3284,6 +3349,15 @@ public sealed class CommitDialog : Window
         }
 
         _statusText.Text = _statusHint.Length > 0 ? $"{_statusHint}   —   {counts}" : counts;
+
+        // Upstream enables the two reset buttons only when there is something to
+        // reset: "Reset unstaged changes" on a non-empty work-tree list
+        // (FormCommit.cs:831), "Reset all changes" on either list (:2806). A live
+        // button that can only ever say "nothing to do" is worse than a dead one.
+        int unstagedCount = _unstagedList.Items.Count;
+        int stagedCount = _stagedList.Items.Count;
+        _resetUnstagedBtn.IsEnabled = unstagedCount > 0;
+        _resetAllBtn.IsEnabled = unstagedCount > 0 || stagedCount > 0;
     }
 
     // '_' in a menu header is an access-key marker in Avalonia; double it to show it.
