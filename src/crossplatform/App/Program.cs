@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Dialogs;
 
 namespace GitExtensions.Avalonia;
 
@@ -177,6 +178,13 @@ internal static class Program
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
+            // Every `Browse…` in the app went through Avalonia's X11 StorageProvider, which on this
+            // desktop never reaches the XDG portal at all: measured on a real Wayland/XWayland
+            // session with a working portal (a manual `org.freedesktop.portal.FileChooser.OpenFile`
+            // gets served), `dbus-monitor` sees *zero* traffic from this process and the picker
+            // returns an empty list without throwing. Avalonia's managed dialogs are in-process, so
+            // they work on both the real display and headless Xvfb.
+            .UseManagedSystemDialogs()
             .WithInterFont()
             .LogToTrace();
 }
