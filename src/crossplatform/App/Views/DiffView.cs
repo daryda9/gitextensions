@@ -209,6 +209,14 @@ public sealed class DiffView : UserControl
 
     public DiffView()
     {
+        // Before anything below reads an option: the two option singletons are aliased
+        // in this class's FIELD initialisers (which have already run) but their VALUES
+        // are only read from here on — to seed the font size, the encoding combo and
+        // every toggle button's checked state — so this is where the persisted strip
+        // has to be restored. Idempotent: only the first view in the process reads the
+        // file (see DiffViewerOptions.EnsureRestored).
+        DiffViewerOptions.EnsureRestored();
+
         // The changed-files list, its toolbar and its regex filter box all live in
         // the shared control (the original's FileStatusList, which also backs the
         // file-tree and stash views): this view only reacts to the selection.
@@ -335,6 +343,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _options.ShowEntireFile = v;
+                DiffViewerOptions.Persist();
                 ReloadDiff();
             });
 
@@ -343,6 +352,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _options.IgnoreWhitespace = v;
+                DiffViewerOptions.Persist();
                 ReloadDiff();
             });
 
@@ -351,6 +361,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _options.ShowNonPrinting = v;
+                DiffViewerOptions.Persist();
                 RenderDiff(_currentDiffText);
             });
 
@@ -359,6 +370,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _extras.IgnoreWhitespaceAtEol = v;
+                DiffViewerOptions.Persist();
                 ReloadDiff();
             });
 
@@ -367,6 +379,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _extras.IgnoreWhitespaceChange = v;
+                DiffViewerOptions.Persist();
                 ReloadDiff();
             });
 
@@ -375,6 +388,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _options.WordDiff = v;
+                DiffViewerOptions.Persist();
                 ReloadDiff();
             });
 
@@ -385,6 +399,7 @@ public sealed class DiffView : UserControl
             v =>
             {
                 _extras.SyntaxHighlighting = v;
+                DiffViewerOptions.Persist();
                 RenderDiff(_currentDiffText);
             },
             icon: "SyntaxHighlighting");
@@ -413,6 +428,7 @@ public sealed class DiffView : UserControl
             }
 
             _options.EncodingName = name;
+            DiffViewerOptions.Persist();
             ReloadDiff();
         };
 
@@ -1257,6 +1273,7 @@ public sealed class DiffView : UserControl
         asText.Click += (_, _) =>
         {
             _extras.TreatAllFilesAsText = !_extras.TreatAllFilesAsText;
+            DiffViewerOptions.Persist();
             ReloadDiff();
         };
 
@@ -1373,6 +1390,7 @@ public sealed class DiffView : UserControl
             : Math.Clamp(_options.FontSize + direction, 6, 32);
 
         _options.FontSize = size;
+        DiffViewerOptions.Persist();
         _diff.FontSize = size;
         _status.Text = F(T("Text size {0:0}pt"), size);
     }
@@ -1593,6 +1611,7 @@ public sealed class DiffView : UserControl
         }
 
         _options.ContextLines = context;
+        DiffViewerOptions.Persist();
         _status.Text = F(T("Lines of context: {0}"), context);
         ReloadDiff();
     }

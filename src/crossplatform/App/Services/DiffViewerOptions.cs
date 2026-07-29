@@ -13,8 +13,13 @@ namespace GitExtensions.Avalonia.Services;
 ///  (<c>--ignore-space-at-eol</c>, <c>-b</c>, <c>--text</c>: the
 ///  <c>ignoreWhitespaceAtEol</c> / <c>ignoreWhiteSpaces</c> buttons and
 ///  <c>treatAllFilesAsTextToolStripMenuItem</c>); the fourth is the display-only
-///  <c>ShowSyntaxHighlightingInDiff</c> setting. Like
-///  <see cref="DiffTextService.Session"/>, they live for the session.</para>
+///  <c>ShowSyntaxHighlightingInDiff</c> setting.</para>
+///
+///  <para>Like <see cref="DiffTextService.Session"/> this is a process-wide instance
+///  shared by every diff view, but since M69 the pair is no longer merely
+///  session-scoped: <see cref="EnsureRestored"/> seeds both from
+///  <c>view-prefs.json</c> and <see cref="Persist"/> writes them back, so the whole
+///  strip comes back as the user left it.</para>
 /// </summary>
 public sealed class DiffViewerOptions
 {
@@ -35,6 +40,78 @@ public sealed class DiffViewerOptions
 
     /// <summary>Whether any of the three git flags is on.</summary>
     public bool HasGitFlags => IgnoreWhitespaceAtEol || IgnoreWhitespaceChange || TreatAllFilesAsText;
+
+    private static readonly ViewPrefsService PrefsService = new();
+
+    private static bool _restored;
+
+    /// <summary>
+    ///  Seeds <see cref="Session"/> and <see cref="DiffTextService.Session"/> from
+    ///  <c>view-prefs.json</c>, once per process.
+    ///
+    ///  <para>Called at the very top of <c>DiffView</c>'s constructor body rather than
+    ///  from a static initialiser of either singleton: the view aliases both objects in
+    ///  its FIELD initialisers and only reads their properties in the constructor body
+    ///  (to seed each toggle button's checked state), so this is the last moment that is
+    ///  both early enough for every reader and independent of the order in which the two
+    ///  singletons happen to be touched first. Idempotent, so the second and later views
+    ///  — including the ones <c>CommitDialog</c> opens — do not re-read the file and
+    ///  cannot clobber a toggle the user has flipped since.</para>
+    /// </summary>
+    public static void EnsureRestored()
+    {
+        if (_restored)
+        {
+            return;
+        }
+
+        // Set before loading: a throwing load must not leave the flag clear and have
+        // every later view retry (and re-apply defaults over live toggles).
+        _restored = true;
+
+        DiffPrefs prefs = PrefsService.Load().Diff;
+        DiffDisplayOptions display = DiffTextService.Session;
+
+        display.ShowEntireFile = prefs.ShowEntireFile;
+        display.IgnoreWhitespace = prefs.IgnoreWhitespace;
+        display.ShowNonPrinting = prefs.ShowNonPrinting;
+        display.WordDiff = prefs.WordDiff;
+        display.EncodingName = prefs.EncodingName;
+        display.ContextLines = prefs.ContextLines;
+        display.FontSize = prefs.FontSize;
+
+        Session.IgnoreWhitespaceAtEol = prefs.IgnoreWhitespaceAtEol;
+        Session.IgnoreWhitespaceChange = prefs.IgnoreWhitespaceChange;
+        Session.TreatAllFilesAsText = prefs.TreatAllFilesAsText;
+        Session.SyntaxHighlighting = prefs.SyntaxHighlighting;
+    }
+
+    /// <summary>
+    ///  Writes the current state of both singletons back to <c>view-prefs.json</c>.
+    ///  Called after every toolbar/menu change; the write goes through
+    ///  <see cref="ViewPrefsService.Update"/> so it cannot revert another surface's
+    ///  group (the file also carries the file-history switches, the left panel filters
+    ///  and the filter MRU).
+    /// </summary>
+    public static void Persist()
+    {
+        DiffDisplayOptions display = DiffTextService.Session;
+
+        PrefsService.Update(prefs => prefs.Diff = new DiffPrefs
+        {
+            ShowEntireFile = display.ShowEntireFile,
+            IgnoreWhitespace = display.IgnoreWhitespace,
+            ShowNonPrinting = display.ShowNonPrinting,
+            WordDiff = display.WordDiff,
+            EncodingName = display.EncodingName,
+            ContextLines = display.ContextLines,
+            FontSize = display.FontSize,
+            IgnoreWhitespaceAtEol = Session.IgnoreWhitespaceAtEol,
+            IgnoreWhitespaceChange = Session.IgnoreWhitespaceChange,
+            TreatAllFilesAsText = Session.TreatAllFilesAsText,
+            SyntaxHighlighting = Session.SyntaxHighlighting,
+        });
+    }
 }
 
 /// <summary>
