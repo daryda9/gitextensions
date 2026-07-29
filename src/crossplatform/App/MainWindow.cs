@@ -1592,7 +1592,10 @@ public sealed class MainWindow : Window
 
         if (dlg.ArchivedPath is { Length: > 0 } path)
         {
-            string shortHash = hash.Length > 8 ? hash[..8] : hash;
+            // The dialog's revision box is editable, so report what it actually archived
+            // rather than the grid row we opened it on.
+            string archived = dlg.ArchivedRevision ?? hash;
+            string shortHash = archived.Length > 8 ? archived[..8] : archived;
             _statusBar.SetText(TF("Archived {0} → {1}", shortHash, path));
         }
     }

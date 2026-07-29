@@ -76,6 +76,10 @@ public sealed class ArchiveDialog : Window
     /// <summary>The path of the written archive, or null if the dialog was cancelled / failed.</summary>
     public string? ArchivedPath { get; private set; }
 
+    /// <summary>The commit actually archived, once Archive succeeded — not necessarily the
+    /// one the caller passed in, because the revision box is editable.</summary>
+    public string? ArchivedRevision { get; private set; }
+
     public ArchiveDialog(string repoPath, string commitHash)
     {
         _repoPath = repoPath;
@@ -508,6 +512,11 @@ public sealed class ArchiveDialog : Window
         ArchiveFormat format = SelectedFormat;
         string repo = _repoPath;
 
+        // The host reports what was archived, and the revision box is free text, so the
+        // resolved hash has to come back out of the worker — reporting the grid row's
+        // hash would name the wrong commit whenever the user retyped the revision.
+        string? resolvedRevision = null;
+
         (bool Ok, string Message) outcome;
         try
         {
@@ -517,6 +526,7 @@ public sealed class ArchiveDialog : Window
                 // whatever the last Load left behind: the user may have retyped it and
                 // gone straight to Archive.
                 string? hash = RevertArchiveService.ResolveCommit(repo, typedRevision);
+                resolvedRevision = hash;
                 if (hash is null)
                 {
                     return (false, string.Format(T("Not a revision: {0}"), typedRevision));
@@ -564,6 +574,7 @@ public sealed class ArchiveDialog : Window
         if (outcome.Ok)
         {
             ArchivedPath = path;
+            ArchivedRevision = resolvedRevision;
             Close();
             return;
         }
