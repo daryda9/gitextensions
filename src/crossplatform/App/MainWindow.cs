@@ -1312,6 +1312,7 @@ public sealed class MainWindow : Window
         _menu.ExitRequested += Close;
         _menu.RefreshRequested += RefreshAll;
         _menu.ShowReflogRequested += () => _ = ShowReflogAsync();
+        _menu.BisectRequested += () => _ = ShowBisectDialogAsync();
         _menu.LightThemeRequested += () =>
         {
             Theming.ThemeManager.Apply(ThemeVariant.Light);

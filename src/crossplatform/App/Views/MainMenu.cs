@@ -122,6 +122,12 @@ public sealed class MainMenu : UserControl
     public event Action? ResetRevisionFiltersRequested;
     public event Action? ShowReflogRequested;
 
+    /// <summary>
+    ///  Raised by the Commands menu's "Bisect…" entry; the host answers by opening the
+    ///  bisect control panel (upstream <c>FormBrowse.BisectClick</c>).
+    /// </summary>
+    public event Action? BisectRequested;
+
     // ---- Dashboard (top-level, shown only while the dashboard is up)
     public event Action? DashboardRefreshRequested;
 
@@ -514,6 +520,12 @@ public sealed class MainMenu : UserControl
         _commands.Items.Add(Gated("branch", Item("FormBrowse/branchToolStripMenuItem.Text", "New branch…", "BranchCreate", () => NewBranchRequested?.Invoke(), gesture: BrowseCommand.CreateBranch)));
         _commands.Items.Add(Gated("tag", Item("FormBrowse/tagToolStripMenuItem.Text", "New tag…", "TagCreate", () => NewTagRequested?.Invoke(), gesture: BrowseCommand.CreateTag)));
         _commands.Items.Add(new Separator());
+        // Upstream's bisectToolStripMenuItem — "B&isect...", Images.Bisect, in this
+        // same slot of the Commands dropdown (FormBrowse.Designer.cs:1206-1212, added
+        // at :1032) and opening FormBisect (FormBrowse.BisectClick:1805-1813). It was
+        // missing here, which left the port with no menu route to a bisect at all.
+        _commands.Items.Add(Gated("bisect", Item("FormBrowse/bisectToolStripMenuItem.Text", "Bisect…", "Bisect", () => BisectRequested?.Invoke())));
+        _commands.Items.Add(new Separator());
         _commands.Items.Add(Item("FormBrowse/formatPatchToolStripMenuItem.Text", "Format patch…", null, () => FormatPatchRequested?.Invoke()));
         _commands.Items.Add(Gated("applyPatch", Item("FormBrowse/applyPatchToolStripMenuItem.Text", "Apply patch…", null, () => ApplyPatchRequested?.Invoke())));
         _commands.Items.Add(Item("FormBrowse/patchToolStripMenuItem.Text", "View patch file…", null, () => ViewPatchRequested?.Invoke()));
@@ -883,6 +895,14 @@ public sealed class MainMenu : UserControl
         bool noSelection = _selectedCount == 0;
         Enable("branch", (singleNormalCommit || noSelection) && live);
         Enable("tag", singleNormalCommit || noSelection);
+
+        // FormBrowse.cs:2347-2349 — bisectToolStripMenuItem shares that block's
+        // singleNormalCommit && !IsBareRepository() test. An empty selection is
+        // allowed here for the same reason branch/tag allow it: the panel does not
+        // need a revision to open, and with two selected it offers range seeding, so
+        // upstream's strict count == 1 would only make the entry dead after a refresh
+        // that dropped the selection.
+        Enable("bisect", (_selectionIsNormal || noSelection) && live);
     }
 
     private void Enable(string name, bool enabled)
