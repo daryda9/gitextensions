@@ -2111,6 +2111,25 @@ chiuso**. Undici commit (`f0c451eba`…`c4b366347`).
   tema a caldo (le vecchie copie `SolidColorBrush` no). Lasciata fuori la pill **note**
   (`BuildNotesBadge`, misurata 5,34, passa AA; resta un chip scuro in tema chiaro, incoerenza
   estetica da guardare un giorno).
+- **Punto 7 — i file picker: vicolo cieco CHIUSO, non registrato** (`6db901748`). La diagnosi
+  storica ("`OpenFolderPickerAsync` torna vuoto perché serve un portal XDG") era **sbagliata**.
+  Misurato sulla sessione **Wayland/XWayland reale** dell'utente (con il suo ok): il portal c'è e
+  risponde — `FileChooser` version 3, backend `xdg-desktop-portal-gnome` *e* `-gtk` attivi, e una
+  `org.freedesktop.portal.FileChooser.OpenFile` invocata a mano con `gdbus` viene servita e
+  restituisce un request handle. Ma `dbus-monitor` sul bus di sessione vede **zero traffico dal
+  processo dell'app** quando si premono i `Browse…`: è lo `StorageProvider` X11 di Avalonia che non
+  arriva mai al portal e torna lista vuota senza eccezione. Fix: `UseManagedSystemDialogs()` in
+  `Program.BuildAvaloniaApp` (+ `using Avalonia.Dialogs`), che fa girare il picker **in-process**.
+  *Verificato end-to-end*, sia sul display reale sia headless: `Ctrl+O` → `Browse…` → il picker
+  elenca `/tmp` con i bookmark veri (Desktop/Documents/…/volumi) → path digitato `/tmp/r9repo` + OK
+  ⇒ il repo si apre (5 commit, 2 stash, 2 worktree). **Conseguenza sul metodo**: i picker sono ora
+  verificabili headless. Nota estetica registrata: i managed dialog non seguono il tema dell'app
+  (fondo nero, icone ambra).
+  *Metodo sul display reale*: XTEST **tastiera** funziona (`set_input_focus` + `Ctrl+O`, o
+  `_NET_ACTIVE_WINDOW` + `Tab`/`space`); il **puntatore no**, `fake_input` MotionNotify viene
+  ignorato/clampato da mutter. Screenshot **per finestra** (`import -window <id>`): il root di
+  XWayland non mostra le finestre Wayland.
+
 - **Punto 4 — auth-failure indipendente dalla locale** (`deac4ae2d`, `b9155207a`, `66e0a8bb5`,
   `0a26785b7`). Scelte **entrambe** le strade, in quest'ordine:
   1. *Pinning della locale dei figli*: `App/Services/GitEnvironment.cs` imposta `LC_MESSAGES=C`,

@@ -354,8 +354,25 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
    ellissi e tooltip). Restano: i due `CollapseHome` duplicati (`MainToolbar.cs` e
    `RevisionGridView.cs`) da unificare, e `PushDialog.cs:95` che stampa ancora il path
    assoluto nel titolo.
-5. **Compat/** — restano no-op solo shim **irraggiungibili** dal port (censiti in M42/D12);
-   i file picker richiedono un portal XDG, altrimenti servirebbe `UseManagedSystemDialogs()`.
+5. ✅ **RISOLTO in M67 — i file picker FUNZIONANO**, con `UseManagedSystemDialogs()` in
+   `Program.BuildAvaloniaApp`. La diagnosi che girava ("serve un portal XDG") era sbagliata: sulla
+   sessione **Wayland/XWayland reale** dell'utente il portal c'è e risponde (`FileChooser` version 3,
+   backend `xdg-desktop-portal-gnome` **e** `-gtk` attivi; una chiamata manuale a
+   `org.freedesktop.portal.FileChooser.OpenFile` via `gdbus` viene servita e restituisce un request
+   handle), ma `dbus-monitor` vede **zero traffico dal processo dell'app** quando si premono i
+   `Browse…`: lo `StorageProvider` X11 di Avalonia non arriva mai al portal e
+   `OpenFolderPickerAsync` torna lista vuota **senza eccezione**. I dialoghi *managed* girano
+   in-process, quindi funzionano sia sul display reale sia su Xvfb — e da ora i picker sono
+   **verificabili headless**. Verificato end-to-end: `Ctrl+O` → `Browse…` → il picker elenca `/tmp`
+   con i bookmark veri della sidebar → path digitato `/tmp/r9repo` + OK → il repo si apre
+   (5 commit, 2 stash, 2 worktree). Nota estetica: i managed dialog **non seguono il tema** dell'app
+   (fondo nero, icone ambra), da guardare un giorno. Restano no-op solo shim `Compat/`
+   **irraggiungibili** dal port (censiti in M42/D12).
+   *Metodo che ha funzionato sul display reale*: XTEST **tastiera** funziona (`set_input_focus` +
+   `Ctrl+O`, oppure `_NET_ACTIVE_WINDOW` + `Tab`/`space`), il **puntatore no** — `fake_input`
+   MotionNotify viene ignorato/clampato da mutter, quindi niente click sintetici su Wayland. Gli
+   screenshot vanno presi **per finestra** (`import -window <id>`), non su root: il root di XWayland
+   non mostra le finestre Wayland.
 6. ✅ **RISOLTO — il clipboard FUNZIONA anche headless** (verificato in M65 con `xclip`:
    `Copy to clipboard → Commit hash` restituisce l'hash esatto di `git rev-parse`, `Copy file path`
    il path del file). La vecchia misura "clipboard X11 inerte sotto Xvfb" era un altro sintomo della
