@@ -636,6 +636,33 @@ public sealed class StashPanel : UserControl
         {
             _status.Text = F(FailedFormat(), result.Output.Trim());
         }
+
+        // `stash apply`/`pop` is a real merge, so it can leave conflicts: ask, as
+        // upstream does. Fire-and-forget because this runs from a result callback;
+        // the probe is a no-op when the index is clean.
+        _ = AskAboutConflictsAsync();
+    }
+
+    private async Task AskAboutConflictsAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo
+                || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })
+            {
+                RefreshStashes();
+                OperationCompleted?.Invoke();
+            }
+        }
+        catch
+        {
+            // Never throw out of a result callback.
+        }
     }
 
     private StashRow? SelectedStash()

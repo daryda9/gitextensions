@@ -2355,7 +2355,15 @@ public sealed class MainWindow : Window
     {
         using IDisposable watch = SuspendWatcher();
 
-        PullOptions? options = await Views.PullDialog.ShowAsync(this, repoPath, _toolbar.DefaultPullAction);
+        // solveConflicts was a parameter nobody passed, so the dialog's "Solve
+        // conflicts" button fell back to a bare mergetool launch. It now opens the
+        // real conflict dialog.
+        PullOptions? options = await Views.PullDialog.ShowAsync(
+            this,
+            repoPath,
+            _toolbar.DefaultPullAction,
+            solveConflicts: () => ShowResolveConflictsDialogAsync());
+
         if (options is not null)
         {
             RefreshAll();
@@ -3038,6 +3046,14 @@ public sealed class MainWindow : Window
             }
 
             RefreshAll();
+
+            // A pull that stopped on conflicts asks the question upstream asks
+            // (MergeConflictHandler), instead of leaving the user to discover the
+            // state. No-op when the index is clean.
+            if (await ConflictFlow.HandleAsync(this, repo) is { HadConflicts: true })
+            {
+                RefreshAll();
+            }
         }
     }
 
@@ -3345,6 +3361,13 @@ public sealed class MainWindow : Window
             {
                 _statusBar.SetText(TF("{0} failed — see the panel output.", label));
             }
+
+            // Cherry-pick and stash pop both merge, so both can stop on conflicts:
+            // ask, as upstream does. No-op when the index is clean.
+            if (await ConflictFlow.HandleAsync(this, _repoPath!) is { HadConflicts: true })
+            {
+                RefreshAll();
+            }
         }
     }
 
@@ -3381,6 +3404,12 @@ public sealed class MainWindow : Window
             {
                 string firstLine = result.Output.Split('\n')[0].Trim();
                 _statusBar.SetText(TF("{0} stopped: {1} — see the panel output.", label, firstLine));
+            }
+
+            // A revert conflicts like any merge: ask instead of only reporting.
+            if (await ConflictFlow.HandleAsync(this, _repoPath!) is { HadConflicts: true })
+            {
+                RefreshAll();
             }
         }
     }

@@ -1938,11 +1938,17 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
-            MergeDialogResult? result = await MergeDialog.ShowAsync(
-                (TopLevel.GetTopLevel(this) as Window)!, repo, name);
+            Window owner = (TopLevel.GetTopLevel(this) as Window)!;
+            MergeDialogResult? result = await MergeDialog.ShowAsync(owner, repo, name);
 
             if (result is not null)
             {
+                OperationCompleted?.Invoke();
+
+                // A merge that stopped on conflicts asks the question upstream asks
+                // (MergeConflictHandler), instead of leaving the state to be
+                // discovered by opening the commit dialog.
+                await ConflictFlow.HandleAsync(owner, repo);
                 OperationCompleted?.Invoke();
             }
         }
@@ -2418,8 +2424,33 @@ public sealed class RepoObjectsTree : UserControl
                     OperationCompleted?.Invoke();
                     Refresh();
                 }
+
+                // `stash apply`/`pop` merges, so it can stop on conflicts.
+                _ = AskAboutStashConflictsAsync();
             });
         });
+    }
+
+    private async Task AskAboutStashConflictsAsync()
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo
+                || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })
+            {
+                OperationCompleted?.Invoke();
+                Refresh();
+            }
+        }
+        catch
+        {
+            // Never throw out of an interaction handler.
+        }
     }
 
     private void RunRemote(Func<RemoteOpResult> work)

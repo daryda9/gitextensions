@@ -658,6 +658,15 @@ public sealed class ApplyPatchDialog : Window
 
         RepositoryChanged = true;
         await RefreshStateAsync();
+
+        // A patch that stopped on a conflict offers the resolve dialog, which the
+        // port now has: this is what the stale note at the top of this file used to
+        // say was missing.
+        if (_state.InConflictedMerge)
+        {
+            await ConflictFlow.HandleAsync(this, repo);
+            await RefreshStateAsync();
+        }
     }
 
     // ---- pickers ----

@@ -286,8 +286,8 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            MergeDialogResult? result = await MergeDialog.ShowAsync(
-                (TopLevel.GetTopLevel(this) as Window)!, repo, row.Name);
+            Window owner = (TopLevel.GetTopLevel(this) as Window)!;
+            MergeDialogResult? result = await MergeDialog.ShowAsync(owner, repo, row.Name);
 
             if (result is null)
             {
@@ -297,6 +297,10 @@ public sealed class BranchTagPanel : UserControl
             _status.Text = result.Success
                 ? $"Merged {result.Branch}."
                 : $"Merge of {result.Branch} did not complete.";
+            RefreshRefs();
+
+            // Conflicts left by the merge: ask, as upstream does.
+            await ConflictFlow.HandleAsync(owner, repo);
             RefreshRefs();
         }
         catch

@@ -646,6 +646,10 @@ public sealed class PullDialog : Window
             }
         }
 
+        // A pull that conflicts asks the question upstream asks before this dialog
+        // disappears — otherwise the conflicted state has no surface at all here.
+        await ConflictFlow.HandleAsync(this, repo);
+
         Close();
     }
 

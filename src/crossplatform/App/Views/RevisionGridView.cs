@@ -6026,6 +6026,10 @@ public sealed class RevisionGridView : UserControl
         AfterRefOp(result.Success
             ? string.Format(T("Merged {0}."), result.Branch)
             : string.Format(T("Merge of {0} did not complete."), result.Branch));
+
+        // Conflicts left by the merge: ask, as upstream does.
+        await ConflictFlow.HandleAsync(owner, _repoPath);
+        AfterRefOp(string.Empty);
     }
 
     private async Task RebaseOnSelectedAsync()
