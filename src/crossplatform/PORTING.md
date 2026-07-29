@@ -2060,6 +2060,78 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   riapplicato da zero sull'HEAD corrente. Prima di delegare, allineare la base del subagent all'HEAD
   vero: il branch può essere avanzato di molti commit rispetto a quello che il loop ha in mano.
 
+## ROUND 12 — commit dialog e flusso di merge — IN CORSO
+
+> **Iterazione 1 / 10.** Tre subagent Claude in worktree isolati su file disgiunti (A commit dialog,
+> B MergeDialog, C ResolveConflictsDialog), più il cablaggio dei call-site fatto dal loop. Base
+> `c9a9d2ec0`, build `Errori: 0` dopo ognuno dei 7 cherry-pick integrati finora.
+
+**M71** (2026-07-29) — **12.A.1, 12.A.2, 12.A.3, 12.B.1 e 12.B.2 chiuse**. Unità A (4 commit) e B
+(3 commit) integrate, più il cablaggio `0f671da88`.
+
+- **Il diff di un file nuovo non è più vuoto** (`805af7125`, `237a2baa0`). Premessa **vera e
+  misurata**: `git diff -- newfile.sh` su un untracked restituisce **0 byte con exit 0**, quindi il
+  pannello restava bianco senza errore. Ora il file nuovo rende un patch vero.
+  *Riverificato dal loop* sull'HEAD integrato: `newfile.sh` mostra `new file mode 100644`,
+  `--- /dev/null`, `+++ b/newfile.sh` e le tre righe `+`; `blob.bin` dà
+  `Binary files /dev/null and b/blob.bin differ` invece di byte grezzi; `big.txt` (20000 righe)
+  rende il patch con troncatura.
+  **Trappola nuova e riusabile**: `isNewFile` di `PatchManager` significa "nuovo **nell'indice**",
+  non "untracked" — riscrive `--- /dev/null` in `--- a/<name>` e toglie `new file mode`, rendendo il
+  patch inapplicabile a un path assente dall'indice (upstream per gli untracked usa un builder
+  diverso che scrive un blob). Per questo il line-staging su untracked ha richiesto un secondo
+  commit. Seconda trappola: `FirstLine()` su output **streaming** pesca l'header del comando, non
+  l'errore.
+- **Il commit passa dal process dialog** (`bb89784e4`). Premessa **vera**: l'output di un hook reale
+  non compariva da nessuna parte. Ora il commit gira in `GitProcessDialog` come `FormProcess`
+  (`FormCommit.cs:1265`).
+  *Riverificato dal loop* con un `pre-commit` che stampa una riga: il dialogo mostra
+  `Command to be executed: git commit -F "/tmp/tmp….tmp"`, **la riga dell'hook**
+  (`PRE-COMMIT HOOK RAN: checking staged files`), il riepilogo `[master a8bee488] commit via process
+  dialog / 1 file changed, 1 insertion(+)`, stato **Success**, footer `Keep dialog open`/`OK`/`Abort`
+  e la casella `Reply:` del path PTY. Il subagent aveva già dimostrato l'hook che **rifiuta**: output
+  visibile, messaggio di commit **non** svuotato, `git log` invariato.
+- **I due reset passano da un `ResetChangesDialog`** (`efe3b4ed7`). Premessa **vera**: il ramo
+  unstaged non aveva **alcuna** conferma e `ResetChanges` non eseguiva mai `clean`, con i due
+  pulsanti mai disabilitati.
+  *Riverificato dal loop*: il dialogo dichiara i conteggi **reali** ("Unstaged changes in 1 tracked
+  file(s) will be reverted; staged changes are kept." + "3 untracked file(s) are also present") e
+  offre la checkbox `Also delete new files and/or directories`; spuntandola e premendo Reset,
+  `tracked.txt` torna a `base`, i **tre** untracked sono cancellati e `git status --porcelain` è
+  **vuoto**. Deviazioni: path espliciti invece di `git checkout -- .` (escludendo i path unmerged che
+  git rifiuterebbe), e unstage/reset **per riga** su un untracked risponde con un messaggio esplicito
+  invece di un errore criptico di git.
+- **`MergeDialog`, e il merge non è più muto** (`56005776a`, `ca21a5b52`, `43304dcd4`, cablaggio
+  `0f671da88`). Premessa **vera e misurata**: `BranchTagService.cs:633-647` passava
+  `allowFastForward: true, squash: false, noCommit: false, strategy: "", allowUnrelatedHistories:
+  false` — tutti cablati, nessun overload — e i quattro chiamanti lo lanciavano dentro `RunMutation`;
+  `grep MergeDialog|FormMergeBranch` dava **zero** occorrenze.
+  Nuova API: `record MergeOptions(...)` + `MergeBranch(repo, name, options)` +
+  `MergeBranchStreaming(...)` + `MergeDialog.ShowAsync(owner, repo, defaultBranch, execute)` che
+  ritorna `MergeDialogResult(Branch, Options, Executed, Success, Output)` — dove `Success == false` è
+  il segnale di conflitto per l'unità D. Il vecchio `MergeBranch(repo, name)` è rimasto, così i
+  call-site compilavano prima del cablaggio.
+  Il loop ha instradato i quattro call-site **togliendo** il wrapper `RunMutation`/`RunRefOp`: il
+  dialogo esegue già il merge, quindi il wrapper avrebbe lanciato git **due volte**.
+  `RevisionGridView` perde anche la conferma nuda "Merge 'x' into 'y'?", superata dal dialogo.
+  *Verificato in GUI dal loop* su `/tmp/r12int`: tasto destro su `branch1` → `Merge into current
+  branch…` → il dialogo si apre con `branch1` preselezionato e `Into current branch **master**` →
+  `Merge` ⇒ process dialog con `git merge --no-edit branch1`,
+  `CONFLICT (content): Merge conflict in README.md`, stato **Failed**, e sul disco un merge
+  conflittuale vero (`MERGE_HEAD` presente, `README.md` in `UU`). Il subagent aveva già coperto
+  fast-forward (0 merge commit), `--no-ff` (merge commit `717bffc`), `--no-commit` (`MERGE_HEAD` +
+  staged), `--strategy=resolve --log=20` con messaggio custom, e `--squash` (`SQUASH_MSG`): le
+  opzioni avanzate **non sono finte**.
+  Deviazioni registrate: nessun pannello illustrativo e nessun link `Hide help` (precedente M50/P3 —
+  il link da solo non farebbe nulla); nessun pulsante commit-picker (`FormChooseCommit` non è
+  portato, M69) quindi la combo è **editabile**; messaggio di merge su file temporaneo invece di
+  `.git/MERGE_MSG`; nessun hook script `BeforeMerge`/`AfterMerge` (il port non ha motore di script).
+  Difetto trovato per strada: sottoscrivere `ComboBox.TextProperty` **spara subito**, e l'eccezione
+  dal costruttore faceva sì che il dialogo **non si aprisse mai** con log pulito e finestra X non
+  mappata.
+- **Nota sul rumore di build**: 31 warning al netto (VSTHRD/CS pre-esistenti). Nessuno viene dai file
+  nuovi né dal cablaggio: verificato elencando i `file:riga` di ogni warning.
+
 ## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
 
 > Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno
@@ -2080,7 +2152,7 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
 **BLOCCO 12.A — dialogo di commit** (`App/Views/CommitDialog.cs`, 3341 righe; upstream
 `src/app/GitUI/CommandsDialogs/FormCommit.cs` + `FormCommit.Designer.cs`)
 
-- [ ] **12.A.1 — un nuovo file selezionato mostra il pannello diff VUOTO.** Causa accertata:
+- [x] **12.A.1 — un nuovo file selezionato mostra il pannello diff VUOTO.** ✅ M71 Causa accertata:
       `PatchStagingService.cs:76-92` esegue `git diff [--cached] -- <path>` e per un file
       **untracked** git non produce nulla (non è nell'index, non c'è niente da diffare) →
       `stdout` vuoto, il pannello resta bianco senza errore. Upstream mostra il **contenuto
@@ -2089,7 +2161,7 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
       patch vero con header `--- /dev/null` — coerente con `_diffFileIsNew`, già usato a
       `CommitDialog.cs:1429`/`:1849` per il line-staging) e non l'output vuoto di `git diff`.
       Attenzione a binari e file grandi: upstream tronca.
-- [ ] **12.A.2 — il commit non passa dal process dialog.** Upstream esegue il commit dentro
+- [x] **12.A.2 — il commit non passa dal process dialog.** ✅ M71 Upstream esegue il commit dentro
       `FormProcess.ShowDialog` (`FormCommit.cs:1265`) e l'utente vede comando+output+hook.
       Il port lo esegue in silenzio: `CommitActionsService.Commit` (`:54-79`) chiama
       `module.GitExecutable.Execute` e `CommitDialog.DoCommit` (`:2331`) riporta solo una riga
@@ -2097,7 +2169,7 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
       **invisibili**. Fix: instradare il commit su `GitProcessDialog` (il port ha già
       `GitProcessDialog.RunStreamingAsync`, usato per il push a `CommitDialog.cs:2556`) —
       stessa superficie del push, con `Keep dialog open`.
-- [ ] **12.A.3 — `Reset all changes` / `Reset unstaged changes` fanno la cosa sbagliata.**
+- [x] **12.A.3 — `Reset all changes` / `Reset unstaged changes` fanno la cosa sbagliata.** ✅ M71
       Upstream (`FormCommit.cs:2184-2198`) instrada **entrambi** su
       `StartResetChangesDialog(..., onlyWorkTree)` = `FormResetChanges`, che chiede conferma
       **e** decide cosa fare degli **untracked**; poi disabilita i pulsanti quando non c'è
@@ -2130,7 +2202,7 @@ nessun dialogo, nessun process dialog, nessuna conferma, e in caso di conflitto 
 scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMergeBranch`
 (187 righe) né di `FormResolveConflicts` (1571 righe).
 
-- [ ] **12.B.1 — `MergeDialog` (port di `FormMergeBranch`)**: combo del branch da mergiare,
+- [x] **12.B.1 — `MergeDialog` (port di `FormMergeBranch`)** ✅ M71: combo del branch da mergiare,
       `Into current branch <x>` in sola lettura, i due radio fast-forward / always-new-commit,
       checkbox **Do not commit**, **Show advanced options** (squash / strategy /
       allow-unrelated-histories: sono esattamente i parametri già presenti nella firma di
@@ -2138,7 +2210,7 @@ scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMer
       illustrativo è **omettibile** (come l'illustrazione del Pull, decisa in M50/P3).
       I quattro call-site vanno instradati qui; `MergeBranch` deve accettare le opzioni invece
       dei flag cablati.
-- [ ] **12.B.2 — il merge passa dal `GitProcessDialog`** (img 01), come già fanno
+- [x] **12.B.2 — il merge passa dal `GitProcessDialog`** ✅ M71 (img 01), come già fanno
       fetch/pull/push: comando, output live, `Keep dialog open`, `OK`/`Abort`.
 - [ ] **12.B.3 — conferma "Merge conflicts" dopo un merge fallito** (img 02): port di
       `MergeConflictHandler.HandleMergeConflicts`
