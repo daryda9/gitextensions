@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using GitCommands;
+using GitCommands.Config;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
 using GitExtensions.Extensibility.Git;
@@ -13,9 +14,38 @@ namespace GitExtensions.Avalonia.Services;
 /// </summary>
 public sealed record RemoteRow(string Name, string FetchUrl, string PushUrl)
 {
+    /// <summary>
+    ///  The raw <c>remote.&lt;name&gt;.pushurl</c> config value, empty when the key is
+    ///  absent. Distinct from <see cref="PushUrl"/> on purpose: that one falls back to
+    ///  the fetch URL (which is what a push actually uses when no separate push URL is
+    ///  configured), so it cannot tell "no pushurl key" from "pushurl equal to url".
+    ///  The Remotes dialog needs that distinction to decide whether the
+    ///  "Use separate push URL" box starts ticked — upstream reads the key the same
+    ///  way, taking the LAST value when several exist
+    ///  (<c>ConfigFileRemoteSettingsManager.LoadRemotes</c>, and the note in
+    ///  <c>ConfigFileRemote.cs:40-43</c>).
+    /// </summary>
+    public string ConfiguredPushUrl { get; init; } = string.Empty;
+
     public string Display => string.IsNullOrEmpty(FetchUrl) ? Name : $"{Name}  ({FetchUrl})";
 
     public override string ToString() => Display;
+}
+
+/// <summary>
+///  One local branch as shown on the Remotes dialog's "Default pull behavior
+///  (fetch &amp; merge)" tab: which remote it pulls from and which remote branch it
+///  merges with. The pair maps onto <c>branch.&lt;name&gt;.remote</c> and
+///  <c>branch.&lt;name&gt;.merge</c>.
+///
+///  <para><see cref="MergeWith"/> is the SHORT name (<c>main</c>), matching what
+///  upstream's grid displays; git stores it fully qualified
+///  (<c>refs/heads/main</c>) and <see cref="GitRef.MergeWith"/> does the
+///  stripping/qualifying on both sides.</para>
+/// </summary>
+public sealed record BranchTrackingRow(string Name, string TrackingRemote, string MergeWith)
+{
+    public override string ToString() => Name;
 }
 
 /// <summary>
@@ -30,6 +60,14 @@ public sealed record GitCredentials(string Username, string Password);
 ///  the UI to prompt for credentials and retry once.
 /// </summary>
 public sealed record RemoteOpResult(bool Success, string Output, bool AuthFailed);
+
+/// <summary>
+///  Outcome of saving a remote's separate push URL. <see cref="SeparatePushUrlKept"/>
+///  is the state the "Use separate push URL" box should end up in: upstream's
+///  <c>SaveClick</c> mutates the check box itself when the value turns out to be empty
+///  or redundant (<c>FormRemotes.cs:509-513</c>), so the caller has to follow.
+/// </summary>
+public sealed record PushUrlSaveResult(RemoteOpResult Result, bool SeparatePushUrlKept);
 
 /// <summary>
 ///  What a fetch/pull does with tags, mirroring the three radio buttons of the
@@ -164,7 +202,200 @@ public sealed class RemoteService
         return [.. remotes.Select(r => new RemoteRow(
             r.Name,
             r.FetchUrl ?? string.Empty,
-            r.PushUrls.Count > 0 ? r.PushUrls[0] : r.FetchUrl ?? string.Empty))];
+            r.PushUrls.Count > 0 ? r.PushUrls[0] : r.FetchUrl ?? string.Empty)
+        {
+            ConfiguredPushUrl = ReadPushUrlSetting(module, r.Name),
+        })];
+    }
+
+    // The raw remote.<name>.pushurl, last value wins — see RemoteRow.ConfiguredPushUrl.
+    private static string ReadPushUrlSetting(GitModule module, string remote)
+        => module.GetSettings(string.Format(SettingKeyString.RemotePushUrl, remote)).LastOrDefault() ?? string.Empty;
+
+    /// <summary>
+    ///  Writes (or removes) a remote's SEPARATE push URL
+    ///  (<c>remote.&lt;name&gt;.pushurl</c>), with upstream's exact semantics.
+    ///
+    ///  <para>Upstream never stores an empty value: <c>UpdateSettings</c>
+    ///  (<c>ConfigFileRemoteSettingsManager.cs:454-467</c>) writes the key with
+    ///  <c>SetSetting</c> when the value is non-blank and REMOVES it with
+    ///  <c>UnsetSetting</c> otherwise. On top of that <c>FormRemotes.SaveClick</c>
+    ///  (<c>FormRemotes.cs:509-513</c>) unticks the check box — hence also drops the
+    ///  key — in two more cases:</para>
+    ///  <list type="bullet">
+    ///   <item>the box is ticked but the text is empty;</item>
+    ///   <item>the push URL equals the fetch URL, compared case-INSENSITIVELY (a
+    ///    separate push URL identical to the fetch URL is redundant).</item>
+    ///  </list>
+    ///
+    ///  <para>Both normalisations happen here so the caller cannot get them wrong,
+    ///  and the effective decision is reported back through
+    ///  <see cref="PushUrlSaveResult.SeparatePushUrlKept"/> so the dialog can retick /
+    ///  untick its box the way upstream's form does.</para>
+    /// </summary>
+    /// <param name="useSeparatePushUrl">State of the "Use separate push URL" box.</param>
+    /// <param name="pushUrl">Contents of the push URL box (trimmed here).</param>
+    /// <param name="fetchUrl">The remote's fetch URL, for the redundancy check.</param>
+    public PushUrlSaveResult SetSeparatePushUrl(string repoPath, string remote, bool useSeparatePushUrl, string pushUrl, string fetchUrl)
+    {
+        string name = remote?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+        {
+            return new PushUrlSaveResult(new RemoteOpResult(false, "Remote name cannot be empty.", AuthFailed: false), false);
+        }
+
+        string target = pushUrl?.Trim() ?? string.Empty;
+        string url = fetchUrl?.Trim() ?? string.Empty;
+
+        // FormRemotes.cs:509-513, verbatim.
+        bool keep = useSeparatePushUrl;
+        if ((target.Length == 0 && keep)
+            || (target.Length > 0 && target.Equals(url, StringComparison.OrdinalIgnoreCase)))
+        {
+            keep = false;
+        }
+
+        // FormRemotes.cs:526 — the manager receives the URL only when the box survived.
+        string? value = keep ? target : null;
+
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            string key = string.Format(SettingKeyString.RemotePushUrl, name);
+
+            // UpdateSettings: blank => UnsetSetting (git config --unset), else SetSetting.
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                module.UnsetSetting(key);
+            }
+            else
+            {
+                module.SetSetting(key, value);
+            }
+
+            return new PushUrlSaveResult(new RemoteOpResult(true, string.Empty, AuthFailed: false), keep);
+        }
+        catch (Exception ex)
+        {
+            return new PushUrlSaveResult(
+                new RemoteOpResult(false, ex.GetBaseException().Message, AuthFailed: false),
+                keep);
+        }
+    }
+
+    /// <summary>
+    ///  Lists the LOCAL branches with their default-pull configuration, ordered by
+    ///  name — the data behind upstream's "Default pull behavior" grid
+    ///  (<c>FormRemotes.cs:340-351</c>, which uses <c>GetRefs(RefsFilter.Heads)</c>
+    ///  ordered by name).
+    /// </summary>
+    public IReadOnlyList<BranchTrackingRow> ListBranchTracking(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        // The IGitRef getters read git config themselves (GitRef.cs:130-168), so this
+        // is always the on-disk truth rather than a cached projection.
+        return
+        [
+            .. module.GetRefs(RefsFilter.Heads)
+                .OrderBy(r => r.Name, StringComparer.Ordinal)
+                .Select(r => new BranchTrackingRow(r.Name, r.TrackingRemote, r.MergeWith)),
+        ];
+    }
+
+    /// <summary>
+    ///  Sets (or clears) a local branch's default pull configuration, delegating to
+    ///  the CORE <see cref="IGitRef.TrackingRemote"/> / <see cref="IGitRef.MergeWith"/>
+    ///  setters rather than writing the keys by hand, so the port inherits upstream's
+    ///  behaviour exactly (<c>GitRef.cs:130-168</c>):
+    ///  <list type="bullet">
+    ///   <item>an empty remote UNSETS <c>branch.&lt;x&gt;.remote</c>;</item>
+    ///   <item>a non-empty remote sets it and, when <c>branch.&lt;x&gt;.merge</c> is
+    ///    still empty, AUTO-SEEDS the merge ref to the branch's own name — this is why
+    ///    picking a remote in upstream's combo silently fills the "Default merge with"
+    ///    column;</item>
+    ///   <item>an empty merge-with UNSETS <c>branch.&lt;x&gt;.merge</c>, a non-empty one
+    ///    is stored FULLY QUALIFIED (<c>refs/heads/&lt;name&gt;</c>) while the UI shows
+    ///    the short name.</item>
+    ///  </list>
+    ///
+    ///  <para>Order matters: the remote is applied first, exactly like upstream's two
+    ///  <c>Validated</c> handlers fire, so the explicit merge-with the user chose wins
+    ///  over the auto-seed instead of being overwritten by it.</para>
+    /// </summary>
+    public RemoteOpResult SetBranchPullConfiguration(string repoPath, string branch, string trackingRemote, string mergeWith)
+    {
+        string name = branch?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+        {
+            return new RemoteOpResult(false, "Branch name cannot be empty.", AuthFailed: false);
+        }
+
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            IGitRef? head = module.GetRefs(RefsFilter.Heads)
+                .FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.Ordinal));
+
+            if (head is null)
+            {
+                return new RemoteOpResult(false, $"No local branch named '{name}'.", AuthFailed: false);
+            }
+
+            head.TrackingRemote = trackingRemote?.Trim() ?? string.Empty;
+            head.MergeWith = mergeWith?.Trim() ?? string.Empty;
+
+            return new RemoteOpResult(true, string.Empty, AuthFailed: false);
+        }
+        catch (Exception ex)
+        {
+            return new RemoteOpResult(false, ex.GetBaseException().Message, AuthFailed: false);
+        }
+    }
+
+    /// <summary>
+    ///  The candidate "Default merge with" values for <paramref name="remote"/>: the
+    ///  short names of that remote's remote-tracking branches. Mirrors upstream's
+    ///  <c>DefaultMergeWithComboDropDown</c> (<c>FormRemotes.cs:669-700</c>), including
+    ///  its guard that an unconfigured remote (no <c>remote.&lt;name&gt;.url</c>)
+    ///  contributes nothing.
+    ///
+    ///  <para>One deliberate deviation: upstream selects the refs whose <c>Name</c>
+    ///  case-insensitively CONTAINS the remote name, which also matches a remote called
+    ///  <c>origin2</c> when <c>origin</c> is selected. Here the ref's own
+    ///  <see cref="IGitRef.Remote"/> is compared for equality — the evident intent,
+    ///  without the substring bug.</para>
+    /// </summary>
+    public IReadOnlyList<string> ListMergeWithCandidates(string repoPath, string remote)
+    {
+        string name = remote?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+        {
+            return [];
+        }
+
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+            if (string.IsNullOrEmpty(module.GetSetting(string.Format(SettingKeyString.RemoteUrl, name))))
+            {
+                return [];
+            }
+
+            return
+            [
+                .. module.GetRefs(RefsFilter.Remotes)
+                    .Where(r => string.Equals(r.Remote, name, StringComparison.OrdinalIgnoreCase))
+                    .Select(r => r.LocalName)
+                    .Where(n => !string.IsNullOrEmpty(n) && n != "HEAD")
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(n => n, StringComparer.Ordinal),
+            ];
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     /// <summary>
