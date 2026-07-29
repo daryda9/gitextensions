@@ -8,11 +8,25 @@ namespace GitExtensions.Avalonia.Services;
 ///  Archive output formats offered from the revision grid. Mapped to the
 ///  corresponding <c>git archive --format=</c> value in
 ///  <see cref="RevertArchiveService.Archive"/>.
+///
+///  <para>
+///  Upstream's <c>FormArchive</c> exposes exactly two, as radio buttons:
+///  <c>zip</c> and plain <c>tar</c> (<c>FormArchive.Designer.cs</c>,
+///  <c>_NO_TRANSLATE_radioButtonFormatZip</c> / <c>…FormatTar</c>, and
+///  <c>FormArchive.cs:131</c> which maps them to the literal strings
+///  <c>"zip"</c> / <c>"tar"</c>). <see cref="Tar"/> exists to close that gap.
+///  <see cref="TarGz"/> is a deliberate addition on top of upstream: it is what a
+///  Linux user reaches for, and <c>git archive</c> supports it natively via its
+///  configured <c>tar.tar.gz.command</c>.
+///  </para>
 /// </summary>
 public enum ArchiveFormat
 {
     Zip,
     TarGz,
+
+    /// <summary>Plain, uncompressed tar — upstream's second radio button.</summary>
+    Tar,
 }
 
 /// <summary>
@@ -51,9 +65,28 @@ public sealed class RevertArchiveService
 
     /// <summary>
     ///  Writes the tree of the commit identified by <paramref name="commitHash"/> to
-    ///  <paramref name="outputPath"/> using <c>git archive --format=&lt;zip|tar.gz&gt;
+    ///  <paramref name="outputPath"/> using <c>git archive --format=&lt;zip|tar|tar.gz&gt;
     ///  -o &lt;path&gt; &lt;hash&gt;</c>. Success requires both a clean git exit and the
     ///  output file existing and non-empty. Never throws.
+    ///
+    ///  <para>
+    ///  Two deliberate divergences from upstream's single <c>string.Format</c>
+    ///  (<c>FormArchive.cs:133</c>):
+    ///  </para>
+    ///  <list type="bullet">
+    ///   <item>the pathspec is introduced with <c>--</c>, which upstream omits — without
+    ///    it a path that happens to look like a ref is read as one;</item>
+    ///   <item>there is <b>no <c>--prefix</c></b>, because upstream has no prefix control
+    ///    either: <c>FormArchive</c> exposes only the format radio buttons, the path
+    ///    filter and the diff filter. Adding one would be inventing UI, so it is left
+    ///    out on purpose.</item>
+    ///  </list>
+    ///  <para>
+    ///  <see cref="GitArgumentBuilder"/> flattens every argument into one command line,
+    ///  so a value containing a space would be re-split into two arguments (git then
+    ///  exits 0 having silently archived the wrong thing). Both the output path and each
+    ///  pathspec are therefore quoted.
+    ///  </para>
     /// </summary>
     /// <param name="paths">
     ///  Optional pathspec limiting what goes into the archive — upstream's
@@ -71,7 +104,12 @@ public sealed class RevertArchiveService
         IReadOnlyList<string>? paths = null)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        string formatArg = format == ArchiveFormat.Zip ? "zip" : "tar.gz";
+        string formatArg = format switch
+        {
+            ArchiveFormat.Zip => "zip",
+            ArchiveFormat.Tar => "tar",
+            _ => "tar.gz",
+        };
         GitArgumentBuilder args = new("archive")
         {
             $"--format={formatArg}",

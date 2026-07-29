@@ -53,6 +53,14 @@ public sealed class ArchiveDialog : Window
     private readonly TextBlock _revisionSubject;
     private readonly TextBlock _revisionAuthor;
 
+    // Upstream's btnChooseRevision (FormArchive.cs:167-174) re-targets the archive at
+    // another commit through FormChooseCommit. The port has no commit picker, so the
+    // revision is typed and resolved with rev-parse; _archiveHash is what actually
+    // gets archived and is re-resolved on every Load / Archive.
+    private readonly TextBox _revisionInput;
+    private readonly Button _loadRevision;
+    private string _archiveHash;
+
     private readonly ComboBox _format;
     private readonly TextBox _outputPath;
 
@@ -72,6 +80,7 @@ public sealed class ArchiveDialog : Window
     {
         _repoPath = repoPath;
         _commitHash = commitHash;
+        _archiveHash = commitHash;
 
         IBrush text = Brush("App.Text", "#DCDCDC");
         IBrush dim = Brush("App.TextDim", "#9B9B9B");
@@ -117,9 +126,35 @@ public sealed class ArchiveDialog : Window
             },
         };
 
+        // "Choose another revision" (upstream's label2 + btnChooseRevision).
+        _revisionInput = new TextBox
+        {
+            Text = commitHash,
+            FontFamily = Monospace,
+            FontSize = 12,
+            Watermark = T("Hash, branch, tag, HEAD~1…"),
+        };
+        _loadRevision = new Button
+        {
+            Content = T("FormArchive/label2.Text", "Load"),
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        _loadRevision.Click += (_, _) => _ = LoadRevisionAsync();
+
+        Grid revisionRow = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        Grid.SetColumn(_revisionInput, 0);
+        Grid.SetColumn(_loadRevision, 1);
+        revisionRow.Children.Add(_revisionInput);
+        revisionRow.Children.Add(_loadRevision);
+
         _format = new ComboBox
         {
-            ItemsSource = new[] { "zip", "tar.gz" },
+            // Upstream offers zip + plain tar; tar.gz is the port's addition.
+            ItemsSource = new[] { "zip", "tar", "tar.gz" },
             SelectedIndex = 0,
             HorizontalAlignment = HorizontalAlignment.Left,
             MinWidth = 140,
@@ -172,8 +207,13 @@ public sealed class ArchiveDialog : Window
             Margin = new Thickness(0, 4, 0, 0),
         };
 
-        _usePathFilter.IsCheckedChanged += (_, _) => SyncFilters();
-        _useRevisionFilter.IsCheckedChanged += (_, _) => SyncFilters();
+        // Upstream's two filters are mutually exclusive: checking one unchecks the
+        // other (FormArchive.cs:176-192). The port used to let both be checked and
+        // then silently preferred the path filter, so the revision filter looked
+        // armed while doing nothing. _syncingFilters breaks the callback loop the
+        // programmatic uncheck would otherwise cause.
+        _usePathFilter.IsCheckedChanged += (_, _) => OnFilterToggled(_usePathFilter, _useRevisionFilter);
+        _useRevisionFilter.IsCheckedChanged += (_, _) => OnFilterToggled(_useRevisionFilter, _usePathFilter);
         SyncFilters();
 
         _status = new TextBlock
@@ -251,36 +291,116 @@ public sealed class ArchiveDialog : Window
         _ = LoadRevisionAsync();
     }
 
-    private ArchiveFormat SelectedFormat => _format.SelectedIndex == 1 ? ArchiveFormat.TarGz : ArchiveFormat.Zip;
+    private ArchiveFormat SelectedFormat => _format.SelectedIndex switch
+    {
+        1 => ArchiveFormat.Tar,
+        2 => ArchiveFormat.TarGz,
+        _ => ArchiveFormat.Zip,
+    };
 
-    private string Extension => SelectedFormat == ArchiveFormat.TarGz ? ".tar.gz" : ".zip";
+    private string Extension => SelectedFormat switch
+    {
+        ArchiveFormat.Tar => ".tar",
+        ArchiveFormat.TarGz => ".tar.gz",
+        _ => ".zip",
+    };
 
-    // Fills the "This revision will be archived" panel. Reading the commit needs
-    // git, so it happens off the UI thread and the panel starts with just the hash.
+    // Resolves whatever is typed in the revision box and fills the "This revision
+    // will be archived" panel from it. Both the rev-parse and the commit read need
+    // git, so they happen off the UI thread; on failure _archiveHash is left alone
+    // so Archive can still refuse with a clear message.
     private async Task LoadRevisionAsync()
     {
-        CommitDetailInfo? info;
+        string typed = (_revisionInput.Text ?? string.Empty).Trim();
+        if (typed.Length == 0)
+        {
+            _status.Text = T("Enter a revision to archive.");
+            return;
+        }
+
+        _loadRevision.IsEnabled = false;
+        string repo = _repoPath;
+
+        (string? Hash, CommitDetailInfo? Info) loaded;
         try
         {
-            info = await Task.Run(() => new CommitDetailService().LoadCommit(_repoPath, _commitHash));
+            loaded = await Task.Run(() =>
+            {
+                string? hash = RevertArchiveService.ResolveCommit(repo, typed);
+                if (hash is null)
+                {
+                    return (null, (CommitDetailInfo?)null);
+                }
+
+                CommitDetailInfo? info;
+                try
+                {
+                    info = new CommitDetailService().LoadCommit(repo, hash);
+                }
+                catch (Exception)
+                {
+                    info = null;
+                }
+
+                return ((string?)hash, info);
+            });
         }
         catch (Exception)
         {
-            info = null;
+            loaded = (null, null);
         }
 
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            if (info is null)
+            _loadRevision.IsEnabled = true;
+
+            if (loaded.Hash is null)
             {
-                _revisionSubject.Text = T("(commit details unavailable)");
+                _revisionSubject.Text = string.Format(T("Not a revision: {0}"), typed);
+                _revisionAuthor.Text = string.Empty;
+                _status.Text = string.Format(T("Not a revision: {0}"), typed);
                 return;
             }
 
-            _revisionHash.Text = info.ShortHash;
-            _revisionSubject.Text = info.Subject;
-            _revisionAuthor.Text = $"{info.Author} — {info.AuthorDate}";
+            _archiveHash = loaded.Hash;
+            _revisionHash.Text = ShortHash(loaded.Hash);
+            _status.Text = string.Empty;
+
+            if (loaded.Info is null)
+            {
+                _revisionSubject.Text = T("(commit details unavailable)");
+                _revisionAuthor.Text = string.Empty;
+                return;
+            }
+
+            _revisionSubject.Text = loaded.Info.Subject;
+            _revisionAuthor.Text = $"{loaded.Info.Author} — {loaded.Info.AuthorDate}";
         });
+    }
+
+    private bool _syncingFilters;
+
+    private void OnFilterToggled(CheckBox toggled, CheckBox other)
+    {
+        if (_syncingFilters)
+        {
+            return;
+        }
+
+        _syncingFilters = true;
+        try
+        {
+            if (toggled.IsChecked == true)
+            {
+                other.IsChecked = false;
+            }
+        }
+        finally
+        {
+            _syncingFilters = false;
+        }
+
+        SyncFilters();
     }
 
     private void SyncFilters()
@@ -298,12 +418,15 @@ public sealed class ArchiveDialog : Window
             return;
         }
 
+        // ".tar.gz" must be tested before ".tar", or switching away from tar.gz would
+        // leave a stray ".tar" behind ("x.tar.gz" -> "x.tar" -> "x.tar.zip").
         string trimmed = current;
         if (trimmed.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
         {
             trimmed = trimmed[..^7];
         }
-        else if (trimmed.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        else if (trimmed.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+              || trimmed.EndsWith(".tar", StringComparison.OrdinalIgnoreCase))
         {
             trimmed = trimmed[..^4];
         }
@@ -318,7 +441,7 @@ public sealed class ArchiveDialog : Window
             IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
                 Title = T("Save archive as"),
-                SuggestedFileName = $"{ShortHash(_commitHash)}{Extension}",
+                SuggestedFileName = SuggestedFileName(),
                 DefaultExtension = Extension.TrimStart('.'),
             });
 
@@ -365,18 +488,33 @@ public sealed class ArchiveDialog : Window
             return;
         }
 
+        string typedRevision = (_revisionInput.Text ?? string.Empty).Trim();
+        if (typedRevision.Length == 0)
+        {
+            _status.Text = T("Enter a revision to archive.");
+            return;
+        }
+
         SetBusy(true);
         _status.Text = T("Archiving…");
 
         ArchiveFormat format = SelectedFormat;
         string repo = _repoPath;
-        string hash = _commitHash;
 
         (bool Ok, string Message) outcome;
         try
         {
             outcome = await Task.Run(() =>
             {
+                // The revision box is free text, so resolve it here rather than trust
+                // whatever the last Load left behind: the user may have retyped it and
+                // gone straight to Archive.
+                string? hash = RevertArchiveService.ResolveCommit(repo, typedRevision);
+                if (hash is null)
+                {
+                    return (false, string.Format(T("Not a revision: {0}"), typedRevision));
+                }
+
                 List<string> pathspec = [];
 
                 if (byPaths)
@@ -445,6 +583,27 @@ public sealed class ArchiveDialog : Window
             .Select(line => line.Trim('\r', ' ', '\t'))
             .Where(line => line.Length > 0)
             .ToArray();
+
+    /// <summary>
+    ///  Upstream's suggestion (<c>FormArchive.cs:116-121</c>):
+    ///  <c>&lt;repo folder&gt;_&lt;hash&gt;</c>, plus <c>_&lt;the single path with '.'
+    ///  turned into '_'&gt;</c> when the path filter holds exactly one entry. The
+    ///  extension follows the selected format, which upstream leaves to the WinForms
+    ///  save dialog's filter mask.
+    /// </summary>
+    private string SuggestedFileName()
+    {
+        string repoName = new DirectoryInfo(_repoPath.TrimEnd(Path.DirectorySeparatorChar)).Name;
+        string name = $"{repoName}_{ShortHash(_archiveHash)}";
+
+        string[] typedPaths = Lines(_paths.Text);
+        if (_usePathFilter.IsChecked == true && typedPaths.Length == 1)
+        {
+            name += "_" + typedPaths[0].Replace('.', '_').Replace('/', '_');
+        }
+
+        return name + Extension;
+    }
 
     private static string ShortHash(string hash) => hash.Length > 10 ? hash[..10] : hash;
 
