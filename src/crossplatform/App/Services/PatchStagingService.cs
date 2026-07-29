@@ -21,6 +21,20 @@ public enum PatchStagingAction
 public sealed record PatchStagingResult(bool Success, string Output);
 
 /// <summary>
+///  A loaded diff, split into what goes on screen and what a patch may be cut from.
+/// </summary>
+/// <param name="Display">The text to render.</param>
+/// <param name="Source">
+///  The patch source: byte-for-byte git output, or an EMPTY string when
+///  <see cref="Display"/> is not a faithful diff (git error text, or content that
+///  had to be truncated), in which case line staging must stay disabled.
+/// </param>
+public sealed record DiffLoad(string Display, string Source)
+{
+    public static readonly DiffLoad Empty = new(string.Empty, string.Empty);
+}
+
+/// <summary>
 ///  Per-hunk / per-line staging, i.e. the part of <c>git add -p</c> the port was
 ///  missing: a patch is built from a character range inside a unified diff and fed
 ///  to <c>git apply</c> on stdin.
@@ -69,17 +83,44 @@ public static class PatchStagingService
         "--patch --no-color --no-ext-diff --no-textconv --unified=3 --src-prefix=a/ --dst-prefix=b/";
 
     /// <summary>
-    ///  The clean unified diff of one file, work tree (<paramref name="staged"/> =
-    ///  <see langword="false"/>) or index. Returns an empty string when there is
-    ///  nothing to show (untracked files, for instance, never appear in a diff).
+    ///  Line budget for the synthetic diff of an untracked file. Past it the panel
+    ///  shows a truncated view (upstream's <c>[Truncated]</c> behaviour) and line
+    ///  staging is switched off, because a patch cut from a partial file would
+    ///  carry counters git cannot match.
     /// </summary>
-    public static string LoadDiff(string repoPath, string path, bool staged)
+    public const int UntrackedMaxLines = 5000;
+
+    /// <summary>Character budget for the same, for very long single lines.</summary>
+    public const int UntrackedMaxChars = 512 * 1024;
+
+    /// <summary>
+    ///  The clean unified diff of one file, work tree (<paramref name="staged"/> =
+    ///  <see langword="false"/>) or index.
+    ///  <para>
+    ///  An <b>untracked</b> file is not in the index and not in HEAD, so a plain
+    ///  <c>git diff</c> has nothing to compare and prints NOTHING — which used to
+    ///  leave the diff panel blank with no error at all. For those, git is asked for
+    ///  a real patch against <c>/dev/null</c> (<c>diff --no-index</c>), which yields
+    ///  the whole file as added lines under a genuine <c>--- /dev/null</c> header,
+    ///  the same shape <c>isNewFile</c> line staging already expects. Binary content
+    ///  is git's own problem there: it prints <c>Binary files … differ</c> instead of
+    ///  raw bytes.
+    ///  </para>
+    /// </summary>
+    /// <param name="untracked">
+    ///  The file exists only in the work tree (status "new" on the unstaged side).
+    /// </param>
+    public static DiffLoad LoadDiff(string repoPath, string path, bool staged, bool untracked = false)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        string args = staged
-            ? $"diff --cached {CleanDiffFlags} -- \"{path}\""
-            : $"diff {CleanDiffFlags} -- \"{path}\"";
+        string args = untracked
+            ? $"diff --no-index {CleanDiffFlags} -- /dev/null \"{path}\""
+            : staged
+                ? $"diff --cached {CleanDiffFlags} -- \"{path}\""
+                : $"diff {CleanDiffFlags} -- \"{path}\"";
 
+        // `git diff --no-index` exits 1 whenever the files differ, which is the
+        // normal case here, so the exit code must not be treated as a failure.
         ExecutionResult result = module.GitExecutable.Execute(
             args,
             outputEncoding: PatchEncoding,
@@ -88,7 +129,53 @@ public static class PatchStagingService
         // StandardOutput only: stderr mixed into the text would corrupt the patch
         // source. It is still worth surfacing when git produced nothing else.
         string stdout = result.StandardOutput ?? string.Empty;
-        return stdout.Length > 0 ? stdout : (result.AllOutput ?? string.Empty);
+        if (stdout.Length == 0)
+        {
+            // Nothing on stdout: whatever git said went to stderr and is not a diff,
+            // so it may be shown but never cut from.
+            string message = result.AllOutput ?? string.Empty;
+            return new DiffLoad(message, string.Empty);
+        }
+
+        return untracked ? Clamp(stdout) : new DiffLoad(stdout, stdout);
+    }
+
+    /// <summary>
+    ///  Keeps a whole-file "diff" inside the display budget. Truncation happens on a
+    ///  line boundary and drops the patch source, so the truncated text can never be
+    ///  turned into a patch.
+    /// </summary>
+    private static DiffLoad Clamp(string diff)
+    {
+        int cut = -1;
+        int lines = 0;
+        for (int i = 0; i < diff.Length; i++)
+        {
+            if (diff[i] != '\n')
+            {
+                continue;
+            }
+
+            lines++;
+            if (lines > UntrackedMaxLines || i + 1 > UntrackedMaxChars)
+            {
+                cut = i + 1;
+                break;
+            }
+        }
+
+        if (cut < 0 && diff.Length <= UntrackedMaxChars)
+        {
+            return new DiffLoad(diff, diff);
+        }
+
+        if (cut < 0)
+        {
+            // One enormous line: there is no boundary to cut on.
+            cut = UntrackedMaxChars;
+        }
+
+        return new DiffLoad(diff[..cut] + TruncatedMarker + "\n", string.Empty);
     }
 
     /// <summary>
@@ -195,4 +282,7 @@ public static class PatchStagingService
     public const string NoHunksMessage = "This file has no text hunks to patch (binary, or nothing changed).";
     public const string NotUtf8Message = "The diff is not valid UTF-8; line staging is not available for this file.";
     public const string NoSelectionMessage = "Select one or more diff lines first.";
+
+    /// <summary>Appended to a clamped whole-file view, like upstream's file viewer.</summary>
+    public const string TruncatedMarker = "[Truncated]";
 }

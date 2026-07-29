@@ -1402,17 +1402,23 @@ public sealed class CommitDialog : Window
         string path = row.Path;
         bool isNew = row.Status == "new";
         bool isRenamed = row.Status == "renamed" || row.Status == "copied";
+
+        // A "new" row on the UNSTAGED side is an untracked file: it is in no tree git
+        // can diff against, so `git diff` prints nothing and the panel used to stay
+        // blank. PatchStagingService diffs it against /dev/null instead.
+        bool untracked = isNew && !staged;
         int token = ++_diffToken;
 
         _ = Task.Run(() =>
         {
             try
             {
-                return (Text: PatchStagingService.LoadDiff(repo, path, staged), Failed: false);
+                return (Diff: PatchStagingService.LoadDiff(repo, path, staged, untracked), Failed: false);
             }
             catch (Exception ex)
             {
-                return (Text: string.Format(T("Could not load diff: {0}"), ex.Message), Failed: true);
+                string message = string.Format(T("Could not load diff: {0}"), ex.Message);
+                return (Diff: new DiffLoad(message, string.Empty), Failed: true);
             }
         }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
         {
@@ -1423,15 +1429,16 @@ public sealed class CommitDialog : Window
                 return;
             }
 
-            (string text, bool failed) = t.Result;
+            (DiffLoad diff, bool failed) = t.Result;
             _diffPath = failed ? string.Empty : path;
             _diffStaged = staged;
             _diffFileIsNew = isNew;
             _diffFileIsRenamed = isRenamed;
 
-            // On failure the panel still shows git's message, but the patch source
-            // stays empty so nothing can be cut from it.
-            RenderDiff(failed ? string.Empty : text, text);
+            // The service already decides what may be cut from: an error message or a
+            // truncated whole-file view carries an EMPTY source, so line staging stays
+            // disabled while the text is still shown.
+            RenderDiff(diff.Source, diff.Display);
         }), TaskScheduler.Default);
     }
 
