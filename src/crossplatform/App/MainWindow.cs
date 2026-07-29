@@ -610,6 +610,10 @@ public sealed class MainWindow : Window
         // asks for a refresh once an operation ends (e.g. "Stop bisect").
         _progressBanner.SuspendWatcher = () => _watcher.Suspend();
         _progressBanner.RepositoryChanged += RefreshAll;
+
+        // "More" on the bisect bar opens the full panel, exactly as upstream's own
+        // bar does (InteractiveGitActionControl.cs:242-254).
+        _progressBanner.BisectDetailsRequested += () => _ = ShowBisectDialogAsync();
         _watcher.Degraded += message => Dispatcher.UIThread.Post(() => _statusBar.SetText(message));
     }
 
@@ -1452,17 +1456,55 @@ public sealed class MainWindow : Window
         Register("Compare to working directory", CompareToWorkingDirectory);
         Register("Compare to branch…", hash => _ = CompareToBranchAsync(hash));
 
-        // Bisect: mark the selected commit good/bad/skip (auto-starting a session
-        // if none is in progress), plus a stop/reset entry. Each surfaces git's
-        // output — the next commit to test, or the final "first bad commit".
+        // Bisect. These four act on an ALREADY OPEN session and the grid disables
+        // them when there is none (RevisionGridView.IsBisectInProgress, wired below,
+        // mirroring RevisionGridControl.cs:2256-2261). They used to auto-start a
+        // session when none was open — `git bisect start` with no prompt and nothing
+        // said, so a misclick in a submenu detached HEAD and moved the work tree.
+        // Starting is now its own explicit act, through the bisect panel.
+        Register("Bisect: start…", hash => { Task ignored = ShowBisectDialogAsync(); });
         Register("Bisect: mark good",
-            hash => RunBisect("Bisect good", () => _bisect.MarkGood(_repoPath!, hash), ensureStarted: true));
+            hash => RunBisect("Bisect good", () => _bisect.MarkGood(_repoPath!, hash)));
         Register("Bisect: mark bad",
-            hash => RunBisect("Bisect bad", () => _bisect.MarkBad(_repoPath!, hash), ensureStarted: true));
+            hash => RunBisect("Bisect bad", () => _bisect.MarkBad(_repoPath!, hash)));
         Register("Bisect: skip",
-            hash => RunBisect("Bisect skip", () => _bisect.Skip(_repoPath!, hash), ensureStarted: true));
+            hash => RunBisect("Bisect skip", () => _bisect.Skip(_repoPath!, hash)));
         Register("Bisect: stop/reset",
-            _ => RunBisect("Bisect reset", () => _bisect.Reset(_repoPath!), ensureStarted: false));
+            _ => RunBisect("Bisect reset", () => _bisect.Reset(_repoPath!)));
+
+        // The gate itself: one File.Exists on .git/BISECT_START, which is exactly
+        // what upstream's Module.InTheMiddleOfBisect() does (GitModule.cs:1968-1971),
+        // so it is safe to answer synchronously as the menu opens.
+        _revisions.IsBisectInProgress = () => _repoPath is { Length: > 0 } repo
+            && _bisect.InTheMiddleOfBisect(repo);
+        _fileHistory.IsBisectInProgress = _revisions.IsBisectInProgress;
+    }
+
+    /// <summary>
+    ///  Opens the bisect control panel — upstream's <c>FormBisect</c>, reached from
+    ///  the Commands menu (<c>FormBrowse.BisectClick:1805-1813</c>), from the
+    ///  notification bar's "More" button, and from the grid's "Start bisect…". The
+    ///  grid selection is handed over so the panel can offer upstream's range seeding.
+    /// </summary>
+    private async Task ShowBisectDialogAsync()
+    {
+        if (_repoPath is null)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        BisectDialog dialog = new(_repoPath, _revisions.SelectedCommitHashes);
+
+        using (IDisposable watch = SuspendWatcher())
+        {
+            await dialog.ShowDialog(this);
+        }
+
+        if (dialog.RepositoryChanged)
+        {
+            RefreshAll();
+        }
     }
 
     // Opens the modal reflog browser; on a checkout from it, refreshes the main
@@ -1484,10 +1526,11 @@ public sealed class MainWindow : Window
         }
     }
 
-    // Runs a bisect step off the UI thread, optionally auto-starting a session
-    // first, then surfaces git's output (next commit to test / first bad commit)
-    // in the status bar and refreshes the grid. Never throws.
-    private void RunBisect(string label, Func<BisectResult> op, bool ensureStarted)
+    // Runs one bisect step off the UI thread, then surfaces git's output (next commit
+    // to test / first bad commit) in the status bar and refreshes the grid. Never
+    // throws, and never starts a session on its own: the caller's entry is disabled
+    // unless one is already open.
+    private void RunBisect(string label, Func<BisectResult> op)
     {
         if (_repoPath is null)
         {
@@ -1504,19 +1547,7 @@ public sealed class MainWindow : Window
             BisectResult result;
             try
             {
-                result = await Task.Run(() =>
-                {
-                    if (ensureStarted && !_bisect.IsInProgress(_repoPath!))
-                    {
-                        BisectResult start = _bisect.Start(_repoPath!);
-                        if (!start.Success)
-                        {
-                            return start;
-                        }
-                    }
-
-                    return op();
-                });
+                result = await Task.Run(op);
             }
             catch (Exception ex)
             {

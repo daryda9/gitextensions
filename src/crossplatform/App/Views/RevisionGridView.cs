@@ -13,6 +13,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
+using GitExtensions.Avalonia.Theming;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -446,6 +447,36 @@ public sealed class RevisionGridView : UserControl
             return (rows.Count, rows.Count > 0 && rows.All(r => !IsArtificial(r)));
         }
     }
+
+    /// <summary>
+    ///  Supplied by the host: whether a bisect session is open in the repository the
+    ///  grid is showing. The row menu asks it as it opens, and enables the
+    ///  mark-good / mark-bad / skip / stop entries only when it answers true — the
+    ///  gate upstream applies at <c>RevisionGridControl.cs:2256-2261</c>. "Start
+    ///  bisect" is enabled on the opposite answer.
+    ///
+    ///  <para>Left unset, the four in-session entries stay disabled and only "Start
+    ///  bisect" is offered, so a host that does not wire this up cannot end up with a
+    ///  menu that silently begins a bisect.</para>
+    /// </summary>
+    public Func<bool>? IsBisectInProgress { get; set; }
+
+    /// <summary>
+    ///  The full hashes of the currently selected real commits, <b>oldest first</b>
+    ///  (the grid itself is newest-first). Artificial work-tree / index rows are left
+    ///  out. Used for the bisect dialog's range seeding, which needs the two ends of
+    ///  the selection.
+    ///
+    ///  <para>Ordered by row index rather than by <c>SelectedItems</c> order, which
+    ///  reflects the order the user clicked in and would make "oldest" depend on
+    ///  which end of the range was clicked first — the same reason the two-row diff
+    ///  path resolves older/newer through <c>Items.IndexOf</c>.</para>
+    /// </summary>
+    public IReadOnlyList<string> SelectedCommitHashes
+        => SelectedCommits()
+            .OrderByDescending(r => _list.Items.IndexOf(r))
+            .Select(r => r.Hash)
+            .ToList();
 
     /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
@@ -5259,7 +5290,8 @@ public sealed class RevisionGridView : UserControl
         IReadOnlyList<string> Local,
         IReadOnlyList<string> Remote,
         IReadOnlyList<string> Tags,
-        string CurrentBranch)
+        string CurrentBranch,
+        bool BisectInProgress)
     {
         // A single, real commit: the shape almost every commit operation needs.
         public bool SingleCommit => !Artificial && SelectionCount <= 1;
@@ -5499,10 +5531,43 @@ public sealed class RevisionGridView : UserControl
         {
             Header = Strip(T("RevisionGridControl/tsmiOtherActions.Text", "&Other actions")),
         };
-        AddRouted(other, "Bisect: mark good", ctx => ctx.SingleCommit);
-        AddRouted(other, "Bisect: mark bad", ctx => ctx.SingleCommit);
-        AddRouted(other, "Bisect: skip", ctx => ctx.SingleCommit);
-        AddRouted(other, "Bisect: stop/reset", ctx => true);
+        // Bisect. Upstream gates the four in-session entries on
+        // Module.InTheMiddleOfBisect() (RevisionGridControl.cs:2256-2261) and offers
+        // no way to start one from here at all — the start lives in FormBisect. This
+        // port needs the start reachable from the grid, because the grid is where the
+        // commit you want to bound the range with is; it opens the same panel rather
+        // than running `git bisect start` behind the menu, which is what these
+        // entries used to do implicitly for you.
+        AddRouted(
+            other,
+            "Bisect: start…",
+            ctx => !ctx.BisectInProgress,
+            T("FormBisect/Start.Text", "Start bisect") + "…",
+            "Bisect");
+        AddRouted(
+            other,
+            "Bisect: mark good",
+            ctx => ctx.SingleCommit && ctx.BisectInProgress,
+            T("RevisionGridControl/markRevisionAsGoodToolStripMenuItem.Text", "Mark revision as good"),
+            "BisectGood");
+        AddRouted(
+            other,
+            "Bisect: mark bad",
+            ctx => ctx.SingleCommit && ctx.BisectInProgress,
+            T("RevisionGridControl/markRevisionAsBadToolStripMenuItem.Text", "Mark revision as bad"),
+            "BisectBad");
+        AddRouted(
+            other,
+            "Bisect: skip",
+            ctx => ctx.SingleCommit && ctx.BisectInProgress,
+            T("RevisionGridControl/bisectSkipRevisionToolStripMenuItem.Text", "Skip revision"),
+            "BisectSkip");
+        AddRouted(
+            other,
+            "Bisect: stop/reset",
+            ctx => ctx.BisectInProgress,
+            T("RevisionGridControl/stopBisectToolStripMenuItem.Text", "Stop bisect"),
+            "BisectStop");
 
         // Anything the host registered that this menu does not place explicitly
         // still has to appear (AddCommitCommand is the shell's only hook), so it
@@ -5616,7 +5681,23 @@ public sealed class RevisionGridView : UserControl
     // Creates an entry driven by a host-registered command (AddCommitCommand). The
     // header is matched exactly; a command the shell did not register simply has no
     // entry, so the menu never shows a dead item.
-    private MenuItem? Routed(string header, Func<MenuCtx, bool> visible, Func<MenuCtx, bool>? enabled = null)
+    /// <param name="caption">
+    ///  What the entry reads, when that has to differ from the registration key —
+    ///  the key is the host's contract and stays English, while the caption can be a
+    ///  translated upstream resource string. Omitted, the key itself is shown, which
+    ///  is how every other entry here works.
+    /// </param>
+    /// <param name="icon">
+    ///  Base name of an upstream icon asset (case-sensitive, see
+    ///  <see cref="IconLoader"/>). A name that does not resolve leaves the entry
+    ///  without an icon rather than blank.
+    /// </param>
+    private MenuItem? Routed(
+        string header,
+        Func<MenuCtx, bool> visible,
+        Func<MenuCtx, bool>? enabled = null,
+        string? caption = null,
+        string? icon = null)
     {
         foreach ((string registered, Action<string> handler) in _commitCommands)
         {
@@ -5626,7 +5707,13 @@ public sealed class RevisionGridView : UserControl
             }
 
             _routedCommands.Add(registered);
-            MenuItem item = new() { Header = registered };
+            MenuItem item = new() { Header = Strip(caption ?? registered) };
+
+            if (icon is { Length: > 0 } && IconLoader.Image(icon, 16) is { } image)
+            {
+                item.Icon = image;
+            }
+
             Action<string> captured = handler;
             item.Click += (_, _) =>
             {
@@ -5643,9 +5730,14 @@ public sealed class RevisionGridView : UserControl
         return null;
     }
 
-    private void AddRouted(MenuItem parent, string header, Func<MenuCtx, bool> enabled)
+    private void AddRouted(
+        MenuItem parent,
+        string header,
+        Func<MenuCtx, bool> enabled,
+        string? caption = null,
+        string? icon = null)
     {
-        if (Routed(header, ctx => true, enabled) is { } item)
+        if (Routed(header, ctx => true, enabled, caption, icon) is { } item)
         {
             parent.Items.Add(item);
         }
@@ -5742,7 +5834,32 @@ public sealed class RevisionGridView : UserControl
             local,
             remote,
             tags,
-            _currentBranch);
+            _currentBranch,
+            ReadBisectState());
+    }
+
+    /// <summary>
+    ///  Whether a bisect session is open, asked at menu-open time. Upstream asks the
+    ///  identical question in the identical place and just as synchronously —
+    ///  <c>RevisionGridControl.cs:2256</c> calls <c>Module.InTheMiddleOfBisect()</c>,
+    ///  which is one <c>File.Exists</c> on <c>.git/BISECT_START</c>
+    ///  (<c>GitModule.cs:1968-1971</c>). No process is spawned, so the UI-thread rule
+    ///  about the blocking services is not in play here.
+    ///
+    ///  <para>Unset (no host), or on any failure, answers false: the bisect entries
+    ///  then stay disabled, which is the safe direction — the alternative is offering
+    ///  a mark that git would reject.</para>
+    /// </summary>
+    private bool ReadBisectState()
+    {
+        try
+        {
+            return IsBisectInProgress?.Invoke() ?? false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // Applies every rule, then collapses submenus with no visible child and

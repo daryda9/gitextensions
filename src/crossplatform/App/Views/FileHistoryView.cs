@@ -89,6 +89,18 @@ public sealed class FileHistoryView : UserControl
     private int _notFoundToken;
 
     /// <summary>
+    ///  Forwards the host's bisect-session probe to the inner grid, so this tab's row
+    ///  menu gates its bisect entries on the same answer the repository grid uses (see
+    ///  <see cref="RevisionGridView.IsBisectInProgress"/>). Without it the entries here
+    ///  would be permanently disabled while the identical menu in the other tab worked.
+    /// </summary>
+    public Func<bool>? IsBisectInProgress
+    {
+        get => _grid.IsBisectInProgress;
+        set => _grid.IsBisectInProgress = value;
+    }
+
+    /// <summary>
     ///  Raised when the user selects a commit; the argument is the full commit hash.
     /// </summary>
     public event Action<string>? RevisionSelected;
