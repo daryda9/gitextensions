@@ -36,6 +36,7 @@ public sealed class MaintenanceDialog : Window
     private readonly Button _fsck;
     private readonly Button _unlock;
     private readonly Button _config;
+    private readonly Button _recover;
 
     public MaintenanceDialog(string repoPath)
     {
@@ -70,11 +71,13 @@ public sealed class MaintenanceDialog : Window
         _fsck = ActionButton("Verify database (git fsck)");
         _unlock = ActionButton("Delete .git/index.lock");
         _config = ActionButton("Edit .git/config");
+        _recover = ActionButton("Recover lost objects…");
 
         _gc.Click += (_, _) => _ = RunGitAsync("Compress database", () => _service.CompressDatabase(_repoPath));
         _fsck.Click += (_, _) => _ = RunGitAsync("Verify database", () => _service.VerifyDatabase(_repoPath));
         _unlock.Click += (_, _) => DeleteLock();
         _config.Click += (_, _) => EditConfig();
+        _recover.Click += (_, _) => _ = OpenVerifyDialogAsync();
 
         // A WrapPanel, not a horizontal StackPanel: the four captions are wider than
         // the 620px dialog, so on screen "Edit .git/config" was clipped off the right
@@ -82,7 +85,7 @@ public sealed class MaintenanceDialog : Window
         // on a second line instead of past the border. The spacing rides on the
         // buttons because WrapPanel has no Spacing of its own.
         WrapPanel actions = new() { Margin = new Thickness(0, 16, 0, 8) };
-        foreach (Button action in new[] { _gc, _fsck, _unlock, _config })
+        foreach (Button action in new[] { _gc, _fsck, _unlock, _config, _recover })
         {
             action.Margin = new Thickness(0, 0, 8, 8);
             actions.Children.Add(action);
@@ -186,12 +189,41 @@ public sealed class MaintenanceDialog : Window
         _output.Text = result.Message;
     }
 
+    /// <summary>
+    ///  Opens the real "Recover lost objects" browser (<see cref="VerifyDialog"/>).
+    ///
+    ///  <para>This entry point exists so the new dialog is REACHABLE without touching
+    ///  <c>MainMenu</c>/<c>MainWindow</c>: the menu's "Recover lost objects…" currently
+    ///  raises <c>GitMaintenanceRequested</c>, which opens THIS dialog. The integrator
+    ///  should point that menu entry straight at <see cref="VerifyDialog"/> — the exact
+    ///  snippet is in <c>NOTES.md</c> — after which this button becomes a convenience
+    ///  shortcut rather than the only route.</para>
+    /// </summary>
+    private async Task OpenVerifyDialogAsync()
+    {
+        SetBusy(true);
+        try
+        {
+            bool changed = await VerifyDialog.ShowAsync(this, _repoPath);
+            if (changed)
+            {
+                _output.Text = "Recover lost objects: the repository's refs changed "
+                             + "(recovery tags/branches created or removed). Refresh the main window to see them.";
+            }
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
     private void SetBusy(bool busy)
     {
         _gc.IsEnabled = !busy;
         _fsck.IsEnabled = !busy;
         _unlock.IsEnabled = !busy;
         _config.IsEnabled = !busy;
+        _recover.IsEnabled = !busy;
     }
 
     private static Button ActionButton(string content) => new()
