@@ -2132,8 +2132,10 @@ uno screenshot del dialogo `Process — Push`: cliccando il testo la console div
   fast-forward (0 merge commit), `--no-ff` (merge commit `717bffc`), `--no-commit` (`MERGE_HEAD` +
   staged), `--strategy=resolve --log=20` con messaggio custom, e `--squash` (`SQUASH_MSG`): le
   opzioni avanzate **non sono finte**.
-  Deviazioni registrate: nessun pannello illustrativo e nessun link `Hide help` (precedente M50/P3 —
-  il link da solo non farebbe nulla); nessun pulsante commit-picker (`FormChooseCommit` non è
+  Deviazioni registrate: ~~nessun pannello illustrativo e nessun link `Hide help` (precedente M50/P3 —
+  il link da solo non farebbe nulla)~~ **CHIUSA da M74**: pannello, link `Hide help`, pulsante
+  `Show help`, stato persistito e swap fast-forward su hover sono portati
+  (`App/Views/HelpImagePanel.cs`, misure in `NOTES.md`); nessun pulsante commit-picker (`FormChooseCommit` non è
   portato, M69) quindi la combo è **editabile**; messaggio di merge su file temporaneo invece di
   `.git/MERGE_MSG`; nessun hook script `BeforeMerge`/`AfterMerge` (il port non ha motore di script).
   Difetto trovato per strada: sottoscrivere `ComboBox.TextProperty` **spara subito**, e l'eccezione
@@ -2381,7 +2383,8 @@ scopre lo stato solo aprendo il commit dialog. Non esiste alcun port di `FormMer
       checkbox **Do not commit**, **Show advanced options** (squash / strategy /
       allow-unrelated-histories: sono esattamente i parametri già presenti nella firma di
       `Commands.MergeBranch`, quindi **non** sono pulsanti finti), link Hide help. Il pannello
-      illustrativo è **omettibile** (come l'illustrazione del Pull, decisa in M50/P3).
+      illustrativo è ✅ **portato in M74** (`HelpImagePanel`, riusabile anche per Pull/Rebase:
+      le sette PNG di `Resources/Help` sono già linkate come risorse Avalonia).
       I quattro call-site vanno instradati qui; `MergeBranch` deve accettare le opzioni invece
       dei flag cablati.
 - [x] **12.B.2 — il merge passa dal `GitProcessDialog`** ✅ M71 (img 01), come già fanno

@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M73,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M74,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `a1a40c3ce` (**M73: superficie del rebase**) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `<M74>` (**M74: pannello di aiuto del merge**) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -81,7 +81,7 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M74**), tiene il contatore iterazione.
+  libera: **M75**), tiene il contatore iterazione.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -240,7 +240,31 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► M73 (2026-07-30) — **superficie del rebase**. Prossima milestone libera: **M74**
+> ### ► M74 (2026-07-30) — **pannello illustrativo del merge**. Prossima milestone libera: **M75**
+> Ultima differenza visibile fra il `MergeDialog` del port e lo screenshot dell'originale: chiusa.
+> `App/Views/HelpImagePanel.cs` (riusabile) + le **7** PNG di `src/app/GitUI/Resources/Help/` linkate
+> come `AvaloniaResource` sotto `Assets/Help/` (quindi Pull e Rebase potranno usarlo: servono solo lo
+> spec e la larghezza, il cablaggio no). Link `Hide help` / pulsante `Show help`, stato persistito in
+> `ViewPrefs.HelpPanels` (**non** in `UiState`, che l'host riserializza alla chiusura), swap su hover
+> verso l'immagine fast-forward con la condizione di upstream.
+> **Il tema scuro è stato risolto misurando**: `AdaptLightness` di upstream non esiste nel port, ed è
+> stato reimplementato in `HelpImagePanel` come remap della lightness percepita su
+> `[L(App.Text), L(App.Window)]` conservando tinta e saturazione, applicato **solo** in tema scuro. Il
+> lastrone bianco passa da **16,67:1 a 1,00:1** contro il pannello e il testo dentro l'immagine resta
+> ≥ **4,57:1**. Il passo per-tinta **non è decorativo**: con una semplice inversione HSL l'etichetta
+> bianca sul nodo blu crollava a **1,89:1** (il blu puro sta a L=0,50, quindi invertire scurisce il
+> nodo *e* la sua lettera). Il tema chiaro è lasciato **intatto** con misura: trasformarlo avrebbe
+> abbassato le etichette bianche sui nodi da 8,59–10,95 a 4,32–6,33.
+> **Residuo nuovo, segnalato dall'unità e non risolvibile da lei**: il link `Hide help` usa
+> `App.Accent` (#007ACC) come tutti i link del port (stessa convenzione di
+> `ResolveConflictsDialog.cs:290`) e misura **3,70:1 in scuro / 4,06:1 in chiaro**, sotto AA 4,5:1.
+> Serve una chiave **`App.Link`** nuova in `ThemeManager` (`Keys`+`Dark`+`Light`) e la sostituzione nei
+> call-site: è un difetto **pre-esistente e diffuso**, non introdotto qui.
+> Non fatti: `AppSettings.DontShowHelpImages` (nel port non esiste nulla da leggere) e il ricolore al
+> cambio tema **con il modale già aperto** (la correzione è calcolata all'apertura e `ThemeManager` non
+> espone un evento di cambio).
+
+> ### ► M73 (2026-07-30) — **superficie del rebase**
 > Nata da una domanda dell'utente sul rebase fermo in `~/test-avalonia`. `RebaseSessionService` +
 > `Continue`/`Skip`/`Abort` (e `Resolve…` quando ci sono conflitti) nel banner, `GIT_EDITOR=true`
 > pinnato perché `--continue` su un `edit` altrimenti aspetta `vi` e pianta il process dialog, e i
