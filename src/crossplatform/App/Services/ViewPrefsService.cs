@@ -29,6 +29,22 @@ public sealed class ViewPrefs
     ///  duplicates and capped at <see cref="ViewPrefsService.MaxRevisionFilterMru"/>.
     /// </summary>
     public List<RevisionFilterMruEntry> RevisionFilterMru { get; set; } = [];
+
+    /// <summary>
+    ///  Whether each illustrative help panel (<see cref="HelpImagePanel"/>) is
+    ///  expanded, keyed by <see cref="HelpImageSpec.Id"/> — the port's home for what
+    ///  upstream stores as <c>AppSettings.SetBool("HelpIsExpanded" + id)</c>. A map
+    ///  rather than one property per dialog because the panel is shared chrome: merge,
+    ///  pull and rebase each get their own remembered state without this class
+    ///  learning their names. An ABSENT key means "expanded" (the designer default),
+    ///  which is why the panel checks for presence instead of reading a bool.
+    ///
+    ///  <para>It lives here and not in <c>UiState</c> for the reason spelled out on
+    ///  <see cref="ViewPrefsService"/>: the panels sit inside modal dialogs that are
+    ///  gone long before <c>MainWindow.PersistLayout()</c> reserialises that file and
+    ///  reverts anything written behind its back.</para>
+    /// </summary>
+    public Dictionary<string, bool> HelpPanels { get; set; } = [];
 }
 
 /// <summary>
@@ -393,6 +409,7 @@ public sealed class ViewPrefsService
         p.FileHistory ??= new FileHistoryPrefs();
         p.LeftPanel ??= new LeftPanelPrefs();
         p.RevisionFilterMru ??= [];
+        p.HelpPanels ??= [];
 
         // An unknown encoding name would leave the toolbar combo with no selection
         // and decode the patch as UTF-8 anyway, so it collapses to the default.
