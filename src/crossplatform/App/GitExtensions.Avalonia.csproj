@@ -60,6 +60,15 @@
       <Link>Assets/Icons/%(Filename)%(Extension)</Link>
     </AvaloniaResource>
 
+    <!-- The illustrative help diagrams upstream shows in the left column of the
+         merge/pull/rebase dialogs (HelpImageDisplayUserControl). Linked, never
+         copied: src/app/GitUI/Resources/Help is shared source for the Windows
+         build. Exposed as avares://…/Assets/Help/<name>.png, the names
+         HelpImagePanel asks for — the resource lookup is case-sensitive. -->
+    <AvaloniaResource Include="..\..\app\GitUI\Resources\Help\*.png">
+      <Link>Assets/Help/%(Filename)%(Extension)</Link>
+    </AvaloniaResource>
+
     <!-- The wide product wordmark drawn on the dashboard's branding strip
          (upstream Dashboard.Designer.cs). It lives in setup/assets/Logo, outside
          the icon glob above, so it needs its own item to become resolvable as
