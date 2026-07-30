@@ -6046,10 +6046,34 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return;
+        }
+
         string target = row.Hash;
-        RunRefOp(
-            string.Format(T("Rebasing on {0}…"), row.ShortHash),
-            repo => _branchTags.RebaseOnto(repo, target));
+        FlashStatus(string.Format(T("Rebasing on {0}…"), row.ShortHash));
+
+        BranchTagResult result;
+        try
+        {
+            result = await Task.Run(() => _branchTags.RebaseOnto(_repoPath, target));
+        }
+        catch (Exception ex)
+        {
+            result = new BranchTagResult(false, ex.Message);
+        }
+
+        AfterRefOp(result.Success
+            ? string.Format(T("Rebased on {0}."), row.ShortHash)
+            : FirstLine(result.Output));
+
+        // A stopped rebase now has real buttons in the banner, so asking here leads
+        // somewhere: resolve, then Continue / Skip / Abort.
+        if (await ConflictFlow.HandleAsync(owner, _repoPath) is { HadConflicts: true })
+        {
+            AfterRefOp(string.Empty);
+        }
     }
 
     private async Task ResetAnotherBranchAsync()

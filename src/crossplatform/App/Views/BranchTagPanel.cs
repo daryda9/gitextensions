@@ -309,21 +309,52 @@ public sealed class BranchTagPanel : UserControl
         }
     }
 
-    private void DoRebase()
+    private void DoRebase() => _ = DoRebaseAsync();
+
+    // Same shape as DoMergeAsync: the rebase runs off the UI thread and, once git
+    // has stopped, the conflict question gets its chance — the banner can now
+    // continue, skip or abort the session.
+    private async Task DoRebaseAsync()
     {
-        if (_repoPath is not { Length: > 0 } repo)
+        try
         {
-            return;
-        }
+            if (_repoPath is not { Length: > 0 } repo
+                || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
 
-        if (SelectedRow() is not { IsTag: false } row)
+            if (SelectedRow() is not { IsTag: false } row)
+            {
+                _status.Text = "Select a branch to rebase onto.";
+                return;
+            }
+
+            _status.Text = $"Rebasing onto {row.Name}…";
+            BranchTagResult result;
+            try
+            {
+                result = await Task.Run(() => _service.RebaseOnto(repo, row.Name));
+            }
+            catch (Exception ex)
+            {
+                result = new BranchTagResult(false, ex.Message);
+            }
+
+            _status.Text = result.Success
+                ? $"Rebased onto {row.Name}."
+                : $"Rebase onto {row.Name} did not complete.";
+            RefreshRefs();
+
+            if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })
+            {
+                RefreshRefs();
+            }
+        }
+        catch (Exception ex)
         {
-            _status.Text = "Select a branch to rebase onto.";
-            return;
+            _status.Text = "Failed: " + ex.Message;
         }
-
-        _status.Text = $"Rebasing onto {row.Name}…";
-        RunMutation(() => _service.RebaseOnto(repo, row.Name));
     }
 
     private async Task DoDeleteAsync()

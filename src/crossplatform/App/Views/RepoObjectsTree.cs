@@ -1245,7 +1245,7 @@ public sealed class RepoObjectsTree : UserControl
                 ? T("RemoteBranchMenuItemsStrings/Rebase.Text", "Rebase current branch on this remote branch…")
                 : T("BranchMenuItemsStrings/Rebase.Text", "Rebase current branch on this branch…"),
             "Rebase",
-            () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name)));
+            () => _ = DoRebaseAsync(row.Name));
         menu.Items.Add(rebase);
 
         // "Create branch" from this ref — upstream's GitRefCreateBranch slot, which
@@ -1297,7 +1297,7 @@ public sealed class RepoObjectsTree : UserControl
         // the same BranchTagService.Checkout used for branches/revisions.
         menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Checkout.Text", "Checkout tag revision…"), "BranchCheckout", () => DoCheckout(row)));
         menu.Items.Add(MenuItem(T("MenuItemsStrings/Merge.Text", "Merge into current branch…"), "Merge", () => _ = DoMergeAsync(row.Name)));
-        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Rebase.Text", "Rebase current branch on this tag revision…"), "Rebase", () => RunMutation(() => _branchTagService.RebaseOnto(_repoPath!, row.Name))));
+        menu.Items.Add(MenuItem(T("TagMenuItemsStrings/Rebase.Text", "Rebase current branch on this tag revision…"), "Rebase", () => _ = DoRebaseAsync(row.Name)));
         menu.Items.Add(MenuItem(T("MenuItemsStrings/CreateBranch.Text", "Create branch…"), "BranchCreate", () => _ = DoCreateBranchAsync(row.Name, prefix: string.Empty)));
         menu.Items.Add(ResetCurrentBranchItem(row.Name));
         menu.Items.Add(new Separator());
@@ -1950,6 +1950,49 @@ public sealed class RepoObjectsTree : UserControl
                 // discovered by opening the commit dialog.
                 await ConflictFlow.HandleAsync(owner, repo);
                 OperationCompleted?.Invoke();
+            }
+        }
+        catch
+        {
+            // Never throw from an interaction handler.
+        }
+    }
+
+    // A rebase stops on the first conflict, and now that the banner can continue,
+    // skip or abort one, it is worth asking straight away — the same question
+    // upstream asks. Done here rather than through RunMutation because the ask has
+    // to wait for git to finish.
+    private async Task DoRebaseAsync(string name)
+    {
+        try
+        {
+            if (_repoPath is not { Length: > 0 } repo || _busy
+                || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            _busy = true;
+            try
+            {
+                await Task.Run(() => _branchTagService.RebaseOnto(repo, name));
+            }
+            catch
+            {
+                // The result is surfaced by the refresh and the banner below.
+            }
+            finally
+            {
+                _busy = false;
+            }
+
+            OperationCompleted?.Invoke();
+            Refresh();
+
+            if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })
+            {
+                OperationCompleted?.Invoke();
+                Refresh();
             }
         }
         catch
