@@ -25,27 +25,33 @@ namespace GitExtensions.Avalonia.Views;
 ///  stopped.</para>
 ///
 ///  <para><b>Which buttons are real.</b> The bisect bar gets good, bad, skip and stop
-///  from <see cref="BisectService"/>, and the <b>merge</b> state gets upstream's own
-///  three — <c>Resolve...</c>, <c>Continue</c> and <c>Abort</c>
-///  (<c>InteractiveGitActionControl.cs:148-152</c>) — now that
-///  <see cref="MergeSessionService"/> implements the two commands behind them. There is
-///  still deliberately <i>no</i> continue/abort button for rebase, cherry-pick, revert
-///  or <c>git am</c>: the port has no service behind those (the only <c>--abort</c>
-///  calls left in <c>App/Services</c> are private clean-up paths inside
-///  <c>CommitEditService</c> and <c>PatchService</c>, not an API), and a button that
-///  cannot do its job is worse than no button. Those states show what is going on
-///  and name the git command that finishes or undoes it, which is honest and still
-///  removes the "why is my repository behaving strangely" dead end.</para>
+///  from <see cref="BisectService"/>; the <b>merge</b> state gets upstream's own three —
+///  <c>Resolve...</c>, <c>Continue</c> and <c>Abort</c>
+///  (<c>InteractiveGitActionControl.cs:148-152</c>) — behind
+///  <see cref="MergeSessionService"/>; and the <b>rebase</b> state gets those plus
+///  <c>Skip</c> (<c>FormRebase.cs:166-169</c>) behind
+///  <see cref="RebaseSessionService"/>. There is still deliberately <i>no</i>
+///  continue/abort button for cherry-pick, revert or <c>git am</c> in this bar: the port
+///  has no service behind the first two, and <c>am</c> has its own dialog
+///  (<see cref="ApplyPatchDialog"/>) which owns that state machine. A button that cannot
+///  do its job is worse than no button, so those states show what is going on and name
+///  the git command that finishes or undoes it, which is honest and still removes the
+///  "why is my repository behaving strangely" dead end.</para>
 ///
-///  <para><b>The two merge states.</b> Upstream splits a stopped merge in two by asking
-///  <c>Module.InTheMiddleOfConflictedMerge()</c> (<c>InteractiveGitActionControl.cs:82</c>):
-///  with unresolved paths it says "… with merge conflicts." and offers
-///  <c>Resolve...</c>; with a clean index the merge itself is done and only the commit
-///  is missing, so it offers <c>Continue</c>. Both states offer <c>Abort</c>. This port
-///  reads the same fact from the index
-///  (<see cref="MergeSessionService.HasUnresolvedConflicts"/>), and pays for that one
-///  extra git process <i>only</i> while a merge is actually in progress — an idle
-///  repository still costs nothing.</para>
+///  <para><b>The two stopped-session states.</b> Upstream splits a stopped merge — and a
+///  stopped rebase — in two by asking <c>Module.InTheMiddleOfConflictedMerge()</c>
+///  (<c>InteractiveGitActionControl.cs:82</c>, <c>FormRebase.cs:151</c>): with unresolved
+///  paths it says "… with merge conflicts." and offers <c>Resolve...</c>; with a clean
+///  index the work itself is done and only the commit is missing, so it offers
+///  <c>Continue</c>. Both states offer <c>Abort</c>. This port reads the same fact from
+///  the index (<see cref="MergeSessionService.HasUnresolvedConflicts"/>,
+///  <see cref="RebaseSessionService.HasUnresolvedConflicts"/>), and pays for that one
+///  extra git process <i>only</i> while something is actually stopped — an idle
+///  repository still costs nothing. The distinction matters most for the rebase, which
+///  routinely stops with a perfectly clean index (an interactive <c>edit</c> or
+///  <c>break</c>): telling that user to "resolve the conflicts" — as this bar used to —
+///  is simply false, so <see cref="DescribeRebase"/> says the rebase is <i>paused</i>
+///  instead.</para>
 ///
 ///  <para><b>Refreshing.</b> The banner never polls. <see cref="Refresh"/> re-reads
 ///  the state on a thread-pool thread and marshals the result back, and the host
@@ -63,6 +69,7 @@ public sealed class RepositoryProgressBanner : UserControl
     private readonly RepositoryStateService _state = new();
     private readonly BisectService _bisect = new();
     private readonly MergeSessionService _merge = new();
+    private readonly RebaseSessionService _rebaseSession = new();
 
     private readonly Border _bisectBar;
     private readonly TextBlock _bisectText;
@@ -81,16 +88,23 @@ public sealed class RepositoryProgressBanner : UserControl
     private readonly TextBlock _actionText;
     private readonly TextBlock _actionHint;
 
-    // Upstream's three merge buttons. Resolve and Continue share one slot — which of
-    // the two is up depends on whether the index still has unmerged paths.
-    private readonly StackPanel _mergeButtons;
+    // The buttons that end a stopped session. Shared by the merge and the rebase state,
+    // because upstream's own bar shares them too (InteractiveGitActionControl.cs:142-152
+    // adds the same ResolveButton / ContinueButton / AbortButton instances for both) —
+    // which of them are up, and what they run, depends on the operation.
+    private readonly StackPanel _sessionButtons;
     private readonly Button _resolve;
     private readonly Button _continue;
+    private readonly Button _skipStep;
     private readonly Button _abort;
 
-    // True while the bar is showing a merge that still has unresolved conflicts: the
+    // True while the bar is showing a session that still has unresolved conflicts: the
     // one state upstream paints orange instead of blue.
     private bool _conflicted;
+
+    // The rebase state behind the buttons when the bar is showing a rebase; None
+    // otherwise. Read on the refresh thread, used only on the UI thread.
+    private RebaseSessionState _rebaseState = RebaseSessionState.None;
 
     private string? _repoPath;
 
@@ -158,23 +172,36 @@ public sealed class RepositoryProgressBanner : UserControl
             T("Open the conflict resolution dialog"),
             OnResolve);
 
+        // The tooltip of these three names the git command they run, which differs per
+        // operation, so it is (re)set in Apply rather than fixed here.
         _continue = MakeButton(
             T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
-            T("Record the merge commit (git merge --continue)"),
+            string.Empty,
             OnContinue);
+
+        // Upstream's notification bar has no Skip — only FormRebase does
+        // (FormRebase.cs:168, "&Skip"). It is offered here because the bar is this port's
+        // only rebase surface, and a rebase stopped on a step the user does not want is
+        // otherwise a dead end: Continue cannot pass it and Abort throws away the steps
+        // already replayed. Shown for the rebase only; `am` has its own dialog.
+        // Upstream's own caption is the sentence-long "S&kip currently applying commit"
+        // (FormRebase.Designer.cs:187), which does not fit a one-row bar and would fit
+        // even less once translated; it is used as the tooltip instead, and the caption
+        // matches the bisect bar's own Skip.
+        _skipStep = MakeButton(T("Skip"), string.Empty, OnSkipStep);
 
         _abort = MakeButton(
             T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
-            T("Discard the merge and restore the working tree (git merge --abort)"),
+            string.Empty,
             OnAbort);
 
-        _mergeButtons = new StackPanel
+        _sessionButtons = new StackPanel
         {
             IsVisible = false,
             Orientation = Orientation.Horizontal,
             Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _resolve, _continue, _abort },
+            Children = { _resolve, _continue, _skipStep, _abort },
         };
 
         StackPanel actionTrailing = new()
@@ -182,7 +209,7 @@ public sealed class RepositoryProgressBanner : UserControl
             Orientation = Orientation.Horizontal,
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _actionHint, _mergeButtons },
+            Children = { _actionHint, _sessionButtons },
         };
 
         _actionBar = MakeBar(_actionText, actionTrailing, out _actionStripe);
@@ -262,7 +289,7 @@ public sealed class RepositoryProgressBanner : UserControl
 
         if (repo is null)
         {
-            Apply(RepositoryProgress.None, BisectSession.None, false);
+            Apply(RepositoryProgress.None, BisectSession.None, false, RebaseSessionState.None);
             return;
         }
 
@@ -299,11 +326,18 @@ public sealed class RepositoryProgressBanner : UserControl
             bool hasConflicts = progress.Operation == RepositoryOperation.Merge
                 && _merge.HasUnresolvedConflicts(repo);
 
+            // Same discipline again: the rebase state machine is only read while a
+            // rebase is actually stopped. Read() itself asks git once (for the index),
+            // and everything else it reports comes off the disk.
+            RebaseSessionState rebase = IsRebase(progress.Operation)
+                ? _rebaseSession.Read(repo)
+                : RebaseSessionState.None;
+
             Dispatcher.UIThread.Post(() =>
             {
                 if (generation == _generation)
                 {
-                    Apply(progress, session, hasConflicts);
+                    Apply(progress, session, hasConflicts, rebase);
                 }
             });
         });
@@ -311,9 +345,14 @@ public sealed class RepositoryProgressBanner : UserControl
 
     // ---- rendering the state ---------------------------------------------------------
 
-    private void Apply(RepositoryProgress progress, BisectSession session, bool hasConflicts)
+    private void Apply(
+        RepositoryProgress progress,
+        BisectSession session,
+        bool hasConflicts,
+        RebaseSessionState rebase)
     {
         _session = session;
+        _rebaseState = rebase;
         _bisectBar.IsVisible = progress.BisectInProgress;
         if (progress.BisectInProgress)
         {
@@ -328,15 +367,23 @@ public sealed class RepositoryProgressBanner : UserControl
         if (_actionBar.IsVisible)
         {
             bool merge = progress.Operation == RepositoryOperation.Merge;
+
+            // A rebase only counts as actionable once the service confirms the session
+            // is really there: the marker directory alone is also what a stopped `git am`
+            // leaves behind, and RebaseSessionService.Read is the one that tells them
+            // apart (InTheMiddleOfRebase). With InProgress false the bar falls back to
+            // the old text-only behaviour rather than offering commands that would fail.
+            bool rebasing = IsRebase(progress.Operation) && rebase.InProgress;
             bool canResolve = ResolveConflictsRequested is not null;
+            bool conflicts = merge ? hasConflicts : rebasing && rebase.HasUnresolvedConflicts;
 
-            _actionText.Text = DescribeOperation(progress, hasConflicts);
+            _actionText.Text = DescribeOperation(progress, conflicts, rebase);
 
-            string hint = HintFor(progress.Operation, hasConflicts, canResolve);
+            string hint = HintFor(progress.Operation, conflicts, canResolve, rebasing);
             _actionHint.Text = hint;
             _actionHint.IsVisible = hint.Length > 0;
 
-            _mergeButtons.IsVisible = merge;
+            _sessionButtons.IsVisible = merge || rebasing;
             if (merge)
             {
                 // Upstream puts Resolve and Continue in the same slot and picks by the
@@ -345,14 +392,56 @@ public sealed class RepositoryProgressBanner : UserControl
                 // and the hint above takes over.
                 _resolve.IsVisible = hasConflicts && canResolve;
                 _continue.IsVisible = !hasConflicts;
-                EnableMergeButtons(true);
+                _skipStep.IsVisible = false;
+                SetSessionTips();
+                EnableSessionButtons(true);
+            }
+            else if (rebasing)
+            {
+                // Upstream swaps Continue for Solve-conflicts (FormRebase.cs:166-167).
+                // Here Continue stays put and goes GREY while the index is unmerged, and
+                // Resolve... appears next to it: with four buttons on the row a swap would
+                // shuffle the other three under the pointer, and a greyed Continue says
+                // "this is how the rebase ends, but not yet" — which is the fact the user
+                // needs. The enablement itself is upstream's rule, unchanged.
+                _resolve.IsVisible = conflicts && canResolve;
+                _continue.IsVisible = true;
+                _skipStep.IsVisible = true;
+                SetSessionTips();
+                EnableSessionButtons(true);
             }
 
-            _conflicted = merge && hasConflicts;
+            _conflicted = (merge || rebasing) && conflicts;
             PaintActionBar(_conflicted);
         }
 
         IsVisible = progress.IsActive;
+    }
+
+    /// <summary>Both rebase flavours; the commands and the buttons are identical.</summary>
+    private static bool IsRebase(RepositoryOperation operation)
+        => operation is RepositoryOperation.Rebase or RepositoryOperation.RebaseInteractive;
+
+    /// <summary>
+    ///  Names the exact git command each shared button will run, in its tooltip, for the
+    ///  operation the bar is currently showing. The captions stay upstream's
+    ///  (<c>Continue</c> / <c>Abort</c>), so the tooltip is the only place the difference
+    ///  between <c>merge --continue</c> and <c>rebase --continue</c> is visible — and it
+    ///  matters, because the two do very different things to the branch.
+    /// </summary>
+    private void SetSessionTips()
+    {
+        bool rebase = _rebaseState.InProgress;
+
+        ToolTip.SetTip(_continue, rebase
+            ? T("Commit this step and replay the rest of the series (git rebase --continue)")
+            : T("Record the merge commit (git merge --continue)"));
+
+        ToolTip.SetTip(_skipStep, T("Skip currently applying commit — its changes are dropped (git rebase --skip)"));
+
+        ToolTip.SetTip(_abort, rebase
+            ? T("Discard the rebase and put the branch back where it started (git rebase --abort)")
+            : T("Discard the merge and restore the working tree (git merge --abort)"));
     }
 
     /// <summary>
@@ -381,7 +470,7 @@ public sealed class RepositoryProgressBanner : UserControl
             _actionStripe.Background = fill;
             _actionText.Foreground = ink;
             _actionHint.Foreground = ink;
-            PaintMergeButtons(onFill: true);
+            PaintSessionButtons(onFill: true);
             return;
         }
 
@@ -389,7 +478,7 @@ public sealed class RepositoryProgressBanner : UserControl
         _actionStripe.Background = Brush("App.Accent", "#007ACC");
         _actionText.Foreground = Brush("App.Text", "#DCDCDC");
         _actionHint.Foreground = Brush("App.TextDim", "#9B9B9B");
-        PaintMergeButtons(onFill: false);
+        PaintSessionButtons(onFill: false);
     }
 
     /// <summary>
@@ -405,12 +494,12 @@ public sealed class RepositoryProgressBanner : UserControl
     ///  trap <c>Theming/TextBoxSurface</c> exists for. Keys the theme in use does not
     ///  consume are simply inert.</para>
     /// </summary>
-    private void PaintMergeButtons(bool onFill)
+    private void PaintSessionButtons(bool onFill)
     {
         if (!onFill)
         {
             // Back to whatever the control theme wants: the bar is a normal panel again.
-            _mergeButtons.Resources.Clear();
+            _sessionButtons.Resources.Clear();
             return;
         }
 
@@ -423,9 +512,9 @@ public sealed class RepositoryProgressBanner : UserControl
         foreach (string state in ButtonStates)
         {
             bool disabled = state == "Disabled";
-            _mergeButtons.Resources[$"ButtonBackground{state}"] = disabled ? face : Hovered(state) ? hover : face;
-            _mergeButtons.Resources[$"ButtonForeground{state}"] = disabled ? dim : label;
-            _mergeButtons.Resources[$"ButtonBorderBrush{state}"] = edge;
+            _sessionButtons.Resources[$"ButtonBackground{state}"] = disabled ? face : Hovered(state) ? hover : face;
+            _sessionButtons.Resources[$"ButtonForeground{state}"] = disabled ? dim : label;
+            _sessionButtons.Resources[$"ButtonBorderBrush{state}"] = edge;
         }
 
         static bool Hovered(string state) => state is "PointerOver" or "Pressed";
@@ -515,8 +604,16 @@ public sealed class RepositoryProgressBanner : UserControl
     ///  "&lt;operation&gt; in progress", plus git's own step counter and target branch
     ///  when it recorded them — the same facts upstream's bar shows.
     /// </summary>
-    private static string DescribeOperation(RepositoryProgress progress, bool hasConflicts)
+    private static string DescribeOperation(
+        RepositoryProgress progress,
+        bool hasConflicts,
+        RebaseSessionState rebase)
     {
+        if (IsRebase(progress.Operation) && rebase.InProgress)
+        {
+            return DescribeRebase(rebase);
+        }
+
         string headline = progress.Operation switch
         {
             // Upstream's own two merge sentences, with its own operation noun
@@ -559,21 +656,97 @@ public sealed class RepositoryProgressBanner : UserControl
     }
 
     /// <summary>
+    ///  What the bar says about a stopped rebase, built from
+    ///  <see cref="RebaseSessionService.Read"/> rather than from the plain marker-file
+    ///  scan, because a rebase with buttons has to describe two different situations
+    ///  truthfully:
+    ///  <list type="bullet">
+    ///   <item><b>stopped on a conflict</b> — upstream's own
+    ///    "… in progress with merge conflicts." sentence, and the work is to resolve;</item>
+    ///   <item><b>stopped on purpose</b> — an interactive <c>edit</c> or <c>break</c> with
+    ///    a clean index. This is the case that made the old text wrong: the bar used to
+    ///    tell every stopped rebase to "resolve the conflicts", of which there were
+    ///    none. Here it says the rebase is <i>paused</i> and names the commit, and the
+    ///    only thing needed is Continue.</item>
+    ///  </list>
+    ///  The step counter and the branch come from git's own marker files; nothing is
+    ///  invented, and anything git did not record is simply left out.
+    /// </summary>
+    private static string DescribeRebase(RebaseSessionState rebase)
+    {
+        // Upstream's noun is a plain "Rebase" for both flavours
+        // (InteractiveGitActionControl.cs:18); the interactive one is called out because
+        // it is the flavour that stops without a conflict, which changes what the user
+        // has to do next.
+        string noun = rebase.Interactive ? T("Interactive rebase") : T("Rebase");
+
+        string headline = rebase.HasUnresolvedConflicts
+            ? string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("{0} is currently in progress with merge conflicts."),
+                noun)
+            : string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("{0} is paused — no conflicts to resolve."),
+                noun);
+
+        if (rebase.HasStepCount)
+        {
+            headline += "  " + string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Step {0} of {1}."),
+                rebase.Step,
+                rebase.TotalSteps);
+        }
+
+        if (rebase.HeadName is { Length: > 0 } branch)
+        {
+            headline += "  " + string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Branch: {0}."),
+                branch);
+        }
+
+        // Only shown when git recorded it: "stopped-sha" exists for a stop on a
+        // conflict, and the merge backend also leaves it for an `edit`.
+        if (rebase.StoppedSha is { Length: > 0 } stopped)
+        {
+            headline += "  " + string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Stopped at {0}."),
+                stopped);
+        }
+
+        return headline;
+    }
+
+    /// <summary>
     ///  Names the command that finishes or undoes the operation, for the states that
     ///  have no button because this port has no service behind them (see the class
-    ///  remarks). Merge has buttons now, so it contributes a hint only in the one case
-    ///  where a button is missing: unresolved conflicts with no host wired to
-    ///  <see cref="ResolveConflictsRequested"/>. That hint points at the commit dialog,
-    ///  which really does resolve conflicts today (<c>CommitDialog.cs:2267</c>), rather
-    ///  than sending the user to a terminal.
+    ///  remarks). Merge and rebase have buttons now, so they contribute a hint only in
+    ///  the one case where a button is missing: unresolved conflicts with no host wired
+    ///  to <see cref="ResolveConflictsRequested"/>. That hint points at the commit
+    ///  dialog, which really does resolve conflicts today
+    ///  (<c>CommitDialog.cs:2267</c>), rather than sending the user to a terminal.
     /// </summary>
-    private static string HintFor(RepositoryOperation operation, bool hasConflicts, bool canResolve) => operation switch
+    private static string HintFor(
+        RepositoryOperation operation,
+        bool hasConflicts,
+        bool canResolve,
+        bool rebasing) => operation switch
     {
         RepositoryOperation.Merge => hasConflicts && !canResolve
             ? T("Resolve the conflicts from the Commit tab, then use Continue.")
             : string.Empty,
-        RepositoryOperation.Rebase or RepositoryOperation.RebaseInteractive =>
-            T("Resolve the conflicts, then run: git rebase --continue / --skip / --abort"),
+
+        // With the session confirmed the buttons speak for themselves; the terminal
+        // hint survives only for the case the service could not confirm (see Apply).
+        RepositoryOperation.Rebase or RepositoryOperation.RebaseInteractive => rebasing
+            ? hasConflicts && !canResolve
+                ? T("Resolve the conflicts from the Commit tab, then use Continue.")
+                : string.Empty
+            : T("Resolve the conflicts, then run: git rebase --continue / --skip / --abort"),
+
         RepositoryOperation.ApplyMailbox =>
             T("Resolve the conflicts, then run: git am --continue / --skip / --abort"),
         RepositoryOperation.CherryPick =>
@@ -659,43 +832,81 @@ public sealed class RepositoryProgressBanner : UserControl
         _more.IsEnabled = enabled;
     }
 
-    // ---- merge actions ----------------------------------------------------------------
+    // ---- merge and rebase actions -----------------------------------------------------
 
     // The host owns the conflict dialog, for the same reason it owns the bisect panel.
+    // One event serves both operations: what the dialog does — stage the resolutions —
+    // is the same either way, and the bar's own refresh afterwards is what turns the
+    // conflicted state into the continuable one.
     private void OnResolve() => ResolveConflictsRequested?.Invoke();
 
-    private void OnContinue() => _ = RunMergeAsync(
-        T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
-        "merge --continue",
-        confirm: null,
-        (service, repo, emit) => service.Continue(repo, emit));
+    // Which git command the three shared buttons run is decided here, by the state the
+    // last refresh read. _rebaseState.InProgress is only true when the bar is actually
+    // showing a confirmed rebase session (see Apply), so a stale click cannot send a
+    // rebase command to a merge.
+    private void OnContinue() => _ = _rebaseState.InProgress
+        ? RunSessionAsync(
+            T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
+            "rebase --continue",
+            confirm: null,
+            (repo, emit) => Outcome(_rebaseSession.Continue(repo, emit)))
+        : RunSessionAsync(
+            T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
+            "merge --continue",
+            confirm: null,
+            (repo, emit) => Outcome(_merge.Continue(repo, emit)));
 
-    private void OnAbort() => _ = RunMergeAsync(
-        T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
-        "merge --abort",
-        // Upstream aborts straight away (InteractiveGitActionControl.cs:221). This port
-        // asks first: the command throws the merge away AND rewrites the working tree,
-        // so a mis-click costs work that git keeps no reflog of. Same reasoning as the
-        // other destructive paths of this port (ResetChangesDialog, force-delete branch).
-        confirm: T("Abort the merge?\n\nThe merge is discarded and every file goes back to the state it had before the merge started. Conflict resolutions you have not committed are lost."),
-        (service, repo, emit) => service.Abort(repo, emit));
+    // Rebase only: the button is hidden in every other state.
+    private void OnSkipStep() => _ = RunSessionAsync(
+        T("Skip"),
+        "rebase --skip",
+        // Not destructive the way an abort is — the rest of the series survives — but it
+        // does drop a commit's changes for good, and upstream's own caption
+        // ("Skip currently applying commit") does not say that out loud. Cheap to
+        // confirm, expensive to undo.
+        confirm: T("Skip this step?\n\nThe commit this step would have applied is dropped: its changes will not be in the rebased branch. The rest of the series continues."),
+        (repo, emit) => Outcome(_rebaseSession.Skip(repo, emit)));
+
+    private void OnAbort() => _ = _rebaseState.InProgress
+        ? RunSessionAsync(
+            T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
+            "rebase --abort",
+            confirm: T("Abort the rebase?\n\nEvery step already replayed is thrown away and the branch goes back to the commit it was on before the rebase started. Conflict resolutions you have not committed are lost."),
+            (repo, emit) => Outcome(_rebaseSession.Abort(repo, emit)))
+        : RunSessionAsync(
+            T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
+            "merge --abort",
+            // Upstream aborts straight away (InteractiveGitActionControl.cs:221). This port
+            // asks first: the command throws the merge away AND rewrites the working tree,
+            // so a mis-click costs work that git keeps no reflog of. Same reasoning as the
+            // other destructive paths of this port (ResetChangesDialog, force-delete branch).
+            confirm: T("Abort the merge?\n\nThe merge is discarded and every file goes back to the state it had before the merge started. Conflict resolutions you have not committed are lost."),
+            (repo, emit) => Outcome(_merge.Abort(repo, emit)));
+
+    // The two session services report the same shape through two distinct record types;
+    // these keep the runner below indifferent to which one ran.
+    private static GitProcessOutcome Outcome(MergeCommandResult result)
+        => new(result.Success, result.Output);
+
+    private static GitProcessOutcome Outcome(RebaseCommandResult result)
+        => new(result.Success, result.Output);
 
     /// <summary>
-    ///  Runs one merge-session command through the port's process dialog — the same
-    ///  surface every other git command of this port reports through, and upstream's own
-    ///  choice for these two (<c>FormProcess.ShowDialog</c>,
-    ///  <c>InteractiveGitActionControl.cs:196,221</c>). Non-interactive: neither command
-    ///  can ever ask a question, and <c>--continue</c> is pinned to a no-op editor by
-    ///  <see cref="MergeSessionService"/>.
+    ///  Runs one merge- or rebase-session command through the port's process dialog — the
+    ///  same surface every other git command of this port reports through, and upstream's
+    ///  own choice for all of them (<c>FormProcess.ShowDialog</c>,
+    ///  <c>InteractiveGitActionControl.cs:196,221</c>, <c>FormRebase.cs:247,270,287</c>).
+    ///  Non-interactive: none of these commands can ask a question, and the ones that
+    ///  would open an editor are pinned to a no-op one by their service.
     ///  <para>Whatever happens, the banner re-reads the repository afterwards and tells
     ///  the host to refresh, so the bar shows the new state (or disappears) without the
     ///  user touching anything. Never throws: this runs from a click handler.</para>
     /// </summary>
-    private async Task RunMergeAsync(
+    private async Task RunSessionAsync(
         string label,
         string command,
         string? confirm,
-        Func<MergeSessionService, string, Action<string>, MergeCommandResult> operation)
+        Func<string, Action<string>, GitProcessOutcome> operation)
     {
         if (_repoPath is not { Length: > 0 } repo
             || TopLevel.GetTopLevel(this) is not Window owner)
@@ -710,7 +921,7 @@ public sealed class RepositoryProgressBanner : UserControl
                 return;
             }
 
-            EnableMergeButtons(false);
+            EnableSessionButtons(false);
 
             await GitProcessDialog.RunStreamingAsync(
                 owner,
@@ -718,8 +929,7 @@ public sealed class RepositoryProgressBanner : UserControl
                 emit =>
                 {
                     using IDisposable? guard = SuspendWatcher?.Invoke();
-                    MergeCommandResult result = operation(_merge, repo, emit);
-                    return new GitProcessOutcome(result.Success, result.Output);
+                    return operation(repo, emit);
                 },
                 interactive: false);
         }
@@ -733,16 +943,27 @@ public sealed class RepositoryProgressBanner : UserControl
         }
         finally
         {
-            EnableMergeButtons(true);
+            EnableSessionButtons(true);
             Refresh();
             RepositoryChanged?.Invoke();
         }
     }
 
-    private void EnableMergeButtons(bool enabled)
+    /// <summary>
+    ///  Enables the shared session buttons for what the repository actually allows.
+    ///  Passing <see langword="false"/> disables everything for the duration of a command.
+    ///  <para>The one conditional rule is upstream's: <c>git rebase --continue</c> refuses
+    ///  to run while the index has an unmerged path, so it is greyed out until the last
+    ///  conflict is staged (<c>FormRebase.cs:166</c> expresses the same rule by hiding the
+    ///  button instead — see <see cref="Apply"/> for why this bar greys it). The merge
+    ///  state does not need the rule: there, Continue is not on screen at all while the
+    ///  index is conflicted.</para>
+    /// </summary>
+    private void EnableSessionButtons(bool enabled)
     {
         _resolve.IsEnabled = enabled;
-        _continue.IsEnabled = enabled;
+        _continue.IsEnabled = enabled && (!_rebaseState.InProgress || _rebaseState.CanContinue);
+        _skipStep.IsEnabled = enabled && _rebaseState.CanSkip;
         _abort.IsEnabled = enabled;
     }
 
@@ -866,7 +1087,14 @@ public sealed class RepositoryProgressBanner : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        ToolTip.SetTip(button, tooltip);
+        // An empty string is a real tip as far as Avalonia is concerned and would pop an
+        // empty box; the shared session buttons pass one deliberately, because their tip
+        // names a command that is only known per operation (see SetSessionTips).
+        if (tooltip.Length > 0)
+        {
+            ToolTip.SetTip(button, tooltip);
+        }
+
         button.Click += (_, _) => onClick();
         return button;
     }
@@ -881,7 +1109,9 @@ public sealed class RepositoryProgressBanner : UserControl
         _more.Content = T("InteractiveGitActionControl/MoreButton.Text", "More");
         _resolve.Content = T("InteractiveGitActionControl/ResolveButton.Text", "Resolve...");
         _continue.Content = T("InteractiveGitActionControl/ContinueButton.Text", "Continue");
+        _skipStep.Content = T("Skip");
         _abort.Content = T("InteractiveGitActionControl/AbortButton.Text", "Abort");
+        SetSessionTips();
         Refresh();
     });
 
