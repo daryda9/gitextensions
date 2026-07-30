@@ -221,6 +221,17 @@ public sealed class RepositoryProgressBanner : UserControl
         };
 
         TranslationService.LanguageChanged += OnLanguageChanged;
+
+        // A live theme switch has to repaint the filled strip straight away. The fill and
+        // the button faces come from App.* brushes, whose Color the theme manager mutates
+        // in place, so those follow by themselves — but the ink on the fill is DERIVED
+        // (InkFor picks black or white by measured contrast, and Brushes.Black/White are
+        // not theme resources). Without this the ink stayed the previous theme's choice
+        // until the next refresh: measured at 3.52:1 on the light theme's rust fill,
+        // below the 4.5:1 floor, against 5.97:1 once repainted. ThemeManager.Apply sets
+        // Application.RequestedThemeVariant (ThemeManager.cs:246), which is what raises
+        // this event; it fires on the UI thread.
+        ActualThemeVariantChanged += (_, _) => PaintActionBar(_conflicted);
     }
 
     /// <summary>
