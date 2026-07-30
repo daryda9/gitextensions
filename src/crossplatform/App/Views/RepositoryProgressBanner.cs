@@ -871,11 +871,14 @@ public sealed class RepositoryProgressBanner : UserControl
     private void OnSkipStep() => _ = RunSessionAsync(
         T("Skip"),
         "rebase --skip",
-        // Not destructive the way an abort is — the rest of the series survives — but it
-        // does drop a commit's changes for good, and upstream's own caption
-        // ("Skip currently applying commit") does not say that out loud. Cheap to
-        // confirm, expensive to undo.
-        confirm: T("Skip this step?\n\nThe commit this step would have applied is dropped: its changes will not be in the rebased branch. The rest of the series continues."),
+        // Not destructive the way an abort is — the rest of the series survives — but the
+        // skipped step is gone for good, and upstream's own caption ("Skip currently
+        // applying commit") does not say that out loud. Cheap to confirm, expensive to
+        // undo. The wording stops short of naming what exactly is lost, because that
+        // depends on the step: a `pick` that could not be applied loses its commit
+        // outright, while a stop on an interactive `edit` has already applied the commit
+        // and only the pending amend is abandoned — verified in GUI on both.
+        confirm: T("Skip this step?\n\nThe rebase abandons the step it stopped on and carries on with the rest of the series. What that step was going to change will not be in the rebased branch, and git keeps no way back to it."),
         (repo, emit) => Outcome(_rebaseSession.Skip(repo, emit)));
 
     private void OnAbort() => _ = _rebaseState.InProgress
