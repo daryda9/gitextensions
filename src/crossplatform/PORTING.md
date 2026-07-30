@@ -2255,6 +2255,57 @@ del dialogo dei conflitti non sono portati; la persistenza di sort-key e toggle 
 toolbar richiederebbe campi in `AppPreferences`; i due commenti ora stantii in `ApplyPatchDialog.cs:51`
 e `PullDialog.cs:718` dicono ancora che il port non ha `FormResolveConflicts`.
 
+## M73 (2026-07-30) — la superficie del rebase, il residuo del round 12
+
+> Unità singola, un subagent Claude in worktree isolato + il cablaggio del loop. Base `4a34cd5b8`,
+> build `Errori: 0` dopo ognuno dei 4 cherry-pick. **Nata da una domanda dell'utente**: perché il
+> rebase fermo nel suo `~/test-avalonia` non si potesse chiudere dalla GUI.
+
+Chiude il residuo che M72 aveva registrato con il suo motivo: *"rebase non cablato a `ConflictFlow`
+perché il port non ha modo di continuarlo — la domanda da sola lascerebbe l'utente col rebase a metà
+e nessun pulsante"*. Ora il modo c'è, quindi la domanda è stata cablata.
+
+- **`App/Services/RebaseSessionService.cs`** (nuovo, `a0ce516f2`): `Read(repoPath)` →
+  `RebaseSessionState` (`InProgress`, `Interactive`, `HasUnresolvedConflicts`, `Step`/`TotalSteps`,
+  `HeadName`, `Onto`, `StoppedSha`, più le regole di upstream come `CanContinue`/`CanSkip`/`CanAbort`)
+  e `Continue`/`Skip`/`Abort(repoPath, emit)`. Stato letto **strutturalmente** — `GetRebaseDir()`,
+  `InTheMiddleOfRebase()` e i file marker `done`/`git-rebase-todo`/`msgnum`/`end`/`head-name`/`onto`/
+  `stopped-sha` — mai parsando i messaggi di git, che qui parla italiano.
+- **I pulsanti nel banner** (`79ef436ee`): `Continue`/`Skip`/`Abort`, più `Resolve…` quando il rebase
+  è fermo su conflitti, riusando l'evento `ResolveConflictsRequested` che il banner **aveva già** (il
+  loop lo cabla già a `ResolveConflictsDialog`: **zero righe nuove in `MainWindow`**). `Abort` dietro
+  conferma, come il merge. `GIT_EDITOR=true` pinnato: senza, `git rebase --continue` su un `edit`
+  aspetterebbe `vi` e **pianterebbe il process dialog per sempre**.
+- **Due stati distinti, e il testo dice la verità**: fermo **senza** conflitti →
+  *"Interactive rebase is paused — no conflicts to resolve. Step N of M."*; fermo **con** conflitti →
+  banner arancione *"…is currently in progress with merge conflicts."*. Non dice "risolvi i conflitti"
+  quando non ce ne sono — era il difetto del suggerimento testuale che c'era prima.
+- **Cablaggio del loop** (`a1a40c3ce`): i quattro entry point del rebase (`BranchTagPanel`,
+  `RepoObjectsTree` ×2, `RevisionGridView`, tutti via `BranchTagService.RebaseOnto`) girano ora
+  **fuori** dai wrapper fire-and-forget `RunMutation`/`RunRefOp`, così l'attesa può esserci e
+  `ConflictFlow.HandleAsync` gira **dopo** che git si è fermato. `HandleAsync` chiede solo su
+  `ConflictedMerge`, quindi un rebase fermo su un `edit` **non** viene interrogato: corretto.
+- **Difetto di contrasto trovato misurando** (`68af816d2`): l'inchiostro del banner è **derivato** dal
+  fondo, non una chiave tematica, quindi un cambio tema **a caldo** lasciava inchiostro nero sul rust
+  del tema chiaro a **3,52:1** fino al refresh successivo. Risolto agganciandosi a
+  `ActualThemeVariantChanged`; rimisurato **5,97:1** senza refresh in mezzo. Correggeva anche la barra
+  del merge di M72.
+- Deviazione scelta dal subagent: `Continue` resta in riga e **si spegne** mentre l'indice è
+  conflittuale, con `Resolve…` accanto, invece dello scambio di visibilità di upstream — con quattro
+  pulsanti lo scambio farebbe ballare gli altri sotto il puntatore. La **regola** è quella di
+  upstream. Conseguenza registrata: lo stato merge nella stessa barra scambia ancora (M72, lasciato
+  com'era), quindi i due stati della barra non sono coerenti fra loro.
+- *Verificato in GUI dal loop* su due fixture: rebase fermo su `edit` (indice pulito, il caso
+  dell'utente) ⇒ `Continue` porta a *"Successfully rebased and updated refs/heads/master"*, banner
+  spento, nessun `.git/rebase-merge`; rebase fermo su **conflitto** ⇒ banner arancione con `Resolve…`
+  e `Continue` spento, il dialogo dei conflitti mostra i lati **invertiti** (`Local/current (theirs)`
+  / `Remote/incoming (ours)`) — corretto, in rebase `ours`/`theirs` di git sono scambiati — e dopo la
+  risoluzione `Continue` chiude il rebase.
+- **Non fatto, con motivo**: editing del todo interattivo (`git rebase --edit-todo`) — servirebbe una
+  griglia del todo più uno shim `GIT_SEQUENCE_EDITOR` puntato al port: è un'unità a sé e **non è
+  promessa da nessun controllo** nella UI. Cherry-pick e revert restano senza service dietro
+  `--continue`, quindi nel banner hanno ancora solo il suggerimento testuale.
+
 ## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
 
 > Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno
