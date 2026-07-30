@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M72,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M73,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -265,13 +265,32 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > degli hook visibile), `ResetChangesDialog`, il diff dei file untracked, e la chrome del commit dialog
 > (status bar upstream, gutter a due colonne, toolbar e filtro per lista).
 >
-> **Residui registrati, nessuno bloccante**: lo stato "conflitti senza operazione in corso" non è nel
-> banner (costerebbe un `git diff` a ogni refresh); rebase/`am`/cherry-pick/revert non hanno pulsanti
-> di continue nel banner (nessun service dietro); la scelta fast-forward del `MergeDialog` è ricordata
-> globalmente e non per repo; `AvaloniaGitUICommands.StartResolveConflictsDialog` resta
-> `NotSupported` (firma sincrona `bool`, decisione semantica); `DontConfirmResolveConflicts` è un flag
-> senza UI perché il port non ha la pagina Confirmations; i commenti stantii in
-> `ApplyPatchDialog.cs:51` e `PullDialog.cs:718`.
+> **Residui registrati, nessuno bloccante** (lista completa, allineata a M73):
+> - lo stato "conflitti senza operazione in corso" (dopo uno `stash pop` conflittuale) non è nel
+>   banner: rilevarlo costerebbe un `git diff` a ogni refresh anche su repo inerti — servirebbe una
+>   cache dello stato dell'indice;
+> - **cherry-pick e revert** non hanno un service dietro `--continue`, quindi nel banner restano col
+>   solo suggerimento testuale. Il rebase invece **ce l'ha da M73**, e `git am` ha già la sua
+>   macchina a stati in `ApplyPatchDialog` (M68);
+> - l'**editing del todo interattivo** (`git rebase --edit-todo`, la griglia per riordinare i commit)
+>   non è portato: servirebbe una griglia del todo più uno shim `GIT_SEQUENCE_EDITOR` puntato al port.
+>   Non è promesso da nessun controllo nella UI;
+> - i **due stati della barra non sono coerenti fra loro**: il merge **scambia** i pulsanti per
+>   visibilità (M72), il rebase li **spegne** restando in riga (M73, per non far ballare quattro
+>   pulsanti sotto il puntatore). Va uniformato, in un verso o nell'altro;
+> - la scelta fast-forward del `MergeDialog` è ricordata **globalmente** e non per repository
+>   (`GetEffectiveSettings().Detached()` è uno store condiviso);
+> - `AvaloniaGitUICommands.StartResolveConflictsDialog` resta `NotSupported`: firma sincrona `bool`
+>   con `IWin32Window?` e nessun riferimento a una `Window` — è una decisione semantica, non un gancio;
+> - `DontConfirmResolveConflicts` è un flag **senza UI**, perché il port non ha la pagina
+>   Confirmations (nessuna delle 17 checkbox di upstream è portata);
+> - nel dialogo dei conflitti mancano **"Open/Save `<side>` as"** (servirebbe un checkout su file
+>   temporaneo più un sostituto Linux di `OpenAs_RunDLL`) e la **file history** (serve instradamento
+>   dall'host);
+> - la persistenza di **sort-key e toggle untracked** delle nuove toolbar del commit dialog
+>   richiederebbe campi in `AppPreferences`, che è condiviso;
+> - i commenti ora stantii in `ApplyPatchDialog.cs:51` e `PullDialog.cs:718`, che dicono ancora che il
+>   port non ha `FormResolveConflicts`.
 
 > ### ►► Le voci originali della priorità utente (tutte chiuse, tenute per riferimento)
 > Lista operativa completa, con `file:riga` verificati al `6b5dff330` e la descrizione degli
