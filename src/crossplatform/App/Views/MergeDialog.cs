@@ -40,12 +40,12 @@ public sealed record MergeDialogResult(
 ///  The dialog never assembles a command line itself: <see cref="BranchTagService"/>
 ///  does.</para>
 ///
-///  <para>Two deliberate deviations from the Windows dialog:</para>
+///  <para>The left-hand <b>illustration panel</b> is <see cref="HelpImagePanel"/>,
+///  including the <c>Hide help</c> link, the <c>Show help</c> button it collapses to
+///  and the fast-forward diagram that appears on hover.</para>
+///
+///  <para>One deliberate deviation from the Windows dialog remains:</para>
 ///  <list type="bullet">
-///   <item>the left-hand <b>illustration panel</b> (and with it the <c>Hide help</c>
-///    link that only shows/hides that panel) is not ported — the same decision as
-///    for the pull dialog's illustration in M50/P3. Porting the link without the
-///    panel would leave a control that does nothing;</item>
 ///   <item>the <b>commit picker button</b> to the right of the branch combo is not
 ///    reproduced: the port has no <c>FormChooseCommit</c> (established in M69), and
 ///    a button that opens nothing is worse than no button. The combo is editable
@@ -66,6 +66,14 @@ public sealed class MergeDialog : Window
     ///  <c>ort</c>, the default since git 2.34).
     /// </summary>
     private static readonly string[] Strategies = ["resolve", "recursive", "octopus", "ours", "subtree"];
+
+    /// <summary>
+    ///  What the illustration column shows. The id is upstream's
+    ///  <c>UniqueIsExpandedSettingsId</c> for this dialog, so the collapsed/expanded
+    ///  choice is remembered per dialog and not globally.
+    /// </summary>
+    private static readonly HelpImageSpec HelpSpec =
+        new("FormMergeBranch", "HelpCommandMerge", "HelpCommandMergeFastForward");
 
     private readonly string _repoPath;
     private readonly string _currentBranch;
@@ -97,23 +105,43 @@ public sealed class MergeDialog : Window
 
     private readonly Button _mergeBtn;
 
+    private readonly HelpImagePanel _help;
+
     private MergeDialogResult? _result;
 
-    private MergeDialog(string repoPath, MergeDialogData data, string? defaultBranch, bool execute)
+    /// <summary>
+    ///  Width of the options column alone — the 640 the dialog used before it grew an
+    ///  illustration column, kept unchanged because that number was measured against
+    ///  the expanded advanced panel, whose captions are the widest thing here.
+    /// </summary>
+    private const double OptionsWidth = 640;
+
+    private MergeDialog(
+        string repoPath,
+        MergeDialogData data,
+        HelpImageAssets helpAssets,
+        string? defaultBranch,
+        bool execute)
     {
         _repoPath = repoPath ?? string.Empty;
         _currentBranch = data.CurrentBranch;
         _execute = execute;
 
-        Width = 640;
-
         // Tall enough for the whole advanced panel (strategy, squash, unrelated
         // histories, --log count and the merge message box) to be visible when it is
         // revealed; the ScrollViewer below stays as the safety net for translations
-        // that wrap the long radio captions onto extra lines.
+        // that wrap the long radio captions onto extra lines. Also more than enough for
+        // the illustration column (373 px of diagram plus the link and notice lines).
         Height = 620;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
+
+        // ---- Illustration column -------------------------------------------
+        // Built first: the radio handlers below drive its hover behaviour, and
+        // Avalonia pushes a property's current value at subscribe time.
+        _help = new HelpImagePanel(HelpSpec, helpAssets) { Margin = new Thickness(12, 12, 0, 12) };
+        _help.ExpandedChanged += ApplyHelpGeometry;
+        ApplyHelpGeometry();
 
         // ---- Merge group ---------------------------------------------------
         _branchLabel = Label(string.Empty);
@@ -252,6 +280,10 @@ public sealed class MergeDialog : Window
             }
         };
         _advanced.IsCheckedChanged += (_, _) => ApplyAdvancedState();
+
+        // FormMergeBranch.cs:155-163: the second diagram describes the fast-forward
+        // outcome, so it is offered on hover only while that radio is the choice.
+        _fastForward.IsCheckedChanged += (_, _) => _help.ShowImage2OnHover = _fastForward.IsChecked == true;
         _noFastForward.IsCheckedChanged += (_, _) =>
         {
             // --squash and --no-ff contradict each other: a squashed merge does not
@@ -268,6 +300,10 @@ public sealed class MergeDialog : Window
 
         _advanced.IsChecked = data.Prefs.ShowAdvanced;
         ApplyAdvancedState();
+
+        // IsCheckedChanged is a plain CLR event and does not replay the current value,
+        // so the initial hover behaviour has to be pushed by hand.
+        _help.ShowImage2OnHover = _fastForward.IsChecked == true;
 
         StackPanel options = new()
         {
@@ -308,7 +344,15 @@ public sealed class MergeDialog : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         });
-        Content = body;
+
+        // Illustration left, options right — the Windows arrangement. The illustration
+        // column is Auto-sized so collapsing it really does hand its space back.
+        Grid root = new() { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        Grid.SetColumn(_help, 0);
+        Grid.SetColumn(body, 1);
+        root.Children.Add(_help);
+        root.Children.Add(body);
+        Content = root;
         DialogKeys.InstallEscapeClose(this);
 
         ApplyTranslations();
@@ -342,8 +386,14 @@ public sealed class MergeDialog : Window
         string? defaultBranch = null,
         bool execute = true)
     {
+        // The palette must be read here, on the UI thread; decoding and recolouring the
+        // two 289x373 diagrams then happens on the worker with the git data.
+        (Color Text, Color Window) palette = HelpImagePanel.ReadPalette();
+
         MergeDialogData data = await Task.Run(() => LoadData(repoPath));
-        MergeDialog dialog = new(repoPath, data, defaultBranch, execute);
+        HelpImageAssets helpAssets = await Task.Run(() => HelpImagePanel.Prepare(HelpSpec, palette));
+
+        MergeDialog dialog = new(repoPath, data, helpAssets, defaultBranch, execute);
         await dialog.ShowDialog(owner);
         return dialog._result;
     }
@@ -368,6 +418,21 @@ public sealed class MergeDialog : Window
         => (_branchCombo.SelectedItem as string ?? _branchCombo.Text ?? string.Empty).Trim();
 
     private void UpdateEnabledState() => _mergeBtn.IsEnabled = SelectedBranch.Length > 0;
+
+    /// <summary>
+    ///  Keeps the window exactly as wide as the options column plus whatever the
+    ///  illustration column currently occupies, so hiding the help really shrinks the
+    ///  dialog instead of leaving a gap — upstream's <c>UpdateControlSize</c> adjusts
+    ///  its <c>Form.Size</c> by the same delta.
+    ///
+    ///  <para>Expanded that is 640 + 305 + 12 = 957, against ~800 for the Windows
+    ///  dialog. The extra ~155 px is all in the options column, not in the diagram
+    ///  (which is reproduced at its native 289 px): Avalonia's Fluent metrics are
+    ///  taller and wider than WinForms', and the pre-existing 640 was measured against
+    ///  the widest thing this dialog can show, the expanded advanced panel. Narrowing
+    ///  the window would clip that rather than move the diagram.</para>
+    /// </summary>
+    private void ApplyHelpGeometry() => Width = OptionsWidth + _help.CurrentWidth + 12;
 
     // FormMergeBranch.advanced_CheckedChanged: hiding the advanced panel also RESETS
     // the options it holds, so a hidden option can never be in force.
@@ -503,6 +568,16 @@ public sealed class MergeDialog : Window
         Caption(_addMergeMessage, T("FormMergeBranch/addMergeMessage.Text", "Specify merge message"));
 
         _mergeBtn.Content = T("FormMergeBranch/Ok.Text", "Merge");
+
+        // The "Show help" caption is two lines in upstream's resources ("Show\nhelp")
+        // because its WinForms button is a narrow vertical strip; this column is sized
+        // to the button instead, so any newline a translation carries is folded away.
+        _help.ApplyTranslations(
+            T("HelpImageDisplayUserControl/linkLabelHide.Text", "Hide help"),
+            T("HelpImageDisplayUserControl/linkLabelShowHelp.Text", "Show help")
+                .ReplaceLineEndings(" "),
+            T("FormMergeBranch/_formMergeBranchHoverShowImageLabelText.Text",
+                "Hover to see scenario when fast forward is possible."));
     }
 
     private static string T(string english) => TranslationService.T(english);
