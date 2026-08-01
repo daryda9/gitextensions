@@ -420,6 +420,14 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
+            // The wired branch path no longer passes through RunGit, which is where the
+            // busy check used to live, so it is made here explicitly.
+            if (_busy)
+            {
+                _status.Text = "Another Git operation is still running.";
+                return;
+            }
+
             string kind = row.IsTag ? "tag" : "branch";
             bool confirmed = await ConfirmAsync($"Delete {kind} '{row.Name}'?");
             if (!confirmed)
@@ -427,11 +435,37 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            bool force = _forceDelete.IsChecked == true;
             _status.Text = $"Deleting {kind} {row.Name}…";
-            RunMutation(() => row.IsTag
-                ? _service.DeleteTag(repo, row.Name)
-                : _service.DeleteBranch(repo, row.Name, force));
+
+            if (row.IsTag)
+            {
+                RunMutation(() => _service.DeleteTag(repo, row.Name));
+                return;
+            }
+
+            // A branch delete goes through the process dialog, like create branch and
+            // checkout, so "the branch is not fully merged" is spelled out instead of
+            // being squeezed into the status line. The checkbox stays the only source of
+            // --force here: unlike the tree's menu, this panel offers it explicitly.
+            // No RunMutation wrapper — it would delete twice.
+            bool force = _forceDelete.IsChecked == true;
+            bool ok;
+            SetBusy(true);
+            try
+            {
+                ok = await RefProcessRunner.DeleteBranchAsync(
+                    TopLevel.GetTopLevel(this) as Window, repo, row.Name, force, _service);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+
+            _status.Text = ok
+                ? $"Deleted branch {row.Name}."
+                : $"Deletion of {row.Name} did not complete.";
+            RefreshRefs();
+            OperationCompleted?.Invoke();
         }
         catch (Exception ex)
         {
