@@ -2308,6 +2308,188 @@ e nessun pulsante"*. Ora il modo c'è, quindi la domanda è stata cablata.
   promessa da nessun controllo** nella UI. Cherry-pick e revert restano senza service dietro
   `--continue`, quindi nel banner hanno ancora solo il suggerimento testuale.
 
+## M75 (2026-08-01) — le mutazioni di ref passano dal process dialog; diagnosi di 13.1
+
+Chiude **13.2** e **13.3** della coda round 13; **13.1 resta aperta** con una diagnosi parziale
+(dettaglio e verdetto nella voce stessa, qui sotto).
+
+**Il difetto di fondo**: nel port creazione branch e checkout giravano dentro wrapper
+fire-and-forget e **muti** — `RepoObjectsTree.RunMutation` su fallimento non faceva *nulla*, né
+messaggio né output né refresh. Upstream esegue entrambe le operazioni dentro `FormProcess`.
+
+- `3196e8f04` — `BranchTagService`: `CreateBranchStreaming`, `CheckoutStreaming`,
+  `CheckoutBranchStreaming`. Costruiscono le **stesse** stringhe di argomenti dei gemelli esistenti
+  (`Commands.Branch`/`CreateOrphan`/`Checkout`/`CheckoutBranch`, più il pre-step di stash) e le
+  fanno passare da `GitStreamRunner` — obbligatorio, perché il core `IExecutable`/`IProcess`
+  bufferizza stderr, dove git scrive il progress. Le vecchie firme sono intatte.
+- `2930ffbe4` — `App/Views/RefProcessRunner.cs`: rotta unica "operazione → `GitProcessDialog`
+  → esito". Ritorna `true` **solo** se git esce 0 **e** l'utente non ha premuto Abort. `owner` può
+  essere null (fallback alla main window, mai un'eccezione).
+- `ca222145d` · `92c548216` · `dd7fa502e` · `4b504d234` — i **10 call-site** cablati:
+  `RepoObjectsTree` (create, checkout, `-B`/remoto), `BranchTagPanel` (create, checkout),
+  `MainWindow` (dropdown toolbar, "Create branch here…", menu Commands), `CommitDialog`,
+  `RevisionGridView`.
+- `3fafaa1f9` — irrobustimento delle guardie `_busy` dell'albero (vedi 13.1).
+
+**Trappole registrate durante il cablaggio:**
+- Il vecchio wrapper va **rimosso** attorno alla chiamata, non lasciato: altrimenti git gira **due
+  volte** (`DoMergeAsync` già avvertiva di questo). `RunMutation` resta però in vita per
+  Reset/Rename/Delete.
+- **Refresh e flag busy restano al call-site.** In `MainWindow` il cablaggio **non** è stato una
+  riga sola: `RunOp` possedeva anche la sospensione del watcher, la status line, `RefreshAll()` e
+  `ConflictFlow.HandleAsync` — conservati in `RunRefProcessAsync`, stessa forma senza `Task.Run`.
+- In `RepoObjectsTree` `_busy` va azzerato **prima** del refresh: `Refresh()` (`:610`) è esso stesso
+  guardato da `_busy` e sarebbe stato un no-op silenzioso.
+- **Refresh anche su `false`/Abort**, in tutti i punti: un checkout interrotto può aver già mosso
+  HEAD, e mostrare uno stato stantio è il fallimento peggiore.
+- Niente `Task.Run` attorno all'helper: apre un modale e fa da sé il threading.
+
+## Coda round 13 — PRIORITÀ UTENTE del 31/07/2026: create branch e checkout dall'albero — **13.2 e 13.3 CHIUSE (M75), 13.1 APERTA**
+
+> Tre difetti segnalati dall'utente usando la GUI del port sul suo repo. **Hanno precedenza su tutto
+> il resto** (le "idee di valore" e i residui del round 12 in `HANDOFF.md` §4 restano dietro).
+> Prossima milestone libera: **M75**.
+>
+> **Causa comune a 13.2 e 13.3, accertata leggendo il codice**: nel port le mutazioni di ref girano
+> dentro wrapper **fire-and-forget e muti**. `RepoObjectsTree.RunMutation` (`:2410-2440`) fa
+> `Task.Run(work)` e, in caso di **fallimento, non fa assolutamente nulla** — nessun messaggio,
+> nessun output, nessun refresh: l'utente vede una GUI immobile e non sa se git è stato lanciato.
+> `MainWindow.RunOp` (`:3326-3372`) è appena meno cieco: scrive una riga nella status bar e, sul
+> fallimento, *"— see the panel output"*. Upstream invece esegue **entrambe** le operazioni dentro
+> `FormProcess`: creazione branch a `FormCreateBranch.cs:163`, checkout a
+> `FormCheckoutBranch.cs:357` (`StartCommandLineProcessDialog`). Il port ha già la superficie
+> giusta — `GitProcessDialog.RunStreamingAsync` (`:334-349`, console + `Keep dialog open` + `Abort`),
+> usata per push/merge/commit — quindi qui manca **solo l'instradamento**, non l'infrastruttura.
+>
+> **Call-site censiti (da cablare tutti, non solo quello dell'albero):**
+>
+> | Operazione | Call-site | Wrapper oggi |
+> |---|---|---|
+> | Create branch | `Views/RepoObjectsTree.cs:2022` | `RunMutation` (muto) |
+> | Create branch | `Views/BranchTagPanel.cs:230` | `RunMutation` (muto) |
+> | Create branch | `MainWindow.cs:1827` (grid, "Create branch here…") | `RunOp` (status bar) |
+> | Create branch | `MainWindow.cs:3456` (menu Commands) | `RunOp` (status bar) |
+> | Create branch | `Views/CommitDialog.cs:3070` | `_actions.CreateBranch` diretto |
+> | Checkout | `Views/RepoObjectsTree.cs:1868` (doppio clic + menu) | `RunMutation` (muto) |
+> | Checkout | `Views/BranchTagPanel.cs:198` | `RunMutation` (muto) |
+> | Checkout | `Views/RevisionGridView.cs:6000` | `RunRefOp` |
+> | Checkout | `MainWindow.cs:1807` (dropdown branch della toolbar) | `RunOp` (status bar) |
+> | Checkout `-B`/remoto | `Views/RepoObjectsTree.cs:1912` | `RunMutation` (muto) |
+
+- [~] **13.1 — `Create branch…` dal menu contestuale di un branch (albero sinistro) è INERTE al
+      primo clic: serve riaprire il menu e cliccare una seconda volta.** ⚠️ **M75: NON RIPRODOTTO,
+      due ipotesi su tre FALSIFICATE, causa residua a certezza MEDIA.** Vedi il verdetto in fondo
+      alla voce. Percorso: `RepoObjectsTree.cs:1253` (branch locale) e `:1301`
+      (branch remoto) → `DoCreateBranchAsync` (`:2004-2028`) → `CreateBranchDialog.AskAsync`
+      (`CheckoutBranchDialog.cs:412-436`) → `ShowDialog(owner)`.
+      **Ipotesi in ordine di probabilità, tutte falsificabili con una sonda di log:**
+      1. **Il modale viene mostrato mentre il popup del `ContextMenu` è ancora aperto.** `ShowDialog`
+         parte dentro `MenuItem.Click` (`MenuItem()` `:1527-1538`), quindi la finestra nasce mentre
+         la popup X11 (override-redirect, con grab del puntatore) non è ancora smontata; il WM può
+         non mapparla/attivarla, e il secondo tentativo — a popup chiuso — funziona. Combacia col
+         sintomo *"la seconda volta va"* ed è coerente con quanto già registrato in `HANDOFF.md` §3
+         (`ShowDialog` che non mappa senza WM). Rimedio standard: rimandare l'apertura con
+         `Dispatcher.UIThread.Post(..., DispatcherPriority.Background)` dopo la chiusura del menu.
+      2. **Un `Refresh()` dell'albero smonta il nodo che possiede il menu** mentre è aperto: i
+         `ContextMenu` sono ricreati per nodo a ogni ricostruzione (`:701`, `:734`, `:919`), quindi
+         il click sull'item può non essere mai consegnato. Il codice già si difende da un effetto
+         collaterale del tasto destro (`OnTreePointerPressed` `:1720-1729`, che sopprime la notifica
+         di selezione per un solo tick a `Background`): verificare se il refresh arriva **dopo** quel
+         tick.
+      3. **La guardia `_busy`** (`:2008`) o `_repoPath` vuoto fanno uscire in silenzio; `_busy` è
+         condiviso da tutte le mutazioni dell'albero e viene azzerato solo da un `Post` sull'UI
+         thread (`:2432`).
+      Fix atteso: il **primo** clic apre il dialogo. Se la causa è la (1), lo stesso rimedio va
+      applicato a **tutti** gli item del menu dell'albero che aprono un modale (Merge, Rebase,
+      Create tag, Rename, Delete…), non solo a Create branch. Aggiungere log diagnostico
+      *definitivo* è preferibile a una correzione a tentoni: qui una guardia che esce in silenzio e
+      una finestra che non mappa hanno lo **stesso** sintomo.
+
+      **VERDETTO M75 (2026-08-01).** Premessa cambiata: l'utente ha chiarito di aver osservato il
+      difetto **su Windows**, non su Linux → **l'ipotesi (1) è fuori questione** (non c'è nessun
+      grab X11 su Win32). Percorso strumentato con una sonda su file e app guidata sul desktop con
+      input sintetico vero (`user32!SetCursorPos` + `mouse_event`, elementi localizzati via UI
+      Automation) su un repo di prova. **Il sintomo non si è riprodotto.** Risultati:
+      - **Ipotesi (2) FALSIFICATA**: nessun `Refresh()`/rebuild parte dalla selezione o dal
+        pointer-pressed. `OnSelectionChanged` (`:1707`) emette solo `RefSelected`; l'unico
+        sottoscrittore è `MainWindow.OnRevisionSelected` (`MainWindow.cs:1869`), che non tocca
+        l'albero; l'unico `_tree.LoadRepository` è in `RefreshAll` (`MainWindow.cs:2865`).
+        Forzando il file watcher a menu aperto, il `BuildTree` è arrivato ~700 ms **dopo**
+        l'apertura del dialogo senza impedirla.
+      - **Ipotesi "target letto dalla selezione" FALSIFICATA per costruzione**: `BranchMenu`
+        (`:1231`) cattura `row.Name` nella closure a `:1253`/`:1301`, e `DoCreateBranchAsync`
+        (`:2004`) non legge mai `_tree.SelectedItem`. Log su un nodo **mai selezionato**: target
+        corretto e dialogo aperto al **primo** click.
+      - Scartate anche: owner nullo (`owner=MainWindow isVisible=True isActive=True`), eccezione
+        silenziata (il `catch` di `:2024` non è mai stato colpito), `async void` (è `async Task`).
+      - **Causa residua: (3), la guardia `_busy`** — l'unico `return` muto rimasto sul percorso.
+        **Certezza MEDIA, per esclusione**: non si è riusciti a fabbricare una finestra `_busy=true`
+        abbastanza lunga su un repo piccolo.
+      Corretti comunque i **due difetti reali e dimostrati** del flag (commit `3fafaa1f9`), che
+      producono esattamente il sintomo riferito: (a) nei wrapper `Run*` `_busy` era azzerato **solo
+      dopo** il ritorno di `work()` via `Post` finale → un git bloccato (credenziali, lock, rete)
+      lo lasciava `true` **per sempre** e da lì **ogni** voce del menu falliva in silenzio; ora c'è
+      un `finally` **dentro** il `Task.Run`. (b) le guardie mute di `DoCheckoutAsync`,
+      `DoMergeAsync`, `DoRebaseAsync`, `DoCreateBranchAsync`, `DoCreateTagAsync` e dei 5 wrapper ora
+      notificano il rifiuto (`NotifyBusy`/`NotifyBusyAsync`, `:2776`, con `_busyNoticeOpen` per non
+      impilare modali). `Refresh()` mantiene di proposito il bail-out muto: è chiamato
+      programmaticamente, non da un'azione utente. **Nessun fix a tentoni per il sintomo "primo
+      clic"**: non è dimostrato. **Sonda diagnostica conservata** nel branch locale
+      `diag/13.1-probe` (`16bfc40c7`, `App/DiagProbe.cs`): se il sintomo si ripresenta, riapplicarla
+      e leggere `%TEMP%\ge_13_1_probe.log` — la comparsa di `DoCreateBranchAsync GUARD-EXIT` rende
+      certa l'ipotesi (3) in un colpo solo. **Voce da RIVERIFICARE con l'utente**, non chiusa.
+- [x] **13.2 — la creazione di un branch non mostra il process dialog.** Confermato nel codice:
+      `RepoObjectsTree.cs:2022` → `RunMutation` → `BranchTagService.CreateBranch` (`:488-501`),
+      che esegue `Commands.Branch(name, objectId, checkout)` e restituisce un `BranchTagResult`
+      **buttato via** quando fallisce. Upstream mostra `FormProcess` con la riga di comando e
+      l'output (`FormCreateBranch.cs:163`), e con `Checkout after create` un secondo processo se il
+      branch è orphan (`:167`). Fix: instradare su `GitProcessDialog.RunStreamingAsync` come già
+      fatto per commit/merge/push, su **tutti** i call-site della tabella sopra, così anche un nome
+      rifiutato da `check-ref-format` o un branch già esistente diventa **visibile** invece di
+      sparire. Nota: `CreateBranch` risolve lo start point con `module.RevParse` **prima** di git —
+      quel fallimento non ha output git, va riportato come messaggio.
+      ✅ **M75**: fatto su **tutti e 5** i call-site di creazione. `BranchTagService` ha ora
+      `CreateBranchStreaming` (stessa riga di comando dei gemelli, orphan+clear incluso come
+      upstream `:167`) che passa da `GitStreamRunner`; l'instradamento è incapsulato in
+      `App/Views/RefProcessRunner.cs`. Il fallimento che **non arriva mai a git** (`rev-parse` a
+      vuoto, nome vuoto) viene scritto nella console del dialogo come `error: unknown revision 'x'`,
+      come richiesto dalla nota.
+- [x] **13.3 — il doppio clic su un branch nell'albero deve fare il checkout mostrando il process
+      dialog.** Il cablaggio **esiste già**: `_tree.DoubleTapped` (`:244`) → `OnActivate`
+      (`:1736-1760`) → `DoCheckout(row)` → `DoCheckoutAsync` (`:1839-1874`), e con working tree
+      **pulito** `CheckoutBranchDialog.AskAsync` (`CheckoutBranchDialog.cs:196-223`) ritorna
+      `DontChange` **senza mostrare nulla** → `RunMutation` esegue `git checkout` in silenzio. Quindi
+      il difetto percepito ("non succede niente") è **mancanza di feedback**, e su un checkout che
+      *fallisce* è mancanza totale di diagnostica (`RunMutation` ignora `!success`).
+      **Da misurare per primo**: se il checkout avviene davvero (confrontare `git branch --show-current`
+      prima/dopo) — se non avviene, la causa è a monte del feedback e va trovata lì.
+      Fix: process dialog sul checkout (upstream `FormCheckoutBranch.cs:357`), sia sul percorso
+      pulito sia dopo la scelta del dialogo "local changes". Da valutare in più, per fedeltà:
+      upstream chiede conferma prima del checkout da doppio clic
+      (`LeftPanel/LocalBranchNode.cs:29-31,54-57` → `MessageBoxes.ConfirmBranchCheckout`), dietro
+      un'impostazione della pagina **Confirmations** che il port non ha — se si porta la conferma,
+      registrare che il flag non ha UI (come già fatto per `DontConfirmResolveConflicts`).
+      ✅ **M75**: fatto su **tutti e 5** i call-site di checkout. Il process dialog viene aperto
+      **dopo** la risposta di `CheckoutBranchDialog.AskAsync`, quindi compare su **entrambi** i
+      percorsi: tree pulito (dove `AskAsync` risponde `DontChange` senza mostrare nulla) e dopo la
+      scelta del dialogo "local changes". `CheckoutStreaming`/`CheckoutBranchStreaming` coprono
+      anche il `-B` e il branch remoto/detached, con il pre-step di stash in streaming.
+      **NON portata** la conferma upstream sul doppio clic (`MessageBoxes.ConfirmBranchCheckout`):
+      dipende da un flag della pagina Confirmations che il port non ha, e aggiungerla senza UI
+      significherebbe un comportamento non disattivabile dall'utente. Resta valutabile.
+
+**Verifica GUI del blocco — NON ESEGUITA, e perché.** Il metodo di `HANDOFF.md` §3 (Xvfb + mini-WM
+python-Xlib + `import -window root`) **non è applicabile sulla macchina di questo round**: Windows 11
+ARM64, senza Xvfb, ImageMagick, python-Xlib, e con una WSL Ubuntu priva di SDK .NET. L'utente ha
+scelto esplicitamente "solo codice + build, verifica manuale a mano". Verifica sostitutiva eseguita:
+build `Errori: 0` con i 31 warning pre-esistenti e nessuno nuovo, più rilettura dei call-site. La
+diagnosi di 13.1 ha invece usato input sintetico Win32 reale (vedi verdetto sopra). **Checklist
+manuale consegnata all'utente** con i 5 criteri di accettazione (primo clic su `Create branch…`;
+process dialog sulla creazione con branch nuovo visibile nell'albero; doppio clic → process dialog
+con `git checkout` e branch corrente cambiato in albero e toolbar; casi di **fallimento** leggibili
+— nome duplicato/rifiutato da `check-ref-format`, checkout bloccato da file locale con tree sporco;
+nessuna regressione su Merge/Rebase/Create tag/Rename/Delete e sul checkout da toolbar e grid).
+
 ## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
 
 > Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno

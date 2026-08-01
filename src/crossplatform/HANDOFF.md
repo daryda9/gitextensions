@@ -11,10 +11,11 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `62715851b` (**M74: pannello di aiuto del merge**) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `3fafaa1f9` (**M75: mutazioni di ref nel process dialog + diagnosi 13.1**) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
+| Coda aperta | **PRIORITÀ UTENTE del 31/07/2026**: 13.2 (create branch senza process dialog) e 13.3 (doppio clic = checkout col process dialog) **CHIUSE in M75** su tutti e 10 i call-site. **Resta 13.1** — `Create branch…` inerte al primo clic: **non riprodotto**, ipotesi "refresh che smonta il nodo" e "target letto dalla selezione" **falsificate con prova diretta**, causa residua `_busy` a certezza **MEDIA**; i due difetti reali del flag sono comunque corretti. Sonda diagnostica nel branch locale `diag/13.1-probe` (`16bfc40c7`). **Da riverificare con l'utente.** Dettaglio in `PORTING.md` → M75 e "Coda round 13" |
 | Bugfix post-blocco | M43 fetch/pull freeze · M44 `HOME` sbagliato → prompt credenziali a ogni push |
 | Packaging | `.deb` self-contained via `packaging/build-deb.sh` |
 | Push su remote | **origin NON allineato: ~75 commit locali non pushati** (`origin/linux-avalonia-port` = `757742ce8`, cioè la chiusura del round 10) al momento della stesura (conta esatta con `git rev-list --count origin/linux-avalonia-port..HEAD`). Il push lo esegue l'utente, mai il loop. Portachiavi: se vuoto, il primo push chiede le credenziali **una volta** (username `daryda9` + PAT), poi `git credential approve` le salva in libsecret |
@@ -81,7 +82,23 @@ dotnet build App/GitExtensions.Avalonia.csproj -v q   # → Errori: 0
 - **NON** fare refactor multi-target, **NON** toccare la build Windows: lavorare solo
   in `src/crossplatform/`.
 - Ogni iterazione aggiorna `PORTING.md`: spunta le voci, registra la milestone (prossima
-  libera: **M75**), tiene il contatore iterazione.
+  libera: **M76**), tiene il contatore iterazione.
+
+### ⚠️ L'ambiente NON è sempre Linux — verificarlo PRIMA di pianificare (misurato in M75)
+Il round 13 è girato su **Windows 11 ARM64** (Git Bash MSYS + PowerShell), non sulla macchina
+Linux dei round precedenti. Conseguenze, tutte misurate:
+- **Niente Xvfb, ImageMagick, python-Xlib**; la WSL Ubuntu presente **non ha SDK .NET**. Tutta
+  l'attrezzatura headless descritta più avanti in questo file **non è applicabile**: non tentarla,
+  concordare con l'utente una verifica alternativa.
+- **La build funziona su Windows**: `dotnet build App/GitExtensions.Avalonia.csproj -v q` da
+  `src/crossplatform` (SDK 10.0.302 in PATH) → `Errori: 0`, 31 warning pre-esistenti.
+- **Se l'app è in esecuzione la build fallisce** con `MSB3027`/`MSB3021` "file bloccato da
+  GitExtensions.Avalonia": chiudere l'istanza (`taskkill //PID <pid> //F`) — non è un errore di
+  compilazione.
+- **Le worktree falliscono con "Filename too long"** (i file di test upstream sfondano MAX_PATH):
+  serve `git config --global core.longpaths true`, già impostato su questa macchina.
+- **Chiedere all'utente su quale piattaforma ha visto il bug**: in M75 il difetto era su Windows e
+  questo ha eliminato in partenza l'ipotesi principale (grab X11), che era in cima alla coda.
 
 ### Metodo del loop (delega)
 - Il loop **non scrive codice a mano**: pianifica e **delega a subagent Claude in
@@ -239,6 +256,29 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 ---
 
 ## 4. Cosa resta da fare
+
+> ### ►► PRIORITÀ UTENTE del 31/07/2026 — **APERTA**: create branch e checkout dall'albero
+> Tre difetti segnalati usando la GUI. **Vengono prima di tutto il resto.** Lista operativa completa,
+> con `file:riga` verificati al `22dfc4d1b`, ipotesi di causa e criteri di accettazione:
+> `PORTING.md` → **"Coda round 13 — PRIORITÀ UTENTE del 31/07/2026"**.
+> 1. **`Create branch…` dal menu contestuale di un branch (albero sinistro) è inerte al primo clic**,
+>    funziona al secondo (`RepoObjectsTree.cs:1253`/`:1301` → `DoCreateBranchAsync` `:2004` →
+>    `ShowDialog`). Da riprodurre e **misurare**: l'ipotesi principale è il modale aperto mentre il
+>    popup del `ContextMenu` è ancora vivo (grab X11 → il WM non mappa la finestra), le altre sono un
+>    `Refresh()` che smonta il nodo col menu aperto e la guardia `_busy`. Se è la prima, il rimedio
+>    vale per **tutti** gli item del menu dell'albero che aprono un modale.
+> 2. **La creazione di un branch non passa dal process dialog** (upstream sì:
+>    `FormCreateBranch.cs:163`). Nel port gira in `RunMutation`, che **sul fallimento non fa nulla**.
+> 3. **Il doppio clic su un branch deve fare il checkout mostrando il process dialog** (upstream
+>    `FormCheckoutBranch.cs:357`). Il cablaggio c'è già (`RepoObjectsTree.cs:244` → `OnActivate`
+>    `:1736` → `DoCheckoutAsync` `:1839`) e su tree pulito il dialogo "local changes" viene saltato di
+>    proposito: quello che manca è il **feedback**. Verificare prima se il checkout avviene davvero.
+>
+> **Causa comune a 2 e 3, accertata**: `RepoObjectsTree.RunMutation` (`:2410-2440`) è fire-and-forget
+> e **muto** — su `!success` nessun messaggio, nessun refresh; `MainWindow.RunOp` (`:3326`) si ferma a
+> una riga di status bar. L'infrastruttura giusta esiste già
+> (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
+> **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
 > ### ► M74 (2026-07-30) — **pannello illustrativo del merge**. Prossima milestone libera: **M75**
 > Ultima differenza visibile fra il `MergeDialog` del port e lo screenshot dell'originale: chiusa.
@@ -632,9 +672,13 @@ infine A/B con e senza fix.
 **Round 11 (M67–M70) è chiuso, e con esso la "Coda round 9": non resta nessuna voce `- [ ]` né
 `- [~]`.** HEAD alla chiusura: `c11c183a9`, poi `6b5dff330` (drop di NOTES.md).
 
-> **Il round 12 è CHIUSO** (M71–M72): commit dialog e flusso di merge completi, verificati end-to-end
-> in GUI. Prossima milestone libera: **M73**. Non c'è una coda aperta: il prossimo round deve prima
-> **decidere cosa vale la pena fare**. Materiale noto sotto, più i residui del round 12 in §4.
+> **C'è una coda APERTA e prioritaria**: le tre voci della **PRIORITÀ UTENTE del 31/07/2026** (create
+> branch inerte al primo clic · create branch senza process dialog · doppio clic = checkout col process
+> dialog), in testa a §4 e per esteso in `PORTING.md` → "Coda round 13". **Il prossimo round parte da
+> lì**, non deve decidere cosa fare. Prossima milestone libera: **M75**.
+>
+> Round 12 (M71–M72), M73 e M74 sono chiusi e verificati in GUI; i loro residui sono in §4 e restano
+> **dietro** la coda round 13, come il materiale noto qui sotto.
 
 Materiale noto e già motivato, dietro le priorità:
 
@@ -664,26 +708,54 @@ localizzato, `GitArgumentBuilder` che ri-splitta gli argomenti, priorità `Templ
 `.git/config.worktree`, e il fatto che **le voci di coda invecchiano**: nell'iterazione 2 tre unità
 su tre erano già state fatte).
 
-Scheletro di prompt per `/loop`, da riempire con le voci scelte:
+Prompt per `/loop`, già riempito con la coda aperta (round 13):
 
 ```
-Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 12: <TEMA>.
+Continua il port Linux/Avalonia di Git Extensions in src/crossplatform/ — ROUND 13: create branch e
+checkout dall'albero sinistro (PRIORITÀ UTENTE del 31/07/2026).
 Branch: linux-avalonia-port (verificare l'HEAD VERO con git rev-parse HEAD). NON push. NON firmare i
 commit (git -c commit.gpgsign=false). NON refactor multi-target. NON toccare la build Windows:
 lavorare SOLO in src/crossplatform/.
 
-LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 e in PORTING.md le milestone M67-M70. La "Coda
-round 9" e' ESAURITA: non ci sono piu' voci aperte da pescare. Le voci di questo round sono elencate
-sotto; tutto il resto e' SKIP dichiarato (repository-host GitHub, colonna build status, script utente,
-le ~35 impostazioni senza consumatore).
+LEGGI PRIMA src/crossplatform/HANDOFF.md sezioni 3 e 4 e in PORTING.md la sezione "Coda round 13 —
+PRIORITA' UTENTE del 31/07/2026" (lista operativa con file:riga, ipotesi di causa, tabella dei
+call-site e criteri di accettazione). La "Coda round 9" e' ESAURITA. Le voci di questo round sono
+quelle sotto; tutto il resto e' SKIP dichiarato (repository-host GitHub, colonna build status, script
+utente, le ~35 impostazioni senza consumatore).
 
 DIREZIONE DELL'UTENTE: lingue solo inglese e italiano. Contano feature, fedelta' all'originale e
 integrazione nella GUI. NIENTE pulsanti finti: se dietro una voce non c'e' il dato, non metterla e
 registrare perche'.
 
 ## VOCI DI QUESTO ROUND
-1. <voce> — <perche' vale, e dove sta il dato/API che la sblocca>
-2. ...
+1. 13.1 — "Create branch..." dal menu contestuale di un branch nell'albero sinistro NON fa nulla al
+   primo clic (serve cliccare due volte). RepoObjectsTree.cs:1253/:1301 -> DoCreateBranchAsync:2004 ->
+   CreateBranchDialog.AskAsync (CheckoutBranchDialog.cs:412) -> ShowDialog. RIPRODURRE E MISURARE
+   PRIMA: ipotesi 1 = modale aperto col popup del ContextMenu ancora vivo (grab X11, il WM non mappa);
+   ipotesi 2 = Refresh() che smonta il nodo col menu aperto (i ContextMenu sono ricreati a :701/:734/
+   :919); ipotesi 3 = la guardia _busy/_repoPath che esce in silenzio. Una guardia silenziosa e una
+   finestra non mappata danno lo STESSO sintomo: mettere log diagnostico, non correggere a tentoni. Se
+   e' l'ipotesi 1, applicare il rimedio a TUTTI gli item del menu dell'albero che aprono un modale.
+2. 13.2 — la creazione di un branch non mostra il process dialog. Upstream: FormProcess a
+   FormCreateBranch.cs:163 (+ :167 per l'orphan). Port: RunMutation (RepoObjectsTree.cs:2410-2440) e'
+   muto e sul fallimento non fa NULLA. Instradare su GitProcessDialog.RunStreamingAsync:334 su tutti i
+   5 call-site (RepoObjectsTree.cs:2022, BranchTagPanel.cs:230, MainWindow.cs:1827 e :3456,
+   CommitDialog.cs:3070). Il RevParse dello start point in BranchTagService.CreateBranch:488 fallisce
+   senza output git: riportarlo come messaggio.
+3. 13.3 — doppio clic su un branch nell'albero = checkout CON process dialog. Il cablaggio esiste
+   (RepoObjectsTree.cs:244 -> OnActivate:1736 -> DoCheckoutAsync:1839) e su tree pulito
+   CheckoutBranchDialog.AskAsync (CheckoutBranchDialog.cs:196-223) salta il dialogo di proposito:
+   manca il FEEDBACK, e su un checkout che fallisce manca ogni diagnostica. Verificare PRIMA se il
+   checkout avviene davvero (git branch --show-current prima/dopo). Upstream: process dialog a
+   FormCheckoutBranch.cs:357, piu' la conferma di LocalBranchNode.cs:29-31,54-57
+   (MessageBoxes.ConfirmBranchCheckout) dietro un flag della pagina Confirmations che il port non ha —
+   se si porta la conferma, registrare che il flag e' senza UI. Cablare tutti i 5 call-site del
+   checkout (tabella in PORTING.md).
+
+VERIFICA ATTESA: repo di prova in /tmp con tree pulito E variante sporca; rclick -> "Create branch..."
+al PRIMO clic; dclick -> process dialog con git checkout e branch corrente cambiato nell'albero; piu'
+un caso di FALLIMENTO (nome duplicato, checkout bloccato da un file da sovrascrivere) con l'errore di
+git leggibile a schermo.
 
 METODO: il loop NON scrive codice a mano tranne il cablaggio minimo in MainWindow/MainMenu. Delega a
 subagent CLAUDE in worktree isolati (isolation: worktree), 2-3 in parallelo, un'unita' per subagent,
@@ -720,7 +792,8 @@ da Start -> Exit o con closewin.py. Sul display REALE (Wayland/XWayland) XTEST t
 puntatore NO, e gli screenshot vanno presi per finestra (import -window <id>).
 Repo di prova in /tmp: r11int (+remote r11intrem), r9repo, g1repo, r11bs (bisect), r11am (patch set),
 r11a3 (archive/sparse), r11v (oggetti perduti), r11tok (sintassi). Distruttivo SOLO in /tmp.
-Aggiornare PORTING.md (prossima milestone libera: M71) e HANDOFF.md a ogni iterazione, e la memoria
+Aggiornare PORTING.md (prossima milestone libera: M75, spuntando le voci 13.1-13.3 nella "Coda round
+13") e HANDOFF.md a ogni iterazione, e la memoria
 avalonia-port-state.md a fine blocco.
 STOP quando le voci sono chiuse o dichiarate, oppure a 15 iterazioni, oppure se una strada si rivela
 impraticabile (documentare il vicolo cieco invece di forzare).
