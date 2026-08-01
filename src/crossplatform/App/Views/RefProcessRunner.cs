@@ -109,6 +109,49 @@ public static class RefProcessRunner
     }
 
     /// <summary>
+    ///  Deletes the local branch <paramref name="name"/> inside the process dialog, the
+    ///  way upstream's <c>FormDeleteBranch.cs:118-119</c> hands its delete to
+    ///  <c>StartCommandLineProcessDialog</c>. <paramref name="force"/> is <c>-D</c>: the
+    ///  refusal it overrides (<c>the branch 'x' is not fully merged</c>) is precisely what
+    ///  the console exists to show, so the caller must have asked the user first.
+    /// </summary>
+    /// <returns><see langword="true"/> when git succeeded and the user did not abort.</returns>
+    public static Task<bool> DeleteBranchAsync(
+        Window? owner,
+        string repoPath,
+        string name,
+        bool force,
+        BranchTagService? service = null)
+    {
+        BranchTagService branchTags = service ?? new BranchTagService();
+        return RunAsync(
+            owner,
+            string.Format(T("Delete branch {0}"), name),
+            emit => branchTags.DeleteBranchStreaming(repoPath, name, force, emit));
+    }
+
+    /// <summary>
+    ///  Deletes <paramref name="branch"/> on <paramref name="remote"/>
+    ///  (<c>git push &lt;remote&gt; --delete</c>), as upstream's
+    ///  <c>FormDeleteRemoteBranch</c> does. It talks to the network, so the live console
+    ///  is the only thing that distinguishes "working" from "hung".
+    /// </summary>
+    /// <returns><see langword="true"/> when git succeeded and the user did not abort.</returns>
+    public static Task<bool> DeleteRemoteBranchAsync(
+        Window? owner,
+        string repoPath,
+        string remote,
+        string branch,
+        BranchTagService? service = null)
+    {
+        BranchTagService branchTags = service ?? new BranchTagService();
+        return RunAsync(
+            owner,
+            string.Format(T("Delete branch {0}"), $"{remote}/{branch}"),
+            emit => branchTags.DeleteRemoteBranchStreaming(repoPath, remote, branch, emit));
+    }
+
+    /// <summary>
     ///  The shared body: run <paramref name="operation"/> in the process dialog and
     ///  reduce its outcome to a boolean. An <b>Abort</b> is never a success, even when
     ///  the killed git had already reported one.

@@ -803,6 +803,94 @@ public sealed class BranchTagService
     }
 
     /// <summary>
+    ///  Streaming twin of <see cref="DeleteBranch"/>: the same
+    ///  <see cref="Commands.DeleteBranch"/> command line, run through
+    ///  <see cref="GitStreamRunner"/> so the process dialog shows git's own words. That
+    ///  matters more here than anywhere else, because the single most common outcome of a
+    ///  non-forced delete is <c>error: the branch 'x' is not fully merged</c> — a message
+    ///  the buffered path threw away, leaving the click looking like a no-op.
+    /// </summary>
+    public BranchTagResult DeleteBranchStreaming(
+        string repoPath, string name, bool force, Action<string> onOutput)
+    {
+        string branchName = name?.Trim() ?? string.Empty;
+        if (branchName.Length == 0)
+        {
+            return Reported(onOutput, "error: branch name cannot be empty");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        IGitRef? branch = module
+            .GetRefs(RefsFilter.Heads)
+            .FirstOrDefault(r => string.Equals(r.Name, branchName, StringComparison.Ordinal));
+
+        if (branch is null)
+        {
+            return Reported(onOutput, $"error: local branch '{branchName}' not found");
+        }
+
+        IGitCommand command = Commands.DeleteBranch([branch], force);
+        return RunStreaming(module, command.Arguments, onOutput);
+    }
+
+    /// <summary>
+    ///  Whether <paramref name="name"/> is fully merged into the current HEAD, i.e.
+    ///  whether deleting it can lose commits. This is the test upstream's
+    ///  <c>FormDeleteBranch</c> makes with its merged-branch list
+    ///  (<c>FormDeleteBranch.cs:95-96</c>) before warning the user; done here with
+    ///  <c>git merge-base --is-ancestor</c>, which answers it in one call.
+    ///  <para>A detached HEAD, an unresolvable branch or a git that errors out all answer
+    ///  <see langword="false"/> — "assume it would lose commits" is the safe default,
+    ///  and it matches upstream, which treats every branch as unmerged when HEAD is
+    ///  detached.</para>
+    /// </summary>
+    public bool IsBranchMerged(string repoPath, string name)
+    {
+        try
+        {
+            string branchName = name?.Trim() ?? string.Empty;
+            if (branchName.Length == 0)
+            {
+                return false;
+            }
+
+            GitModule module = GitContext.CreateModule(repoPath);
+            if (DetachedHeadParser.IsDetachedHead(module.GetSelectedBranch()))
+            {
+                return false;
+            }
+
+            GitArgumentBuilder args = new("merge-base") { "--is-ancestor", branchName.Quote(), "HEAD" };
+            return module.GitExecutable.Execute(args, throwOnErrorExit: false).ExitedSuccessfully;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///  Streaming twin of <see cref="DeleteRemoteBranch"/>. The push writes its progress
+    ///  to stderr, which the core executable buffers, hence
+    ///  <see cref="GitStreamRunner"/>.
+    /// </summary>
+    public BranchTagResult DeleteRemoteBranchStreaming(
+        string repoPath, string remote, string branch, Action<string> onOutput)
+    {
+        string remoteName = remote?.Trim() ?? string.Empty;
+        string branchName = branch?.Trim() ?? string.Empty;
+        if (remoteName.Length == 0 || branchName.Length == 0)
+        {
+            return Reported(onOutput, "error: remote and branch name cannot be empty");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("push") { remoteName, "--delete", branchName };
+        return RunStreaming(module, args, onOutput);
+    }
+
+    /// <summary>
     ///  Deletes the branch <paramref name="branch"/> on the remote
     ///  <paramref name="remote"/> via <c>git push &lt;remote&gt; --delete &lt;branch&gt;</c>.
     ///  <paramref name="branch"/> is the short branch name on the remote (without

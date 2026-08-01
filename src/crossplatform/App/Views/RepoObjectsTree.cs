@@ -2249,15 +2249,56 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (row.IsCurrent)
+            if (row.IsCurrent || _repoPath is not { Length: > 0 } repo)
             {
                 return;
             }
 
-            if (await ConfirmAsync(TF("Delete branch '{0}'?", row.Name)))
+            if (_busy)
             {
-                RunMutation(() => _branchTagService.DeleteBranch(_repoPath!, row.Name, force: false));
+                await NotifyBusyAsync();
+                return;
             }
+
+            if (!await ConfirmAsync(TF("Delete branch '{0}'?", row.Name)))
+            {
+                return;
+            }
+
+            // Upstream deletes with --force ALWAYS (FormDeleteBranch.cs:118) and instead
+            // warns first when the branch is not fully merged (:90-116). The port used to
+            // delete without --force and say nothing when git refused, so the single most
+            // common case — a branch with commits of its own — silently did nothing.
+            bool force = true;
+            if (!_branchTagService.IsBranchMerged(repo, row.Name))
+            {
+                force = await ConfirmAsync(
+                    T("The branch you are about to delete is not fully merged. Are you sure you want to delete it?")
+                    + "\n" + T("Deleted branches can be recovered using the reflog for a while."));
+                if (!force)
+                {
+                    return;
+                }
+            }
+
+            // Deleted inside the process dialog, like create branch and checkout: git's
+            // own refusal has to be readable. No RunMutation wrapper — it would delete twice.
+            try
+            {
+                _busy = true;
+                await RefProcessRunner.DeleteBranchAsync(
+                    TopLevel.GetTopLevel(this) as Window, repo, row.Name, force, _branchTagService);
+            }
+            finally
+            {
+                // Cleared before the refresh: Refresh() is itself guarded by _busy.
+                _busy = false;
+            }
+
+            // On failure too: git may have deleted some refs before stopping, and a stale
+            // tree after a failed delete is its own bug report.
+            OperationCompleted?.Invoke();
+            Refresh();
         }
         catch
         {
@@ -2269,8 +2310,14 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (!row.IsRemote)
+            if (!row.IsRemote || _repoPath is not { Length: > 0 } repo)
             {
+                return;
+            }
+
+            if (_busy)
+            {
+                await NotifyBusyAsync();
                 return;
             }
 
@@ -2282,11 +2329,27 @@ public sealed class RepoObjectsTree : UserControl
             }
 
             // Destructive and affects the remote: confirm before pushing the delete.
-            if (await ConfirmAsync(TF("Delete branch '{0}' on remote '{1}'?", branch, remote)
+            if (!await ConfirmAsync(TF("Delete branch '{0}' on remote '{1}'?", branch, remote)
                 + "\n" + T("Deleting a branch on the remote cannot be undone.")))
             {
-                RunMutation(() => _branchTagService.DeleteRemoteBranch(_repoPath!, remote, branch));
+                return;
             }
+
+            // Same route as the local delete: the push talks to the network and can fail
+            // for a dozen server-side reasons, all of which used to vanish.
+            try
+            {
+                _busy = true;
+                await RefProcessRunner.DeleteRemoteBranchAsync(
+                    TopLevel.GetTopLevel(this) as Window, repo, remote, branch, _branchTagService);
+            }
+            finally
+            {
+                _busy = false;
+            }
+
+            OperationCompleted?.Invoke();
+            Refresh();
         }
         catch
         {
