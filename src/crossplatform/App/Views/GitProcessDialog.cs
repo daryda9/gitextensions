@@ -174,13 +174,21 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
+        // Remembered across runs, as upstream does: the checkbox is the inverse of
+        // the single global AppSettings.CloseProcessDialog flag
+        // (FormStatus.cs:50 reads it, FormStatus.cs:276 writes it back). Unchecking it
+        // once must therefore still be unchecked the next time ANY process dialog
+        // opens — the port previously hard-coded `true` here, which is why the choice
+        // was forgotten.
         _keepOpen = new CheckBox
         {
             Content = "Keep dialog open",
-            IsChecked = true,
+            IsChecked = !new Services.ViewPrefsService().Load().CloseProcessDialog,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             VerticalAlignment = VerticalAlignment.Center,
         };
+
+        _keepOpen.IsCheckedChanged += (_, _) => KeepOpenChanged();
 
         // OK stays disabled until the operation really finished: closing mid-run
         // must not look like an acknowledged success (mirrors FormStatus, where Ok
@@ -790,6 +798,35 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
                 };
                 _closeTimer.Start();
             }
+        }
+    }
+
+    // Reacts to the user toggling "Keep dialog open", mirroring
+    // FormStatus.KeepDialogOpen_CheckedChanged (FormStatus.cs:274-284):
+    //
+    //  * the choice is persisted at once as the global CloseProcessDialog flag, so the
+    //    NEXT dialog opens with the same box state;
+    //  * and the invariant is maintained: if the box is turned OFF while the operation
+    //    has ALREADY finished successfully, the dialog closes now. Without this the
+    //    box was useless in practice — a checkout finishes in a few hundred
+    //    milliseconds, so by the time the user reaches the checkbox the auto-close
+    //    decision in Settle() has long been taken (with the box still checked), and
+    //    unchecking it did nothing at all.
+    //
+    // An aborted or failed run is left alone, exactly like upstream: only a success
+    // closes itself.
+    private void KeepOpenChanged()
+    {
+        bool keep = _keepOpen.IsChecked == true;
+
+        // Best-effort, read-modify-write so another surface's group is not reverted.
+        new Services.ViewPrefsService().Update(p => p.CloseProcessDialog = !keep);
+
+        if (!keep && _finished && !_aborted && _outcome?.Success == true)
+        {
+            _closeTimer?.Stop();
+            _closeTimer = null;
+            Close();
         }
     }
 

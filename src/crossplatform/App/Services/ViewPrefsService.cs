@@ -45,6 +45,26 @@ public sealed class ViewPrefs
     ///  reverts anything written behind its back.</para>
     /// </summary>
     public Dictionary<string, bool> HelpPanels { get; set; } = [];
+
+    /// <summary>
+    ///  Whether the process dialog closes itself when the operation SUCCEEDS — the
+    ///  port's home for upstream's <c>AppSettings.CloseProcessDialog</c>
+    ///  (<c>src/app/GitCommands/Settings/AppSettings.cs:1336</c>, key
+    ///  <c>"closeprocessdialog"</c>). It is the inverse of the <c>Keep dialog open</c>
+    ///  checkbox in <see cref="GitProcessDialog"/>, exactly as upstream's
+    ///  <c>FormStatus.KeepDialogOpen_CheckedChanged</c> writes it
+    ///  (<c>src/app/GitUI/HelperDialogs/FormStatus.cs:276</c>).
+    ///
+    ///  <para>ONE global flag, not one per command: that is upstream's semantics, and
+    ///  the port follows it. Defaults to <see langword="false"/> (dialog stays open),
+    ///  matching <c>GetBool("closeprocessdialog", false)</c>.</para>
+    ///
+    ///  <para>It lives in this file rather than <c>ui-state.json</c> for the reason
+    ///  given on <see cref="ViewPrefsService"/>: the process dialog is modal and long
+    ///  gone before <c>MainWindow.PersistLayout()</c> reserialises that file, which
+    ///  would revert the write.</para>
+    /// </summary>
+    public bool CloseProcessDialog { get; set; }
 }
 
 /// <summary>
