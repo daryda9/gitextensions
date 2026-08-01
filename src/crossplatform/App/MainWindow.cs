@@ -1803,8 +1803,9 @@ public sealed class MainWindow : Window
             return;
         }
 
-        RunOp($"Checkout {name}",
-            () => new BranchTagService().Checkout(_repoPath!, name, action.Value).Success);
+        await RunRefProcessAsync(
+            TF("Checkout {0}", name),
+            () => RefProcessRunner.CheckoutAsync(this, _repoPath!, name, action.Value));
     }
 
     // Creates a branch at the selected commit through the F4 dialog (name +
@@ -1822,9 +1823,10 @@ public sealed class MainWindow : Window
             return;
         }
 
-        RunOp($"Create branch {request.Name}",
-            () => new BranchTagService()
-                .CreateBranch(_repoPath!, request.Name, startPoint: hash, checkout: request.Checkout).Success);
+        await RunRefProcessAsync(
+            TF("Create branch {0}", request.Name),
+            () => RefProcessRunner.CreateBranchAsync(
+                this, _repoPath!, request.Name, hash, request.Checkout));
     }
 
     // Creates a tag at the selected commit through the F4 dialog: lightweight or
@@ -3323,6 +3325,49 @@ public sealed class MainWindow : Window
     }
 
 
+    // The RunOp equivalent for the ref mutations that upstream runs inside FormProcess
+    // (create branch, checkout): the process dialog owns the label, the background
+    // thread and the console, so all that is left here is what RunOp does AROUND the
+    // work — muting the watcher, the status line, the refresh and the conflict prompt.
+    // Unlike RunOp there is no Task.Run: RefProcessRunner opens a modal and moves git
+    // off the UI thread itself.
+    private async Task RunRefProcessAsync(string label, Func<Task<bool>> op)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        bool ok;
+        using (SuspendWatcher())
+        {
+            _statusBar.SetText(TF("{0}…", label));
+            try
+            {
+                ok = await op();
+            }
+            catch (Exception ex)
+            {
+                _statusBar.SetText(TF("{0} failed: {1}", label, ex.Message));
+                return;
+            }
+        }
+
+        // Refreshed even when the verdict is false: a failed — or aborted — checkout
+        // can still have moved HEAD or the working tree, and showing the repository as
+        // it actually is now beats showing the state it had before.
+        RefreshAll();
+        if (!ok)
+        {
+            _statusBar.SetText(TF("{0} failed — see the panel output.", label));
+        }
+
+        if (await ConflictFlow.HandleAsync(this, _repoPath!) is { HadConflicts: true })
+        {
+            RefreshAll();
+        }
+    }
+
     private void RunOp(string label, Func<bool> op, bool confirm = false)
     {
         if (_repoPath is null)
@@ -3451,9 +3496,10 @@ public sealed class MainWindow : Window
             return;
         }
 
-        RunOp($"Create branch {request.Name}",
-            () => new BranchTagService()
-                .CreateBranch(_repoPath!, request.Name, startPoint: startPoint, checkout: request.Checkout).Success);
+        await RunRefProcessAsync(
+            TF("Create branch {0}", request.Name),
+            () => RefProcessRunner.CreateBranchAsync(
+                this, _repoPath!, request.Name, startPoint, request.Checkout));
     }
 
     // The revision a new branch/tag should be anchored to: the selected commit when
