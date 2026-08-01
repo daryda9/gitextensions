@@ -3063,23 +3063,40 @@ public sealed class CommitDialog : Window
 
         string branch = chosen;
         bool doCheckout = checkout;
+        if (_busy)
+        {
+            return;
+        }
+
         SetStatus(string.Format(
             T("Running {0} …"),
             $"git {(doCheckout ? "checkout -b" : "branch")} {branch} HEAD"));
-        RunActionResult(
-            () => _actions.CreateBranch(_repoPath, branch, doCheckout),
-            result =>
-            {
-                SetStatus(result.Success
-                    ? string.Format(
-                        doCheckout
-                            ? T("Created and checked out branch '{0}'.")
-                            : T("Created branch '{0}'."),
-                        branch)
-                    : string.Format(T("Create branch failed: {0}"), FirstLine(result.Output)));
-                RefreshBranchCaption();
-                Reload();
-            });
+
+        // Same command as CommitActionsService.CreateBranch produced, but routed
+        // through the process dialog so a failure is readable instead of a truncated
+        // status line. _busy is ours now that RunActionResult is gone.
+        bool ok;
+        _busy = true;
+        try
+        {
+            ok = await RefProcessRunner.CreateBranchAsync(this, _repoPath, branch, "HEAD", doCheckout);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        SetStatus(ok
+            ? string.Format(
+                doCheckout
+                    ? T("Created and checked out branch '{0}'.")
+                    : T("Created branch '{0}'."),
+                branch)
+            : T("Create branch failed — see the process output."));
+
+        // Refreshed on failure too: an aborted checkout -b may already have moved HEAD.
+        RefreshBranchCaption();
+        Reload();
     }
 
     // ---------- options ----------
