@@ -501,6 +501,156 @@ public sealed class BranchTagService
     }
 
     /// <summary>
+    ///  Streaming counterpart of <see cref="CreateBranch"/>: the very command upstream's
+    ///  <c>FormCreateBranch</c> hands to <c>FormProcess</c>
+    ///  (<c>FormCreateBranch.cs:159-167</c>) — <see cref="Commands.Branch"/>, or
+    ///  <see cref="Commands.CreateOrphan"/> when <paramref name="orphan"/> — run through
+    ///  <see cref="GitStreamRunner"/> so every stdout/stderr line reaches
+    ///  <paramref name="onOutput"/> live and can be shown in the process dialog.
+    ///  <para>The start point is resolved with <c>rev-parse</c> BEFORE git is launched, so
+    ///  that failure has no git output of its own: it is written to
+    ///  <paramref name="onOutput"/> as an <c>error: …</c> line, because a process dialog
+    ///  with an empty console is indistinguishable from a hang.</para>
+    ///  <para><paramref name="clearWorkingTree"/> is upstream's "Clear the working tree"
+    ///  companion of the orphan checkbox: a <c>git rm -r --force .</c>
+    ///  (<see cref="Commands.Remove"/>) that only runs when the orphan checkout
+    ///  succeeded.</para>
+    /// </summary>
+    public BranchTagResult CreateBranchStreaming(
+        string repoPath,
+        string name,
+        string startPoint,
+        bool checkout,
+        Action<string> onOutput,
+        bool orphan = false,
+        bool clearWorkingTree = false)
+    {
+        string branchName = name?.Trim() ?? string.Empty;
+        if (branchName.Length == 0)
+        {
+            return Reported(onOutput, "error: branch name cannot be empty");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string start = string.IsNullOrWhiteSpace(startPoint) ? "HEAD" : startPoint.Trim();
+        ObjectId objectId = module.RevParse(start);
+        if (objectId.IsZero)
+        {
+            return Reported(onOutput, $"error: unknown revision '{start}'");
+        }
+
+        ArgumentString args = orphan
+            ? Commands.CreateOrphan(branchName, objectId)
+            : Commands.Branch(branchName, objectId, checkout);
+
+        BranchTagResult result = RunStreaming(module, args, onOutput);
+        if (!result.Success || !orphan || !clearWorkingTree)
+        {
+            return result;
+        }
+
+        onOutput(string.Empty);
+        BranchTagResult cleared = RunStreaming(module, Commands.Remove(), onOutput);
+        return new BranchTagResult(
+            cleared.Success,
+            (result.Output.TrimEnd() + Environment.NewLine + cleared.Output).TrimStart());
+    }
+
+    /// <summary>
+    ///  Streaming counterpart of <see cref="Checkout"/> — same semantics (including the
+    ///  <see cref="LocalChangesAction.Stash"/> pre-step, which streams too), with every
+    ///  line handed to <paramref name="onOutput"/> as git produces it. The core
+    ///  <c>IExecutable</c> buffers stderr, which is exactly where checkout writes
+    ///  "Switched to branch …" and its errors, hence <see cref="GitStreamRunner"/>.
+    /// </summary>
+    public BranchTagResult CheckoutStreaming(
+        string repoPath,
+        string name,
+        Action<string> onOutput,
+        LocalChangesAction changesAction = LocalChangesAction.DontChange,
+        bool includeUntrackedInStash = true)
+    {
+        string target = name?.Trim() ?? string.Empty;
+        if (target.Length == 0)
+        {
+            return Reported(onOutput, "error: branch name cannot be empty");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string prefix = string.Empty;
+        if (changesAction == LocalChangesAction.Stash)
+        {
+            BranchTagResult stashed = StashLocalChangesStreaming(module, target, includeUntrackedInStash, onOutput);
+            if (!stashed.Success)
+            {
+                return stashed;
+            }
+
+            prefix = stashed.Output.TrimEnd() + Environment.NewLine;
+            onOutput(string.Empty);
+        }
+
+        LocalChangesAction checkoutAction = changesAction == LocalChangesAction.Stash
+            ? LocalChangesAction.DontChange
+            : changesAction;
+
+        BranchTagResult result = RunStreaming(module, Commands.Checkout(target, checkoutAction), onOutput);
+        return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
+    }
+
+    /// <summary>
+    ///  Streaming counterpart of <see cref="CheckoutBranch"/>: the full upstream checkout
+    ///  (remote flag, local-changes action, <c>-b … --track</c> / <c>-B</c> /
+    ///  detached-HEAD new-branch mode) with live output. The argument-validation failures
+    ///  never reach git, so they are reported through <paramref name="onOutput"/> as
+    ///  <c>error: …</c> lines rather than leaving the console empty.
+    /// </summary>
+    public BranchTagResult CheckoutBranchStreaming(
+        string repoPath,
+        string branchName,
+        bool isRemote,
+        Action<string> onOutput,
+        LocalChangesAction changesAction = LocalChangesAction.DontChange,
+        CheckoutNewBranchMode newBranchMode = CheckoutNewBranchMode.DontCreate,
+        string? newBranchName = null,
+        bool includeUntrackedInStash = true)
+    {
+        string branch = branchName?.Trim() ?? string.Empty;
+        if (branch.Length == 0)
+        {
+            return Reported(onOutput, "error: branch name cannot be empty");
+        }
+
+        string? newName = newBranchName?.Trim();
+        if (isRemote && newBranchMode != CheckoutNewBranchMode.DontCreate && string.IsNullOrEmpty(newName))
+        {
+            return Reported(onOutput, "error: custom branch name is empty");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string prefix = string.Empty;
+        if (changesAction == LocalChangesAction.Stash)
+        {
+            BranchTagResult stashed = StashLocalChangesStreaming(module, branch, includeUntrackedInStash, onOutput);
+            if (!stashed.Success)
+            {
+                return stashed;
+            }
+
+            prefix = stashed.Output.TrimEnd() + Environment.NewLine;
+            changesAction = LocalChangesAction.DontChange;
+            onOutput(string.Empty);
+        }
+
+        IGitCommand command = Commands.CheckoutBranch(branch, isRemote, changesAction, newBranchMode, newName);
+        BranchTagResult result = RunStreaming(module, command.Arguments, onOutput);
+        return prefix.Length == 0 ? result : result with { Output = prefix + result.Output };
+    }
+
+    /// <summary>
     ///  Creates a tag <paramref name="name"/> on <paramref name="commit"/>
     ///  (defaults to HEAD when empty).
     ///  <para><paramref name="operation"/> selects lightweight / annotated /
@@ -1001,5 +1151,47 @@ public sealed class BranchTagService
     {
         ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
         return new BranchTagResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    // Streaming twin of StashLocalChanges, so the "auto stash" step of a streaming
+    // checkout shows its own command line and output instead of appearing out of
+    // nowhere in the middle of the console.
+    private static BranchTagResult StashLocalChangesStreaming(
+        GitModule module, string target, bool includeUntracked, Action<string> onOutput)
+    {
+        GitArgumentBuilder args = new("stash")
+        {
+            "push",
+            { includeUntracked, "--include-untracked" },
+            "-m",
+            $"Checkout {target} (auto stash)".Quote()
+        };
+
+        return RunStreaming(module, args, onOutput);
+    }
+
+    // Runs one git command through GitStreamRunner, echoing every line to onOutput
+    // while also accumulating it, so the caller still gets the full text in
+    // BranchTagResult.Output (which is what the callers show when they report a
+    // failure outside the process dialog).
+    private static BranchTagResult RunStreaming(GitModule module, ArgumentString args, Action<string> onOutput)
+    {
+        StringBuilder sb = new();
+        int exit = GitStreamRunner.Run(repoPath: module.WorkingDir, arguments: args, onLine: line =>
+        {
+            sb.AppendLine(line);
+            onOutput(line);
+        });
+
+        return new BranchTagResult(exit == 0, sb.ToString());
+    }
+
+    // A failure that never reached git: it has no output of its own, so the message
+    // is pushed into the console AND returned, keeping the process dialog readable
+    // instead of blank-and-failed.
+    private static BranchTagResult Reported(Action<string> onOutput, string message)
+    {
+        onOutput(message);
+        return new BranchTagResult(false, message);
     }
 }
