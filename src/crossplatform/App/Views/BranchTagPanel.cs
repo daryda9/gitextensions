@@ -195,7 +195,27 @@ public sealed class BranchTagPanel : UserControl
             }
 
             _status.Text = $"Checking out {row.Name}…";
-            RunMutation(() => _service.Checkout(repo, row.Name, changesAction));
+
+            // The checkout runs inside the process dialog (upstream's FormCheckoutBranch
+            // goes through FormProcess), so RunMutation must NOT wrap it — that would
+            // check out a second time. Busy state and refresh stay here.
+            bool ok;
+            SetBusy(true);
+            try
+            {
+                ok = await RefProcessRunner.CheckoutAsync(
+                    TopLevel.GetTopLevel(this) as Window, repo, row.Name, changesAction, service: _service);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+
+            // Reloaded on failure and on Abort too: an interrupted checkout can already
+            // have moved HEAD, so the list has to show what the repository is now.
+            _status.Text = ok ? $"Checked out {row.Name}." : $"Checkout of {row.Name} did not complete.";
+            RefreshRefs();
+            OperationCompleted?.Invoke();
         }
         catch (Exception ex)
         {
@@ -227,7 +247,29 @@ public sealed class BranchTagPanel : UserControl
             }
 
             _status.Text = $"Creating branch {r.Name}…";
-            RunMutation(() => _service.CreateBranch(repo, r.Name, start, r.Checkout));
+
+            // Created inside the process dialog, as upstream does through FormProcess
+            // (FormCreateBranch.cs:163). No RunMutation wrapper: it would run git twice.
+            bool ok;
+            SetBusy(true);
+            try
+            {
+                ok = await RefProcessRunner.CreateBranchAsync(
+                    TopLevel.GetTopLevel(this) as Window,
+                    repo,
+                    r.Name,
+                    start,
+                    r.Checkout,
+                    service: _service);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+
+            _status.Text = ok ? $"Created branch {r.Name}." : $"Creation of {r.Name} did not complete.";
+            RefreshRefs();
+            OperationCompleted?.Invoke();
         }
         catch (Exception ex)
         {

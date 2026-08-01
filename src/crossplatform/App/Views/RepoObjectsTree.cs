@@ -1865,7 +1865,34 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
-            RunMutation(() => _branchTagService.Checkout(repo, row.Name, changesAction));
+            // The checkout itself runs inside the process dialog (upstream's
+            // FormCheckoutBranch goes through FormProcess, FormCheckoutBranch.cs:357), so
+            // there is NO RunMutation wrapper here — that would check out a second time.
+            // This is the path a plain double click takes, and the one that used to be
+            // completely silent on a clean working tree, where AskAsync answers
+            // DontChange without showing anything (CheckoutBranchDialog.cs:196-223).
+            try
+            {
+                _busy = true;
+                await RefProcessRunner.CheckoutAsync(
+                    TopLevel.GetTopLevel(this) as Window,
+                    repo,
+                    row.Name,
+                    changesAction,
+                    service: _branchTagService);
+            }
+            finally
+            {
+                // Cleared before the refresh below: Refresh() is itself guarded by _busy
+                // and would silently do nothing while the flag is still set.
+                _busy = false;
+            }
+
+            // Reloaded on failure and on Abort too: an interrupted checkout can already
+            // have moved HEAD, and the tree (bold current branch) must show what the
+            // repository is now.
+            OperationCompleted?.Invoke();
+            Refresh();
         }
         catch
         {
@@ -1909,8 +1936,28 @@ public sealed class RepoObjectsTree : UserControl
             }
         }
 
-        RunMutation(() => _branchTagService.CheckoutBranch(
-            repo, c.BranchName, c.IsRemote, c.LocalChanges, c.NewBranchMode, c.NewBranchName));
+        // Same as the local path: the process dialog runs git, so no RunMutation wrapper.
+        // The non-fast-forward confirmation above stays here — the helper never asks it.
+        try
+        {
+            _busy = true;
+            await RefProcessRunner.CheckoutBranchAsync(
+                TopLevel.GetTopLevel(this) as Window,
+                repo,
+                c.BranchName,
+                c.IsRemote,
+                c.LocalChanges,
+                c.NewBranchMode,
+                c.NewBranchName,
+                service: _branchTagService);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        OperationCompleted?.Invoke();
+        Refresh();
     }
 
     // --- Create branch / tag ----------------------------------------------
@@ -2019,7 +2066,28 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
-            RunMutation(() => _branchTagService.CreateBranch(repo, r.Name, startPoint, r.Checkout));
+            // Created inside the process dialog, as upstream does through FormProcess
+            // (FormCreateBranch.cs:163). No RunMutation wrapper: it would run git twice.
+            try
+            {
+                _busy = true;
+                await RefProcessRunner.CreateBranchAsync(
+                    TopLevel.GetTopLevel(this) as Window,
+                    repo,
+                    r.Name,
+                    startPoint,
+                    r.Checkout,
+                    service: _branchTagService);
+            }
+            finally
+            {
+                _busy = false;
+            }
+
+            // Refreshed on both outcomes, for the same reason as the checkout: a
+            // "create and checkout" that failed halfway may still have created the ref.
+            OperationCompleted?.Invoke();
+            Refresh();
         }
         catch
         {
