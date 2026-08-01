@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -102,6 +102,9 @@ public sealed class RepoObjectsTree : UserControl
 
     private string? _repoPath;
     private bool _busy;
+
+    // Guards NotifyBusy against stacking one refusal modal on top of another.
+    private bool _busyNoticeOpen;
 
     // --- Session-local ref ordering state --------------------------------
     // All sorting/reordering below is view-only: it reorders the displayed
@@ -1840,8 +1843,14 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (_repoPath is not { Length: > 0 } repo || _busy)
+            if (_repoPath is not { Length: > 0 } repo)
             {
+                return;
+            }
+
+            if (_busy)
+            {
+                await NotifyBusyAsync();
                 return;
             }
 
@@ -1980,8 +1989,14 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (_repoPath is not { Length: > 0 } repo || _busy)
+            if (_repoPath is not { Length: > 0 } repo)
             {
+                return;
+            }
+
+            if (_busy)
+            {
+                await NotifyBusyAsync();
                 return;
             }
 
@@ -2013,9 +2028,15 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (_repoPath is not { Length: > 0 } repo || _busy
+            if (_repoPath is not { Length: > 0 } repo
                 || TopLevel.GetTopLevel(this) is not Window owner)
             {
+                return;
+            }
+
+            if (_busy)
+            {
+                await NotifyBusyAsync();
                 return;
             }
 
@@ -2052,8 +2073,16 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (_repoPath is not { Length: > 0 } repo || _busy)
+            if (_repoPath is not { Length: > 0 } repo)
             {
+                return;
+            }
+
+            // 13.1: this used to be a mute `return`, which is the one remaining
+            // explanation for a "Create branch…" click that appears to do nothing.
+            if (_busy)
+            {
+                await NotifyBusyAsync();
                 return;
             }
 
@@ -2166,8 +2195,14 @@ public sealed class RepoObjectsTree : UserControl
     {
         try
         {
-            if (_repoPath is not { Length: > 0 } repo || _busy)
+            if (_repoPath is not { Length: > 0 } repo)
             {
+                return;
+            }
+
+            if (_busy)
+            {
+                await NotifyBusyAsync();
                 return;
             }
 
@@ -2477,8 +2512,14 @@ public sealed class RepoObjectsTree : UserControl
 
     private void RunMutation(Func<BranchTagResult> work)
     {
-        if (_repoPath is not { Length: > 0 } || _busy)
+        if (_repoPath is not { Length: > 0 })
         {
+            return;
+        }
+
+        if (_busy)
+        {
+            NotifyBusy();
             return;
         }
 
@@ -2494,10 +2535,17 @@ public sealed class RepoObjectsTree : UserControl
             {
                 success = false;
             }
+            finally
+            {
+                // Cleared as soon as the work returns rather than only inside the Post
+                // below: when that Post was the sole reset, anything that stopped it from
+                // being delivered left _busy stuck at true, and from then on EVERY entry
+                // of the tree's context menu was refused in silence.
+                _busy = false;
+            }
 
             Dispatcher.UIThread.Post(() =>
             {
-                _busy = false;
                 if (success)
                 {
                     OperationCompleted?.Invoke();
@@ -2509,8 +2557,14 @@ public sealed class RepoObjectsTree : UserControl
 
     private void RunStash(Func<StashOpResult> work)
     {
-        if (_repoPath is not { Length: > 0 } || _busy)
+        if (_repoPath is not { Length: > 0 })
         {
+            return;
+        }
+
+        if (_busy)
+        {
+            NotifyBusy();
             return;
         }
 
@@ -2526,10 +2580,17 @@ public sealed class RepoObjectsTree : UserControl
             {
                 success = false;
             }
+            finally
+            {
+                // Cleared as soon as the work returns rather than only inside the Post
+                // below: when that Post was the sole reset, anything that stopped it from
+                // being delivered left _busy stuck at true, and from then on EVERY entry
+                // of the tree's context menu was refused in silence.
+                _busy = false;
+            }
 
             Dispatcher.UIThread.Post(() =>
             {
-                _busy = false;
                 if (success)
                 {
                     OperationCompleted?.Invoke();
@@ -2566,8 +2627,14 @@ public sealed class RepoObjectsTree : UserControl
 
     private void RunRemote(Func<RemoteOpResult> work)
     {
-        if (_repoPath is not { Length: > 0 } || _busy)
+        if (_repoPath is not { Length: > 0 })
         {
+            return;
+        }
+
+        if (_busy)
+        {
+            NotifyBusy();
             return;
         }
 
@@ -2583,10 +2650,17 @@ public sealed class RepoObjectsTree : UserControl
             {
                 success = false;
             }
+            finally
+            {
+                // Cleared as soon as the work returns rather than only inside the Post
+                // below: when that Post was the sole reset, anything that stopped it from
+                // being delivered left _busy stuck at true, and from then on EVERY entry
+                // of the tree's context menu was refused in silence.
+                _busy = false;
+            }
 
             Dispatcher.UIThread.Post(() =>
             {
-                _busy = false;
                 if (success)
                 {
                     OperationCompleted?.Invoke();
@@ -2598,8 +2672,14 @@ public sealed class RepoObjectsTree : UserControl
 
     private void RunSubmodule(Func<SubmoduleOpResult> work)
     {
-        if (_repoPath is not { Length: > 0 } || _busy)
+        if (_repoPath is not { Length: > 0 })
         {
+            return;
+        }
+
+        if (_busy)
+        {
+            NotifyBusy();
             return;
         }
 
@@ -2615,10 +2695,17 @@ public sealed class RepoObjectsTree : UserControl
             {
                 success = false;
             }
+            finally
+            {
+                // Cleared as soon as the work returns rather than only inside the Post
+                // below: when that Post was the sole reset, anything that stopped it from
+                // being delivered left _busy stuck at true, and from then on EVERY entry
+                // of the tree's context menu was refused in silence.
+                _busy = false;
+            }
 
             Dispatcher.UIThread.Post(() =>
             {
-                _busy = false;
                 if (success)
                 {
                     OperationCompleted?.Invoke();
@@ -2630,8 +2717,14 @@ public sealed class RepoObjectsTree : UserControl
 
     private void RunWorktree(Func<WorktreeOpResult> work)
     {
-        if (_repoPath is not { Length: > 0 } || _busy)
+        if (_repoPath is not { Length: > 0 })
         {
+            return;
+        }
+
+        if (_busy)
+        {
+            NotifyBusy();
             return;
         }
 
@@ -2647,10 +2740,17 @@ public sealed class RepoObjectsTree : UserControl
             {
                 success = false;
             }
+            finally
+            {
+                // Cleared as soon as the work returns rather than only inside the Post
+                // below: when that Post was the sole reset, anything that stopped it from
+                // being delivered left _busy stuck at true, and from then on EVERY entry
+                // of the tree's context menu was refused in silence.
+                _busy = false;
+            }
 
             Dispatcher.UIThread.Post(() =>
             {
-                _busy = false;
                 if (success)
                 {
                     OperationCompleted?.Invoke();
@@ -2658,6 +2758,68 @@ public sealed class RepoObjectsTree : UserControl
                 }
             });
         });
+    }
+
+    /// <summary>
+    ///  Tells the user that the action was refused because another git operation is still
+    ///  running. Every <c>_busy</c> guard in this control used to be a bare
+    ///  <c>return</c>, so a menu click, a double click or an F-key simply did nothing and
+    ///  looked broken — no action of the user's may end in the void.
+    ///  <para>Why a modal and not a status line: this control has no status surface at all
+    ///  (hence the recurring "No status surface on this control" comments), and disabling
+    ///  the menu items instead is not usable either — the context menu is rebuilt per
+    ///  click, so the greyed-out entries would carry no explanation. The small modal is
+    ///  the surface the tree already uses to talk to the user, in
+    ///  <see cref="ConfirmAsync"/> and <see cref="PromptAsync"/>, so the refusal reuses
+    ///  it verbatim.</para>
+    /// </summary>
+    private void NotifyBusy() => _ = NotifyBusyAsync();
+
+    private async Task NotifyBusyAsync()
+    {
+        try
+        {
+            // Only ever one notice at a time: an impatient double click on a blocked menu
+            // entry must not stack modals on top of each other.
+            if (_busyNoticeOpen || TopLevel.GetTopLevel(this) is not Window owner)
+            {
+                return;
+            }
+
+            _busyNoticeOpen = true;
+            try
+            {
+                Button ok = new() { Content = T("OK"), HorizontalAlignment = HorizontalAlignment.Right };
+                Window dialog = new()
+                {
+                    Title = T("TranslatedStrings/_error.Text", "Error"),
+                    Width = 340,
+                    SizeToContent = SizeToContent.Height,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                    Background = Brush("App.Panel", Brushes.DimGray),
+                };
+                ok.Click += (_, _) => dialog.Close();
+
+                StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
+                content.Children.Add(new TextBlock
+                {
+                    Text = T("Another Git operation is still running. Please wait for it to finish and try again."),
+                    TextWrapping = TextWrapping.Wrap,
+                });
+                content.Children.Add(ok);
+                dialog.Content = content;
+
+                await dialog.ShowDialog(owner);
+            }
+            finally
+            {
+                _busyNoticeOpen = false;
+            }
+        }
+        catch
+        {
+            // Never throw out of a refusal notice.
+        }
     }
 
     // Minimal modal yes/no confirmation; allows the action when no owner window
