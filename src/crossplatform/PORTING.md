@@ -2344,6 +2344,48 @@ messaggio né output né refresh. Upstream esegue entrambe le operazioni dentro 
   HEAD, e mostrare uno stato stantio è il fallimento peggiore.
 - Niente `Task.Run` attorno all'helper: apre un modale e fa da sé il threading.
 
+## M76 (2026-08-01) — riscontro dell'utente su M75: `Keep dialog open` e `Delete branch`
+
+Due difetti trovati dall'utente **provando la build di M75 sul repo vero** (i branch `test`, `test1`,
+`prova` nel reflog sono le sue prove; il checkout funziona).
+
+**`Keep dialog open` non ricordava la scelta e non chiudeva il dialogo** (`955d57e64`). Unica causa
+per entrambi i sintomi: un `IsChecked = true` cablato nel costruttore. Poiché `Settle()` legge la
+casella quando il run finisce — e un checkout finisce in poche centinaia di ms, prima che l'utente
+ci arrivi — il ramo di auto-chiusura non veniva praticamente mai preso.
+**Verdetto sull'originale, contro l'ipotesi dell'utente ("un booleano per tipologia di comando")**:
+upstream ha **un solo flag GLOBALE** condiviso da tutti i process dialog —
+`AppSettings.CloseProcessDialog`, chiave piatta `"closeprocessdialog"`
+(`GitCommands/Settings/AppSettings.cs:1336-1340`), letto a `FormStatus.cs:50` e riscritto a `:276`,
+editabile anche da Impostazioni → Generale (`GeneralSettingsPage.cs:90,114`). L'auto-chiusura scatta
+**solo su successo** e senza ritardo (`FormStatus.cs:190`); l'unica modulazione per call-site è
+`useDialogSettings: false`, che **nasconde** la casella e disabilita l'auto-chiusura — tutto o
+niente, non una memoria per comando. **L'utente, messo davanti alla misura, ha scelto la fedeltà a
+upstream**: flag globale. Persistito in `view-prefs.json` (non in `ui-state.json`: il dialogo è
+modale e sparisce prima che `MainWindow.PersistLayout()` riserializzi quel file, che lo
+sovrascriverebbe — stessa ragione di `HelpPanels`). Differenza pre-esistente lasciata: l'auto-chiusura
+del port aspetta 800 ms (`Settle()`), upstream chiude subito.
+
+**`Delete branch` non cancellava nulla e non mostrava niente** (`79a638e21`, `116a88d0d`).
+**NON è una regressione di M75**, misurato: `git diff 22dfc4d1b..HEAD` filtrato sul percorso del
+delete dà **zero hunk**. Due difetti sovrapposti e preesistenti:
+1. `RepoObjectsTree.cs:2259` cancellava con **`force: false`** → `git branch --delete "x"`, che su un
+   branch non mergiato esce con `error: the branch 'x' is not fully merged` (riprodotto in un repo
+   scratch). Upstream passa **sempre `force: true`** (`FormDeleteBranch.cs:118`) **dopo aver
+   avvisato** (`:90-116`).
+2. `RunMutation` è muto sul fallimento → nessun messaggio, nessun dialogo: il click sembrava inerte.
+Fix: `DeleteBranchStreaming` + `IsBranchMerged` (`git merge-base --is-ancestor <b> HEAD`; detached
+HEAD ⇒ `false`, come upstream) + `DeleteRemoteBranchStreaming` (`git push <remote> --delete`), e i
+tre call-site (albero locale, albero remoto, `BranchTagPanel`) portati sul process dialog con
+l'avviso "not fully merged" che promuove a `--force` — rispondendo **No** non parte nulla.
+`RunMutation` resta per reset/rename/tag/remoti e per il "Delete All" del folder node (upstream lì
+cancella solo i merged, quindi lasciato com'è).
+
+**Aperto, registrato qui e non risolto**: su Windows il port tenta la PTY di Linux e la console
+mostra `<pty: Unable to load DLL 'libc'…>` seguito da `<no pseudo-terminal available; falling back to
+non-interactive git>`. Il comando gira lo stesso, ma la casella `Reply:` del process dialog è di
+fatto inerte su Windows (niente prompt interattivi di git). Non segnalato come priorità dall'utente.
+
 ## Coda round 13 — PRIORITÀ UTENTE del 31/07/2026: create branch e checkout dall'albero — **13.2 e 13.3 CHIUSE (M75), 13.1 APERTA**
 
 > Tre difetti segnalati dall'utente usando la GUI del port sul suo repo. **Hanno precedenza su tutto
