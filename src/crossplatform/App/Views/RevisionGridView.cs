@@ -5995,9 +5995,17 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
-        RunRefOp(
-            string.Format(T("Checking out {0}…"), name),
-            repo => _branchTags.Checkout(repo, name, changes));
+        // The checkout itself runs inside the process dialog (as upstream's
+        // FormCheckoutBranch does through FormProcess), so there is no RunRefOp
+        // wrapper here — it would check out a second time.
+        bool ok = await RefProcessRunner.CheckoutAsync(
+            TopLevel.GetTopLevel(this) as Window, _repoPath, name, changes, service: _branchTags);
+
+        // Reloaded on failure too: an aborted checkout can leave HEAD or the working
+        // tree already moved, and the grid must show what the repository is now.
+        AfterRefOp(ok
+            ? string.Format(T("Checked out {0}."), name)
+            : string.Format(T("Checkout of {0} did not complete."), name));
     }
 
     private async Task MergeRefAsync(string name)
