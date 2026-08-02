@@ -2480,6 +2480,94 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 2: M80 (2026-08-03) — lo stile è una scelta, non un fatto compiuto
+
+> Richiesta dell'utente subito dopo M79: *«dammi la possibilità di scegliere dalle impostazioni se
+> mantenere il vecchio stile/icone o quello nuovo»*. **Ribalta la decisione presa in M79** di
+> sostituire l'aspetto senza affiancare una variante classica. Base `1e884a9b8`, due subagent in
+> worktree isolati, file disgiunti, build `Errori: 0`.
+
+**Deciso che il cambio è a caldo**, come già il tema, non "al riavvio": una scelta di stile che
+obbliga a riaprire l'app sarebbe incoerente col combo Theme che sta tre righe sopra nella stessa
+pagina. Costa poco perché nessuna delle tre parti ha bisogno di ricostruire le view.
+
+### Il contratto, fissato PRIMA di delegare
+```csharp
+public enum AppStyle { Classic, Modern }
+ThemeManager.CurrentStyle / CurrentVariant
+ThemeManager.StyleChanged                                  // event Action?
+ThemeManager.Apply(ThemeVariant variant, AppStyle style)
+```
+Averlo scritto in anticipo è ciò che ha permesso ai due subagent di lavorare **in parallelo** invece
+che in sequenza: quello della UI ha compilato contro una firma che nel suo worktree non esisteva
+ancora e ha chiuso con esattamente due errori "AppStyle not found" — previsti, e spariti al
+cherry-pick del motore.
+
+### U6 — il motore (`Theming/AppStyle.cs`, `ThemeManager.cs`, `IconLoader.cs`, `ModernStyles.cs`, `App.cs`)
+- **Palette a quattro famiglie**: `ClassicDark`/`ClassicLight`/`ModernDark`/`ModernLight`, **34 chiavi
+  ciascuna** (contate, non stimate). I valori classici sono recuperati **verbatim** dal
+  `a38eb4ab4`, commenti di merito inclusi: sono il ragionamento di M67/M70 e restano leggibili
+  accanto ai moderni.
+- Le due chiavi nate dopo quel commit — `App.Link` e `App.AccentFill` — nel classico **non
+  esistevano** e sono state inventate misurando. Vincolo dato al subagent: *"classico" vuol dire
+  l'aspetto di prima, non ereditarne un fallimento AA* — quindi `App.Link` classico **non** riusa il
+  vecchio `App.Accent`, che stava a 3,70:1 scuro / 4,06:1 chiaro.
+- **Icone commutabili a caldo senza ricostruire le view**: `GlyphIcon` conserva anche il **nome** e al
+  disegno sceglie glifo tinto (Modern) o `Bitmap` (Classic). Sottoscrizione a `StyleChanged` in
+  `OnAttachedToVisualTree` e **disiscrizione in `OnDetachedFromVisualTree`** (`IconLoader.cs:261`/
+  `:278`) — punto dichiarato al subagent come *più importante della feature stessa*: `StyleChanged` è
+  `static` e la griglia ricicla i container di continuo, quindi un controllo staccato che resta
+  sottoscritto fa crescere la lista senza limite.
+- Il log "has no vector glyph…" **non spara** in Classic: lì il PNG è la scelta, non un ripiego.
+- **`ModernStyles` reso reversibile**: per ogni chiave Fluent sovrascritta fotografa il valore
+  precedente e in ripristino lo rimette, o **rimuove la chiave** se prima non c'era — che è ciò che
+  restituisce il valore del `ControlTheme`. I valori di Fluent non si indovinano riscrivendoli. Gli
+  `Style` aggiunti vengono **tolti** dalla collezione, non neutralizzati. Restano attivi in entrambi
+  gli stili i due stili `TabItem`/`TextBlock` che esistevano anche prima di M79.
+
+### U7 — la scelta (`SettingsWindow.cs`, `MainMenu.cs`, `MainWindow.cs`, `UiStateService.cs`)
+Combo **Style** accanto a Theme nella pagina Appearance (voci `Modern`/`Classic`), voci
+`Classic style`/`Modern style` nel menu **View** accanto a quelle del tema, e `Style` persistito in
+`ui-state.json` con la stessa normalizzazione di `Theme`.
+Il punto delicato era il ciclo anteprima/OK/Cancel con **due** dimensioni invece di una, e la regola
+adottata è netta: **nessun call site passa mai un letterale per la dimensione che l'utente non ha
+toccato** — ogni `Apply` riceve la *coppia*, letta fresca da chi la possiede in quel momento.
+`PreviewTheme()` è diventato `PreviewAppearance()` su entrambi i combo; `LoadValues()` restituisce la
+coppia da cui Cancel torna indietro; `ApplyAndSave()` sposta **entrambe** le dimensioni sulla nuova
+baseline, così "Apply poi Cancel" non disfa nulla. Trovato per strada: `OpenSettingsAsync` doveva
+ri-sincronizzare `Style` dal file insieme a `Theme`, o la riserializzazione alla chiusura annullava la
+scelta.
+
+### Correzione del loop in integrazione
+**Il pulsante Commit restava vettoriale in Classic.** M79 gli aveva tolto le **sette** bitmap per-stato
+di upstream a favore di un glifo tinto — giusto per il moderno, sbagliato per il classico, dove lo
+stato è detto dall'**icona** e non dalla tinta. E `Commit` è **l'unico dei 90 glifi senza PNG proprio**
+(verificato incrociando `Icons.cs` con `Resources/Icons/`: 89 su 90 hanno il raster), quindi il
+fallback sul nome del glifo non poteva funzionare. `GlyphSource` porta ora un **nome classico
+opzionale** accanto al proprio: basta il meccanismo live già esistente, senza ricostruire view né
+sottoscrivere niente nella toolbar.
+
+### Verificato in GUI dal loop (screenshot guardati, pixel misurati)
+- **Cambio a caldo** da Modern a Classic dalla pagina Appearance, **senza riavvio**: le icone tornano
+  raster nella stessa sessione.
+- **Le quattro combinazioni** rese e misurate. Classic è **byte-identico** al pre-M79: scuro
+  `#1E1E1E`/`#252526`/`#333337`, chiaro `#F3F3F3`/`#FFFFFF`/`#E4E4E4` — **bianco puro incluso**.
+  Modern scuro `#141518`/`#1C1D21`/`#2F3038`.
+- **Persistenza**: `Style` riletto da `ui-state.json` all'avvio.
+- Icona del branch in Classic: **32 px scuri, 0 chiari** — è davvero il PNG, non il glifo.
+
+### Proprietà nota di Classic, non un difetto da correggere
+Parecchie PNG di upstream (`Branch.png` fra queste) sono **line art nera** su 16×16, quindi sul tema
+scuro classico sono quasi invisibili. Era già così **prima di M79** — M79 le aveva sostituite con un
+glifo tinto, ed è il motivo per cui il moderno non ha il problema. Correggerlo renderebbe Classic
+non-classico: la sua definizione è *l'aspetto di prima*, e lì dentro c'è anche questo.
+
+### Nota di integrazione
+Durante l'iterazione sono entrati nel branch **due merge da `origin`** con lavoro fatto altrove, che
+ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M78** e l'iterazione 1
+**M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
+build resta a `Errori: 0` dopo l'unione.
+
 ## ROUND 13 — GUI moderna — iterazione 1: M79 (2026-08-02)
 
 > Direzione dell'utente: *«mantenere la struttura e le funzioni attuali, rendendo però più moderna la

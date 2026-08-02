@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | **merge delle due linee di lavoro** (locale `116a88d0d` + remoto `3b5ad6f04`). Avevano numerato in parallelo: **M75/M76** = mutazioni di ref (locale), **M77/M78** = grafo (erano M75/M76 sul remoto), **M79** = GUI moderna (era M77 sul remoto). Prossima libera: **M80** · `3b5ad6f04` (**M79: GUI moderna, iterazione 1**) · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | **merge delle due linee di lavoro** (locale `116a88d0d` + remoto `3b5ad6f04`). Avevano numerato in parallelo: **M75/M76** = mutazioni di ref (locale), **M77/M78** = grafo (erano M75/M76 sul remoto), **M79** = GUI moderna (era M77 sul remoto). Prossima libera: **M81** · `M80: lo stile e' una scelta (Classic/Modern)` · `3b5ad6f04` (M79: GUI moderna, iterazione 1) · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -280,7 +280,26 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
-> ### ► ROUND 13 — **GUI moderna**, iterazione 1: **M79** (2026-08-02). Prossima milestone libera: **M80**
+> ### ► ROUND 13 — iterazione 2: **M80** (2026-08-03) — **lo stile è una scelta**. Prossima milestone libera: **M81**
+> Richiesta dell'utente subito dopo M79 (*«dammi la possibilità di scegliere dalle impostazioni se
+> mantenere il vecchio stile/icone o quello nuovo»*), che **ribalta** la decisione di M79 di sostituire
+> l'aspetto senza affiancare una variante classica. Combo **Style** (Modern/Classic) accanto a Theme
+> nella pagina Appearance, voci gemelle nel menu View, `Style` in `ui-state.json`. **Cambio a caldo**
+> come il tema, non al riavvio.
+> Sotto: palette a **quattro** famiglie (34 chiavi ciascuna, valori classici verbatim dal `a38eb4ab4`);
+> `GlyphIcon` che conserva il nome e disegna glifo o PNG secondo lo stile; `ModernStyles` reversibile,
+> che **rimuove** la chiave Fluent quando prima non c'era invece di indovinarne il valore.
+> Verificato a schermo: cambio a caldo senza riavvio, quattro combinazioni, Classic **byte-identico**
+> al pre-M79 (bianco puro incluso), persistenza all'avvio. Dettaglio in `PORTING.md` → "ROUND 13 —
+> iterazione 2".
+> **Da NON riscoprire**: (a) con due dimensioni ortogonali, **nessun call site deve passare un
+> letterale per la dimensione che l'utente non ha toccato** — si passa sempre la coppia, letta fresca;
+> (b) `StyleChanged` è `static`, quindi la **disiscrizione** in `OnDetachedFromVisualTree` conta più
+> della feature: la griglia ricicla i container di continuo; (c) fissare il **contratto di API prima
+> di delegare** è ciò che ha reso le due unità parallele invece che sequenziali — quella della UI ha
+> chiuso con due errori di compilazione previsti, spariti al cherry-pick dell'altra.
+
+> ### ► ROUND 13 — **GUI moderna**, iterazione 1: **M79** (2026-08-02)
 > Direzione dell'utente: struttura e funzioni **invariate**, superficie modernizzata. Deciso anche che
 > **non** si affianca una variante "Classic": l'aspetto si sostituisce. Tre subagent in worktree
 > isolati, file disgiunti, nessuno dentro `App/Views/`. Dettaglio completo in `PORTING.md` → "ROUND 13".
