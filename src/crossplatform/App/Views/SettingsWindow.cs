@@ -48,13 +48,14 @@ namespace GitExtensions.Avalonia.Views;
 ///   <item>Default pull action (the five actions the toolbar's Pull split button
 ///    offers), persisted in <see cref="UiState.DefaultPullAction"/> — the value the
 ///    split button itself reads.</item>
-///   <item>Default theme (Light / Dark), persisted via <see cref="UiStateService"/>
-///    and applied live through <see cref="ThemeManager"/>.</item>
+///   <item>Default theme (Light / Dark) and visual style (Modern / Classic), two
+///    independent choices persisted via <see cref="UiStateService"/> and applied live
+///    through <see cref="ThemeManager"/>.</item>
 ///  </list>
 ///
 ///  <para><b>Buttons.</b> OK applies + persists everything and closes, Apply does
-///  the same without closing, Cancel discards — reverting a live theme preview back
-///  to the theme that was active on open (or to the last Apply).</para>
+///  the same without closing, Cancel discards — reverting a live appearance preview
+///  back to the theme AND style that were active on open (or to the last Apply).</para>
 ///
 ///  <para><b>Translation.</b> This is the port's most text-dense window, so every
 ///  caption goes through <see cref="TranslationService"/> and is registered in
@@ -86,6 +87,7 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox _settingsLevel;
     private readonly ComboBox _pullAction;
     private readonly ComboBox _theme;
+    private readonly ComboBox _style;
 
     // One three-state checkbox per GitConfigChoices entry, same order.
     private readonly CheckBox[] _gitConfigChecks;
@@ -144,8 +146,11 @@ public sealed class SettingsWindow : Window
     // rebuild of the control tree (and no reload of the user's pending edits).
     private readonly List<Action> _relabel = [];
 
-    // The theme to restore when the dialog is dismissed without applying.
+    // The theme and style to restore when the dialog is dismissed without applying.
+    // Both are captured together and restored together: a preview always applies the
+    // pair, so a Cancel that put back only one would leave the other one previewed.
     private string _revertTheme;
+    private string _revertStyle;
 
     private bool _applied;
 
@@ -477,15 +482,27 @@ public sealed class SettingsWindow : Window
         // languages, so they are plain items.
         _theme.Items.Add(new ComboBoxItem { Content = "Dark" });
         _theme.Items.Add(new ComboBoxItem { Content = "Light" });
-        _theme.SelectionChanged += (_, _) => PreviewTheme();
+        _theme.SelectionChanged += (_, _) => PreviewAppearance();
+
+        _style = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+
+        // Like the theme items: no upstream trans-unit for either name.
+        _style.Items.Add(new ComboBoxItem { Content = "Modern" });
+        _style.Items.Add(new ComboBoxItem { Content = "Classic" });
+        _style.SelectionChanged += (_, _) => PreviewAppearance();
 
         Panel appearancePanel = CategoryPanel(
             AppearanceKey, AppearanceText,
-            null, "The application colour theme. The choice is applied immediately as a "
-                + "preview and persisted on OK or Apply (reverted on Cancel).",
+            null, "The application colour theme and its visual style — \"Modern\" for the "
+                + "current vector icons and neutral palette, \"Classic\" for the earlier "
+                + "look. The two are independent, so any combination works. Both choices "
+                + "are applied immediately as a preview and persisted on OK or Apply "
+                + "(reverted on Cancel).",
             text,
             dim,
-            Field("ColorsSettingsPage/gbTheme.Text", "Theme", _theme, dim));
+            Field("ColorsSettingsPage/gbTheme.Text", "Theme", _theme, dim),
+            // No upstream trans-unit carries this label, so it is a plain literal.
+            Field(null, "Style", _style, dim));
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
@@ -607,18 +624,21 @@ public sealed class SettingsWindow : Window
         DialogKeys.EnsureFocusRoute(this);
 
         // Load current values.
-        _revertTheme = LoadValues();
+        (_revertTheme, _revertStyle) = LoadValues();
 
         ApplyTitle();
         TranslationService.LanguageChanged += OnLanguageChanged;
 
-        // Revert a live theme preview if the window is closed without applying.
+        // Revert a live appearance preview if the window is closed without applying.
+        // Theme and style go back in one call, so Cancel undoes both dimensions.
         Closing += (_, _) =>
         {
             TranslationService.LanguageChanged -= OnLanguageChanged;
             if (!_applied)
             {
-                ThemeManager.Apply(_revertTheme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
+                ThemeManager.Apply(
+                    _revertTheme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark,
+                    _revertStyle == "Classic" ? AppStyle.Classic : AppStyle.Modern);
             }
         };
     }
@@ -711,9 +731,9 @@ public sealed class SettingsWindow : Window
 
     // ---- values ------------------------------------------------------------
 
-    // Reads git identity, pull action and theme into the controls; returns the
-    // theme that was active on open (for the Cancel revert).
-    private string LoadValues()
+    // Reads git identity, pull action, theme and style into the controls; returns the
+    // theme/style pair that was active on open (for the Cancel revert).
+    private (string Theme, string Style) LoadValues()
     {
         // With no repository open, "Local" has nothing to point at: preselect Global
         // and take Local off the table rather than showing a level that cannot work.
@@ -757,9 +777,11 @@ public sealed class SettingsWindow : Window
             _commitInfoChecks[i].IsChecked = commitInfoValues[i];
         }
 
-        // Theme.
+        // Theme and style: the pair the dialog previews from, and the pair Cancel
+        // restores to.
         _theme.SelectedIndex = ui.Theme == "Light" ? 1 : 0;
-        return ui.Theme;
+        _style.SelectedIndex = ui.Style == "Classic" ? 1 : 0;
+        return (ui.Theme, ui.Style);
     }
 
     private GitSettingLevel SelectedLevel
@@ -857,12 +879,17 @@ public sealed class SettingsWindow : Window
         return new GitConfigSettings(GitContext.CreateModule(repo).GitExecutable, level);
     }
 
-    // Applies the theme preview live as the combo changes.
-    private void PreviewTheme()
-    {
-        bool light = _theme.SelectedIndex == 1;
-        ThemeManager.Apply(light ? ThemeVariant.Light : ThemeVariant.Dark);
-    }
+    // Applies the appearance preview live as either combo changes. Both dimensions
+    // are read from the combos and passed together, so changing one never resets the
+    // other — the two are orthogonal and all four combinations are reachable.
+    private void PreviewAppearance()
+        => ThemeManager.Apply(SelectedVariant, SelectedStyle);
+
+    private ThemeVariant SelectedVariant
+        => _theme.SelectedIndex == 1 ? ThemeVariant.Light : ThemeVariant.Dark;
+
+    private AppStyle SelectedStyle
+        => _style.SelectedIndex == 1 ? AppStyle.Classic : AppStyle.Modern;
 
     private void ApplyAndSave()
     {
@@ -960,15 +987,16 @@ public sealed class SettingsWindow : Window
         // ---- Default pull action: UiState is what the toolbar reads.
         string pullAction = PullChoices[Math.Max(0, _pullAction.SelectedIndex)].Token;
 
-        // ---- Theme: persist + apply (already previewed live).
+        // ---- Theme and style: persist + apply the pair (already previewed live).
         bool autoRefresh = _autoRefresh.IsChecked == true;
 
         UiState ui = _uiStateService.Load();
         ui.Theme = _theme.SelectedIndex == 1 ? "Light" : "Dark";
+        ui.Style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
-        ThemeManager.Apply(ui.Theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
+        ThemeManager.Apply(SelectedVariant, SelectedStyle);
 
         // The host owns the live UiState instance and re-serialises it on close, which
         // would otherwise overwrite the value just written to the file. Telling it
@@ -979,9 +1007,11 @@ public sealed class SettingsWindow : Window
         // the repository watcher — only the host can do that.
         _autoRefreshChanged?.Invoke(autoRefresh);
 
-        // An applied theme is the new baseline: a later Cancel must not undo it.
+        // An applied appearance is the new baseline: a later Cancel must not undo it.
+        // Both dimensions move to the baseline together.
         _applied = true;
         _revertTheme = ui.Theme;
+        _revertStyle = ui.Style;
     }
 
     // ---- hotkeys ------------------------------------------------------------
