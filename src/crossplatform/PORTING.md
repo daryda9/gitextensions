@@ -2308,6 +2308,56 @@ e nessun pulsante"*. Ora il modo c'è, quindi la domanda è stata cablata.
   promessa da nessun controllo** nella UI. Cherry-pick e revert restano senza service dietro
   `--continue`, quindi nel banner hanno ancora solo il suggerimento testuale.
 
+## M75 (2026-08-02) — il grafo non unisce più branch che non lo sono
+
+> Unità singola, scritta e verificata dal loop. Base `22dfc4d1b`, build `Errori: 0`, nessun warning
+> nuovo. **Nata da una segnalazione dell'utente**: «a volte si incasina sul grafo dei branch e
+> visualizza come uniti branch che non lo sono, ad esempio quando mi sposto su un branch».
+> Riprodotta, non era un'impressione.
+
+**Il difetto.** Le righe artificiali "Working directory"/"Commit index" non passavano dal
+layout del DAG: la loro riga verso HEAD era **dipinta sopra** dopo il fatto, da
+`RevisionGridView.WithHeadConnector`, che aggiungeva un segmento nella **lane di HEAD** su *ogni*
+riga sopra HEAD. Il layout non ne sapeva niente. Quando HEAD non era la riga in cima — cioè dopo
+il checkout di **qualsiasi** branch che in ordine di data sta sotto a un altro — quel tratto
+attraversava righe la cui lane era libera oppure, peggio, già occupata da un ramo scorrelato: i due
+si leggevano come **una linea sola**.
+
+Ci si sommava un secondo difetto indipendente: il colore del segmento era `ColorLane = indice di
+lane`. Una lane viene **liberata** quando due rami convergono (`BuildGraph`, `lanes[i] = null`) e
+`FirstFree` la riassegna più in basso a un ramo che non c'entra nulla — che quindi riceveva lo
+**stesso colore nella stessa colonna**. Riprodotto in `/tmp/graphrecy` (due side branch mergiati in
+punti diversi di main): con il vecchio codice `sideA` e `sideB` erano entrambi blu in colonna 1,
+separati da una riga sola, e si leggevano come un unico ramo lungo.
+
+**La correzione.**
+- `RevisionRow.GraphParents` (nuovo, nullable): parenti **solo per il layout**. Le righe artificiali
+  lo usano per dichiarare l'arco working directory → commit index → HEAD tenendo `ParentHashes`
+  vuoto, così la navigazione del DAG continua a non entrarci né uscirne. È vuoto anche quando HEAD è
+  fuori dalla finestra caricata: il nodo resta isolato invece di puntare a un commit che non è quello
+  checkoutato.
+- `BuildDisplayRows` ora antepone le righe artificiali e **rilancia `RevisionService.BuildRevisionGraph`
+  sull'insieme mostrato**: l'arco verso HEAD ottiene una lane propria, instradata come tutte le altre.
+  `WithHeadConnector`, `ArtificialSegments`, `_artificialLane` e `_headDisplayIndex` sono spariti.
+- `BuildGraph` traccia un'**identità di arco** parallela alle lane (`colors`, allocata quando una lane
+  viene occupata ex novo, ereditata quando prosegue) e la mette in `RevisionGraphSegment.ColorLane` e
+  nel nuovo `RevisionRow.NodeColor`. Una colonna riciclata cambia colore.
+- `RevisionGraphControl` prende `nodeColor` (default `-1` = vecchio comportamento su colonna); le
+  righe artificiali ricevono i flag relative/gray come le altre, perché ora possono portarsi dietro le
+  lane di rami terzi.
+
+**Verificato in GUI** (Xvfb, screenshot guardati) su tre fixture: `featX` checkoutato con altri due
+rami più recenti sopra (prima: un tratto unico da "Working directory" fino a `X2` attraverso `featY`,
+`main5`, `merge featX`, `main3`; dopo: colonna propria, topologia corretta), `main` con working dir
+**e** index sporchi (catena working directory → commit index → `main5`, `featY` e `featX` in lane
+distinte), e il riciclo delle lane (`sideA` arancione / `sideB` blu nella stessa colonna 1). Nessuna
+regressione con working dir pulito (riga artificiale assente, grafo identico) né sul repo vero con
+`Load 500 more commits` a 1000+ commit.
+
+**Non fatto**: nulla di quanto sopra tocca il caso con **quick filter** attivo, dove le righe mostrate
+sono un sottoinsieme non contiguo e la colonna del grafo resta collassata — comportamento invariato e
+già dichiarato.
+
 ## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
 
 > Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno

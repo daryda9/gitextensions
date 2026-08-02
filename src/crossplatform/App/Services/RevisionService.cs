@@ -467,6 +467,23 @@ public sealed record RevisionRow(
     public int NodeLane { get; init; }
 
     /// <summary>
+    ///  Palette index of this row's node dot. Distinct from <see cref="NodeLane"/>:
+    ///  a lane is only a column and gets recycled between unrelated branches, so the
+    ///  colour is keyed on the edge identity assigned by the lane-assignment pass.
+    /// </summary>
+    public int NodeColor { get; init; }
+
+    /// <summary>
+    ///  Parents used by the lane-assignment pass instead of <see cref="ParentHashes"/>,
+    ///  or <c>null</c> to use the real ones. Set only by the synthesised
+    ///  "working directory" / "commit index" rows, which have no parents of their own
+    ///  (DAG navigation must never walk into or out of them) but do need a real edge
+    ///  down to the checked-out commit, laid out by the graph rather than painted over
+    ///  it afterwards.
+    /// </summary>
+    public IReadOnlyList<string>? GraphParents { get; init; }
+
+    /// <summary>
     ///  The line segments to draw in this row's graph cell (vertical lane lines,
     ///  plus the diagonal branch/merge edges into and out of the node).
     /// </summary>
@@ -492,7 +509,9 @@ public sealed record RevisionRow(
 ///  laneWidth / 2) and a vertical fraction of the row height
 ///  (0 = top edge, 0.5 = vertical centre / node row, 1 = bottom edge). Every
 ///  edge is split at the centre so branch/merge diagonals meet cleanly at the
-///  node. <see cref="ColorLane"/> selects the segment colour from the palette.
+///  node. <see cref="ColorLane"/> selects the segment colour from the palette; it
+///  is an edge identity, NOT the lane index (lanes are recycled between unrelated
+///  branches, colours are not).
 /// </summary>
 public sealed record RevisionGraphSegment(
     double FromLane,
@@ -978,24 +997,43 @@ public sealed class RevisionService
     ///    as: straight verticals for pass-through lanes, diagonals from top-edge
     ///    to centre for edges converging on the node, and diagonals from centre
     ///    to bottom-edge for the node's edges to its parents.</item>
+    ///   <item>Colour is tracked SEPARATELY from the column. A lane index is freed
+    ///    whenever two branches converge and is then handed to an unrelated branch
+    ///    further down; keying the palette on the index therefore painted two
+    ///    unrelated lines in the same colour in the same column, which reads as one
+    ///    continuous branch. Each lane carries an edge identity instead, allocated
+    ///    when the lane is newly occupied and inherited when it merely continues.</item>
     ///  </list>
     /// </summary>
     private static IReadOnlyList<RevisionRow> BuildGraph(List<RevisionRow> input)
     {
         List<string?> lanes = [];
+
+        // Palette identity of each lane slot, kept the same length as `lanes`
+        // (-1 = free). See the colour note above.
+        List<int> colors = [];
+        int nextColor = 0;
         int laneCount = 1;
         List<RevisionRow> result = new(input.Count);
 
         foreach (RevisionRow row in input)
         {
             string?[] incoming = lanes.ToArray();
+            int[] incomingColors = [.. colors];
 
-            // The node lane: reuse the lowest lane already waiting for this commit,
-            // otherwise take the lowest free lane (a branch tip with no descendant).
+            // The node lane: reuse the lowest lane already waiting for this commit
+            // (inheriting its colour), otherwise take the lowest free lane — a branch
+            // tip with no descendant, which starts a new colour.
             int nodeLane = IndexOf(lanes, row.Hash);
+            int nodeColor;
             if (nodeLane < 0)
             {
                 nodeLane = FirstFree(lanes);
+                nodeColor = nextColor++;
+            }
+            else
+            {
+                nodeColor = colors[nodeLane];
             }
 
             // Every lane that was waiting for this commit ends here (children merge in).
@@ -1004,16 +1042,17 @@ public sealed class RevisionService
                 if (lanes[i] == row.Hash)
                 {
                     lanes[i] = null;
+                    colors[i] = -1;
                 }
             }
 
             // The node's edges to its parents all emanate from the node lane.
             HashSet<int> nodeOrigin = [];
-            IReadOnlyList<string> parents = row.ParentHashes;
+            IReadOnlyList<string> parents = row.GraphParents ?? row.ParentHashes;
             if (parents.Count > 0)
             {
-                // First parent continues straight down the node lane.
-                Set(lanes, nodeLane, parents[0]);
+                // First parent continues straight down the node lane, same colour.
+                SetLane(nodeLane, parents[0], nodeColor);
                 nodeOrigin.Add(nodeLane);
 
                 // Extra parents (merge) branch off into reused or fresh lanes.
@@ -1021,23 +1060,26 @@ public sealed class RevisionService
                 {
                     int existing = IndexOf(lanes, parents[p]);
                     int pl = existing >= 0 ? existing : FirstFree(lanes);
-                    Set(lanes, pl, parents[p]);
+                    int pc = existing >= 0 ? colors[existing] : nextColor++;
+                    SetLane(pl, parents[p], pc);
                     nodeOrigin.Add(pl);
                 }
             }
             else
             {
                 // Root commit: nothing continues below the node.
-                Set(lanes, nodeLane, null);
+                SetLane(nodeLane, null, -1);
             }
 
             // Drop trailing free lanes so the graph stays as narrow as possible.
             while (lanes.Count > 0 && lanes[^1] is null)
             {
                 lanes.RemoveAt(lanes.Count - 1);
+                colors.RemoveAt(colors.Count - 1);
             }
 
             string?[] outgoing = lanes.ToArray();
+            int[] outgoingColors = [.. colors];
 
             List<RevisionGraphSegment> segments = [];
 
@@ -1051,7 +1093,7 @@ public sealed class RevisionService
                 }
 
                 int target = incoming[i] == row.Hash ? nodeLane : i;
-                segments.Add(new RevisionGraphSegment(i, 0.0, target, 0.5, i));
+                segments.Add(new RevisionGraphSegment(i, 0.0, target, 0.5, Colour(incomingColors, i)));
             }
 
             // Bottom halves: every outgoing lane runs from the centre to the bottom edge.
@@ -1064,13 +1106,31 @@ public sealed class RevisionService
                 }
 
                 int source = nodeOrigin.Contains(i) ? nodeLane : i;
-                segments.Add(new RevisionGraphSegment(source, 0.5, i, 1.0, i));
+                segments.Add(new RevisionGraphSegment(source, 0.5, i, 1.0, Colour(outgoingColors, i)));
             }
 
             laneCount = Math.Max(laneCount, Math.Max(nodeLane + 1, Math.Max(incoming.Length, outgoing.Length)));
 
-            result.Add(row with { NodeLane = nodeLane, GraphSegments = segments });
+            result.Add(row with { NodeLane = nodeLane, NodeColor = nodeColor, GraphSegments = segments });
         }
+
+        // Writes a lane slot, growing both parallel lists as needed.
+        void SetLane(int index, string? value, int color)
+        {
+            while (lanes.Count <= index)
+            {
+                lanes.Add(null);
+                colors.Add(-1);
+            }
+
+            lanes[index] = value;
+            colors[index] = value is null ? -1 : color;
+        }
+
+        // Defensive: an occupied lane always has an identity, but never let a stale
+        // -1 reach the palette — fall back to the column, the old behaviour.
+        static int Colour(int[] source, int index)
+            => index < source.Length && source[index] >= 0 ? source[index] : index;
 
         // Stamp the shared lane count onto every row so the column width is uniform.
         for (int i = 0; i < result.Count; i++)
@@ -1105,16 +1165,6 @@ public sealed class RevisionService
         }
 
         return -1;
-    }
-
-    private static void Set(List<string?> lanes, int index, string? value)
-    {
-        while (lanes.Count <= index)
-        {
-            lanes.Add(null);
-        }
-
-        lanes[index] = value;
     }
 
     /// <summary>
