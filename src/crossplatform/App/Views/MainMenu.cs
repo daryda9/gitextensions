@@ -116,6 +116,11 @@ public sealed class MainMenu : UserControl
     // ---- View
     public event Action? LightThemeRequested;
     public event Action? DarkThemeRequested;
+
+    // The visual style is a second, orthogonal appearance dimension: it picks the
+    // icon set and neutral ramp, and does not touch the light/dark choice above.
+    public event Action? ClassicStyleRequested;
+    public event Action? ModernStyleRequested;
     public event Action<string>? LanguageRequested;
     public event Action? RefreshRequested;
     public event Action? RevisionFilterRequested;
@@ -468,6 +473,8 @@ public sealed class MainMenu : UserControl
         view.Items.Add(GroupHeader(T("AppearanceSettingsPage/$this.Text", "Appearance")));
         view.Items.Add(Item(null, "Light theme", null, () => LightThemeRequested?.Invoke()));
         view.Items.Add(Item(null, "Dark theme", null, () => DarkThemeRequested?.Invoke()));
+        view.Items.Add(Item(null, "Classic style", null, () => ClassicStyleRequested?.Invoke()));
+        view.Items.Add(Item(null, "Modern style", null, () => ModernStyleRequested?.Invoke()));
         view.Items.Add(_language);
         view.Items.Add(new Separator());
         view.Items.Add(Item("FormBrowse/refreshToolStripMenuItem.Text", "Refresh", "ReloadRevisions", () => RefreshRequested?.Invoke(), gesture: BrowseCommand.Refresh));
