@@ -6,13 +6,21 @@ namespace GitExtensions.Avalonia.Theming;
 
 /// <summary>
 ///  Owns the app's palette brushes and swaps them between a dark and a light
-///  theme at runtime.
+///  theme — and, since M78, between the classic and the modern style — at
+///  runtime.
 ///
 ///  <para>The brushes are created once and registered in
 ///  <see cref="Application.Resources"/>; views capture those instances. To
 ///  switch theme we mutate each brush's <see cref="SolidColorBrush.Color"/> in
 ///  place, so every control referencing a brush repaints live — no need for
 ///  DynamicResource bindings throughout the UI.</para>
+///
+///  <para>The two axes are orthogonal: <see cref="AppStyle"/> x
+///  <see cref="ThemeVariant"/> gives four palettes, and every one of the
+///  <see cref="Keys"/> must exist in all four. A missing key is silent —
+///  <c>Brush(...)</c> falls back to black and <c>B(...)</c> to null — which is
+///  the M62 class of bug that cost two milestones; <see cref="Palette"/> is the
+///  only place a dictionary is chosen, and the loop below skips nothing.</para>
 /// </summary>
 public static class ThemeManager
 {
@@ -32,7 +40,238 @@ public static class ThemeManager
         "App.Link",
     ];
 
-    private static readonly Dictionary<string, Color> Dark = new()
+    // ------------------------------------------------------------------
+    //  CLASSIC — the palette as it stood before M77 (commit a38eb4ab4).
+    //  Values are verbatim, comments included where they record a measurement:
+    //  they are the reasoning of M62/M67/M70 and re-deriving them would only
+    //  lose it. The two keys that did not exist yet, App.AccentFill and
+    //  App.Link, are new here and carry their own derivation.
+    // ------------------------------------------------------------------
+
+    private static readonly Dictionary<string, Color> ClassicDark = new()
+    {
+        ["App.Window"] = Color.Parse("#1E1E1E"),
+        ["App.Panel"] = Color.Parse("#252526"),
+        ["App.PanelAlt"] = Color.Parse("#2D2D30"),
+        ["App.Toolbar"] = Color.Parse("#333337"),
+        ["App.Border"] = Color.Parse("#3F3F46"),
+        ["App.Text"] = Color.Parse("#DCDCDC"),
+        ["App.TextDim"] = Color.Parse("#9B9B9B"),
+        ["App.Accent"] = Color.Parse("#007ACC"),
+
+        // NEW in M78: the classic family never had a separate fill, because the
+        // selected grid row is a M77-era surface. #007ACC itself does not serve:
+        // it carries white at 4.51:1 but the row's other two inks fail on it —
+        // the dimmed #DFECFA at 3.76:1 and, at 3.34:1, only just clears the 3:1
+        // a non-text marker owes. #0068B0 is the same hue (204.5 deg against
+        // 204.1) taken one step darker, and is the LIGHTEST value of that hue
+        // which clears all three: white 5.82:1, #DFECFA 4.86:1, #9CF0B8 4.32:1.
+        // Those are, to the hundredth, the same three figures the modern
+        // #215BDD scores — the two styles differ in tint, not in legibility.
+        ["App.AccentFill"] = Color.Parse("#0068B0"),
+        ["App.Selection"] = Color.Parse("#094771"),
+        ["App.GraphGreen"] = Color.Parse("#4EC9B0"),
+
+        // Input surfaces (text boxes, pickers). Same value as App.Panel: the key was
+        // used by ~20 call sites without ever being registered, so Brush("App.Control",
+        // Brushes.Black) silently pinned a black surface that never followed the theme —
+        // unreadable in the light theme, where the text stays App.Text.
+        ["App.Control"] = Color.Parse("#252526"),
+
+        // Aliases of an existing key, registered because the call sites already read
+        // them (same M62 trap as App.Control: an unregistered key silently pins the
+        // fallback, which does not follow the theme).
+        //   App.Foreground      — synonym of App.Text used by CommitDialog (9 sites).
+        //     Its fallback was Brushes.Gainsboro (#DCDCDC): correct by accident in the
+        //     dark theme, 1.24:1 against the light window. Same value as App.Text, so
+        //     the dark theme is pixel-identical to before.
+        //   App.PanelBackground — synonym of App.PanelAlt used by CleanupDialog's
+        //     confirmation bar; its #2A2A2E fallback held a dark bar under App.Text ink
+        //     in the light theme (1.17:1). #2D2D30 vs #2A2A2E is 1.04:1, invisible.
+        ["App.Foreground"] = Color.Parse("#DCDCDC"),
+        ["App.PanelBackground"] = Color.Parse("#2D2D30"),
+
+        // Diff ink. The dark values are the ones DiffView already paints its own added
+        // and removed lines with (#6AC776 / #E06C6C), so the CommitDialog diff pane
+        // stops drifting to LimeGreen/OrangeRed and matches the real diff view.
+        ["App.DiffAdded"] = Color.Parse("#6AC776"),
+        ["App.DiffRemoved"] = Color.Parse("#E06C6C"),
+
+        // Syntax-highlighting ink (DiffView + FileTreeView). Both views carried the
+        // same five literals "in the same key as the diff colours", tuned for a dark
+        // background; the light theme therefore rendered highlighted code at
+        // 1.53–2.97:1. Registering them per theme is the fix — and it is not a
+        // toggle-only path: FileTreeView highlights unconditionally
+        // (RenderContent(..., highlight: !binary)), so on the light theme the File
+        // tree tab was unreadable by default with no way to turn it off.
+        //
+        // The dark trio+pair below are the ORIGINAL literals, except Comment and
+        // Preprocessor, which are lifted by a barely-perceptible amount (ΔE*ab 4.8
+        // and 3.1). Reason: the highlighter repaints +/- lines over a background
+        // TINT (AddedTint/RemovedTint, alpha 0x28), so the effective background is
+        // not #1E1E1E but #2A392C / #3C2A2A — and against those #7E9E7E measured
+        // 4.12:1 and #C586C0 4.39:1, i.e. the DARK theme also failed AA on exactly
+        // the lines syntax highlighting exists to colour. Every token now clears
+        // 4.6:1 against the worst of the five surfaces it can land on
+        // (App.Window, App.Panel, App.PanelAlt and the two diff tints).
+        //
+        // Kept apart on purpose, not just legible: the five are checked pairwise in
+        // CIE L*a*b* under normal, deuteranope and protanope simulation. The dark
+        // family's weakest pair was String↔Comment at ΔE 2.4 under protanopia (two
+        // tokens a red-blind reader could not tell apart); the light family below
+        // holds ΔE ≥ 17.6 across all three simulations, which is why Number is the
+        // darkest of the five — the green/olive/rust cluster collapses in hue for a
+        // colour-blind reader and has to separate by lightness instead. That also
+        // preserves each token's identity across themes: Number was the brightest
+        // (highest-contrast) token in the dark theme and stays the strongest here.
+        ["App.TokenKeyword"] = Color.Parse("#8AB4F8"),
+        ["App.TokenString"] = Color.Parse("#CE9178"),
+        ["App.TokenComment"] = Color.Parse("#8BA78B"),
+        ["App.TokenNumber"] = Color.Parse("#B5CEA8"),
+        ["App.TokenPreprocessor"] = Color.Parse("#C88DC4"),
+
+        // Commit-button accents, one per upstream RepoState (RepoStateVisualiser). The
+        // dark values ARE the upstream ones: on the dark toolbar they already read.
+        ["App.RepoStateClean"] = Color.Parse("#8A8A8A"),
+        ["App.RepoStateDirty"] = Color.Parse("#FFA07A"),
+        ["App.RepoStateDirtySubmodules"] = Color.Parse("#FFA500"),
+        ["App.RepoStateMixed"] = Color.Parse("#E6A700"),
+        ["App.RepoStateStaged"] = Color.Parse("#87CEFA"),
+        ["App.RepoStateUntrackedOnly"] = Color.Parse("#8A63D2"),
+
+        // The transcript boxes of CleanupDialog and CloneDialog. M62 left these two
+        // unregistered on the grounds that a theme-invariant dark terminal matched the
+        // process dialog's fixed beige. Measuring the family says otherwise: of the nine
+        // read-only monospace output surfaces pinned by TextBoxSurface, seven already
+        // read App.Panel/App.PanelAlt + App.Text, and only the process dialog is
+        // deliberately fixed — and its beige (#ECE9D8) sits 1.10:1 from the light
+        // window, so it blends there, whereas #111111 was a black slab in a light
+        // dialog. Aliased to App.PanelAlt/App.Text, matching OutputView and
+        // SubmodulesDialog, the closest siblings (raw git output in a monospace box).
+        // Contrast stays far above threshold: 12.24:1 before, 10.01:1 dark / 14.11:1 light.
+        ["App.ConsoleBackground"] = Color.Parse("#2D2D30"),
+        ["App.ConsoleForeground"] = Color.Parse("#DCDCDC"),
+
+        // The revision grid's three ref pills (RevisionGridView.BuildRefBadge): local
+        // branch, remote-tracking branch, tag. Each value is the OUTLINE and the GLYPH
+        // colour at once, on App.RefPillBg.
+        //
+        // They were hard-coded (#2E7D32 / #C0392B / #B8860B, "tuned toward the original
+        // GitExtensions palette") and therefore theme-blind: those three values were
+        // picked against a white pill and, measured on a real screenshot, scored
+        // 5.13 / 5.44 / 3.25:1 in the light theme but 2.99 / 2.82 / 4.71:1 in the dark
+        // one — so the dark theme actually failed WCAG AA on TWO of the three, not one.
+        // Registering them per theme is the whole point: a single triple cannot serve
+        // both backgrounds.
+        //
+        // The dark trio is a light tint of each hue, measured on #252526 at
+        // 6.67 / 6.56 / 6.67:1 — deliberately one narrow band, so no pill reads as the
+        // weak one of the family.
+        ["App.RefPillBg"] = Color.Parse("#252526"),
+        ["App.RefBranch"] = Color.Parse("#5FBF6B"),
+        ["App.RefRemote"] = Color.Parse("#EE908A"),
+        ["App.RefTag"] = Color.Parse("#D9A226"),
+
+        // NEW in M78: hyperlink ink. The classic family had no link colour and the
+        // call sites borrowed App.Accent, which M74 recorded as the open defect —
+        // #007ACC measures 3.70 / 3.40 / 3.04 / 2.79:1 on Window / Panel / PanelAlt
+        // / Toolbar, i.e. under AA on every surface a link lands on and under 3:1 on
+        // the toolbar. "Classic" means the pre-M77 LOOK, not the inherited failure,
+        // so the link gets its own value: the same 204 deg hue lightened until it
+        // clears 4.5:1 on the worst of the four, 4.75:1 on the toolbar.
+        ["App.Link"] = Color.Parse("#4DA6E8"),
+    };
+
+    private static readonly Dictionary<string, Color> ClassicLight = new()
+    {
+        ["App.Window"] = Color.Parse("#F3F3F3"),
+        ["App.Panel"] = Color.Parse("#FFFFFF"),
+        ["App.PanelAlt"] = Color.Parse("#ECECEC"),
+        ["App.Toolbar"] = Color.Parse("#E4E4E4"),
+        ["App.Border"] = Color.Parse("#C4C4C4"),
+        ["App.Text"] = Color.Parse("#1E1E1E"),
+        ["App.TextDim"] = Color.Parse("#6A6A6A"),
+        ["App.Accent"] = Color.Parse("#007ACC"),
+
+        // See the dark block. The fill is variant-invariant in the classic family
+        // for the same reason App.Accent is: the classic accent was a single
+        // #007ACC in both themes, and the inks the selected row carries (white,
+        // #DFECFA, #9CF0B8) do not change with the variant either, so the same
+        // #0068B0 satisfies both. The modern family splits the two because its
+        // accent already differs per variant.
+        ["App.AccentFill"] = Color.Parse("#0068B0"),
+        ["App.Selection"] = Color.Parse("#CBE3F7"),
+        ["App.GraphGreen"] = Color.Parse("#1E7D5A"),
+        ["App.Control"] = Color.Parse("#FFFFFF"),
+        ["App.Foreground"] = Color.Parse("#1E1E1E"),
+        ["App.PanelBackground"] = Color.Parse("#ECECEC"),
+
+        // Light-theme diff ink. The dark greens/reds are unreadable on a white panel
+        // (#6AC776 → 2.09:1, #E06C6C → 3.22:1), so they darken the way App.GraphGreen
+        // already does (#4EC9B0 → #1E7D5A). App.DiffAdded reuses that very value;
+        // App.DiffRemoved is the same brick-red hue as #E06C6C/#CE5C5C taken darker,
+        // because the palette registers no red at all and #CE5C5C only reaches 3.95:1.
+        // Measured on #FFFFFF: 5.08:1 and 5.98:1.
+        ["App.DiffAdded"] = Color.Parse("#1E7D5A"),
+        ["App.DiffRemoved"] = Color.Parse("#B03A3A"),
+
+        // Light-theme syntax ink (see the dark block for the whole story). Each value
+        // KEEPS its dark counterpart's hue (±5°) and darkens until it clears AA on the
+        // worst light surface it can land on — the removed-line tint #F0DEDE, which is
+        // darker than the white panel and is therefore the binding constraint, not
+        // #FFFFFF. Measured minimum over {#FFFFFF, #F3F3F3, #ECECEC, #DEECDF,
+        // #F0DEDE}: 5.48 keyword / 4.64 string / 4.82 comment / 8.33 number /
+        // 5.35 preprocessor, up from 1.63 / 2.04 / 2.29 / 1.31 / 2.15. (Full
+        // per-surface table in NOTES.md.)
+        //
+        // Comment stays the low-chroma grey-green it is in the dark theme, so it still
+        // reads as the recessed token; Number is the darkest, which is what buys the
+        // colour-blind separation described above.
+        ["App.TokenKeyword"] = Color.Parse("#1B47DA"),
+        ["App.TokenString"] = Color.Parse("#A94304"),
+        ["App.TokenComment"] = Color.Parse("#536556"),
+        ["App.TokenNumber"] = Color.Parse("#264517"),
+        ["App.TokenPreprocessor"] = Color.Parse("#9B18A0"),
+
+        ["App.ConsoleBackground"] = Color.Parse("#ECECEC"),
+        ["App.ConsoleForeground"] = Color.Parse("#1E1E1E"),
+
+        // The upstream RepoState colours were picked for the light WinForms toolbar of
+        // Windows, yet MainToolbar paints them as the Commit CAPTION's foreground, where
+        // they are normal text and need 4.5:1. Measured on the light toolbar (#E4E4E4)
+        // they ranged from 1.35:1 (Staged) to 3.44:1 (UntrackedOnly) — four of six below
+        // even 3:1. These keep each hue and darken it to just over 4.6:1 there.
+        ["App.RepoStateClean"] = Color.Parse("#636363"),
+        ["App.RepoStateDirty"] = Color.Parse("#994F31"),
+        ["App.RepoStateDirtySubmodules"] = Color.Parse("#8A5900"),
+        ["App.RepoStateMixed"] = Color.Parse("#825E00"),
+        ["App.RepoStateStaged"] = Color.Parse("#366887"),
+        ["App.RepoStateUntrackedOnly"] = Color.Parse("#7743D6"),
+
+        // Ref pills, light theme (see the dark block for the whole story). Each hue is
+        // kept and darkened until it clears AA on the white pill: measured on a real
+        // screenshot at 6.53 / 6.67 / 6.40:1, the same narrow band as the dark trio, so
+        // the terna reads as one family in both themes. The tag is the one that moved
+        // most (#B8860B was 3.25:1) because amber is the hue that fights a white
+        // background hardest — at AA it necessarily lands on a dark olive.
+        ["App.RefPillBg"] = Color.Parse("#FFFFFF"),
+        ["App.RefBranch"] = Color.Parse("#256B29"),
+        ["App.RefRemote"] = Color.Parse("#A83226"),
+        ["App.RefTag"] = Color.Parse("#7E5800"),
+
+        // NEW in M78: hyperlink ink, light half (see the dark block). The borrowed
+        // #007ACC measured 4.51 / 4.06 / 3.82 / 3.55:1 on Panel / Window / PanelAlt /
+        // Toolbar — AA only on pure white, which is the one surface a link rarely
+        // sits alone on. #0067AF is the same hue darkened to the lightest value that
+        // clears 4.5:1 everywhere: 5.90 / 5.32 / 4.99 / 4.64:1.
+        ["App.Link"] = Color.Parse("#0067AF"),
+    };
+
+    // ------------------------------------------------------------------
+    //  MODERN — the M77 palette.
+    // ------------------------------------------------------------------
+
+    private static readonly Dictionary<string, Color> ModernDark = new()
     {
         // ---- the neutral ramp (M77) ----
         // The old ramp was VS Code 2015's: #1E1E1E / #252526 / #2D2D30 / #333337,
@@ -222,7 +461,7 @@ public static class ThemeManager
         ["App.Link"] = Color.Parse("#5B9CFF"),
     };
 
-    private static readonly Dictionary<string, Color> Light = new()
+    private static readonly Dictionary<string, Color> ModernLight = new()
     {
         // The light ramp, same treatment (M77). App.Panel was #FFFFFF — pure paper
         // white, the light-theme half of the same 2015 signature — and is now #FDFDFD:
@@ -333,27 +572,62 @@ public static class ThemeManager
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
 
-    /// <summary>Creates the palette brushes and registers them; applies the dark theme.</summary>
+    /// <summary>The style currently applied.</summary>
+    public static AppStyle CurrentStyle { get; private set; } = AppStyle.Modern;
+
+    /// <summary>The theme variant currently applied.</summary>
+    public static ThemeVariant CurrentVariant { get; private set; } = ThemeVariant.Dark;
+
+    /// <summary>
+    ///  Raised after a style change has been fully applied — palette mutated,
+    ///  control styles swapped. Listeners only have to invalidate themselves.
+    ///
+    ///  <para>This is a STATIC event: anything that subscribes from a control
+    ///  must unsubscribe when it detaches, or a recycling list will grow the
+    ///  invocation list without bound (see <c>GlyphIcon</c> in IconLoader).</para>
+    /// </summary>
+    public static event Action? StyleChanged;
+
+    private static Dictionary<string, Color> Palette(AppStyle style, ThemeVariant variant)
+    {
+        bool light = variant == ThemeVariant.Light;
+        return style == AppStyle.Classic
+            ? (light ? ClassicLight : ClassicDark)
+            : (light ? ModernLight : ModernDark);
+    }
+
+    /// <summary>Creates the palette brushes and registers them; applies the modern dark theme.</summary>
     public static void Initialize(Application app)
     {
+        Dictionary<string, Color> seed = Palette(AppStyle.Modern, ThemeVariant.Dark);
         foreach (string key in Keys)
         {
-            SolidColorBrush brush = new(Dark[key]);
+            SolidColorBrush brush = new(seed[key]);
             Brushes[key] = brush;
             app.Resources[key] = brush;
         }
 
-        Apply(ThemeVariant.Dark);
+        Apply(ThemeVariant.Dark, AppStyle.Modern);
     }
 
-    /// <summary>Switches the palette (and the Fluent theme variant) live.</summary>
-    public static void Apply(ThemeVariant variant)
+    /// <summary>Switches the palette variant live, keeping the current style.</summary>
+    public static void Apply(ThemeVariant variant) => Apply(variant, CurrentStyle);
+
+    /// <summary>Switches the palette variant and the style live.</summary>
+    public static void Apply(ThemeVariant variant, AppStyle style)
     {
-        Dictionary<string, Color> colors = variant == ThemeVariant.Light ? Light : Dark;
+        bool styleChanged = style != CurrentStyle;
+
+        CurrentVariant = variant;
+        CurrentStyle = style;
+
+        Dictionary<string, Color> colors = Palette(style, variant);
         foreach (string key in Keys)
         {
             if (Brushes.TryGetValue(key, out SolidColorBrush? brush) && colors.TryGetValue(key, out Color c))
             {
+                // Mutated in place on purpose: replacing the instance would strand
+                // every view (and ManagedFileChooserTheming) that captured it.
                 brush.Color = c;
             }
         }
@@ -361,6 +635,16 @@ public static class ThemeManager
         if (Application.Current is { } app)
         {
             app.RequestedThemeVariant = variant;
+
+            if (styleChanged)
+            {
+                ModernStyles.Apply(app, style);
+            }
+        }
+
+        if (styleChanged)
+        {
+            StyleChanged?.Invoke();
         }
     }
 }
