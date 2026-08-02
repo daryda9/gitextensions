@@ -103,9 +103,14 @@ public static class ModernStyles
         SolidColorBrush selectionHover = Derived(selection, text, 0.10);
         SolidColorBrush selectionPressed = Derived(selection, text, 0.18);
 
-        // A border that reads as "this control is under the pointer" needs 3:1 of its
-        // own; App.Border alone is a quiet separator, so hover pulls it toward the ink.
-        SolidColorBrush borderStrong = Derived(border, text, 0.35);
+        // A border that reads as "this control is under the pointer" is a non-text
+        // indicator and needs 3:1 of its own. App.Border is a quiet separator — it
+        // measures 1.23:1 on the toolbar in the dark theme — so the hover border pulls
+        // it 45% toward the ink. 0.45 is the smallest step on the scale that clears
+        // 3:1 against ALL THREE surfaces a control border can land on (App.Toolbar,
+        // App.Control, App.Selection) in BOTH themes; the worst case is 3.30:1 on the
+        // selection surface. At 0.35 the toolbar case was 2.98:1 dark / 2.73:1 light.
+        SolidColorBrush borderStrong = Derived(border, text, 0.45);
 
         // ---- Button ---------------------------------------------------------------
         // Fluent's stock ButtonBackground* are TRANSLUCENT overlays over whatever is
@@ -121,7 +126,13 @@ public static class ModernStyles
         Set(app, "ButtonForegroundDisabled", textDim);
         Set(app, "ButtonBorderBrush", border);
         Set(app, "ButtonBorderBrushPointerOver", borderStrong);
-        Set(app, "ButtonBorderBrushPressed", accent);
+        // Pressed keeps the HOVER border, not the accent. An accent hairline on the
+        // pressed fill measures 2.05:1 in the dark theme (#3B82F6 on #53545B) — below
+        // the 3:1 a non-text indicator needs, i.e. a promise the colour cannot keep.
+        // Pressed is already unmistakable from the fill alone: the background moves by
+        // two full steps of the ramp. The accent is reserved for FOCUS, where it is
+        // the only signal and where it does measure (3.57:1 worst case).
+        Set(app, "ButtonBorderBrushPressed", borderStrong);
         Set(app, "ButtonBorderBrushDisabled", border);
 
         // ---- ToggleButton ---------------------------------------------------------
@@ -153,7 +164,7 @@ public static class ModernStyles
         Set(app, "ToggleButtonForegroundIndeterminateDisabled", textDim);
         Set(app, "ToggleButtonBorderBrush", border);
         Set(app, "ToggleButtonBorderBrushPointerOver", borderStrong);
-        Set(app, "ToggleButtonBorderBrushPressed", accent);
+        Set(app, "ToggleButtonBorderBrushPressed", borderStrong);
         Set(app, "ToggleButtonBorderBrushChecked", accent);
         Set(app, "ToggleButtonBorderBrushCheckedPointerOver", accent);
         Set(app, "ToggleButtonBorderBrushCheckedPressed", accent);
@@ -161,7 +172,7 @@ public static class ModernStyles
         Set(app, "ToggleButtonBorderBrushCheckedDisabled", border);
         Set(app, "ToggleButtonBorderBrushIndeterminate", border);
         Set(app, "ToggleButtonBorderBrushIndeterminatePointerOver", borderStrong);
-        Set(app, "ToggleButtonBorderBrushIndeterminatePressed", accent);
+        Set(app, "ToggleButtonBorderBrushIndeterminatePressed", borderStrong);
         Set(app, "ToggleButtonBorderBrushIndeterminateDisabled", border);
 
         // ---- TextBox --------------------------------------------------------------
@@ -209,7 +220,7 @@ public static class ModernStyles
         Set(app, "ComboBoxBackgroundBorderBrushFocused", accent);
         Set(app, "ComboBoxBorderBrush", border);
         Set(app, "ComboBoxBorderBrushPointerOver", borderStrong);
-        Set(app, "ComboBoxBorderBrushPressed", accent);
+        Set(app, "ComboBoxBorderBrushPressed", borderStrong);
         Set(app, "ComboBoxBorderBrushDisabled", border);
         Set(app, "ComboBoxForeground", text);
         Set(app, "ComboBoxForegroundFocused", text);
@@ -316,6 +327,17 @@ public static class ModernStyles
         app.Resources["SystemControlFocusVisualSecondaryThickness"] = new Thickness(0);
         app.Resources["UseSystemFocusVisuals"] = true;
 
+        // Two-tone on purpose, and the second tone is not decoration — it is what makes
+        // the ring measurable on BOTH of its edges.
+        //
+        // The outer 2px of App.Accent is adjacent to whatever CONTAINER the control
+        // sits in, and clears 3:1 on every one of them (worst case 3.57:1, the dark
+        // toolbar). Its inner edge, though, touches the control's own fill, and a
+        // focused+hovered button in the dark theme puts the accent on #41424A at
+        // 2.72:1 — a fail. The 1px App.Text hairline inside the ring restores that
+        // edge to 5.94:1 at worst (App.Text on the pressed fill), so the indicator as
+        // a whole is separated from its surroundings on both sides whatever state the
+        // control is in.
         FuncTemplate<Control> focusRing = new(() => new Border
         {
             BorderBrush = accent,
@@ -325,6 +347,12 @@ public static class ModernStyles
             // ring just OUTSIDE the control's own border instead of on top of it, so
             // a focused-and-hovered control still shows both.
             Margin = new Thickness(-FocusRingThickness),
+            Child = new Border
+            {
+                BorderBrush = text,
+                BorderThickness = new Thickness(FocusRingHaloThickness),
+                CornerRadius = Metrics.Radius.SmCorner,
+            },
         });
 
         app.Styles.Add(Build(focusRing));
@@ -332,6 +360,10 @@ public static class ModernStyles
 
     /// <summary>2px — thick enough to survive a 1px control border next to it.</summary>
     private const double FocusRingThickness = 2;
+
+    /// <summary>1px of App.Text inside the accent, so the ring's inner edge measures
+    /// against the control's own fill too.</summary>
+    private const double FocusRingHaloThickness = 1;
 
     /// <summary>
     ///  The global <see cref="Style"/>s, as one <see cref="Styles"/> collection so
