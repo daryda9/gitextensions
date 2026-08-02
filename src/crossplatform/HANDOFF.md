@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | **merge dei due rami di lavoro** `116a88d0d` (proprio) + `15db999b3` (remoto). Le due linee avevano numerato in parallelo: le milestone del **grafo** sono state rinumerate a **M77/M78** (erano M75/M76 sul remoto), quelle dei **ref** restano M75/M76. Prossima libera: **M79** · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | **merge delle due linee di lavoro** (locale `116a88d0d` + remoto `3b5ad6f04`). Avevano numerato in parallelo: **M75/M76** = mutazioni di ref (locale), **M77/M78** = grafo (erano M75/M76 sul remoto), **M79** = GUI moderna (era M77 sul remoto). Prossima libera: **M80** · `3b5ad6f04` (**M79: GUI moderna, iterazione 1**) · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -280,7 +280,32 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
-> ### ► M78 (2026-08-02) — **le linee del grafo non si spezzano più sui merge**. Prossima milestone libera: **M79**
+> ### ► ROUND 13 — **GUI moderna**, iterazione 1: **M79** (2026-08-02). Prossima milestone libera: **M80**
+> Direzione dell'utente: struttura e funzioni **invariate**, superficie modernizzata. Deciso anche che
+> **non** si affianca una variante "Classic": l'aspetto si sostituisce. Tre subagent in worktree
+> isolati, file disgiunti, nessuno dentro `App/Views/`. Dettaglio completo in `PORTING.md` → "ROUND 13".
+> - **Icone**: 90 glifi vettoriali monocromatici (Lucide, ISC, path inline) tinti dalle *istanze* dei
+>   brush di palette. **API di `IconLoader` invariata** → zero call site toccate dall'unità; i nomi
+>   senza glifo cadono sul PNG e si loggano, quindi la copertura è misurabile da un run. Marchi di
+>   terzi e famiglia `FileStatus*` restano raster **con motivo**.
+> - **Token e stati**: `Metrics` (spazi 4/8/12/16/24, 5 livelli di testo, raggi, durate) + stati e
+>   transizioni ottenuti **ridefinendo le chiavi risorsa di Fluent**, non combattendole. Nessun
+>   esadecimale: i colori di stato derivano dai brush di palette per riferimento. Griglia esclusa per
+>   costruzione. Le view **non** usano ancora `Metrics`: è il lavoro successivo.
+> - **Palette**: rampa fredda, via bianco e nero puri, accento contemporaneo, `App.Link` (residuo M74).
+>   Tutte le famiglie di inchiostro ri-derivate, tinte di diff **ricomposte** sull'alpha `0x28`.
+> - **Due correzioni del loop**: cinque icone di toolbar tornavano raster perché riassegnavano
+>   `Image.Source` con un `Bitmap` (nuovo `IconLoader.Retarget`); e la riga selezionata della griglia
+>   è scesa a 3,68:1 col nuovo accento → nuova chiave **`App.AccentFill`**, misurata poi a 6,85:1.
+> **Da NON riscoprire**: (a) un colore ha **ruoli**, e fondo e inchiostro non si servono con la stessa
+> tinta — è già successo con le ref pill in M67 e con `App.Link` in M74; una campagna di misure sul
+> solo `ThemeManager` **non vede** gli usi derivati dentro le view. (b) Assegnare `Image.Source` è un
+> modo silenzioso di annullare un'icona vettoriale. (c) **Il watchdog uccide un subagent dopo 600 s
+> senza progresso e in questa iterazione ha preso tutti e tre, sempre sulla verifica GUI**: riprenderli
+> con `SendMessage` (worktree e transcript intatti, mai rilanciarli da zero), imporre *un file scritto
+> = un commit*, e tenere la verifica GUI nel loop chiedendo ai subagent misure **calcolate offline**.
+
+> ### ► M78 (2026-08-02) — **le linee del grafo non si spezzano più sui merge**
 > Seconda segnalazione dell'utente sullo stesso pannello («a volte le linee risultano spezzate»),
 > diagnosticata **misurando i pixel** del suo screenshot: la lane si interrompeva al **centro** della
 > riga del merge. In `BuildGraph` i parent extra di un merge finivano **tutti** in `nodeOrigin`, anche

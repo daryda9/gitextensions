@@ -29,20 +29,13 @@ public class App : Application
         // registers the App.* brushes this reads. See ManagedFileChooserTheming.
         ManagedFileChooserTheming.Install(this);
 
-        // Normalize control sizing: Fluent's default tab headers are oversized
-        // for a dense tool; keep them compact and consistent with the rest.
-        Style tabItem = new(x => x.OfType<TabItem>());
-        tabItem.Setters.Add(new Setter(TemplatedControl.FontSizeProperty, 13.0));
-        tabItem.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, FontWeight.Normal));
-        tabItem.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(12, 6)));
-        tabItem.Setters.Add(new Setter(Layoutable.MinHeightProperty, 0.0));
-        Styles.Add(tabItem);
-
-        // A sane default text size app-wide (Fluent defaults to 14, which reads
-        // large next to the 12px grid/diff); views can still override.
-        Style text = new(x => x.OfType<TextBlock>());
-        text.Setters.Add(new Setter(TextBlock.FontSizeProperty, 13.0));
-        Styles.Add(text);
+        // Typography defaults, control corners, hover/pressed/disabled/focus states
+        // and their transitions — all app-wide, none of it editing a view. The two
+        // styles that used to live right here (TabItem sizing and the 13px TextBlock
+        // default) moved into ModernStyles.Build unchanged. Must run after
+        // ThemeManager.Initialize: every state colour is derived from the App.*
+        // brush instances it registers. See Theming/ModernStyles.
+        Theming.ModernStyles.Install(this);
     }
 
     public override void OnFrameworkInitializationCompleted()
