@@ -75,6 +75,16 @@ public static class IconLoader
 
     private static void NoteRasterFallback(string name)
     {
+        // In the classic style the PNG is the CHOICE, not a shortfall: the whole point
+        // of that style is the 2015 icon set. Reporting it would turn a normal run into
+        // several hundred lines of false "missing glyph" diagnostics and destroy the
+        // one measurement this log exists for — how much of the icon set still has no
+        // vector form.
+        if (ThemeManager.CurrentStyle == AppStyle.Classic)
+        {
+            return;
+        }
+
         if (!FellBackToRaster.TryAdd(name, 0))
         {
             return;
@@ -105,7 +115,11 @@ public static class IconLoader
     {
         if (Icons.Get(name) is { } glyph)
         {
-            return new GlyphIcon(glyph, tintKey) { Width = size, Height = size };
+            // Built the same way in both styles. GlyphIcon carries the NAME as well as
+            // the geometry and decides at draw time: the vector in Modern, the 2015 PNG
+            // in Classic. That is what makes the switch hot — the views keep the exact
+            // control instances they built, nothing is rebuilt.
+            return new GlyphIcon(glyph, tintKey, name) { Width = size, Height = size };
         }
 
         NoteRasterFallback(name);
@@ -138,7 +152,10 @@ public static class IconLoader
         {
             if (target is GlyphIcon icon)
             {
-                icon.SetGlyph(glyph, tintKey);
+                // Works in both styles: the new NAME travels with the new geometry, so
+                // a classic-styled icon re-points at the new PNG and a modern one at
+                // the new vector, from the same call.
+                icon.SetGlyph(glyph, tintKey, name);
                 return;
             }
 
@@ -171,15 +188,16 @@ internal sealed class GlyphIcon : global::Avalonia.Controls.Image
 {
     private readonly GlyphSource _glyph;
     private AvaloniaObject? _observed;
+    private bool _styleObserved;
 
     /// <summary>
     ///  Swaps the drawn glyph in place, keeping the resolved tint and its
     ///  subscription. Used by <see cref="IconLoader.Retarget"/> for the toolbar
     ///  icons that change with state.
     /// </summary>
-    internal void SetGlyph(Geometry geometry, string? tintKey = null)
+    internal void SetGlyph(Geometry geometry, string? tintKey = null, string? name = null)
     {
-        _glyph.SetGeometry(geometry);
+        _glyph.SetGeometry(geometry, name);
 
         if (tintKey is not null && _glyph.RetintNeeded(tintKey))
         {
@@ -203,9 +221,9 @@ internal sealed class GlyphIcon : global::Avalonia.Controls.Image
         InvalidateVisual();
     }
 
-    internal GlyphIcon(Geometry geometry, string tintKey)
+    internal GlyphIcon(Geometry geometry, string tintKey, string name)
     {
-        _glyph = new GlyphSource(geometry, tintKey);
+        _glyph = new GlyphSource(geometry, tintKey, name);
         Source = _glyph;
 
         // Custom-drawn content does not clip to its bounds by default, and the
@@ -231,6 +249,19 @@ internal sealed class GlyphIcon : global::Avalonia.Controls.Image
             observable.PropertyChanged += OnTintChanged;
         }
 
+        // Same discipline as the tint, and it matters more here: ThemeManager.StyleChanged
+        // is a STATIC event, so an icon that stayed subscribed after being detached would
+        // never be collected and the invocation list would grow for as long as the app
+        // runs. The revision grid recycles its row containers on every scroll tick, so
+        // "leaks one per detach" means thousands within a session — and every one of them
+        // would still be invalidated on each style switch. Paired with the unsubscribe in
+        // OnDetachedFromVisualTree below, and re-subscribed here on re-attach.
+        if (!_styleObserved)
+        {
+            ThemeManager.StyleChanged += OnStyleChanged;
+            _styleObserved = true;
+        }
+
         InvalidateVisual();
     }
 
@@ -242,8 +273,21 @@ internal sealed class GlyphIcon : global::Avalonia.Controls.Image
             _observed = null;
         }
 
+        if (_styleObserved)
+        {
+            ThemeManager.StyleChanged -= OnStyleChanged;
+            _styleObserved = false;
+        }
+
         base.OnDetachedFromVisualTree(e);
     }
+
+    /// <summary>
+    ///  The style decides glyph-versus-PNG inside <see cref="GlyphSource.Draw"/>, and
+    ///  <see cref="Image.Source"/> keeps the same identity across the switch, so
+    ///  nothing else would ever ask this control to repaint.
+    /// </summary>
+    private void OnStyleChanged() => InvalidateVisual();
 
     private void OnTintChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
@@ -269,15 +313,28 @@ internal sealed class GlyphSource : IImage
     private IBrush? _inherited;
     private bool _resolved;
 
-    internal GlyphSource(Geometry geometry, string tintKey)
+    // The icon's NAME, kept alongside the geometry so the classic style can ask
+    // IconLoader for the matching 2015 PNG at draw time. Without it the control
+    // would have no way back to the raster set once it was built as a glyph.
+    private string _name;
+
+    internal GlyphSource(Geometry geometry, string tintKey, string name)
     {
         _geometry = geometry;
         _tintKey = tintKey;
+        _name = name;
     }
 
     // Swapped in place by GlyphIcon.SetGlyph so a state-driven icon keeps the tint
     // it already resolved and the subscription that follows the theme.
-    internal void SetGeometry(Geometry geometry) => _geometry = geometry;
+    internal void SetGeometry(Geometry geometry, string? name = null)
+    {
+        _geometry = geometry;
+        if (name is not null)
+        {
+            _name = name;
+        }
+    }
 
     internal bool RetintNeeded(string tintKey) => !string.Equals(_tintKey, tintKey, StringComparison.Ordinal);
 
@@ -307,6 +364,21 @@ internal sealed class GlyphSource : IImage
     {
         if (destRect.Width <= 0 || destRect.Height <= 0)
         {
+            return;
+        }
+
+        // ---- the classic style draws the 2015 bitmap instead ----------------------
+        // Decided HERE, per draw, and not at construction time: that is what lets the
+        // switch be hot. The control, its layout slot and its Source identity are
+        // untouched, so no view is rebuilt and nothing has to be told the style moved
+        // beyond the InvalidateVisual GlyphIcon issues on StyleChanged.
+        //
+        // If the name has no PNG (a glyph drawn for something the 2015 set never had)
+        // the vector is drawn anyway: a blank icon would be a worse answer than a
+        // slightly modern-looking one.
+        if (ThemeManager.CurrentStyle == AppStyle.Classic && IconLoader.Load(_name) is { } bitmap)
+        {
+            context.DrawImage(bitmap, destRect);
             return;
         }
 
