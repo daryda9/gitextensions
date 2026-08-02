@@ -120,6 +120,15 @@ public sealed class UiState
     public string Theme { get; set; } = "Dark";
 
     /// <summary>
+    ///  Which visual style the surface uses: "Modern" (the M77 vector icons and
+    ///  neutral ramp) or "Classic" (the pre-M77 look).
+    ///
+    ///  <para>Orthogonal to <see cref="Theme"/> — all four combinations are valid —
+    ///  and stored beside it because it is the same kind of Appearance choice.</para>
+    /// </summary>
+    public string Style { get; set; } = "Modern";
+
+    /// <summary>
     ///  UI language: the base name of a <c>Translation/*.xlf</c> catalogue
     ///  ("Italian", "German", …), or "English" for the untranslated literals.
     ///  Sits next to <see cref="Theme"/> because upstream treats both as
@@ -273,6 +282,7 @@ public sealed class UiStateService
         (s.RevisionsStar, s.BottomStar) = NormalizeSplit(s.RevisionsStar, s.BottomStar, 0.6);
         (s.DetailStar, s.DiffStar) = NormalizeSplit(s.DetailStar, s.DiffStar, 0.4);
         s.Theme = s.Theme == "Light" ? "Light" : "Dark";
+        s.Style = s.Style == "Classic" ? "Classic" : "Modern";
         s.BottomTab = string.IsNullOrWhiteSpace(s.BottomTab) ? "Commit" : s.BottomTab.Trim();
 
         // A corrupt coordinate is dropped rather than clamped: with no position the
