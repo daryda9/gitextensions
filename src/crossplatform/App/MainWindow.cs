@@ -1084,6 +1084,7 @@ public sealed class MainWindow : Window
 
         _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
+        _revisions.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
         _tree.OpenRepositoryRequested += OpenRepositoryPath;
         // The tree cannot reach the bottom panel or the streaming remote ops itself;

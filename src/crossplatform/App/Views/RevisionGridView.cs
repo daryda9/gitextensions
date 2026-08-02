@@ -5261,6 +5261,13 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     public event Action<string>? SelectRefInLeftPanelRequested;
 
+    /// <summary>
+    ///  Raised after a ref operation from the grid's menu changed HEAD or refs, so
+    ///  the shell can refresh every panel at once (same contract as the tree's
+    ///  event). When nothing is subscribed the grid reloads itself instead.
+    /// </summary>
+    public event Action? OperationCompleted;
+
     // Everything the entries need to decide about themselves. Cheap to build: no
     // git call, only what is already loaded in the view.
     private sealed record MenuCtx(
@@ -6217,7 +6224,18 @@ public sealed class RevisionGridView : UserControl
 
     private void AfterRefOp(string message)
     {
-        Reload();
+        // The shell's handler reloads every panel, this grid included (and tells the
+        // watcher the window is up to date), so reloading here as well would be a
+        // second pass over the same commits.
+        if (OperationCompleted is { } completed)
+        {
+            completed();
+        }
+        else
+        {
+            Reload();
+        }
+
         RefreshRefContext();
         FlashStatus(message);
     }
