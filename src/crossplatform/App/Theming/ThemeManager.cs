@@ -20,7 +20,7 @@ public static class ThemeManager
     private static readonly string[] Keys =
     [
         "App.Window", "App.Panel", "App.PanelAlt", "App.Toolbar", "App.Border",
-        "App.Text", "App.TextDim", "App.Accent", "App.Selection", "App.GraphGreen",
+        "App.Text", "App.TextDim", "App.Accent", "App.AccentFill", "App.Selection", "App.GraphGreen",
         "App.Control", "App.Foreground", "App.PanelBackground",
         "App.DiffAdded", "App.DiffRemoved",
         "App.TokenKeyword", "App.TokenString", "App.TokenComment",
@@ -70,6 +70,16 @@ public static class ThemeManager
         // body text, so it is held to 3:1 (3.57:1 on the toolbar, its worst surface)
         // and App.Link below carries the text-grade blue.
         ["App.Accent"] = Color.Parse("#3B82F6"),
+
+        // Accent as a FILL, kept apart from the accent as ink because the two roles
+        // pull the tint in opposite directions and no single blue serves both: at
+        // #3B82F6 the accent reads 4.58:1 as ink on App.Panel but only 3.68:1 under
+        // the white text of a selected grid row, and every blue that carries white
+        // text falls under 4.5:1 as ink (#2563EB: 5.17 fill / 3.26 ink). Same split
+        // as App.Link. This value is the lightest that clears all three inks the
+        // selected row can carry — white 5.82:1, the dimmed #DFECFA 4.86:1, and the
+        // #9CF0B8 marker 4.32:1 (non-text, needs 3).
+        ["App.AccentFill"] = Color.Parse("#215BDD"),
         ["App.Selection"] = Color.Parse("#1E3A5F"),
         ["App.GraphGreen"] = Color.Parse("#4EC9B0"),
 
@@ -238,6 +248,10 @@ public static class ThemeManager
         ["App.TextDim"] = Color.Parse("#62626B"),
 
         ["App.Accent"] = Color.Parse("#1D4ED8"),
+
+        // See the dark block. The light accent is already dark enough to carry white
+        // text (6.70:1), so fill and ink coincide here.
+        ["App.AccentFill"] = Color.Parse("#1D4ED8"),
         ["App.Selection"] = Color.Parse("#CFE0F8"),
         ["App.GraphGreen"] = Color.Parse("#1E7D5A"),
         ["App.Control"] = Color.Parse("#FDFDFD"),

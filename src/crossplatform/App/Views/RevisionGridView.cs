@@ -6534,6 +6534,7 @@ public sealed class RevisionGridView : UserControl
         // Fallbacks used only when the themed brushes are missing/non-solid.
         private static readonly Color AccentFallback = Color.FromRgb(0x00, 0x7A, 0xCC);
         private static readonly Color SelectionFallback = Color.FromRgb(0x09, 0x47, 0x71);
+        private static readonly Color AccentFillFallback = Color.FromRgb(0x21, 0x5B, 0xDD);
 
         private readonly IBrush _normalBg;
         private readonly Border _focusRect;
@@ -6633,7 +6634,10 @@ public sealed class RevisionGridView : UserControl
             bool focusedRow = selected && (_item?.IsFocused == true || _item?.IsKeyboardFocusWithin == true);
             bool hover = _item?.IsPointerOver == true;
 
-            Color accent = ColorOf("App.Accent", AccentFallback);
+            // App.AccentFill, not App.Accent: this is a FILL that carries white text,
+            // and the two roles need different blues. The accent that reads as ink on a
+            // panel puts the selected row's white subject at 3.68:1 — below AA.
+            Color accent = ColorOf("App.AccentFill", AccentFillFallback);
             Color selection = ColorOf("App.Selection", SelectionFallback);
 
             if (selected)
