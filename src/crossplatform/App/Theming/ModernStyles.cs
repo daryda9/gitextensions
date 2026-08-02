@@ -195,7 +195,7 @@ public static class ModernStyles
             || text is null || textDim is null || accent is null || selection is null
             || control is null)
         {
-            return;
+            return map;
         }
 
         // ---- derived state surfaces ----------------------------------------------
@@ -426,8 +426,8 @@ public static class ModernStyles
         // ComboBox, spinners, buttons inside templates), so one assignment rounds the
         // whole input family at Radius.Sm. Buttons get Radius.Md through their own
         // style below — they are standalone surfaces, not parts of a dense row.
-        app.Resources["ControlCornerRadius"] = Metrics.Radius.SmCorner;
-        app.Resources["OverlayCornerRadius"] = Metrics.Radius.MdCorner;
+        Set(map, "ControlCornerRadius", Metrics.Radius.SmCorner);
+        Set(map, "OverlayCornerRadius", Metrics.Radius.MdCorner);
 
         // ---- focus ring ------------------------------------------------------------
         // Fluent's own focus visual is a thin two-tone rectangle that all but vanishes
@@ -435,11 +435,26 @@ public static class ModernStyles
         // by the ADORNER layer, which is outside layout — so nothing shifts when a
         // control takes focus (a focus ring made of BorderThickness would move the
         // label inside the button by a pixel).
-        app.Resources["SystemControlFocusVisualPrimaryBrush"] = accent;
-        app.Resources["SystemControlFocusVisualSecondaryBrush"] = accent;
-        app.Resources["SystemControlFocusVisualPrimaryThickness"] = new Thickness(FocusRingThickness);
-        app.Resources["SystemControlFocusVisualSecondaryThickness"] = new Thickness(0);
-        app.Resources["UseSystemFocusVisuals"] = true;
+        Set(map, "SystemControlFocusVisualPrimaryBrush", accent);
+        Set(map, "SystemControlFocusVisualSecondaryBrush", accent);
+        Set(map, "SystemControlFocusVisualPrimaryThickness", new Thickness(FocusRingThickness));
+        Set(map, "SystemControlFocusVisualSecondaryThickness", new Thickness(0));
+        Set(map, "UseSystemFocusVisuals", true);
+
+        return map;
+    }
+
+    /// <summary>
+    ///  The modern-only <see cref="Style"/>s, as one <see cref="Styles"/> collection so
+    ///  they can be added to and removed from <see cref="Application.Styles"/> as a
+    ///  single block. The baseline styles are NOT in here — see
+    ///  <see cref="BuildBaseline"/>.
+    /// </summary>
+    private static Styles BuildModern(Application app)
+    {
+        // Same instances the palette registered: the ring follows the theme.
+        SolidColorBrush accent = P(app, "App.Accent") ?? new SolidColorBrush(Colors.Transparent);
+        SolidColorBrush text = P(app, "App.Text") ?? new SolidColorBrush(Colors.Transparent);
 
         // Two-tone on purpose, and the second tone is not decoration — it is what makes
         // the ring measurable on BOTH of its edges.
@@ -469,7 +484,7 @@ public static class ModernStyles
             },
         });
 
-        app.Styles.Add(Build(focusRing));
+        return Build(focusRing);
     }
 
     /// <summary>2px — thick enough to survive a 1px control border next to it.</summary>
@@ -483,13 +498,19 @@ public static class ModernStyles
     ///  The global <see cref="Style"/>s, as one <see cref="Styles"/> collection so
     ///  they are registered in a single, ordered block after Fluent.
     /// </summary>
-    private static Styles Build(ITemplate<Control> focusRing)
+    private static Styles BuildBaseline()
     {
         Styles styles = [];
 
         // ---- typography -------------------------------------------------------------
         // MOVED VERBATIM from App.Initialize (App.cs:34-45), same values, so this
         // refactor is a no-op on screen.
+        //
+        // THESE TWO ARE NOT MODERN. They were in App.Initialize before M77, i.e. they
+        // are part of the classic look as much as of the modern one, and M77 only
+        // relocated them. They are therefore installed once and never removed: if the
+        // style-restore took them away, switching to Classic would give a look the app
+        // never had — Fluent's 14px text and its oversized tab headers.
         //
         // Fluent defaults TextBlock to 14, which reads large next to the 12px
         // grid/diff; the app default is Metrics.Text.Subtitle. Views still override.
@@ -509,6 +530,16 @@ public static class ModernStyles
         tabItem.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(Metrics.Space.Md, 6)));
         tabItem.Setters.Add(new Setter(Layoutable.MinHeightProperty, 0.0));
         styles.Add(tabItem);
+
+        return styles;
+    }
+
+    /// <summary>
+    ///  The global <see cref="Style"/>s that belong to the modern style only.
+    /// </summary>
+    private static Styles Build(ITemplate<Control> focusRing)
+    {
+        Styles styles = [];
 
         // The selected tab is promoted by WEIGHT, not by size: same 13px, semibold.
         // Together with the full-strength ink (TabItemHeaderForegroundSelected = App.Text
@@ -698,7 +729,7 @@ public static class ModernStyles
     private static SolidColorBrush? P(Application app, string key)
         => app.Resources.TryGetResource(key, null, out object? value) ? value as SolidColorBrush : null;
 
-    /// <summary>Redefines a Fluent resource key app-wide.</summary>
-    private static void Set(Application app, string key, object value)
-        => app.Resources[key] = value;
+    /// <summary>Records a Fluent resource key the modern surface redefines.</summary>
+    private static void Set(Dictionary<string, object> map, string key, object value)
+        => map[key] = value;
 }
