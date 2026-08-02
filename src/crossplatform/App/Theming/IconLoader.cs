@@ -141,7 +141,11 @@ public static class IconLoader
     ///  reverted to its 2015 PNG on the first refresh while every icon around it
     ///  stayed a glyph.</para>
     /// </summary>
-    public static void Retarget(Image? target, string name, string tintKey = Icons.Text)
+    /// <param name="classicName">
+    ///  Icon to load in the classic style when it is a DIFFERENT icon, not just the
+    ///  raster form of the same one. Only the Commit button needs it.
+    /// </param>
+    public static void Retarget(Image? target, string name, string tintKey = Icons.Text, string? classicName = null)
     {
         if (target is null)
         {
@@ -155,7 +159,7 @@ public static class IconLoader
                 // Works in both styles: the new NAME travels with the new geometry, so
                 // a classic-styled icon re-points at the new PNG and a modern one at
                 // the new vector, from the same call.
-                icon.SetGlyph(glyph, tintKey, name);
+                icon.SetGlyph(glyph, tintKey, name, classicName);
                 return;
             }
 
@@ -195,9 +199,10 @@ internal sealed class GlyphIcon : global::Avalonia.Controls.Image
     ///  subscription. Used by <see cref="IconLoader.Retarget"/> for the toolbar
     ///  icons that change with state.
     /// </summary>
-    internal void SetGlyph(Geometry geometry, string? tintKey = null, string? name = null)
+    internal void SetGlyph(Geometry geometry, string? tintKey = null, string? name = null, string? classicName = null)
     {
         _glyph.SetGeometry(geometry, name);
+        _glyph.SetClassicName(classicName);
 
         if (tintKey is not null && _glyph.RetintNeeded(tintKey))
         {
@@ -318,12 +323,22 @@ internal sealed class GlyphSource : IImage
     // would have no way back to the raster set once it was built as a glyph.
     private string _name;
 
+    // The name to load the raster from when the classic style is on, when it differs
+    // from the glyph's own name. Only the Commit button needs it: the modern surface
+    // says the repo state with ONE glyph plus a tint, where upstream ships seven
+    // different bitmaps — so "classic" there means a different icon, not the same
+    // icon drawn differently. It is also the only glyph of the ninety with no PNG of
+    // its own, which is exactly why this cannot be left to the name.
+    private string? _classicName;
+
     internal GlyphSource(Geometry geometry, string tintKey, string name)
     {
         _geometry = geometry;
         _tintKey = tintKey;
         _name = name;
     }
+
+    internal void SetClassicName(string? name) => _classicName = name;
 
     // Swapped in place by GlyphIcon.SetGlyph so a state-driven icon keeps the tint
     // it already resolved and the subscription that follows the theme.
@@ -376,7 +391,7 @@ internal sealed class GlyphSource : IImage
         // If the name has no PNG (a glyph drawn for something the 2015 set never had)
         // the vector is drawn anyway: a blank icon would be a worse answer than a
         // slightly modern-looking one.
-        if (ThemeManager.CurrentStyle == AppStyle.Classic && IconLoader.Load(_name) is { } bitmap)
+        if (ThemeManager.CurrentStyle == AppStyle.Classic && IconLoader.Load(_classicName ?? _name) is { } bitmap)
         {
             context.DrawImage(bitmap, destRect);
             return;

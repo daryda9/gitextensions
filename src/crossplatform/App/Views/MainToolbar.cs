@@ -974,7 +974,11 @@ public sealed class MainToolbar : UserControl
             // stays one glyph and takes the same state key as its tint: one shape,
             // one colour, said once — and it survives a theme switch, which seven
             // baked bitmaps could not.
-            IconLoader.Retarget(_commitIcon, "Commit", CommitStateKey(state));
+            // Classic keeps upstream's seven per-state bitmaps: there the state is said
+            // by the ICON, not by a tint, so "the earlier look" is a different picture
+            // per state — and "Commit" is the one glyph of the ninety with no PNG.
+            IconLoader.Retarget(
+                _commitIcon, "Commit", CommitStateKey(state), ToolbarStateService.IconFor(state));
 
             // The state icons are meaningful in their own right, so unlike the old
             // fixed icon they are never dimmed.
