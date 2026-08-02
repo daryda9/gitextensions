@@ -115,6 +115,48 @@ public static class IconLoader
             ? null
             : new Image { Source = bmp, Width = size, Height = size };
     }
+
+    /// <summary>
+    ///  Re-points an icon control built earlier by <see cref="Image(string, double, string)"/>
+    ///  at a different icon name, keeping it a vector glyph when the new name has one.
+    ///
+    ///  <para>Three toolbar icons change with state (commit-info position, shell,
+    ///  default pull action) and used to do it by assigning a <see cref="Bitmap"/>
+    ///  straight onto <see cref="global::Avalonia.Controls.Image.Source"/>. That
+    ///  works — which is the problem: the bitmap wins, and the icon silently
+    ///  reverted to its 2015 PNG on the first refresh while every icon around it
+    ///  stayed a glyph.</para>
+    /// </summary>
+    public static void Retarget(Image? target, string name, string tintKey = Icons.Text)
+    {
+        if (target is null)
+        {
+            return;
+        }
+
+        if (Icons.Get(name) is { } glyph)
+        {
+            if (target is GlyphIcon icon)
+            {
+                icon.SetGlyph(glyph, tintKey);
+                return;
+            }
+
+            // The control was built from a PNG (its first name had no glyph) and
+            // cannot grow the glyph's tint plumbing after the fact. Rare, and it
+            // only costs this one icon its vector form until the view rebuilds.
+            NoteRasterFallback(name);
+        }
+        else
+        {
+            NoteRasterFallback(name);
+        }
+
+        if (Load(name) is { } bmp)
+        {
+            target.Source = bmp;
+        }
+    }
 }
 
 /// <summary>
@@ -129,6 +171,37 @@ internal sealed class GlyphIcon : global::Avalonia.Controls.Image
 {
     private readonly GlyphSource _glyph;
     private AvaloniaObject? _observed;
+
+    /// <summary>
+    ///  Swaps the drawn glyph in place, keeping the resolved tint and its
+    ///  subscription. Used by <see cref="IconLoader.Retarget"/> for the toolbar
+    ///  icons that change with state.
+    /// </summary>
+    internal void SetGlyph(Geometry geometry, string? tintKey = null)
+    {
+        _glyph.SetGeometry(geometry);
+
+        if (tintKey is not null && _glyph.RetintNeeded(tintKey))
+        {
+            // The tint brush is a different instance now, so the subscription that
+            // follows the theme has to move with it.
+            if (_observed is not null)
+            {
+                _observed.PropertyChanged -= OnTintChanged;
+                _observed = null;
+            }
+
+            _glyph.SetTintKey(tintKey);
+            if (_glyph.Tint is AvaloniaObject observable)
+            {
+                _observed = observable;
+                observable.PropertyChanged += OnTintChanged;
+            }
+        }
+
+        // Source did not change identity, so nothing else asks for a repaint.
+        InvalidateVisual();
+    }
 
     internal GlyphIcon(Geometry geometry, string tintKey)
     {
@@ -191,8 +264,8 @@ internal sealed class GlyphSource : IImage
     private const double Grid = 24.0;
     private const double Stroke = 2.0;
 
-    private readonly Geometry _geometry;
-    private readonly string _tintKey;
+    private string _tintKey;
+    private Geometry _geometry;
     private IBrush? _inherited;
     private bool _resolved;
 
@@ -200,6 +273,23 @@ internal sealed class GlyphSource : IImage
     {
         _geometry = geometry;
         _tintKey = tintKey;
+    }
+
+    // Swapped in place by GlyphIcon.SetGlyph so a state-driven icon keeps the tint
+    // it already resolved and the subscription that follows the theme.
+    internal void SetGeometry(Geometry geometry) => _geometry = geometry;
+
+    internal bool RetintNeeded(string tintKey) => !string.Equals(_tintKey, tintKey, StringComparison.Ordinal);
+
+    // Only for icons whose colour is itself state (the Commit button's repo state):
+    // the key changes, so the tint has to be resolved again from the palette.
+    internal void SetTintKey(string tintKey)
+    {
+        _tintKey = tintKey;
+        if (_resolved)
+        {
+            Tint = Icons.Tint(_tintKey);
+        }
     }
 
     internal IBrush? Tint { get; private set; }

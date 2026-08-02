@@ -838,10 +838,7 @@ public sealed class MainToolbar : UserControl
         _commitInfoPosition = position;
 
         (string icon, string label) = CommitInfoEntry(position);
-        if (_commitInfoIcon is not null)
-        {
-            _commitInfoIcon.Source = IconLoader.Load(icon);
-        }
+        IconLoader.Retarget(_commitInfoIcon, icon);
 
         if (_commitInfoButton is not null)
         {
@@ -909,12 +906,7 @@ public sealed class MainToolbar : UserControl
             return;
         }
 
-        Bitmap? bitmap = IconLoader.Load(iconName);
-        if (bitmap is not null)
-        {
-            _pushIcon.Source = bitmap;
-        }
-
+        IconLoader.Retarget(_pushIcon, iconName);
         _pushIcon.Opacity = lit ? 1.0 : 0.85;
     }
 
@@ -977,11 +969,12 @@ public sealed class MainToolbar : UserControl
 
         if (_commitIcon is not null)
         {
-            Bitmap? bitmap = IconLoader.Load(ToolbarStateService.IconFor(state));
-            if (bitmap is not null)
-            {
-                _commitIcon.Source = bitmap;
-            }
+            // Upstream ships seven different raster icons for the seven repo states.
+            // Here the state is already spoken by the CAPTION's colour, so the icon
+            // stays one glyph and takes the same state key as its tint: one shape,
+            // one colour, said once — and it survives a theme switch, which seven
+            // baked bitmaps could not.
+            IconLoader.Retarget(_commitIcon, "Commit", CommitStateKey(state));
 
             // The state icons are meaningful in their own right, so unlike the old
             // fixed icon they are never dimmed.
@@ -990,6 +983,20 @@ public sealed class MainToolbar : UserControl
 
         FreezeCommitWidth();
     }
+
+    // The palette key that carries a state's colour, for the icon tint. The brush
+    // itself comes from CommitStateBrush below, which also holds the upstream
+    // fallbacks for a theme that does not register the key.
+    private static string CommitStateKey(RepoState state) => state switch
+    {
+        RepoState.Clean => "App.RepoStateClean",
+        RepoState.Dirty => "App.RepoStateDirty",
+        RepoState.DirtySubmodules => "App.RepoStateDirtySubmodules",
+        RepoState.Mixed => "App.RepoStateMixed",
+        RepoState.Staged => "App.RepoStateStaged",
+        RepoState.UntrackedOnly => "App.RepoStateUntrackedOnly",
+        _ => "App.TextDim",
+    };
 
     // Upstream's RepoStateVisualiser pairs each state with a colour; those colours are
     // offered as theme keys first (so a theme can override them) and fall back to the
@@ -1324,10 +1331,7 @@ public sealed class MainToolbar : UserControl
             _shellCaption.Text = shell.Name;
         }
 
-        if (_shellIcon is not null && IconLoader.Load(shell.IconName) is { } bmp)
-        {
-            _shellIcon.Source = bmp;
-        }
+        IconLoader.Retarget(_shellIcon, shell.IconName);
 
         if (_shellBody is not null)
         {
@@ -1971,10 +1975,7 @@ public sealed class MainToolbar : UserControl
     // has no room for the full action name.
     private void ApplyDefaultPullAction()
     {
-        if (_pullIcon is not null)
-        {
-            _pullIcon.Source = IconLoader.Load(PullIcon(_defaultPullAction));
-        }
+        IconLoader.Retarget(_pullIcon, PullIcon(_defaultPullAction));
 
         if (_pullButton is not null)
         {
