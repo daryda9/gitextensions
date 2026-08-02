@@ -195,6 +195,11 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         // is only enabled by Done()).
         _ok = MakeButton("OK");
         _ok.IsEnabled = false;
+
+        // IsDefault (Enter activates it) is granted only together with IsEnabled, so
+        // Enter can never close the dialog while git is still running — there Enter
+        // belongs to the interactive Reply box, which handles the key itself.
+        _ok.IsDefault = false;
         _ok.Click += (_, _) => Close();
 
         // Abort is only shown when there is something we can genuinely kill (the
@@ -465,6 +470,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         _aborted = false;
         _finished = false;
         _ok.IsEnabled = false;
+        _ok.IsDefault = false;
         _abort.IsEnabled = true;
         _check.IsVisible = false;
         _header.Text = $"Process — {_label}";
@@ -662,6 +668,7 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
         _pollTimer = null;
         _finished = true;
         _ok.IsEnabled = true;
+        _ok.IsDefault = true;
         _abort.IsEnabled = false;
         _pty = null;
         _input.Text = string.Empty;
@@ -798,6 +805,15 @@ public sealed class GitProcessDialog : Window, Services.IGitPtyHost
                 };
                 _closeTimer.Start();
             }
+        }
+
+        // The dialog stays open (keep-open, failure, or abort-less error): give OK the
+        // keyboard focus so the hint above — "Press Enter or Esc to exit…" — is true.
+        // Skipped when a close timer is already running, so the auto-close paths are
+        // untouched.
+        if (_closeTimer is null)
+        {
+            Dispatcher.UIThread.Post(() => _ok.Focus());
         }
     }
 
