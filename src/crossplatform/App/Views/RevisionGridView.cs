@@ -176,12 +176,9 @@ public sealed class RevisionGridView : UserControl
     private int _unstaged;
     private int _staged;
 
-    // Graph geometry for the artificial rows, recomputed whenever the displayed
-    // set is rebuilt: the lane the artificial nodes live in (HEAD's lane) and the
-    // displayed index of the HEAD row, so the lane line can be carried down to it.
-    private int _artificialLane;
+    // How many artificial rows are currently at the head of the displayed set (0-2).
+    // Their lanes and segments come from the DAG layout like any other row.
     private int _artificialCount;
-    private int _headDisplayIndex = -1;
 
     // --- Incremental history loading ------------------------------------------
     //
@@ -409,7 +406,7 @@ public sealed class RevisionGridView : UserControl
 
     // Per display row (index into _rows), the "is relative" flags the graph cell
     // needs: the node's own flag plus one flag per segment, in the exact order the
-    // segment list is built by WithHeadConnector / ArtificialSegments. Recomputed
+    // segment list comes out of the DAG layout (RevisionService.BuildGraph). Recomputed
     // by ComputeGraphRelatives() on every rebind, since the flag of a segment
     // depends on the row that opened its lane (see that method).
     private List<(bool Node, bool[] Segments)> _graphRelatives = [];
@@ -1230,10 +1227,14 @@ public sealed class RevisionGridView : UserControl
     }
 
     // Builds one synthesised row. Dates are DateTime.MaxValue so FormatDate renders
-    // the Date cell blank, and the parent list is empty so DAG navigation never
-    // walks into (or out of) an artificial node — the lane line to HEAD is drawn
-    // by the graph column instead.
-    private static RevisionRow MakeArtificial(string hash, string subject, int lane, int laneCount)
+    // the Date cell blank, and ParentHashes stays empty so DAG navigation never walks
+    // into (or out of) an artificial node.
+    //
+    // GraphParents carries the edge the graph must draw — the next artificial row, or
+    // HEAD — WITHOUT making it a navigable parent. It is empty when HEAD is outside the
+    // loaded window: the node then stands alone rather than pointing at a commit that
+    // is not the checked-out one.
+    private static RevisionRow MakeArtificial(string hash, string subject, string? graphParent)
         => new(
             Hash: hash,
             ShortHash: string.Empty,
@@ -1244,12 +1245,19 @@ public sealed class RevisionGridView : UserControl
             ParentHashes: [],
             RefNames: [])
         {
-            NodeLane = lane,
-            LaneCount = laneCount,
+            GraphParents = graphParent is null ? [] : [graphParent],
         };
 
-    // Prepends the artificial rows to the filtered commit rows, recording the graph
-    // geometry (lane + HEAD position) the row builder needs to link them to HEAD.
+    // Prepends the artificial rows to the filtered commit rows and re-runs the DAG
+    // layout over the whole displayed set, so their edge down to HEAD is a real graph
+    // edge with a lane of its own.
+    //
+    // It used to be painted on afterwards instead (a segment forced into HEAD's lane on
+    // every row above HEAD), which the layout knew nothing about: whenever HEAD was not
+    // the topmost row — i.e. after checking out any branch that is behind another in
+    // date order — that stroke ran through rows whose lane was free or, worse, already
+    // carried an unrelated branch, and the two read as ONE line. Branches looked joined
+    // that are not.
     //
     // They are dropped whenever they could not be drawn honestly:
     //  * quick (in-memory) filter — the rows shown are a non-contiguous subset and
@@ -1263,8 +1271,6 @@ public sealed class RevisionGridView : UserControl
     private IReadOnlyList<RevisionRow> BuildDisplayRows(IReadOnlyList<RevisionRow> commits)
     {
         _artificialCount = 0;
-        _artificialLane = 0;
-        _headDisplayIndex = -1;
 
         bool wanted = _showArtificial
             && (_unstaged > 0 || _staged > 0) && !_quickFilterActive && commits.Count > 0;
@@ -1273,47 +1279,46 @@ public sealed class RevisionGridView : UserControl
             return commits;
         }
 
-        // Anchor the nodes in HEAD's lane (falling back to the topmost row's lane
-        // when HEAD is outside the loaded window), so the connector lands on the
-        // checked-out commit exactly like the original grid.
-        int lane = commits[0].NodeLane;
-        int headIndex = -1;
+        string? head = null;
         for (int i = 0; i < commits.Count; i++)
         {
             if (commits[i].IsHead)
             {
-                headIndex = i;
-                lane = commits[i].NodeLane;
+                head = commits[i].Hash;
                 break;
             }
         }
 
-        if (headIndex < 0 && GitFilterActive)
+        if (head is null && GitFilterActive)
         {
             // The filter excluded the checked-out commit: nothing to hang them off.
             return commits;
         }
 
-        int laneCount = commits[0].LaneCount;
+        // Chain them the way the pending work actually flows: working directory →
+        // index → HEAD. With no index row the working directory hangs off HEAD.
         List<RevisionRow> display = [];
         if (_unstaged > 0)
         {
             display.Add(MakeArtificial(WorkTreeHash,
-                T("TranslatedStrings/_workingDirectoryText.Text", "Working directory"), lane, laneCount));
+                T("TranslatedStrings/_workingDirectoryText.Text", "Working directory"),
+                _staged > 0 ? IndexHash : head));
         }
 
         if (_staged > 0)
         {
             display.Add(MakeArtificial(IndexHash,
-                T("TranslatedStrings/_indexText.Text", "Commit index"), lane, laneCount));
+                T("TranslatedStrings/_indexText.Text", "Commit index"), head));
         }
 
         _artificialCount = display.Count;
-        _artificialLane = lane;
-        _headDisplayIndex = headIndex >= 0 ? headIndex + _artificialCount : -1;
 
         display.AddRange(commits);
-        return display;
+
+        // Re-run the layout over the combined list so the artificial nodes get real
+        // lanes and the edge to HEAD is routed like any other, instead of being drawn
+        // over lanes the layout has already given to somebody else.
+        return RevisionService.BuildRevisionGraph(display);
     }
 
     /// <summary>
@@ -2486,10 +2491,8 @@ public sealed class RevisionGridView : UserControl
             bool nodeRelative = artificial
                 || _headRelatives.Count == 0
                 || _headRelatives.Contains(row.Hash);
-            int nodeLane = artificial ? _artificialLane : row.NodeLane;
-            IReadOnlyList<RevisionGraphSegment> segments = artificial
-                ? ArtificialSegments(i)
-                : WithHeadConnector(row, i);
+            int nodeLane = row.NodeLane;
+            IReadOnlyList<RevisionGraphSegment> segments = row.GraphSegments;
 
             bool[] flags = new bool[segments.Count];
             int maxLane = nodeLane;
@@ -4780,42 +4783,6 @@ public sealed class RevisionGridView : UserControl
         };
     }
 
-    // --- Graph geometry for the artificial nodes ------------------------------
-    //
-    // The artificial rows sit in HEAD's lane and are chained downward: each of
-    // them draws the half-lane below its node (and, from the second one on, the
-    // half above it), and the commit rows between the top of the list and HEAD
-    // carry the same lane through, so the line reaches the HEAD node unbroken —
-    // exactly the continuous lane the original Windows grid shows.
-    private IReadOnlyList<RevisionGraphSegment> ArtificialSegments(int displayIndex)
-    {
-        List<RevisionGraphSegment> segments =
-        [
-            new(_artificialLane, 0.5, _artificialLane, 1.0, _artificialLane),
-        ];
-        if (displayIndex > 0)
-        {
-            segments.Add(new(_artificialLane, 0.0, _artificialLane, 0.5, _artificialLane));
-        }
-
-        return segments;
-    }
-
-    // Segments added to a COMMIT row so the artificial lane reaches HEAD: a full
-    // pass-through above HEAD, and the upper half on the HEAD row itself.
-    private IReadOnlyList<RevisionGraphSegment> WithHeadConnector(RevisionRow row, int displayIndex)
-    {
-        if (_artificialCount == 0 || _headDisplayIndex < 0 || displayIndex > _headDisplayIndex)
-        {
-            return row.GraphSegments;
-        }
-
-        List<RevisionGraphSegment> segments = [.. row.GraphSegments];
-        double toY = displayIndex == _headDisplayIndex ? 0.5 : 1.0;
-        segments.Add(new(_artificialLane, 0.0, _artificialLane, toY, _artificialLane));
-        return segments;
-    }
-
     private Control BuildRow(RevisionRow? row)
     {
         // A container being CLEARED re-invokes the template with an unset (null)
@@ -4857,9 +4824,10 @@ public sealed class RevisionGridView : UserControl
                 : null;
 
             RevisionGraphControl graph = new(
-                WithHeadConnector(row, index),
+                row.GraphSegments,
                 row.NodeLane,
                 LaneWidth,
+                nodeColor: row.NodeColor,
                 relativeSegments: flags?.Segments,
                 relativeNode: flags?.Node ?? true,
                 nonRelativeBrush: flags is null ? null : B("App.TextDim"));
@@ -5005,8 +4973,22 @@ public sealed class RevisionGridView : UserControl
 
         if (_showGraph && !_quickFilterActive)
         {
+            // Same treatment as a commit row: the artificial nodes are ordinary graph
+            // rows now, so they can carry other branches' lanes through and those must
+            // gray out with everything else.
+            (bool Node, bool[] Segments)? flags = _drawNonRelativesGray
+                ? GraphRelatives(index)
+                : null;
+
             RevisionGraphControl graph = new(
-                ArtificialSegments(index), _artificialLane, LaneWidth, artificialNode: true);
+                row.GraphSegments,
+                row.NodeLane,
+                LaneWidth,
+                artificialNode: true,
+                nodeColor: row.NodeColor,
+                relativeSegments: flags?.Segments,
+                relativeNode: flags?.Node ?? true,
+                nonRelativeBrush: flags is null ? null : B("App.TextDim"));
             Grid.SetColumn(graph, 0);
             grid.Children.Add(graph);
             view.TrackGraph(graph);
@@ -6771,6 +6753,7 @@ public sealed class RevisionGridView : UserControl
 
         private readonly IReadOnlyList<RevisionGraphSegment> _segments;
         private readonly int _nodeLane;
+        private readonly int _nodeColor;
         private readonly double _laneWidth;
         private readonly bool _artificialNode;
 
@@ -6788,12 +6771,18 @@ public sealed class RevisionGridView : UserControl
             int nodeLane,
             double laneWidth,
             bool artificialNode = false,
+            int nodeColor = -1,
             IReadOnlyList<bool>? relativeSegments = null,
             bool relativeNode = true,
             IBrush? nonRelativeBrush = null)
         {
             _segments = segments;
             _nodeLane = nodeLane;
+
+            // The node's palette entry is its edge identity, not its column (lanes are
+            // recycled between unrelated branches). -1 keeps the old column-keyed
+            // behaviour for callers that have no identity to give.
+            _nodeColor = nodeColor >= 0 ? nodeColor : nodeLane;
             _laneWidth = laneWidth;
             _artificialNode = artificialNode;
             _relativeSegments = relativeSegments;
@@ -6885,7 +6874,7 @@ public sealed class RevisionGridView : UserControl
                 }
             }
 
-            IBrush nodeBrush = Brush(_nodeLane, _relativeNode);
+            IBrush nodeBrush = Brush(_nodeColor, _relativeNode);
             double cx = X(_nodeLane);
             double cy = h / 2;
 

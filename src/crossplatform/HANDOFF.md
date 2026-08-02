@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `116a88d0d` (**M76: `Keep dialog open` persistito + `Delete branch` riparato**) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | **merge dei due rami di lavoro** `116a88d0d` (proprio) + `15db999b3` (remoto). Le due linee avevano numerato in parallelo: le milestone del **grafo** sono state rinumerate a **M77/M78** (erano M75/M76 sul remoto), quelle dei **ref** restano M75/M76. Prossima libera: **M79** · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -280,7 +280,46 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
-> ### ► M74 (2026-07-30) — **pannello illustrativo del merge**. Prossima milestone libera: **M75**
+> ### ► M78 (2026-08-02) — **le linee del grafo non si spezzano più sui merge**. Prossima milestone libera: **M79**
+> Seconda segnalazione dell'utente sullo stesso pannello («a volte le linee risultano spezzate»),
+> diagnosticata **misurando i pixel** del suo screenshot: la lane si interrompeva al **centro** della
+> riga del merge. In `BuildGraph` i parent extra di un merge finivano **tutti** in `nodeOrigin`, anche
+> quando la lane **portava già** quel parent: la metà inferiore veniva ri-sorgentata dal nodo, la metà
+> superiore restava un vicolo cieco e il ramo appariva spezzato in due (col frammento sotto che
+> prendeva il colore del nodo). Ora quella lane **continua diritta** e l'arco di merge è una diagonale
+> **in più** verso di essa (`joinEdges`), nel colore del ramo mergiato. La lane nuova è invariata.
+> Frequente su storie con branch di release paralleli. Dettaglio, misure e residuo cosmetico (1 px di
+> antialiasing dove i due mezzi segmenti si toccano) in `PORTING.md` → "M78".
+
+> ### ► M77 (2026-08-02) — **il grafo non unisce più branch che non lo sono**
+> Segnalazione dell'utente («a volte visualizza come uniti branch che non lo sono, quando mi sposto su
+> un branch»), riprodotta. Le righe artificiali non passavano dal layout del DAG: la riga verso HEAD
+> era dipinta sopra da `WithHeadConnector`, che forzava un segmento nella lane di HEAD su *ogni* riga
+> sopra HEAD. Con HEAD non in cima — cioè dopo il checkout di qualunque branch che in ordine di data
+> sta sotto a un altro — quel tratto attraversava lane libere o **già occupate da rami scorrelati**, e
+> i due si leggevano come una linea sola. Difetto indipendente che ci si sommava: `ColorLane` era
+> l'**indice di lane**, e una lane liberata da una convergenza viene riassegnata più in basso a un ramo
+> che non c'entra nulla, che riceveva lo stesso colore nella stessa colonna.
+> **Fix**: `RevisionRow.GraphParents` (parenti solo per il layout, `ParentHashes` resta vuoto così la
+> navigazione non entra nei nodi artificiali), `BuildDisplayRows` rilancia `BuildRevisionGraph`
+> sull'insieme mostrato, e `BuildGraph` traccia un'**identità di arco** parallela alle lane
+> (`RevisionRow.NodeColor` + `ColorLane`). Rimossi `WithHeadConnector`, `ArtificialSegments`,
+> `_artificialLane`, `_headDisplayIndex`. Dettaglio e fixture in `PORTING.md` → "M77".
+> **Da NON riscoprire**: la lane è solo una colonna, viene **riciclata**; qualsiasi cosa la usi come
+> identità (colore, continuità visiva) è sbagliata. E niente si disegna nel grafo senza passare dal
+> layout: se un arco non è nel DAG, il DAG darà la sua colonna a qualcun altro.
+
+> ### ► M76 (2026-08-01) — **`Keep dialog open` persistito + `Delete branch` riparato**
+> Riscontro dell'utente sulla build di M75: il flag `Keep dialog open` non ricordava la scelta (un
+> `IsChecked = true` nel costruttore) ed è ora un flag **globale** come upstream, persistito in
+> `view-prefs.json`; `Delete branch` era muto e cancellava con `force: false` (difetto **preesistente**,
+> non una regressione di M75). Dettaglio in `PORTING.md` → "M76".
+
+> ### ► M75 (2026-08-01) — **le mutazioni di ref passano dal process dialog** (13.2 e 13.3 chiuse)
+> `BranchTagService.*Streaming` + `App/Views/RefProcessRunner.cs` su tutti e 10 i call-site di create
+> branch e checkout; refresh e guardie `_busy` restano al call-site. Dettaglio in `PORTING.md` → "M75".
+
+> ### ► M74 (2026-07-30) — **pannello illustrativo del merge**
 > Ultima differenza visibile fra il `MergeDialog` del port e lo screenshot dell'originale: chiusa.
 > `App/Views/HelpImagePanel.cs` (riusabile) + le **7** PNG di `src/app/GitUI/Resources/Help/` linkate
 > come `AvaloniaResource` sotto `Assets/Help/` (quindi Pull e Rebase potranno usarlo: servono solo lo
@@ -675,7 +714,7 @@ infine A/B con e senza fix.
 > **C'è una coda APERTA e prioritaria**: le tre voci della **PRIORITÀ UTENTE del 31/07/2026** (create
 > branch inerte al primo clic · create branch senza process dialog · doppio clic = checkout col process
 > dialog), in testa a §4 e per esteso in `PORTING.md` → "Coda round 13". **Il prossimo round parte da
-> lì**, non deve decidere cosa fare. Prossima milestone libera: **M75**.
+> lì**, non deve decidere cosa fare. Prossima milestone libera: **M79**.
 >
 > Round 12 (M71–M72), M73 e M74 sono chiusi e verificati in GUI; i loro residui sono in §4 e restano
 > **dietro** la coda round 13, come il materiale noto qui sotto.
