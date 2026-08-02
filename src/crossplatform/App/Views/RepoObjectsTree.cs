@@ -610,6 +610,15 @@ public sealed class RepoObjectsTree : UserControl
             return;
         }
 
+        // Move the current-branch marker NOW, from HEAD on disk. The rebuild below is
+        // ~1.4 s of sequential git on a large repository, and until M-fast-mark the bold
+        // marker only moved when it finished, so a checkout left the old branch bold for
+        // a visible moment. This is a re-label of nodes that already exist, not a fake:
+        // BuildTree reconciles against the same HEAD when the reload lands, so the two
+        // cannot disagree. Deliberately ahead of the _busy guard — a refresh that is
+        // refused because one is already in flight must still show the right marker.
+        ApplyCurrentBranchMarker();
+
         if (_busy)
         {
             return;
@@ -852,6 +861,128 @@ public sealed class RepoObjectsTree : UserControl
 
         RestoreState(roots);
         _firstBuild = false;
+
+        // Final reconciliation against the real HEAD. In the normal case this is a
+        // no-op — the IsCurrent flags above come from the same refs listing — but a
+        // rebuild that was already in flight when HEAD moved would otherwise land with
+        // a stale marker and silently undo the fast path in Refresh().
+        ApplyCurrentBranchMarker();
+    }
+
+    /// <summary>
+    ///  Reads the checked-out branch straight from <c>&lt;git dir&gt;/HEAD</c>, the way
+    ///  upstream's <c>GetSelectedBranchFast</c> does (Commands.Execution.cs:100-130), and
+    ///  re-applies the bold/✓ current-branch marker to the local-branch leaves already in
+    ///  the tree. Costs one small file read instead of the ~1.4 s a full <see cref="Refresh"/>
+    ///  needs (five sequential git invocations, of which <c>git submodule status</c> alone
+    ///  is ~1 s on a large repository), so the marker moves as soon as a ref operation
+    ///  finishes and the full reload lands afterwards without visibly changing anything.
+    ///  <para>Returns without touching anything when HEAD cannot be read — the marker
+    ///  always reflects what is really on disk, never the requested branch name. A detached
+    ///  HEAD reads as "no branch" and correctly leaves every branch unbold.</para>
+    /// </summary>
+    private void ApplyCurrentBranchMarker()
+    {
+        if (_repoPath is not { Length: > 0 } repo || ReadHeadBranch(repo) is not { } head)
+        {
+            return;
+        }
+
+        List<BranchTagRow> changed = [];
+
+        foreach ((TreeViewItem item, string key) in _nodeKey.ToList())
+        {
+            if (item.Tag is not BranchTagRow row || row.IsRemote || row.IsTag
+                || !key.StartsWith("branches/", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            bool isCurrent = head.Length > 0 && string.Equals(row.Name, head, StringComparison.Ordinal);
+            if (isCurrent == row.IsCurrent)
+            {
+                continue;
+            }
+
+            BranchTagRow updated = row with { IsCurrent = isCurrent };
+            item.Tag = updated;
+
+            // The menu gates Checkout/Merge/Rebase/Reset/Delete on IsCurrent
+            // (BranchMenu), so it has to be regenerated with the new flag.
+            item.ContextMenu = BranchMenu(updated);
+            SetLeafCurrent(item, isCurrent);
+            changed.Add(updated);
+        }
+
+        if (changed.Count == 0)
+        {
+            return;
+        }
+
+        // Keep the retained snapshot in step: a re-sort or a language switch rebuilds the
+        // tree from it (OnLanguageChanged, RefSortMenu) and would otherwise put the stale
+        // marker back.
+        if (_snapshot is { } snapshot)
+        {
+            Dictionary<string, BranchTagRow> byName = changed.ToDictionary(static r => r.Name, StringComparer.Ordinal);
+            List<BranchTagRow> branches = snapshot.Refs.Branches
+                .Select(r => !r.IsRemote && !r.IsTag && byName.TryGetValue(r.Name, out BranchTagRow? u) ? u : r)
+                .ToList();
+            _snapshot = snapshot with { Refs = snapshot.Refs with { Branches = branches } };
+        }
+    }
+
+    // Toggles the "✓ " prefix and the bold weight on an existing leaf, in place. The
+    // label is the leaf's own last path segment ("x" under "feature"), so it is adjusted
+    // rather than rebuilt from the full ref name.
+    private static void SetLeafCurrent(TreeViewItem item, bool isCurrent)
+    {
+        if (item.Header is not Panel panel)
+        {
+            return;
+        }
+
+        const string Marker = "✓ ";
+        foreach (TextBlock label in panel.Children.OfType<TextBlock>())
+        {
+            string text = label.Text ?? string.Empty;
+            bool marked = text.StartsWith(Marker, StringComparison.Ordinal);
+
+            label.Text = isCurrent
+                ? (marked ? text : Marker + text)
+                : (marked ? text[Marker.Length..] : text);
+            label.FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal;
+        }
+    }
+
+    // "ref: refs/heads/&lt;name&gt;" → the branch name; a raw sha (detached HEAD) → "";
+    // unreadable, or a HEAD pointing outside refs/heads → null, meaning "leave the
+    // marker alone and let the full reload decide".
+    private static string? ReadHeadBranch(string repoPath)
+    {
+        try
+        {
+            if (RepositoryWatcherService.ResolveGitDir(repoPath) is not { } gitDir)
+            {
+                return null;
+            }
+
+            string headFile = Path.Combine(gitDir, "HEAD");
+            if (!File.Exists(headFile))
+            {
+                return null;
+            }
+
+            string text = File.ReadAllText(headFile).Trim();
+            const string Prefix = "ref: refs/heads/";
+            return text.StartsWith(Prefix, StringComparison.Ordinal) ? text[Prefix.Length..].Trim()
+                : text.StartsWith("ref: ", StringComparison.Ordinal) ? null
+                : string.Empty;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private bool IsCategoryShown(string id) => id switch
