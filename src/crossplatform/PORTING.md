@@ -2358,6 +2358,50 @@ regressione con working dir pulito (riga artificiale assente, grafo identico) n�
 sono un sottoinsieme non contiguo e la colonna del grafo resta collassata — comportamento invariato e
 già dichiarato.
 
+## M76 (2026-08-02) — le linee del grafo non si spezzano più sui merge
+
+> Unità singola, base `bf8dfec51`, build `Errori: 0`. **Segnalazione dell'utente** con screenshot:
+> «come mai a volte le linee risultano spezzate?». Diagnosticata **misurando i pixel** dello
+> screenshot prima di toccare il codice: la lane verde si interrompeva esattamente a `y=62`, cioè al
+> **centro** della riga del merge.
+
+**Il difetto.** In `BuildGraph`, i parent extra di un merge finivano tutti in `nodeOrigin`:
+
+```csharp
+int existing = IndexOf(lanes, parents[p]);
+int pl = existing >= 0 ? existing : FirstFree(lanes);
+SetLane(pl, parents[p], …);
+nodeOrigin.Add(pl);          // <-- anche quando la lane era GIÀ occupata da quel parent
+```
+
+`nodeOrigin` decide da dove parte la metà inferiore della lane
+(`source = nodeOrigin.Contains(i) ? nodeLane : i`). Quando la lane **portava già** quel parent —
+cioè un altro ramo ci stava scendendo sopra da righe precedenti — la sua metà inferiore veniva
+**ri-sorgentata dal nodo**: la metà superiore restava un **vicolo cieco** a metà riga e il ramo
+appariva **spezzato in due**, col frammento sotto che prendeva pure il colore del nodo invece del
+suo. Succede su ogni merge la cui seconda parent è già raggiunta da un ramo elencato più in alto —
+frequentissimo su una storia con branch di release paralleli, che è esattamente lo screenshot
+dell'utente (`Merge branch 'master' into release/6.0`).
+
+**La correzione.** Se la lane è già occupata da quel parent, **continua diritta** e l'arco di merge
+diventa una diagonale **in più** dal nodo verso quella lane al bordo inferiore della riga
+(`joinEdges`), nel colore del ramo mergiato — non un rimpiazzo del passaggio. La lane nuova
+(`existing < 0`) resta invariata: `FirstFree` + colore nuovo + `nodeOrigin`.
+
+**Verificato in GUI** su una fixture minima (`branchB` che scende verso `a1`, merge di `branchA` in
+`main` la cui seconda parent è `a1`): prima **4 righe di pixel vuote** nella lane 0 al centro della
+riga del merge, dopo **zero**. Poi sulla **storia vera** dello screenshot dell'utente (clone con i
+ref potati attorno a `e048b4a94`/`069d8b778`, tag `v6.0.4`): entrambe le lane continue, la diagonale
+del merge che si innesta. Nessuna regressione sul caso comune (merge la cui seconda parent prende una
+lane nuova: `sideA`/`sideB` in `/tmp/graphrecy`, identico).
+
+**Residuo cosmetico misurato, non corretto**: dove due mezzi segmenti si toccano al centro riga
+l'antialiasing lascia **un pixel** di allargamento laterale (misurato: colonne `31,32` che diventano
+`31,32,33` alle sole y dei centri riga). Si toglierebbe emettendo **un unico** segmento a tutta
+altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le metà con
+`bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
+`seg.ToY >= 1.0`, e non vale il rischio per un pixel.
+
 ## Coda round 12 — PRIORITÀ UTENTE del 29/07/2026: commit dialog e flusso di merge
 
 > Voci indicate dall'utente confrontando la GUI del port con l'originale Windows. **Hanno

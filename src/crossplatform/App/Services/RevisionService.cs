@@ -1048,6 +1048,11 @@ public sealed class RevisionService
 
             // The node's edges to its parents all emanate from the node lane.
             HashSet<int> nodeOrigin = [];
+
+            // Merge edges into a lane that was ALREADY carrying that parent before this
+            // row: (targetLane, colour). They are extra diagonals, not replacements —
+            // see the comment where they are emitted.
+            List<(int Lane, int Colour)> joinEdges = [];
             IReadOnlyList<string> parents = row.GraphParents ?? row.ParentHashes;
             if (parents.Count > 0)
             {
@@ -1059,9 +1064,24 @@ public sealed class RevisionService
                 for (int p = 1; p < parents.Count; p++)
                 {
                     int existing = IndexOf(lanes, parents[p]);
-                    int pl = existing >= 0 ? existing : FirstFree(lanes);
-                    int pc = existing >= 0 ? colors[existing] : nextColor++;
-                    SetLane(pl, parents[p], pc);
+                    if (existing >= 0)
+                    {
+                        // Somebody else's lane is already flowing down to this parent, so
+                        // it must KEEP flowing straight through the row: claiming it as a
+                        // node origin re-sourced its lower half from the node and left the
+                        // upper half a dead end — the lane looked broken in two, and the
+                        // fragment below took the node's colour. Record the merge edge
+                        // instead and draw it as an extra diagonal into that lane.
+                        if (existing != nodeLane)
+                        {
+                            joinEdges.Add((existing, colors[existing]));
+                        }
+
+                        continue;
+                    }
+
+                    int pl = FirstFree(lanes);
+                    SetLane(pl, parents[p], nextColor++);
                     nodeOrigin.Add(pl);
                 }
             }
@@ -1107,6 +1127,14 @@ public sealed class RevisionService
 
                 int source = nodeOrigin.Contains(i) ? nodeLane : i;
                 segments.Add(new RevisionGraphSegment(source, 0.5, i, 1.0, Colour(outgoingColors, i)));
+            }
+
+            // Merge edges into an already-flowing lane, drawn IN ADDITION to that lane's
+            // straight bottom half: the branch keeps its unbroken line and the merge joins
+            // it at the row's bottom edge, in the colour of the branch being merged.
+            foreach ((int lane, int colour) in joinEdges)
+            {
+                segments.Add(new RevisionGraphSegment(nodeLane, 0.5, lane, 1.0, colour >= 0 ? colour : lane));
             }
 
             laneCount = Math.Max(laneCount, Math.Max(nodeLane + 1, Math.Max(incoming.Length, outgoing.Length)));

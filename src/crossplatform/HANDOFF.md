@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `a1d0bc899` (**M75: il grafo non unisce più branch che non lo sono**) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | `M76: linee del grafo non spezzate` · `a1d0bc899` (M75: il grafo non unisce più branch che non lo sono) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -240,7 +240,18 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 
 ## 4. Cosa resta da fare
 
-> ### ► M75 (2026-08-02) — **il grafo non unisce più branch che non lo sono**. Prossima milestone libera: **M76**
+> ### ► M76 (2026-08-02) — **le linee del grafo non si spezzano più sui merge**. Prossima milestone libera: **M77**
+> Seconda segnalazione dell'utente sullo stesso pannello («a volte le linee risultano spezzate»),
+> diagnosticata **misurando i pixel** del suo screenshot: la lane si interrompeva al **centro** della
+> riga del merge. In `BuildGraph` i parent extra di un merge finivano **tutti** in `nodeOrigin`, anche
+> quando la lane **portava già** quel parent: la metà inferiore veniva ri-sorgentata dal nodo, la metà
+> superiore restava un vicolo cieco e il ramo appariva spezzato in due (col frammento sotto che
+> prendeva il colore del nodo). Ora quella lane **continua diritta** e l'arco di merge è una diagonale
+> **in più** verso di essa (`joinEdges`), nel colore del ramo mergiato. La lane nuova è invariata.
+> Frequente su storie con branch di release paralleli. Dettaglio, misure e residuo cosmetico (1 px di
+> antialiasing dove i due mezzi segmenti si toccano) in `PORTING.md` → "M76".
+
+> ### ► M75 (2026-08-02) — **il grafo non unisce più branch che non lo sono**
 > Segnalazione dell'utente («a volte visualizza come uniti branch che non lo sono, quando mi sposto su
 > un branch»), riprodotta. Le righe artificiali non passavano dal layout del DAG: la riga verso HEAD
 > era dipinta sopra da `WithHeadConnector`, che forzava un segmento nella lane di HEAD su *ogni* riga
