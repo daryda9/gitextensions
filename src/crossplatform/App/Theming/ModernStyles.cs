@@ -54,14 +54,128 @@ namespace GitExtensions.Avalonia.Theming;
 /// </summary>
 public static class ModernStyles
 {
+    /// <summary>The baseline styles, present in BOTH app styles; added once, never removed.</summary>
+    private static Styles? _baseline;
+
+    /// <summary>The modern-only styles; built once, added and removed as a block.</summary>
+    private static Styles? _modern;
+
+    /// <summary>The modern Fluent overrides, key -> value; built once.</summary>
+    private static Dictionary<string, object>? _modernValues;
+
     /// <summary>
-    ///  Redefines the Fluent state keys from the palette and adds the global styles.
-    ///  Call from <see cref="Application.Initialize"/>, after
-    ///  <see cref="ThemeManager.Initialize"/> has registered the <c>App.*</c> brushes.
+    ///  What <see cref="Application.Resources"/> held for each overridden key BEFORE
+    ///  the first modern install. A key absent from the app dictionary is recorded as
+    ///  <c>null</c> and REMOVED on restore — removing is what hands the lookup back to
+    ///  Fluent's own <c>ControlTheme</c>; writing a guessed Fluent value back would
+    ///  pin a colour Fluent is free to change.
     /// </summary>
-    public static void Install(Application app)
+    private static readonly Dictionary<string, object?> Snapshot = [];
+
+    private static bool _modernInstalled;
+
+    /// <summary>
+    ///  Applies (or removes) the modern control surface. Call from
+    ///  <see cref="Application.Initialize"/> and from
+    ///  <see cref="ThemeManager.Apply(Avalonia.Styling.ThemeVariant, AppStyle)"/>,
+    ///  always after <see cref="ThemeManager.Initialize"/> has registered the
+    ///  <c>App.*</c> brushes.
+    ///
+    ///  <para>Idempotent in both directions, and reversible: the Fluent keys are
+    ///  restored to what they held before (or removed), and the modern
+    ///  <see cref="Style"/>s are taken OUT of <see cref="Application.Styles"/> rather
+    ///  than neutralised. The baseline styles — the TabItem sizing and the 13px
+    ///  TextBlock default, which lived in <c>App.Initialize</c> before M77 and are
+    ///  therefore part of the classic look too — are installed separately and are
+    ///  never removed.</para>
+    /// </summary>
+    public static void Apply(Application app, AppStyle style)
     {
         ArgumentNullException.ThrowIfNull(app);
+
+        if (_baseline is null)
+        {
+            _baseline = BuildBaseline();
+            app.Styles.Add(_baseline);
+        }
+
+        if (style == AppStyle.Modern)
+        {
+            InstallModern(app);
+        }
+        else
+        {
+            RemoveModern(app);
+        }
+    }
+
+    private static void RemoveModern(Application app)
+    {
+        if (!_modernInstalled)
+        {
+            return;
+        }
+
+        foreach ((string key, object? previous) in Snapshot)
+        {
+            if (previous is null)
+            {
+                app.Resources.Remove(key);
+            }
+            else
+            {
+                app.Resources[key] = previous;
+            }
+        }
+
+        if (_modern is not null)
+        {
+            app.Styles.Remove(_modern);
+        }
+
+        _modernInstalled = false;
+    }
+
+    private static void InstallModern(Application app)
+    {
+        if (_modernInstalled)
+        {
+            return;
+        }
+
+        // Built once and reused: the derived state brushes listen to the palette for
+        // the lifetime of the app, so rebuilding them on every toggle would leak one
+        // subscription pair per switch.
+        _modernValues ??= BuildValues(app);
+
+        if (_modernValues.Count == 0)
+        {
+            // ThemeManager did not run — see BuildValues. Leave Fluent alone.
+            return;
+        }
+
+        foreach ((string key, object value) in _modernValues)
+        {
+            if (!Snapshot.ContainsKey(key))
+            {
+                Snapshot[key] = app.Resources.TryGetValue(key, out object? existing) ? existing : null;
+            }
+
+            app.Resources[key] = value;
+        }
+
+        _modern ??= BuildModern(app);
+        app.Styles.Add(_modern);
+        _modernInstalled = true;
+    }
+
+    /// <summary>
+    ///  Collects the Fluent state keys the modern surface redefines, from the palette.
+    ///  Returns an EMPTY map if the palette is missing.
+    /// </summary>
+    private static Dictionary<string, object> BuildValues(Application app)
+    {
+        Dictionary<string, object> map = [];
 
         // ---- the palette, by reference -------------------------------------------
         SolidColorBrush? window = P(app, "App.Window");
@@ -116,64 +230,64 @@ public static class ModernStyles
         // Fluent's stock ButtonBackground* are TRANSLUCENT overlays over whatever is
         // behind the button; on a coloured toolbar that drags the label toward the
         // background and the contrast collapses. These are opaque palette surfaces.
-        Set(app, "ButtonBackground", toolbar);
-        Set(app, "ButtonBackgroundPointerOver", surfaceHover);
-        Set(app, "ButtonBackgroundPressed", surfacePressed);
-        Set(app, "ButtonBackgroundDisabled", surfaceDisabled);
-        Set(app, "ButtonForeground", text);
-        Set(app, "ButtonForegroundPointerOver", text);
-        Set(app, "ButtonForegroundPressed", text);
-        Set(app, "ButtonForegroundDisabled", textDim);
-        Set(app, "ButtonBorderBrush", border);
-        Set(app, "ButtonBorderBrushPointerOver", borderStrong);
+        Set(map, "ButtonBackground", toolbar);
+        Set(map, "ButtonBackgroundPointerOver", surfaceHover);
+        Set(map, "ButtonBackgroundPressed", surfacePressed);
+        Set(map, "ButtonBackgroundDisabled", surfaceDisabled);
+        Set(map, "ButtonForeground", text);
+        Set(map, "ButtonForegroundPointerOver", text);
+        Set(map, "ButtonForegroundPressed", text);
+        Set(map, "ButtonForegroundDisabled", textDim);
+        Set(map, "ButtonBorderBrush", border);
+        Set(map, "ButtonBorderBrushPointerOver", borderStrong);
         // Pressed keeps the HOVER border, not the accent. An accent hairline on the
         // pressed fill measures 2.05:1 in the dark theme (#3B82F6 on #53545B) — below
         // the 3:1 a non-text indicator needs, i.e. a promise the colour cannot keep.
         // Pressed is already unmistakable from the fill alone: the background moves by
         // two full steps of the ramp. The accent is reserved for FOCUS, where it is
         // the only signal and where it does measure (3.57:1 worst case).
-        Set(app, "ButtonBorderBrushPressed", borderStrong);
-        Set(app, "ButtonBorderBrushDisabled", border);
+        Set(map, "ButtonBorderBrushPressed", borderStrong);
+        Set(map, "ButtonBorderBrushDisabled", border);
 
         // ---- ToggleButton ---------------------------------------------------------
         // Unchecked = a button. Checked = the selection surface, i.e. the same
         // "this one is chosen" colour the lists use, so a pressed-in toolbar toggle
         // and a selected row say the same thing.
-        Set(app, "ToggleButtonBackground", toolbar);
-        Set(app, "ToggleButtonBackgroundPointerOver", surfaceHover);
-        Set(app, "ToggleButtonBackgroundPressed", surfacePressed);
-        Set(app, "ToggleButtonBackgroundDisabled", surfaceDisabled);
-        Set(app, "ToggleButtonBackgroundChecked", selection);
-        Set(app, "ToggleButtonBackgroundCheckedPointerOver", selectionHover);
-        Set(app, "ToggleButtonBackgroundCheckedPressed", selectionPressed);
-        Set(app, "ToggleButtonBackgroundCheckedDisabled", surfaceDisabled);
-        Set(app, "ToggleButtonBackgroundIndeterminate", toolbar);
-        Set(app, "ToggleButtonBackgroundIndeterminatePointerOver", surfaceHover);
-        Set(app, "ToggleButtonBackgroundIndeterminatePressed", surfacePressed);
-        Set(app, "ToggleButtonBackgroundIndeterminateDisabled", surfaceDisabled);
+        Set(map, "ToggleButtonBackground", toolbar);
+        Set(map, "ToggleButtonBackgroundPointerOver", surfaceHover);
+        Set(map, "ToggleButtonBackgroundPressed", surfacePressed);
+        Set(map, "ToggleButtonBackgroundDisabled", surfaceDisabled);
+        Set(map, "ToggleButtonBackgroundChecked", selection);
+        Set(map, "ToggleButtonBackgroundCheckedPointerOver", selectionHover);
+        Set(map, "ToggleButtonBackgroundCheckedPressed", selectionPressed);
+        Set(map, "ToggleButtonBackgroundCheckedDisabled", surfaceDisabled);
+        Set(map, "ToggleButtonBackgroundIndeterminate", toolbar);
+        Set(map, "ToggleButtonBackgroundIndeterminatePointerOver", surfaceHover);
+        Set(map, "ToggleButtonBackgroundIndeterminatePressed", surfacePressed);
+        Set(map, "ToggleButtonBackgroundIndeterminateDisabled", surfaceDisabled);
         foreach (string state in new[] { "", "PointerOver", "Pressed", "Checked",
                                          "CheckedPointerOver", "CheckedPressed",
                                          "Indeterminate", "IndeterminatePointerOver",
                                          "IndeterminatePressed" })
         {
-            Set(app, $"ToggleButtonForeground{state}", text);
+            Set(map, $"ToggleButtonForeground{state}", text);
         }
 
-        Set(app, "ToggleButtonForegroundDisabled", textDim);
-        Set(app, "ToggleButtonForegroundCheckedDisabled", textDim);
-        Set(app, "ToggleButtonForegroundIndeterminateDisabled", textDim);
-        Set(app, "ToggleButtonBorderBrush", border);
-        Set(app, "ToggleButtonBorderBrushPointerOver", borderStrong);
-        Set(app, "ToggleButtonBorderBrushPressed", borderStrong);
-        Set(app, "ToggleButtonBorderBrushChecked", accent);
-        Set(app, "ToggleButtonBorderBrushCheckedPointerOver", accent);
-        Set(app, "ToggleButtonBorderBrushCheckedPressed", accent);
-        Set(app, "ToggleButtonBorderBrushDisabled", border);
-        Set(app, "ToggleButtonBorderBrushCheckedDisabled", border);
-        Set(app, "ToggleButtonBorderBrushIndeterminate", border);
-        Set(app, "ToggleButtonBorderBrushIndeterminatePointerOver", borderStrong);
-        Set(app, "ToggleButtonBorderBrushIndeterminatePressed", borderStrong);
-        Set(app, "ToggleButtonBorderBrushIndeterminateDisabled", border);
+        Set(map, "ToggleButtonForegroundDisabled", textDim);
+        Set(map, "ToggleButtonForegroundCheckedDisabled", textDim);
+        Set(map, "ToggleButtonForegroundIndeterminateDisabled", textDim);
+        Set(map, "ToggleButtonBorderBrush", border);
+        Set(map, "ToggleButtonBorderBrushPointerOver", borderStrong);
+        Set(map, "ToggleButtonBorderBrushPressed", borderStrong);
+        Set(map, "ToggleButtonBorderBrushChecked", accent);
+        Set(map, "ToggleButtonBorderBrushCheckedPointerOver", accent);
+        Set(map, "ToggleButtonBorderBrushCheckedPressed", accent);
+        Set(map, "ToggleButtonBorderBrushDisabled", border);
+        Set(map, "ToggleButtonBorderBrushCheckedDisabled", border);
+        Set(map, "ToggleButtonBorderBrushIndeterminate", border);
+        Set(map, "ToggleButtonBorderBrushIndeterminatePointerOver", borderStrong);
+        Set(map, "ToggleButtonBorderBrushIndeterminatePressed", borderStrong);
+        Set(map, "ToggleButtonBorderBrushIndeterminateDisabled", border);
 
         // ---- TextBox --------------------------------------------------------------
         // App.Control is the input surface (M62 registered it for exactly this).
@@ -181,108 +295,108 @@ public static class ModernStyles
         // (TextControlBorderThemeThicknessFocused = 0,0,0,2), which is why the
         // thickness keys are deliberately left alone here — changing them moves the
         // text inside the box on focus.
-        Set(app, "TextControlBackground", control);
-        Set(app, "TextControlBackgroundPointerOver", inputHover);
-        Set(app, "TextControlBackgroundFocused", control);
-        Set(app, "TextControlBackgroundDisabled", surfaceDisabled);
-        Set(app, "TextControlForeground", text);
-        Set(app, "TextControlForegroundPointerOver", text);
-        Set(app, "TextControlForegroundFocused", text);
-        Set(app, "TextControlForegroundDisabled", textDim);
-        Set(app, "TextControlBorderBrush", border);
-        Set(app, "TextControlBorderBrushPointerOver", borderStrong);
-        Set(app, "TextControlBorderBrushFocused", accent);
-        Set(app, "TextControlBorderBrushDisabled", border);
-        Set(app, "TextControlPlaceholderForeground", textDim);
-        Set(app, "TextControlPlaceholderForegroundPointerOver", textDim);
-        Set(app, "TextControlPlaceholderForegroundFocused", textDim);
-        Set(app, "TextControlPlaceholderForegroundDisabled", textDim);
+        Set(map, "TextControlBackground", control);
+        Set(map, "TextControlBackgroundPointerOver", inputHover);
+        Set(map, "TextControlBackgroundFocused", control);
+        Set(map, "TextControlBackgroundDisabled", surfaceDisabled);
+        Set(map, "TextControlForeground", text);
+        Set(map, "TextControlForegroundPointerOver", text);
+        Set(map, "TextControlForegroundFocused", text);
+        Set(map, "TextControlForegroundDisabled", textDim);
+        Set(map, "TextControlBorderBrush", border);
+        Set(map, "TextControlBorderBrushPointerOver", borderStrong);
+        Set(map, "TextControlBorderBrushFocused", accent);
+        Set(map, "TextControlBorderBrushDisabled", border);
+        Set(map, "TextControlPlaceholderForeground", textDim);
+        Set(map, "TextControlPlaceholderForegroundPointerOver", textDim);
+        Set(map, "TextControlPlaceholderForegroundFocused", textDim);
+        Set(map, "TextControlPlaceholderForegroundDisabled", textDim);
 
         // Despite the "Color" suffix the control theme feeds this to
         // TextBox.SelectionBrush, so it wants an IBrush (TextBoxSurface.cs:100).
-        Set(app, "TextControlSelectionHighlightColor", accent);
+        Set(map, "TextControlSelectionHighlightColor", accent);
 
         // The inline clear/reveal buttons inside a TextBox.
-        Set(app, "TextControlButtonBackground", Brushes.Transparent);
-        Set(app, "TextControlButtonBackgroundPointerOver", inputHover);
-        Set(app, "TextControlButtonBackgroundPressed", inputPressed);
-        Set(app, "TextControlButtonForeground", textDim);
-        Set(app, "TextControlButtonForegroundPointerOver", text);
-        Set(app, "TextControlButtonForegroundPressed", text);
+        Set(map, "TextControlButtonBackground", Brushes.Transparent);
+        Set(map, "TextControlButtonBackgroundPointerOver", inputHover);
+        Set(map, "TextControlButtonBackgroundPressed", inputPressed);
+        Set(map, "TextControlButtonForeground", textDim);
+        Set(map, "TextControlButtonForegroundPointerOver", text);
+        Set(map, "TextControlButtonForegroundPressed", text);
 
         // ---- ComboBox -------------------------------------------------------------
-        Set(app, "ComboBoxBackground", control);
-        Set(app, "ComboBoxBackgroundUnfocused", control);
-        Set(app, "ComboBoxBackgroundPointerOver", inputHover);
-        Set(app, "ComboBoxBackgroundPressed", inputPressed);
-        Set(app, "ComboBoxBackgroundDisabled", surfaceDisabled);
-        Set(app, "ComboBoxBackgroundBorderBrushUnfocused", border);
-        Set(app, "ComboBoxBackgroundBorderBrushFocused", accent);
-        Set(app, "ComboBoxBorderBrush", border);
-        Set(app, "ComboBoxBorderBrushPointerOver", borderStrong);
-        Set(app, "ComboBoxBorderBrushPressed", borderStrong);
-        Set(app, "ComboBoxBorderBrushDisabled", border);
-        Set(app, "ComboBoxForeground", text);
-        Set(app, "ComboBoxForegroundFocused", text);
-        Set(app, "ComboBoxForegroundFocusedPressed", text);
-        Set(app, "ComboBoxForegroundDisabled", textDim);
-        Set(app, "ComboBoxPlaceHolderForeground", textDim);
-        Set(app, "ComboBoxPlaceHolderForegroundFocusedPressed", textDim);
-        Set(app, "ComboBoxDropDownBackground", panel);
-        Set(app, "ComboBoxDropDownBorderBrush", border);
-        Set(app, "ComboBoxDropDownGlyphForeground", textDim);
-        Set(app, "ComboBoxDropDownGlyphForegroundFocused", text);
-        Set(app, "ComboBoxDropDownGlyphForegroundFocusedPressed", text);
-        Set(app, "ComboBoxDropDownGlyphForegroundDisabled", textDim);
+        Set(map, "ComboBoxBackground", control);
+        Set(map, "ComboBoxBackgroundUnfocused", control);
+        Set(map, "ComboBoxBackgroundPointerOver", inputHover);
+        Set(map, "ComboBoxBackgroundPressed", inputPressed);
+        Set(map, "ComboBoxBackgroundDisabled", surfaceDisabled);
+        Set(map, "ComboBoxBackgroundBorderBrushUnfocused", border);
+        Set(map, "ComboBoxBackgroundBorderBrushFocused", accent);
+        Set(map, "ComboBoxBorderBrush", border);
+        Set(map, "ComboBoxBorderBrushPointerOver", borderStrong);
+        Set(map, "ComboBoxBorderBrushPressed", borderStrong);
+        Set(map, "ComboBoxBorderBrushDisabled", border);
+        Set(map, "ComboBoxForeground", text);
+        Set(map, "ComboBoxForegroundFocused", text);
+        Set(map, "ComboBoxForegroundFocusedPressed", text);
+        Set(map, "ComboBoxForegroundDisabled", textDim);
+        Set(map, "ComboBoxPlaceHolderForeground", textDim);
+        Set(map, "ComboBoxPlaceHolderForegroundFocusedPressed", textDim);
+        Set(map, "ComboBoxDropDownBackground", panel);
+        Set(map, "ComboBoxDropDownBorderBrush", border);
+        Set(map, "ComboBoxDropDownGlyphForeground", textDim);
+        Set(map, "ComboBoxDropDownGlyphForegroundFocused", text);
+        Set(map, "ComboBoxDropDownGlyphForegroundFocusedPressed", text);
+        Set(map, "ComboBoxDropDownGlyphForegroundDisabled", textDim);
 
         // Drop-down rows sit on App.Panel, so their states derive from the panel,
         // not from the toolbar.
-        Set(app, "ComboBoxItemBackground", Brushes.Transparent);
-        Set(app, "ComboBoxItemBackgroundPointerOver", panelHover);
-        Set(app, "ComboBoxItemBackgroundPressed", panelPressed);
-        Set(app, "ComboBoxItemBackgroundDisabled", Brushes.Transparent);
-        Set(app, "ComboBoxItemBackgroundSelected", selection);
-        Set(app, "ComboBoxItemBackgroundSelectedPointerOver", selectionHover);
-        Set(app, "ComboBoxItemBackgroundSelectedPressed", selectionPressed);
-        Set(app, "ComboBoxItemBackgroundSelectedDisabled", surfaceDisabled);
+        Set(map, "ComboBoxItemBackground", Brushes.Transparent);
+        Set(map, "ComboBoxItemBackgroundPointerOver", panelHover);
+        Set(map, "ComboBoxItemBackgroundPressed", panelPressed);
+        Set(map, "ComboBoxItemBackgroundDisabled", Brushes.Transparent);
+        Set(map, "ComboBoxItemBackgroundSelected", selection);
+        Set(map, "ComboBoxItemBackgroundSelectedPointerOver", selectionHover);
+        Set(map, "ComboBoxItemBackgroundSelectedPressed", selectionPressed);
+        Set(map, "ComboBoxItemBackgroundSelectedDisabled", surfaceDisabled);
         foreach (string state in new[] { "", "PointerOver", "Pressed", "Selected",
                                          "SelectedPointerOver", "SelectedPressed" })
         {
-            Set(app, $"ComboBoxItemForeground{state}", text);
+            Set(map, $"ComboBoxItemForeground{state}", text);
         }
 
-        Set(app, "ComboBoxItemForegroundDisabled", textDim);
-        Set(app, "ComboBoxItemForegroundSelectedDisabled", textDim);
-        Set(app, "ComboBoxItemBorderBrushPointerOver", Brushes.Transparent);
-        Set(app, "ComboBoxItemBorderBrushPressed", Brushes.Transparent);
-        Set(app, "ComboBoxItemBorderBrushSelected", Brushes.Transparent);
-        Set(app, "ComboBoxItemBorderBrushSelectedPointerOver", Brushes.Transparent);
-        Set(app, "ComboBoxItemBorderBrushSelectedPressed", Brushes.Transparent);
-        Set(app, "ComboBoxItemBorderBrushDisabled", Brushes.Transparent);
-        Set(app, "ComboBoxItemBorderBrushSelectedDisabled", Brushes.Transparent);
+        Set(map, "ComboBoxItemForegroundDisabled", textDim);
+        Set(map, "ComboBoxItemForegroundSelectedDisabled", textDim);
+        Set(map, "ComboBoxItemBorderBrushPointerOver", Brushes.Transparent);
+        Set(map, "ComboBoxItemBorderBrushPressed", Brushes.Transparent);
+        Set(map, "ComboBoxItemBorderBrushSelected", Brushes.Transparent);
+        Set(map, "ComboBoxItemBorderBrushSelectedPointerOver", Brushes.Transparent);
+        Set(map, "ComboBoxItemBorderBrushSelectedPressed", Brushes.Transparent);
+        Set(map, "ComboBoxItemBorderBrushDisabled", Brushes.Transparent);
+        Set(map, "ComboBoxItemBorderBrushSelectedDisabled", Brushes.Transparent);
 
         // ---- MenuItem / menu flyouts ----------------------------------------------
         // Avalonia's MenuItem ControlTheme resolves the MenuFlyoutItem* family for
         // its own states (the menu bar and the context menus share it).
-        Set(app, "MenuFlyoutPresenterBackground", panel);
-        Set(app, "MenuFlyoutPresenterBorderBrush", border);
-        Set(app, "MenuFlyoutItemBackground", Brushes.Transparent);
-        Set(app, "MenuFlyoutItemBackgroundPointerOver", panelHover);
-        Set(app, "MenuFlyoutItemBackgroundPressed", panelPressed);
-        Set(app, "MenuFlyoutItemBackgroundDisabled", Brushes.Transparent);
-        Set(app, "MenuFlyoutItemForeground", text);
-        Set(app, "MenuFlyoutItemForegroundPointerOver", text);
-        Set(app, "MenuFlyoutItemForegroundPressed", text);
-        Set(app, "MenuFlyoutItemForegroundDisabled", textDim);
-        Set(app, "MenuFlyoutItemKeyboardAcceleratorTextForeground", textDim);
-        Set(app, "MenuFlyoutItemKeyboardAcceleratorTextForegroundPointerOver", textDim);
-        Set(app, "MenuFlyoutItemKeyboardAcceleratorTextForegroundPressed", textDim);
-        Set(app, "MenuFlyoutItemKeyboardAcceleratorTextForegroundDisabled", textDim);
-        Set(app, "MenuFlyoutSubItemChevron", textDim);
-        Set(app, "MenuFlyoutSubItemChevronPointerOver", text);
-        Set(app, "MenuFlyoutSubItemChevronPressed", text);
-        Set(app, "MenuFlyoutSubItemChevronSubMenuOpened", text);
-        Set(app, "MenuFlyoutSubItemChevronDisabled", textDim);
+        Set(map, "MenuFlyoutPresenterBackground", panel);
+        Set(map, "MenuFlyoutPresenterBorderBrush", border);
+        Set(map, "MenuFlyoutItemBackground", Brushes.Transparent);
+        Set(map, "MenuFlyoutItemBackgroundPointerOver", panelHover);
+        Set(map, "MenuFlyoutItemBackgroundPressed", panelPressed);
+        Set(map, "MenuFlyoutItemBackgroundDisabled", Brushes.Transparent);
+        Set(map, "MenuFlyoutItemForeground", text);
+        Set(map, "MenuFlyoutItemForegroundPointerOver", text);
+        Set(map, "MenuFlyoutItemForegroundPressed", text);
+        Set(map, "MenuFlyoutItemForegroundDisabled", textDim);
+        Set(map, "MenuFlyoutItemKeyboardAcceleratorTextForeground", textDim);
+        Set(map, "MenuFlyoutItemKeyboardAcceleratorTextForegroundPointerOver", textDim);
+        Set(map, "MenuFlyoutItemKeyboardAcceleratorTextForegroundPressed", textDim);
+        Set(map, "MenuFlyoutItemKeyboardAcceleratorTextForegroundDisabled", textDim);
+        Set(map, "MenuFlyoutSubItemChevron", textDim);
+        Set(map, "MenuFlyoutSubItemChevronPointerOver", text);
+        Set(map, "MenuFlyoutSubItemChevronPressed", text);
+        Set(map, "MenuFlyoutSubItemChevronSubMenuOpened", text);
+        Set(map, "MenuFlyoutSubItemChevronDisabled", textDim);
 
         // ---- TabItem ---------------------------------------------------------------
         // Unselected tabs are transparent so they take whatever panel they sit on;
@@ -290,22 +404,22 @@ public static class ModernStyles
         // it is the only one with a surface, full-strength ink, a semibold label and
         // an accent pipe (see the :selected style below). That is the
         // "weight and colour before size" rule from Metrics.Text.
-        Set(app, "TabItemHeaderBackgroundUnselected", Brushes.Transparent);
-        Set(app, "TabItemHeaderBackgroundUnselectedPointerOver", panelHover);
-        Set(app, "TabItemHeaderBackgroundUnselectedPressed", panelPressed);
-        Set(app, "TabItemHeaderBackgroundSelected", selection);
-        Set(app, "TabItemHeaderBackgroundSelectedPointerOver", selectionHover);
-        Set(app, "TabItemHeaderBackgroundSelectedPressed", selectionPressed);
-        Set(app, "TabItemHeaderBackgroundDisabled", Brushes.Transparent);
-        Set(app, "TabItemHeaderForegroundUnselected", textDim);
-        Set(app, "TabItemHeaderForegroundUnselectedPointerOver", text);
-        Set(app, "TabItemHeaderForegroundUnselectedPressed", text);
-        Set(app, "TabItemHeaderForegroundSelected", text);
-        Set(app, "TabItemHeaderForegroundSelectedPointerOver", text);
-        Set(app, "TabItemHeaderForegroundSelectedPressed", text);
-        Set(app, "TabItemHeaderForegroundDisabled", textDim);
-        Set(app, "TabItemHeaderSelectedPipeFill", accent);
-        Set(app, "TabItemPipeThickness", 2.0);
+        Set(map, "TabItemHeaderBackgroundUnselected", Brushes.Transparent);
+        Set(map, "TabItemHeaderBackgroundUnselectedPointerOver", panelHover);
+        Set(map, "TabItemHeaderBackgroundUnselectedPressed", panelPressed);
+        Set(map, "TabItemHeaderBackgroundSelected", selection);
+        Set(map, "TabItemHeaderBackgroundSelectedPointerOver", selectionHover);
+        Set(map, "TabItemHeaderBackgroundSelectedPressed", selectionPressed);
+        Set(map, "TabItemHeaderBackgroundDisabled", Brushes.Transparent);
+        Set(map, "TabItemHeaderForegroundUnselected", textDim);
+        Set(map, "TabItemHeaderForegroundUnselectedPointerOver", text);
+        Set(map, "TabItemHeaderForegroundUnselectedPressed", text);
+        Set(map, "TabItemHeaderForegroundSelected", text);
+        Set(map, "TabItemHeaderForegroundSelectedPointerOver", text);
+        Set(map, "TabItemHeaderForegroundSelectedPressed", text);
+        Set(map, "TabItemHeaderForegroundDisabled", textDim);
+        Set(map, "TabItemHeaderSelectedPipeFill", accent);
+        Set(map, "TabItemPipeThickness", 2.0);
 
         // ---- corners ----------------------------------------------------------------
         // ControlCornerRadius is the key every Fluent input resolves (TextBox,
