@@ -155,10 +155,12 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        // Load persisted UI state first, and apply the remembered theme before
-        // any App.* brushes are read below, so the window opens in that theme.
+        // Load persisted UI state first, and apply the remembered theme and style
+        // before any App.* brushes are read below, so the window opens in them.
+        // Both dimensions go in one Apply call: the resources are rebuilt once, and
+        // neither choice can be lost by a second call defaulting the other.
         _uiState = _uiStateService.Load();
-        Theming.ThemeManager.Apply(_uiState.Theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark);
+        ApplyAppearance();
 
         Title = DefaultTitle;
         Width = _uiState.WindowWidth;
@@ -1319,18 +1321,13 @@ public sealed class MainWindow : Window
         _menu.RefreshRequested += RefreshAll;
         _menu.ShowReflogRequested += () => _ = ShowReflogAsync();
         _menu.BisectRequested += () => _ = ShowBisectDialogAsync();
-        _menu.LightThemeRequested += () =>
-        {
-            Theming.ThemeManager.Apply(ThemeVariant.Light);
-            _uiState.Theme = "Light";
-            _uiStateService.Save(_uiState);
-        };
-        _menu.DarkThemeRequested += () =>
-        {
-            Theming.ThemeManager.Apply(ThemeVariant.Dark);
-            _uiState.Theme = "Dark";
-            _uiStateService.Save(_uiState);
-        };
+        // Theme and style are orthogonal, so each handler changes only its own
+        // dimension in _uiState and then re-applies BOTH from it: whichever of the
+        // two the user did not touch keeps the value it had.
+        _menu.LightThemeRequested += () => SetAppearance(theme: "Light");
+        _menu.DarkThemeRequested += () => SetAppearance(theme: "Dark");
+        _menu.ClassicStyleRequested += () => SetAppearance(style: "Classic");
+        _menu.ModernStyleRequested += () => SetAppearance(style: "Modern");
         _menu.LanguageRequested += language => _ = ChangeLanguageAsync(language);
         _menu.FetchRequested += () => RunRemoteOp("Fetch", (s, r, emit, creds) => s.FetchStreaming(_repoPath!, r, emit, creds));
         // Upstream's Commands → Pull opens FormPull (DoPull with isSilent: false).
@@ -3664,10 +3661,43 @@ public sealed class MainWindow : Window
         return path;
     }
 
+    // ---- appearance (theme + style) -------------------------------------------------
+
+    // The two appearance dimensions live side by side in UiState as strings; these
+    // turn them into what ThemeManager takes. Anything unrecognised falls back to the
+    // same defaults UiStateService normalises to.
+    private static ThemeVariant VariantOf(string theme)
+        => theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark;
+
+    private static Theming.AppStyle StyleOf(string style)
+        => style == "Classic" ? Theming.AppStyle.Classic : Theming.AppStyle.Modern;
+
+    // Applies both dimensions from the live UiState. Always both, never one: Apply
+    // takes the pair, so passing a default for the untouched one would silently reset it.
+    private void ApplyAppearance()
+        => Theming.ThemeManager.Apply(VariantOf(_uiState.Theme), StyleOf(_uiState.Style));
+
+    // Changes one dimension (or both), applies the resulting pair, and persists it.
+    private void SetAppearance(string? theme = null, string? style = null)
+    {
+        if (theme is not null)
+        {
+            _uiState.Theme = theme;
+        }
+
+        if (style is not null)
+        {
+            _uiState.Style = style;
+        }
+
+        ApplyAppearance();
+        _uiStateService.Save(_uiState);
+    }
+
     // Opens the modal Settings window over the main window, passing the current
     // repo path. Settings persists its own changes; afterwards we re-sync the
-    // in-memory theme so PersistLayout() on close doesn't overwrite a change
-    // the user made in the dialog.
+    // in-memory theme and style so PersistLayout() on close doesn't overwrite a
+    // change the user made in the dialog.
     private async Task OpenSettingsAsync()
     {
         await SettingsWindow.ShowAsync(
@@ -3692,7 +3722,9 @@ public sealed class MainWindow : Window
                 _watcher.Watch(on ? _repoPath : null);
             },
             hotkeys: _hotkeys);
-        _uiState.Theme = _uiStateService.Load().Theme;
+        UiState saved = _uiStateService.Load();
+        _uiState.Theme = saved.Theme;
+        _uiState.Style = saved.Style;
     }
 
     // ---- plugins --------------------------------------------------------------------
