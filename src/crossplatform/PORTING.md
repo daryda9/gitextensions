@@ -2358,6 +2358,125 @@ regressione con working dir pulito (riga artificiale assente, grafo identico) n�
 sono un sottoinsieme non contiguo e la colonna del grafo resta collassata — comportamento invariato e
 già dichiarato.
 
+## ROUND 13 — GUI moderna — iterazione 1: M77 (2026-08-02)
+
+> Direzione dell'utente: *«mantenere la struttura e le funzioni attuali, rendendo però più moderna la
+> gui»*. Quindi **nessuna** voce di menu, view, flusso o comportamento cambia: si tocca solo il
+> livello di superficie. Deciso esplicitamente anche che **non** si affianca una variante "Classic":
+> l'aspetto si sostituisce.
+>
+> Base `a38eb4ab4`. Tre subagent Claude in worktree isolati, file **disgiunti**, nessuno dentro
+> `App/Views/`. Build `Errori: 0` dopo ogni cherry-pick.
+
+### La diagnosi, misurata prima di toccare qualcosa
+| | stato al `a38eb4ab4` |
+|---|---|
+| Icone | PNG raster 16px di Git Extensions 2015, multicolore, contorno nero, densità disomogenee |
+| Palette | VS Code 2015: `#1E1E1E`/`#252526`/`#2D2D30`/`#333337`, accento `#007ACC`, e in chiaro `App.Panel` **`#FFFFFF`** puro |
+| Angoli | **6** `CornerRadius` in tutto il codice |
+| Tipografia | nessuna scala: `FontSize = 12` in **81** punti, `11` in 20, `10` in 10, `13` in 6 |
+| Spaziature | `16`/`12`/`8`/`4` mescolati a `6` e `10`, fuori da qualunque scala |
+| Stati e moto | **zero** file con `Transitions`/`Animation`; hover, focus e pressed sono i default Fluent |
+
+### U1 — icone monocromatiche vettoriali (`Theming/Icons.cs`, `Theming/IconLoader.cs`)
+**90 glifi** line-art su griglia 24×24, tratto 2, trascritti da Lucide (ISC, licenza e provenienza per
+glifo in testa al file). Tinti dalle **istanze** dei brush di palette (`App.Text`/`App.TextDim`/
+`App.Accent`), quindi seguono il cambio tema; `GlyphIcon` si sottoscrive al `PropertyChanged` del
+brush perché nulla invaliderebbe il controllo su una proprietà che non è sua.
+**L'API di `IconLoader` non cambia**: nessuna delle 54 call site è stata toccata dall'unità, e i nomi
+senza glifo cadono sul PNG loggando una riga per nome — la copertura si misura dallo stdout di un run.
+`GlyphIcon` deriva da `Image` **perché** due call site fanno pattern match su `Image` e altre
+riassegnano `.Source`.
+Lasciati raster **con motivo**: i marchi di terzi (`github`, `BitBucket`, `VisualStudio*`, `putty`,
+`Gitk`…), che un ridisegno monocromatico travisa; e la famiglia `FileStatus*`, che col colore codifica
+*anche* da quale lato del diff viene un file — informazione che una tinta sola non porta.
+
+### U2 — token di stile e stati (`Theming/Metrics.cs`, `Theming/ModernStyles.cs`, `App.cs`)
+`Space` 4/8/12/16/24 (con `6` e `10` documentati come da ritirare), `Text` a **5 livelli**
+(Caption 11 / Body 12 / Subtitle 13 / Title 16 / Display 20) con costanti di peso e colore perché la
+gerarchia venga da quelli prima che dalla dimensione, `Radius` 4/6/10, `Motion` 120/140/160 ms.
+**Le view non sono convertite**: questo giro costruisce solo il vocabolario.
+Gli stati **non** sono ottenuti gridando più forte di Fluent ma **ridefinendo le sue chiavi risorsa**
+in `Application.Resources` — la tecnica di `TextBoxSurface`/`ManagedFileChooserTheming`. Le chiavi
+sono state lette dalla dll Fluent 11.3.14 compilata (`strings -el`, sono UTF-16). Famiglie coperte:
+`Button*`, `ToggleButton*`, `TextControl*`, `ComboBox*`/`ComboBoxItem*`, `MenuFlyoutItem*`,
+`TabItemHeader*`, `ControlCornerRadius`/`OverlayCornerRadius`, `SystemControlFocusVisual*`.
+**Nessun esadecimale negli stati**: `Derived()` si sottoscrive ai brush di palette e ri-mescola, quindi
+la rampa nuova è ereditata e il cambio tema a caldo continua a funzionare.
+Il calcolo dei contrasti ha trovato **tre fallimenti veri prima dello schermo**: bordo hover a 2,98:1,
+bordo pressed accentato a 2,05:1 (tolto — il riempimento porta già il pressed), e il bordo interno del
+focus ring su un pulsante in hover a 2,72:1 (risolto con un alone `App.Text` da 1px dentro i 2px di
+accento, così misurano entrambi i lati). Peggior testo **5,65:1** scuro / **5,08:1** chiaro su 28
+combinazioni di stato; peggior non-testo 3,30 / 3,32:1.
+**Revision grid esclusa per costruzione**, verificato leggendo: ogni selettore di transizione è
+`OfType<X>().Template()`, e il sottoalbero di una riga (`ListBoxItem` → `RevisionRowView`) non contiene
+**nessun** controllo templato.
+
+### U3 — rampa di neutri e `App.Link` (`Theming/ThemeManager.cs`)
+Scuro `#141518`/`#1C1D21`/`#26272D`/`#2F3038`, bordo `#3C3E47`; chiaro `#F3F3F6`/`#FDFDFD`/`#EBEBEF`/
+`#E2E2E8`, bordo `#C2C2CB` — **via il bianco puro**. Ogni superficie porta una leggera dominante
+fredda (canale blu 3–9 sopra il rosso).
+**La prima stesura è stata scartata dalla misura**: i valori indicativi del brief (window `#17181B`,
+bordo `#2E3037`) davano separazioni fra superfici adiacenti di 1,066/1,075/1,084 e un bordo a 1,26 sul
+pannello — le superfici collassavano in una massa piatta. La rampa finale tiene le separazioni **al di
+sopra** delle vecchie (1,084/1,131/1,135) e i bordi da 1,71 a 1,23.
+Ri-derivate **tutte** le famiglie di inchiostro, perché cambiare la rampa invalida ogni numero di
+M67/M70: le due tinte di diff sono state **ricomposte** (alpha `0x28` sulla superficie nuova →
+`#213127`/`#342325` invece di `#2A392C`/`#3C2A2A`) e i 5 token verificati contro **quelle**, non
+contro `App.Window`. `App.TextDim` passa da 4,39 (falliva AA sulle tinte di diff) a 4,70:1;
+`App.DiffRemoved` da 4,20 a 4,62:1 senza muoversi, solo perché la finestra è più scura.
+Sei accenti RepoState ricalcolati sulla toolbar nuova: i due che non passavano AA in scuro
+(`Clean` 3,64 · `UntrackedOnly` 2,87) sono ora **5,19** e **5,24**.
+Aggiunta **`App.Link`** (`#5B9CFF` / `#1A4FC4`), il residuo aperto da M74: 6,13:1 sul pannello scuro
+contro i 3,70:1 di `App.Accent`.
+
+### Correzioni del loop in integrazione (file hub, non dei subagent)
+1. **Cinque icone di toolbar tornavano raster.** Commit-info, shell, azione di pull predefinita,
+   direzione di push e stato del repo cambiano con lo stato e lo facevano assegnando un `Bitmap`
+   direttamente a `Image.Source`: funziona, ed è il problema — il bitmap vince sul glifo, quindi al
+   primo refresh quelle cinque tornavano al PNG 2015 mentre tutte le altre restavano vettoriali. U1
+   l'aveva **segnalato senza correggerlo**, come da regola. Nuovo `IconLoader.Retarget`, che ri-punta
+   un'icona già costruita scambiando la geometria in place e conservando la tinta risolta. Il pulsante
+   Commit abbandona le **sette** bitmap per-stato di upstream a favore di **un** glifo tinto con la
+   chiave di stato — che è già quello che fa la sua caption, e a differenza di sette bitmap cotte
+   sopravvive al cambio tema.
+2. **La riga selezionata della griglia è scesa sotto AA.** `RevisionGridView` dipinge la selezione con
+   `App.Accent` pieno e ci mette sopra testo bianco: con l'accento nuovo il soggetto misurava
+   **3,68:1** (col vecchio `#007ACC` faceva 4,51). È un uso **derivato dentro una view**, fuori da
+   `ThemeManager`, quindi la campagna di misure di U3 non poteva vederlo. Nessun blu serve entrambi i
+   ruoli — chi porta testo bianco a 4,5:1 scende sotto 4,5:1 come inchiostro su pannello, e viceversa
+   (`#3B82F6`: 4,58 inchiostro / 3,68 fondo; `#2563EB`: 3,26 / 5,17). Stessa separazione che la
+   palette fa già per `App.Link`: nuova chiave **`App.AccentFill`** = `#215BDD` scuro / `#1D4ED8`
+   chiaro, il valore più chiaro che fa passare tutti e tre gli inchiostri che una riga selezionata può
+   portare (bianco 5,82 · `#DFECFA` 4,86 · marker `#9CF0B8` 4,32). **Misurato a schermo dopo: 6,85:1.**
+
+### Verificato in GUI dal loop (screenshot guardati davvero, colori misurati con PIL+WCAG)
+Toolbar, tab strip, albero sinistro e griglia in **entrambi i temi**; ref pill anche su **riga
+selezionata**; tab File tree con i cinque token di sintassi; hover su un pulsante di toolbar
+(`#26272D` contro toolbar `#2F3038`, stato visibile e preso dalla palette). Copertura icone: **26**
+nomi cadono ancora sul PNG in un run tipico, tutti fra quelli lasciati raster di proposito più una
+coda di nomi minori.
+
+### Aperto, con motivo
+- Le **view non usano ancora `Metrics`**: 81 `FontSize = 12` e le `Thickness` a `6`/`10` sono ancora
+  letterali. È il lavoro successivo, ed è la ragione per cui il vocabolario esiste già.
+- Le call site dei link usano ancora `App.Accent`, non `App.Link`. Con l'accento nuovo il difetto di
+  M74 è **rientrato da solo** (4,58:1 contro i 3,70 di prima), quindi non è più urgente, ma la chiave
+  giusta è `App.Link`.
+- `Unstage` e i 26 nomi in coda non hanno glifo.
+- `App.Border` misura **1,23:1** scuro / 1,37 chiaro contro `App.Toolbar` (segnalato da U2): non è una
+  violazione per come è usato oggi, ma è troppo debole per reggere da solo il contorno di un controllo.
+- Nessuna verifica su schermo di **pressed** e **focus** (calcolati, non fotografati).
+
+### Trappola di metodo nuova, da NON riscoprire
+**Il watchdog dell'harness uccide un subagent dopo 600 s senza progresso, e in questa iterazione ha
+preso tutti e tre.** Ciò che li bloccava era sempre la **verifica GUI** (avvio Xvfb, attese, mini-WM).
+Due erano stati uccisi *prima di committare*. Rimedi che hanno funzionato: riprenderli con
+`SendMessage` (il worktree è intatto e il transcript pure — **non** rilanciarli da zero), imporre
+*un file scritto = un commit*, e **spostare la verifica GUI nel loop**, che è comunque dove il metodo
+la mette. Corollario: a un subagent conviene chiedere misure **calcolate offline**, non misurate a
+schermo.
+
 ## M76 (2026-08-02) — le linee del grafo non si spezzano più sui merge
 
 > Unità singola, base `bf8dfec51`, build `Errori: 0`. **Segnalazione dell'utente** con screenshot:
