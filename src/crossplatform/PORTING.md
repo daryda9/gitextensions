@@ -2480,6 +2480,57 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 4: M82 (2026-08-03) — non è la `Window` a fare da parent
+
+> Regressione segnalata dall'utente sull'app in esecuzione, subito dopo M81: *«quando provo ad aprire i
+> settings, cliccando tools → settings il programma crasha e si chiude da solo»*. Base `d041e22e5`,
+> worktree isolato, `Errori: 0`.
+
+**Riprodotta prima di toccare qualsiasi cosa**, con un harness headless fuori dall'albero che avvia
+`App` e apre la `SettingsWindow` come fa `MainWindow.OpenSettingsAsync`:
+
+```
+System.InvalidOperationException: The Control already has a parent.
+   at Avalonia.Controls.Decorator.set_Child(Control value)
+   at GitExtensions.Avalonia.Theming.UiScaling.Attach(Window window)  UiScaling.cs:138
+   ...
+   at Avalonia.StyledElement.ApplyStyling()
+   at Avalonia.Controls.WindowBase.MeasureCore(Size availableSize)
+```
+
+### La causa: la correzione di M81 era puntata sull'oggetto sbagliato
+A fare da parent del contenuto **non è la `Window`**: è il suo `ContentPresenter`, che raccoglie o
+rilascia il figlio **solo al layout successivo**. Azzerare `Window.Content` quindi **non stacca niente
+subito**, e la riga dopo — che passa il controllo a `LayoutTransformControl.Child` — lancia.
+L'avvio sopravviveva per **tempismo**, non per correttezza; Settings no. E la coda dello stack dice
+perché non c'era un "layout successivo" da aspettare: il setter di stile che installa lo scaler scatta
+**dentro la prima misura della finestra**, quando il presenter tiene già il contenuto.
+`Window.Presenter.UpdateChild()` forza la riconciliazione **subito**, ed è ciò che stacca davvero.
+
+### Il contratto: se non si può scalare, non si scala — non si lancia
+`TryReparent` è ora l'unico punto che re-parenta (primo attach **e** sostituzione successiva del
+`Content`), **verifica** che il controllo sia libero, e se non lo è **rimette a posto il contenuto e
+lascia quella finestra non scalata**. Una preferenza di aspetto non vale un crash del processo. Il
+gestore del cambio `Content` ha una guardia di rientranza, perché il ramo di ripristino scrive
+`Content` a sua volta.
+
+### Secondo difetto, e correzione di quanto M81 aveva scritto qui sopra
+`LayoutTransformControl` **riscrive la propria `LayoutTransform`** durante il layout (una
+`ScaleTransform` assegnata torna come `MatrixTransform` equivalente) e la **azzera** quando fa layout
+**senza figlio**. Le finestre mostrate vuote e riempite dopo — `MainWindow` al cambio lingua, e ogni
+dialog che costruisce il corpo dopo `Show` — venivano quindi disegnate **non scalate** a
+Small/Large/VeryLarge. M81 dichiarava questo caso verificato: lo era nel probe, dove il wrapper aveva
+già un figlio, non sul percorso reale. Il transform viene **ri-asserito** dopo l'assegnazione del
+figlio.
+
+### Verificato / non verificato
+56 asserzioni headless, tutte e quattro le size: Settings si apre ed è avvolta al fattore giusto; il
+cambio di size **dall'interno della Settings aperta** funziona in ogni direzione; finestre con
+`Content` nel costruttore, assegnato dopo `Show`, sostituito a caldo, e non-`Control`; `ShowDialog`
+modale; `GitProcessDialog`, `CommitDialog`, `AboutDialog`. **Non** istanziati `PushDialog`/`PullDialog`:
+costruttori privati alimentati da letture git asincrone — passano per lo stesso unico `Attach`.
+Nessuno screenshot: su questa macchina la verifica GUI headless non funziona.
+
 ## ROUND 13 — iterazione 3: M81 (2026-08-03) — la UI era davvero più grande: 14 contro 12
 
 > Osservazione dell'utente confrontando il port con l'originale WinForms affiancati: *«in generale
@@ -2563,6 +2614,10 @@ dimensione ricordata invece di aprirsi al 100% e saltare.
 1. **`InvalidOperationException: The Control already has a parent`** all'apertura di ogni finestra: nel
    wrap il contenuto veniva passato a `Child` mentre era ancora figlio della `Window`. Va **staccato
    prima** (`window.Content = null`). Sbagliato al primo colpo, e avrebbe fatto crashare l'avvio.
+   **Ma la correzione era mezza sbagliata, e M82 l'ha rifatta**: a fare da parent non è la `Window`
+   ma il suo `ContentPresenter`, che aggiorna il figlio solo al layout successivo — azzerare
+   `Content` non stacca niente subito. L'avvio sopravviveva per puro tempismo; Tools → Settings
+   crashava. Vedi M82.
 2. Una `InvalidateMeasure()` aggiunta "per sicurezza" dopo il cambio di transform è **inutile**:
    `LayoutTransformControl` invalida da sé. Rimossa dopo averlo verificato togliendola e rimisurando —
    il commento che la giustificava era falso, ed è il tipo di riga che sopravvive per anni perché
