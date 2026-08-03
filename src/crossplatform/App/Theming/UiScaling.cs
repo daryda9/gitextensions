@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.VisualTree;
@@ -66,6 +67,20 @@ public static class UiScaling
     public static readonly AttachedProperty<bool> ScaledProperty =
         AvaloniaProperty.RegisterAttached<Window, bool>("Scaled", typeof(UiScaling));
 
+    // The one host installed on a given window, remembered ON that window.
+    //
+    // THIS IS WHAT MAKES Attach IDEMPOTENT, and it is not optional. The style setter
+    // that drives Attach is re-evaluated whenever Application.Styles changes — adding or
+    // removing a style makes every styled element re-style, and the setter's value goes
+    // back to Unset (false) and then to true again. Opening the Settings dialog does
+    // exactly that, so Attach ran a SECOND time on the main window: it built a second
+    // host, and the first host's Content-swap handler then fought it for the window's
+    // Content until the real content was left parented to neither. The main window went
+    // blank — white client area, correct title bar — and stayed blank after the dialog
+    // closed. Attach now recognises a window it has already wrapped and does nothing.
+    private static readonly AttachedProperty<LayoutTransformControl?> HostProperty =
+        AvaloniaProperty.RegisterAttached<Window, LayoutTransformControl?>("Host", typeof(UiScaling));
+
     // The transform hosts of the windows that are still alive. Weak, because a closed
     // dialog must be collectable: the list is only ever walked to re-scale, and a
     // window that has gone away needs no re-scaling. Compacted on every walk, so a
@@ -130,6 +145,22 @@ public static class UiScaling
 
     private static void Attach(Window window)
     {
+        if (window.GetValue(HostProperty) is LayoutTransformControl already)
+        {
+            // Already wrapped, and the style setter simply came round again (see
+            // HostProperty). A second host is never built: the existing one is the
+            // window's only wrapper for the rest of its life. The one thing worth
+            // re-checking is that it is still installed — the Content-swap handler below
+            // normally does that, but it cannot run for a change raised before it was
+            // subscribed.
+            if (!ReferenceEquals(window.Content, already))
+            {
+                TryReparent(window, already, window.Content);
+            }
+
+            return;
+        }
+
         LayoutTransformControl host = new() { LayoutTransform = Transform(CurrentScale) };
 
         if (!TryReparent(window, host, window.Content))
@@ -140,6 +171,7 @@ public static class UiScaling
             return;
         }
 
+        window.SetValue(HostProperty, host);
         Hosts.Add(new WeakReference<LayoutTransformControl>(host));
 
         // A window that assigns Content after it has been styled (or replaces it later,
@@ -195,6 +227,15 @@ public static class UiScaling
         if (ReferenceEquals(content, host))
         {
             return true;
+        }
+
+        // Never make the host a descendant of itself. Nothing in the port asks for this
+        // today — HostProperty stops the one path that did — but the cost of getting it
+        // wrong is the whole window going blank, silently, which is exactly the bug this
+        // guard is named after. Declining leaves the window as it is.
+        if (content is Control candidate && host.GetLogicalAncestors().Contains(candidate))
+        {
+            return false;
         }
 
         window.Content = host;
