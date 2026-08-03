@@ -2568,6 +2568,32 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M82 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
+
+> Segnalazione dell'utente con due screenshot: *«sia in diff che in stash, se ridimensiono le sezioni
+> di sotto, queste non si stickano alla larghezza del contenitore»*.
+
+**Causa**: in `DiffView` e `StashPanel` la larghezza iniziale stava sul **figlio** dentro colonne
+`Auto` — `_files.Width = 320`, `listPanel.Width = 340`, `_filesGrid.Width = 320`. Il `GridSplitter`
+ridimensiona la **colonna**: il figlio con `Width` propria restava alla sua misura e fra il suo bordo
+destro e lo splitter si apriva una **striscia morta**. Le colonne erano `Auto`, quindi la colonna
+seguiva lo splitter mentre il contenuto no.
+
+**Fix**: le larghezze passano alle `ColumnDefinition` (`320px`/`340px`), con `MinWidth = 120` così un
+pannello non si può trascinare a zero. Nessuna `Width` sui figli, che ora si stirano (default
+`Stretch`). `FileTreeView` faceva già così (`ColumnDefinitions("300,Auto,*")`) e non aveva il difetto:
+è la conferma che la differenza è quella e non altro.
+
+### Misure (Xvfb `:218`, scansione dei pixel su una riga del pannello)
+| | prima del drag | dopo il drag |
+|---|---|---|
+| Stash, colonna dei file | `x 901–1220` (320 px), splitter a `1221` | `x 901–1301` (401 px), splitter a `1302` |
+| Diff, lista dei file | 320 px | ~512 px, contigua allo splitter |
+
+Zero pixel fra il bordo del contenuto e lo splitter in tutti i casi — la striscia morta degli
+screenshot non c'è più. Cercati altri `GridSplitter` con lo stesso schema: solo questi due (gli altri
+undici usano colonne in pixel o in star).
+
 ## M81 (2026-08-03) — i submodule dei submodule, e il doppio clic che li apre
 
 > Richiesta dell'utente con screenshot dell'originale a confronto: *«nella versione originale si
