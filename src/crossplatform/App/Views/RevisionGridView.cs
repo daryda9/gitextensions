@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
@@ -211,10 +211,6 @@ public sealed class RevisionGridView : UserControl
     // which is what keeps lanes, edges and the artificial rows correct as the
     // history grows.
     private IReadOnlyList<RevisionRow> _loaded = [];
-
-    // Footer strip with the "load more" button, shown only while _hasMore.
-    private readonly Border _moreBar;
-    private readonly Button _moreButton;
 
     // The list's own ScrollViewer, captured from the first scroll event, so an
     // append can restore the exact scroll offset instead of jumping to the top.
@@ -912,23 +908,6 @@ public sealed class RevisionGridView : UserControl
         // append can restore the scroll offset afterwards.
         _list.AddHandler(ScrollViewer.ScrollChangedEvent, OnListScrolled, RoutingStrategies.Bubble);
 
-        // Footer: an explicit "load more" affordance next to the implicit
-        // scroll-to-end one, shown only while the walk has more commits to give.
-        _moreButton = MakeBarButton(string.Empty);
-        _moreButton.Margin = new Thickness(0);
-        _moreButton.HorizontalAlignment = HorizontalAlignment.Center;
-        _moreButton.Click += (_, _) => LoadMore(userRequested: true);
-        _moreBar = new Border
-        {
-            Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(10, 4, 10, 4),
-            IsVisible = false,
-            Child = _moreButton,
-        };
-        UpdateMoreBar();
-
         Panel listHost = new();
         listHost.Children.Add(_list);
         listHost.Children.Add(_quickSearchOverlay);
@@ -937,11 +916,9 @@ public sealed class RevisionGridView : UserControl
         DockPanel.SetDock(searchBar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(_headerHost, Dock.Top);
-        DockPanel.SetDock(_moreBar, Dock.Bottom);
         root.Children.Add(searchBar);
         root.Children.Add(_status);
         root.Children.Add(_headerHost);
-        root.Children.Add(_moreBar);
         root.Children.Add(listHost);
 
         Content = root;
@@ -1447,8 +1424,9 @@ public sealed class RevisionGridView : UserControl
         // Re-walk exactly as far as the user has already paged in, in one page. One
         // commit MORE is asked for: "the page came back full" is how the service
         // reports that the walk continues, so a request for exactly `depth` would
-        // always come back full and resurrect the "Load more" footer at the end of
-        // a fully-walked history. The extra row is trimmed off in the merge.
+        // always come back full and leave _hasMore (hence the "N+" commit count, and a
+        // pointless extra walk at the bottom) set on a fully-walked history. The extra
+        // row is trimmed off in the merge.
         int depth = Math.Max(_pageSize, _loaded.Count);
 
         _loaded = [];
@@ -1485,18 +1463,16 @@ public sealed class RevisionGridView : UserControl
     }
 
     /// <summary>
-    ///  Appends the next page of history. Called by the footer button and, silently,
-    ///  when the list is scrolled to its end. A no-op while a page is already in
-    ///  flight or when the walk is exhausted.
+    ///  Appends the next page of history, silently, when the list is scrolled to its
+    ///  end. A no-op while a page is already in flight or when the walk is exhausted.
     /// </summary>
-    private void LoadMore(bool userRequested)
+    private void LoadMore()
     {
         if (_loadingPage || !_hasMore || string.IsNullOrEmpty(_repoPath))
         {
             return;
         }
 
-        _ = userRequested; // (kept for readability at the call sites)
         LoadPage(restart: false);
     }
 
@@ -1551,7 +1527,6 @@ public sealed class RevisionGridView : UserControl
 
         int generation = _loadGeneration;
         _loadingPage = true;
-        UpdateMoreBar();
 
         if (restart && !preserveView)
         {
@@ -1620,7 +1595,6 @@ public sealed class RevisionGridView : UserControl
                     // single place where scroll offset, selection and keyboard focus
                     // are carried across the rebind (see ApplyFilterCore).
                     ApplyFilterCore(_search.Text, keepViewport);
-                    UpdateMoreBar();
                 });
             }
             catch (Exception ex)
@@ -1634,22 +1608,10 @@ public sealed class RevisionGridView : UserControl
 
                     _loadingPage = false;
                     _hasMore = false;
-                    UpdateMoreBar();
                     _status.Text = string.Format(T("Error: {0}"), ex.Message);
                 });
             }
         });
-    }
-
-    // Shows/hides the footer and captions its button with the page size (or a
-    // "loading" caption while a page is in flight).
-    private void UpdateMoreBar()
-    {
-        _moreBar.IsVisible = _hasMore;
-        _moreButton.IsEnabled = !_loadingPage;
-        _moreButton.Content = _loadingPage
-            ? T("RevisionGridControl/_strLoading.Text", "Loading…")
-            : string.Format(T("Load {0} more commits"), _pageSize);
     }
 
     // The list was scrolled: capture its ScrollViewer and, once the end of the
@@ -1666,7 +1628,7 @@ public sealed class RevisionGridView : UserControl
         double remaining = viewer.Extent.Height - viewer.Viewport.Height - viewer.Offset.Y;
         if (remaining <= 2 && viewer.Extent.Height > viewer.Viewport.Height)
         {
-            LoadMore(userRequested: false);
+            LoadMore();
         }
     }
 
@@ -1683,7 +1645,6 @@ public sealed class RevisionGridView : UserControl
         }
 
         _pageSize = value;
-        UpdateMoreBar();
         Reload();
 
         // The page size is persisted alongside the checkable options, so it rides the
@@ -3477,11 +3438,9 @@ public sealed class RevisionGridView : UserControl
             RebuildFilterMruFlyout();
         }
 
-        // The header is built from the column flags, and the footer's page-size
-        // caption from _pageSize, so both are rebuilt; OptionsChanged() then brings
-        // the flyout check marks (built in the constructor, i.e. before this call)
-        // in line and tells the host's mirrored menu.
-        UpdateMoreBar();
+        // The header is built from the column flags, so it is rebuilt; OptionsChanged()
+        // then brings the flyout check marks (built in the constructor, i.e. before this
+        // call) in line and tells the host's mirrored menu.
         _headerHost.Content = BuildHeader();
         OptionsChanged();
 
