@@ -95,7 +95,7 @@ public static class ModernStyles
 
         if (_baseline is null)
         {
-            _baseline = BuildBaseline();
+            _baseline = BuildBaseline(app);
             app.Styles.Add(_baseline);
         }
 
@@ -399,6 +399,12 @@ public static class ModernStyles
         Set(map, "MenuFlyoutSubItemChevronDisabled", textDim);
 
         // ---- TabItem ---------------------------------------------------------------
+        // KEPT, but no longer what paints the app's tabs: BuildTabItem installs a
+        // template of its own in the baseline, with the same palette colours, so these
+        // keys only matter to a TabItem that somehow resolves Fluent's template. They
+        // are left in place because they are the correct values for the modern surface
+        // and removing them would leave that fallback on Fluent's stock greys.
+        //
         // Unselected tabs are transparent so they take whatever panel they sit on;
         // the SELECTED one is not louder because it is bigger, it is louder because
         // it is the only one with a surface, full-strength ink, a semibold label and
@@ -498,7 +504,7 @@ public static class ModernStyles
     ///  The global <see cref="Style"/>s, as one <see cref="Styles"/> collection so
     ///  they are registered in a single, ordered block after Fluent.
     /// </summary>
-    private static Styles BuildBaseline()
+    private static Styles BuildBaseline(Application app)
     {
         Styles styles = [];
 
@@ -531,6 +537,179 @@ public static class ModernStyles
         tabItem.Setters.Add(new Setter(Layoutable.MinHeightProperty, 0.0));
         styles.Add(tabItem);
 
+        styles.AddRange(BuildTabItem(app));
+
+        return styles;
+    }
+
+    /// <summary>2px — the selected tab's top bar, and the reason the selection marker
+    /// can no longer touch the label: it owns a layout ROW of its own.</summary>
+    private const double TabSelectedBarThickness = 2;
+
+    /// <summary>
+    ///  The tab header look, for BOTH app styles.
+    ///
+    ///  <para><b>Why a template of our own.</b> Fluent marks the selected tab with
+    ///  <c>PART_SelectedPipe</c>, a 2px bar that lives in the SAME <see cref="Panel"/>
+    ///  as the content presenter and is simply aligned to the header's inner edge —
+    ///  i.e. it is drawn OVER the label's cell, not beside it. That is harmless at
+    ///  Fluent's own 48px <c>TabItemMinHeight</c>, where the centred label leaves
+    ///  ~17px of slack under it, but this app deliberately sets
+    ///  <c>MinHeight = 0</c> and a 6px vertical padding (above) for a dense strip, and
+    ///  at that size the pipe lands on the text — the blue line through the tab
+    ///  titles. No padding value fixes it: the pipe is positioned against the header
+    ///  edge, so growing the padding grows the gap on the wrong side. The fix is
+    ///  structural: put the marker in its own <see cref="Grid"/> row, so layout — not
+    ///  luck — keeps it off the label at every font size.</para>
+    ///
+    ///  <para><b>What it looks like, and why.</b> Upstream's WinForms strip
+    ///  (<c>TabControlPaintContext</c>) does not mark the selected tab with a hairline
+    ///  at all: it FILLS it with the page colour, gives it a border on top and both
+    ///  sides but never on the bottom, and grows it a couple of pixels so it merges
+    ///  into the page body while its siblings sit behind a line. This template keeps
+    ///  that reading — filled surface, border on three sides, open at the bottom —
+    ///  and adds an accent bar on the top edge instead of upstream's size bump, so
+    ///  nothing in the strip moves when the selection changes.</para>
+    ///
+    ///  <para>Every colour comes from the palette by reference; if the palette is
+    ///  missing the whole block is skipped and Fluent keeps the tabs.</para>
+    /// </summary>
+    private static Styles BuildTabItem(Application app)
+    {
+        Styles styles = [];
+
+        SolidColorBrush? window = P(app, "App.Window");
+        SolidColorBrush? border = P(app, "App.Border");
+        SolidColorBrush? text = P(app, "App.Text");
+        SolidColorBrush? textDim = P(app, "App.TextDim");
+        SolidColorBrush? accent = P(app, "App.Accent");
+        SolidColorBrush? selection = P(app, "App.Selection");
+
+        if (window is null || border is null || text is null
+            || textDim is null || accent is null || selection is null)
+        {
+            return styles;
+        }
+
+        // Hover on an UNSELECTED tab: the strip surface pulled toward the ink, the
+        // same rule the rest of this file uses, so it inverts by itself between
+        // themes. Hover must stay quieter than the selected fill — it is a pointer
+        // echo, not a second selection.
+        SolidColorBrush stripHover = Derived(window, text, 0.08);
+        SolidColorBrush selectionHover = Derived(selection, text, 0.10);
+
+        // Rounded on the two edges that face away from the page body only; the bottom
+        // corners stay square because the selected tab is meant to run INTO the body.
+        CornerRadius topCorners = new(Metrics.Radius.Sm / 2, Metrics.Radius.Sm / 2, 0, 0);
+
+        FuncControlTemplate<TabItem> template = new((tab, scope) =>
+        {
+            Border bar = new()
+            {
+                Name = "PART_SelectedBar",
+                Height = TabSelectedBarThickness,
+                // Transparent, not collapsed: the row is reserved on EVERY tab, so
+                // selecting one does not shift its label by 2px.
+                Background = Brushes.Transparent,
+            };
+            bar.RegisterInNameScope(scope);
+
+            ContentPresenter header = new()
+            {
+                Name = "PART_ContentPresenter",
+                RecognizesAccessKey = true,
+            };
+            header.RegisterInNameScope(scope);
+            header[!ContentPresenter.ContentProperty] = tab[!HeaderedContentControl.HeaderProperty];
+            header[!ContentPresenter.ContentTemplateProperty] = tab[!HeaderedContentControl.HeaderTemplateProperty];
+            header[!ContentPresenter.PaddingProperty] = tab[!TemplatedControl.PaddingProperty];
+            header[!ContentPresenter.HorizontalContentAlignmentProperty] =
+                tab[!ContentControl.HorizontalContentAlignmentProperty];
+            header[!ContentPresenter.VerticalContentAlignmentProperty] =
+                tab[!ContentControl.VerticalContentAlignmentProperty];
+            header[!ContentPresenter.FontFamilyProperty] = tab[!TemplatedControl.FontFamilyProperty];
+            header[!ContentPresenter.FontSizeProperty] = tab[!TemplatedControl.FontSizeProperty];
+            header[!ContentPresenter.FontWeightProperty] = tab[!TemplatedControl.FontWeightProperty];
+            header[!ContentPresenter.ForegroundProperty] = tab[!TemplatedControl.ForegroundProperty];
+
+            Grid layout = new()
+            {
+                RowDefinitions = new RowDefinitions
+                {
+                    new RowDefinition(GridLength.Auto),
+                    new RowDefinition(new GridLength(1, GridUnitType.Star)),
+                },
+            };
+            Grid.SetRow(bar, 0);
+            Grid.SetRow(header, 1);
+            layout.Children.Add(bar);
+            layout.Children.Add(header);
+
+            Border root = new()
+            {
+                Name = "PART_LayoutRoot",
+                CornerRadius = topCorners,
+                Child = layout,
+            };
+            root.RegisterInNameScope(scope);
+            root[!Border.BackgroundProperty] = tab[!TemplatedControl.BackgroundProperty];
+            root[!Border.BorderBrushProperty] = tab[!TemplatedControl.BorderBrushProperty];
+            root[!Border.BorderThicknessProperty] = tab[!TemplatedControl.BorderThicknessProperty];
+            return root;
+        });
+
+        // ---- the control itself: template + the unselected resting state -----------
+        // BorderThickness is the same on every tab so that turning the border ON is a
+        // colour change, not a layout change: no tab ever moves by a pixel. The bottom
+        // edge is 0 on purpose — that is what lets the selected tab join the page.
+        Style tab = new(x => x.OfType<TabItem>());
+        tab.Setters.Add(new Setter(TemplatedControl.TemplateProperty, template));
+        tab.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
+        tab.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, Brushes.Transparent));
+        tab.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(1, 1, 1, 0)));
+        tab.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, textDim));
+        styles.Add(tab);
+
+        Style hover = new(x => x.OfType<TabItem>().Class(":pointerover"));
+        hover.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, stripHover));
+        hover.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, border));
+        hover.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, text));
+        styles.Add(hover);
+
+        // ---- selected --------------------------------------------------------------
+        // Four independent signals, none of them a hairline: the App.Selection fill,
+        // the App.Accent border on three sides, the 2px accent bar in its own row, and
+        // full-strength ink at SemiBold. App.Text on App.Selection measures 13.9:1
+        // (light) and 10.4:1 (dark); the accent border's OUTER edge, which is what
+        // locates the tab against the strip, measures 3.95:1 on App.Window light and
+        // 3.72:1 dark — the same 3:1 floor the focus ring was held to.
+        //
+        // The focus ring stays distinct because it is a different SHAPE in a different
+        // layer: a 2px accent rectangle with an App.Text halo, drawn all the way round
+        // the tab by the adorner layer, over a tab that is already filled or not.
+        Style selected = new(x => x.OfType<TabItem>().Class(":selected"));
+        selected.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, selection));
+        selected.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, accent));
+        selected.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, text));
+        selected.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, Metrics.Text.ActiveWeight));
+        styles.Add(selected);
+
+        Style selectedHover = new(x => x.OfType<TabItem>().Class(":selected").Class(":pointerover"));
+        selectedHover.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, selectionHover));
+        selectedHover.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, accent));
+        styles.Add(selectedHover);
+
+        Style bar = new(x => x.OfType<TabItem>().Class(":selected")
+            .Template().OfType<Border>().Name("PART_SelectedBar"));
+        bar.Setters.Add(new Setter(Border.BackgroundProperty, accent));
+        styles.Add(bar);
+
+        Style disabled = new(x => x.OfType<TabItem>().Class(":disabled"));
+        disabled.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
+        disabled.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, Brushes.Transparent));
+        disabled.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, textDim));
+        styles.Add(disabled);
+
         return styles;
     }
 
@@ -541,13 +720,11 @@ public static class ModernStyles
     {
         Styles styles = [];
 
-        // The selected tab is promoted by WEIGHT, not by size: same 13px, semibold.
-        // Together with the full-strength ink (TabItemHeaderForegroundSelected = App.Text
-        // against App.TextDim for the others) that is two independent signals before
-        // the accent pipe is even counted.
-        Style tabItemSelected = new(x => x.OfType<TabItem>().Class(":selected"));
-        tabItemSelected.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, Metrics.Text.ActiveWeight));
-        styles.Add(tabItemSelected);
+        // NOTE: the selected tab's weight, fill, border and marker used to be split
+        // between here and the Fluent TabItemHeader* keys. They now all live in
+        // BuildTabItem, in the BASELINE, because the classic style had the same defect
+        // (a hairline pipe drawn across the label) and a bug fix must not depend on
+        // which style the user picked.
 
         // ---- corners ------------------------------------------------------------------
         Style button = new(x => x.OfType<Button>());
