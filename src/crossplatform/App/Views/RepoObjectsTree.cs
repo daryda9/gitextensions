@@ -101,7 +101,27 @@ public sealed class RepoObjectsTree : UserControl
     private List<TreeViewItem> _roots = [];
 
     private string? _repoPath;
+
+    // Set ONLY while a git MUTATION started from this control is running (checkout,
+    // rebase, branch/tag create, delete, …). This is what the "Another Git operation is
+    // still running" notice reports on, so it must never be held for anything but a live
+    // git command: it used to double as the reload guard below, which meant the ~1.4 s
+    // post-checkout tree reload kept refusing the next checkout even though git had
+    // already exited. Two checkouts in a row therefore hit the modal.
     private bool _busy;
+
+    // Reload state, deliberately separate from _busy: a reload is read-only, may overlap
+    // a mutation, and must never make the UI refuse a command.
+    //   _refreshEpoch  — bumped by every Refresh(); a background pass whose epoch is no
+    //                    longer the current one is stale and its snapshot is dropped.
+    //   _refreshing    — a background pass is in flight.
+    //   _refreshQueued — a Refresh() arrived while one was in flight; the newer state has
+    //                    to win, so the in-flight (older) snapshot is discarded and a new
+    //                    pass is started when it lands. Coalesced, so N clicks cost one
+    //                    extra pass, not N.
+    private int _refreshEpoch;
+    private bool _refreshing;
+    private bool _refreshQueued;
 
     // Guards NotifyBusy against stacking one refusal modal on top of another.
     private bool _busyNoticeOpen;
@@ -615,17 +635,32 @@ public sealed class RepoObjectsTree : UserControl
         // marker only moved when it finished, so a checkout left the old branch bold for
         // a visible moment. This is a re-label of nodes that already exist, not a fake:
         // BuildTree reconciles against the same HEAD when the reload lands, so the two
-        // cannot disagree. Deliberately ahead of the _busy guard — a refresh that is
-        // refused because one is already in flight must still show the right marker.
+        // cannot disagree. Deliberately ahead of the reload guard — a reload that is
+        // coalesced away because one is already in flight must still show the right marker.
         ApplyCurrentBranchMarker();
 
-        if (_busy)
+        // Any pass already running was started against an older repository state.
+        _refreshEpoch++;
+
+        if (_refreshing)
         {
+            // Do not start a second concurrent set of git processes; the pass in flight
+            // will notice it has been superseded and re-run with the current state.
+            _refreshQueued = true;
             return;
         }
 
-        _busy = true;
-        _ = Task.Run(() =>
+        _refreshing = true;
+        StartRefresh(repo, _refreshEpoch);
+    }
+
+    // One background reload pass. Only the pass whose epoch is still current is allowed
+    // to paint; a superseded one is thrown away and immediately replaced, so overlapping
+    // refreshes can neither interleave inside BuildTree (it only ever runs on the UI
+    // thread) nor leave the older result on screen.
+    private void StartRefresh(string repo, int epoch)
+    {
+        _ = Task.Run(async () =>
         {
             RepoSnapshot? snapshot = null;
             string? error = null;
@@ -641,20 +676,56 @@ public sealed class RepoObjectsTree : UserControl
                 // bare repo and keep being listed.
                 bool bare = _repositoryStateService.IsBareRepository(repo);
 
-                BranchTagListing refs = _branchTagService.LoadRefs(repo);
-                IReadOnlyList<StashRow> stashes = bare ? [] : _stashService.ListStashes(repo);
-                IReadOnlyList<SubmoduleRow> submodules = bare ? [] : _submoduleService.ListSubmodules(repo);
-                IReadOnlyList<WorktreeRow> worktrees = _worktreeService.ListWorktrees(repo);
-                snapshot = new RepoSnapshot(refs, stashes, submodules, worktrees);
+                // The four listings are independent read-only git invocations against the
+                // same repository and were run one after the other, which made a reload
+                // cost their SUM (~1.4 s here, of which `git submodule status` alone is
+                // ~1.0-1.3 s). Run concurrently it costs the slowest one instead. Nothing
+                // in BuildTree depends on the ORDER the four ran in — it only reads the
+                // finished lists out of the snapshot, and each service builds its own
+                // GitModule per call, so there is no shared state between them.
+                Task<BranchTagListing> refs = Task.Run(() => _branchTagService.LoadRefs(repo));
+                Task<IReadOnlyList<StashRow>> stashes = bare
+                    ? Task.FromResult<IReadOnlyList<StashRow>>([])
+                    : Task.Run(() => _stashService.ListStashes(repo));
+                Task<IReadOnlyList<SubmoduleRow>> submodules = bare
+                    ? Task.FromResult<IReadOnlyList<SubmoduleRow>>([])
+                    : Task.Run(() => _submoduleService.ListSubmodules(repo));
+                Task<IReadOnlyList<WorktreeRow>> worktrees = Task.Run(() => _worktreeService.ListWorktrees(repo));
+
+                await Task.WhenAll(refs, stashes, submodules, worktrees).ConfigureAwait(false);
+                snapshot = new RepoSnapshot(
+                    await refs.ConfigureAwait(false),
+                    await stashes.ConfigureAwait(false),
+                    await submodules.ConfigureAwait(false),
+                    await worktrees.ConfigureAwait(false));
             }
             catch (Exception ex)
             {
+                // await rethrows the first inner exception, so this is the real git message.
                 error = ex.Message;
             }
 
             Dispatcher.UIThread.Post(() =>
             {
-                _busy = false;
+                _refreshing = false;
+
+                if (_refreshQueued || epoch != _refreshEpoch)
+                {
+                    // Superseded: this snapshot describes a state the repository has
+                    // already left. Drop it (the synchronous HEAD-derived marker keeps the
+                    // visible tree honest meanwhile) and reload against the current state.
+                    _refreshQueued = false;
+                    if (_repoPath is { Length: > 0 } current)
+                    {
+                        _refreshing = true;
+                        StartRefresh(current, _refreshEpoch);
+                    }
+
+                    // If there is no repository any more, Refresh() has already emptied the
+                    // tree; either way this stale snapshot is never painted.
+                    return;
+                }
+
                 if (snapshot is not null)
                 {
                     BuildTree(snapshot);
@@ -2023,8 +2094,9 @@ public sealed class RepoObjectsTree : UserControl
             }
             finally
             {
-                // Cleared before the refresh below: Refresh() is itself guarded by _busy
-                // and would silently do nothing while the flag is still set.
+                // git has exited, so the guard is released HERE — before the reload. The
+                // reload has its own epoch-based guard (_refreshing), so the next checkout
+                // is accepted immediately instead of waiting out the ~1.4 s tree rebuild.
                 _busy = false;
             }
 
@@ -2422,7 +2494,7 @@ public sealed class RepoObjectsTree : UserControl
             }
             finally
             {
-                // Cleared before the refresh: Refresh() is itself guarded by _busy.
+                // Cleared before the refresh: the reload has its own guard, not _busy.
                 _busy = false;
             }
 
