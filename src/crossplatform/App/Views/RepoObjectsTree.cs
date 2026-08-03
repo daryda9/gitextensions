@@ -860,18 +860,7 @@ public sealed class RepoObjectsTree : UserControl
         // OpenRepositoryRequested) plus "Update" for its own path.
         TreeViewItem submodulesNode = Category(T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), "SubmodulesManage", submodules.Count, "submodules");
         submodulesNode.ContextMenu = SubmoduleRootMenu();
-        foreach (SubmoduleRow row in submodules)
-        {
-            string label = row.Status switch
-            {
-                SubmoduleState.NotInitialized => TF("{0} (not initialized)", row.Display),
-                SubmoduleState.OutOfDate => TF("{0} (out of date)", row.Display),
-                _ => row.Display,
-            };
-            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false, "submodules/" + row.Path);
-            leaf.ContextMenu = SubmoduleMenu(row);
-            submodulesNode.Items.Add(leaf);
-        }
+        AddSubmodulesWithFolders(submodulesNode, submodules);
 
         categories["submodules"] = submodulesNode;
 
@@ -1126,6 +1115,93 @@ public sealed class RepoObjectsTree : UserControl
             folders[folderPath] = node;
             host.Items.Add(node);
             return node;
+        }
+    }
+
+    /// <summary>
+    ///  Inserts the submodule rows as a HIERARCHY: a submodule of a submodule hangs off
+    ///  its own super-project's node, and a path segment that is only a plain directory
+    ///  (<c>core</c>, <c>graphs</c>) becomes a folder node in between — the same shape as
+    ///  upstream's <c>SubmoduleTree.AddTopAndNodesToTree</c>, which builds a
+    ///  <c>SubmoduleFolderNode</c> for every path part that is not itself a submodule.
+    ///  <para>The rows arrive sorted so that a super-project always precedes its
+    ///  submodules, hence a child always finds its host node already built.</para>
+    /// </summary>
+    private void AddSubmodulesWithFolders(TreeViewItem parent, IReadOnlyList<SubmoduleRow> rows)
+    {
+        // Both submodule nodes and pure-directory nodes, keyed by their path relative to
+        // the top-level repository, so a nested row can find whichever of the two is its
+        // parent.
+        Dictionary<string, TreeViewItem> nodes = new(StringComparer.Ordinal);
+
+        foreach (SubmoduleRow row in rows)
+        {
+            // Upstream's SubmoduleNode displays "name [branch]" — the name only, the
+            // branch of the submodule's own HEAD, and "no branch" when detached. The
+            // commit it sits at stays in the tooltip: in a chain four levels deep the
+            // sha was pure noise on every line.
+            string label = row.Name;
+            if (row.Status != SubmoduleState.NotInitialized)
+            {
+                label += row.Branch.Length > 0 ? $" ({row.Branch})" : $" ({T("no branch")})";
+            }
+
+            label = row.Status switch
+            {
+                SubmoduleState.NotInitialized => TF("{0} (not initialized)", label),
+                SubmoduleState.OutOfDate => TF("{0} (out of date)", label),
+                _ => label,
+            };
+
+            // Host on the path's own directory, not on the declaring submodule: between
+            // the two there can be plain directories ("core", "graphs" of
+            // pluma_orchestrator/core/graphs/tasks), and upstream shows each of them as
+            // its own folder node.
+            int slash = row.Path.LastIndexOf('/');
+            TreeViewItem host = Host(slash < 0 ? string.Empty : row.Path[..slash]);
+            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false, "submodules/" + row.Path);
+            leaf.ContextMenu = SubmoduleMenu(row);
+            ToolTip.SetTip(leaf, row.ShortSha.Length > 0 ? $"{row.Path} @ {row.ShortSha}" : row.Path);
+
+            // Searchable on the whole path, like the ref folders: a filter typed as the
+            // super-project's name still reaches the nested submodules.
+            _nodeText[leaf] = row.Path;
+
+            nodes[row.Path] = leaf;
+            host.Items.Add(leaf);
+        }
+
+        return;
+
+        // The node a path should hang off: the deepest already-built node (submodule or
+        // directory) on the way down, creating the missing directory levels.
+        TreeViewItem Host(string path)
+        {
+            if (path.Length == 0)
+            {
+                return parent;
+            }
+
+            if (nodes.TryGetValue(path, out TreeViewItem? existing))
+            {
+                return existing;
+            }
+
+            int slash = path.LastIndexOf('/');
+            TreeViewItem host = Host(slash < 0 ? string.Empty : path[..slash]);
+
+            TreeViewItem folder = new()
+            {
+                Header = HeaderPanel(slash < 0 ? path : path[(slash + 1)..], "FolderClosed", bold: false),
+                Foreground = Brush("App.Text", Brushes.Gainsboro),
+            };
+
+            _nodeText[folder] = path;
+            _nodeKey[folder] = "submodules/" + path;
+
+            nodes[path] = folder;
+            host.Items.Add(folder);
+            return folder;
         }
     }
 
@@ -1679,7 +1755,7 @@ public sealed class RepoObjectsTree : UserControl
         // OpenRepositoryRequested (the tree never references MainWindow directly).
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row))));
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnUpdateSubmodule.Text", "Update"), "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row.Path))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnUpdateSubmodule.Text", "Update"), "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row))));
         menu.Items.Add(MenuItem(T("Update (merge)…"), "Merge", () => _ = DoMergeSubmoduleAsync(row)));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Path)));
@@ -1958,6 +2034,19 @@ public sealed class RepoObjectsTree : UserControl
                 if (!worktree.IsSamePath(_repoPath) && !worktree.IsPrunable)
                 {
                     OpenRepositoryRequested?.Invoke(worktree.Path);
+                }
+
+                break;
+
+            // Upstream's SubmoduleNode.OnDoubleClick opens the submodule as the browsed
+            // repository (SubmoduleNode.cs:112-121, via SetWorkingDir), which here is the
+            // same route as the node's own "Open" menu item. A submodule that was never
+            // initialized has no repository to open: its directory is empty, so opening it
+            // would only swap the window onto a non-repo path.
+            case TreeViewItem { Tag: SubmoduleRow submodule }:
+                if (submodule.Status != SubmoduleState.NotInitialized)
+                {
+                    OpenRepositoryRequested?.Invoke(SubmoduleFullPath(submodule));
                 }
 
                 break;
@@ -2566,7 +2655,7 @@ public sealed class RepoObjectsTree : UserControl
         {
             if (await ConfirmAsync(TF("Update submodule '{0}' to its remote branch and merge into the current checkout?", row.Path)))
             {
-                RunSubmodule(() => _submoduleService.UpdateMerge(_repoPath!, row.Path));
+                RunSubmodule(() => _submoduleService.UpdateMerge(_repoPath!, row));
             }
         }
         catch
