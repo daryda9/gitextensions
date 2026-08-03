@@ -2480,6 +2480,78 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 6: M84 (2026-08-03) — il meccanismo sbagliato, sostituito
+
+> Decisione del coordinatore dopo M83, portata all'utente: **sostituire il transform per-finestra con
+> la scala del font**. Le due ragioni che l'hanno decisa sono quelle misurate in M83 — il transform
+> **non raggiunge i popup**, quindi la coerenza che lo giustificava non esiste, e muta l'albero del
+> contenuto da dentro una callback di styling, cosa che ha prodotto **tre difetti di fila** (crash di
+> ogni finestra, finestra principale bianca, transform perso sulle finestre riempite dopo `Show`).
+> Base `73224da6f`, `Errori: 0`.
+
+### Rimosso, non deprecato
+`ScaledProperty`, `HostProperty`, l'host `LayoutTransformControl` e la sua lista debole, `Attach`,
+`TryReparent`, `AsControl`, `Transform`, `CurrentScale`, l'evento `SizeChanged` (mai sottoscritto) e
+la `Style` app-wide su `Window` in `App.Initialize`. **Nessun percorso dell'app tocca più l'albero del
+contenuto di una finestra per applicare una scelta di aspetto.**
+
+### Cosa scrive adesso l'opzione: tre chiavi di risorsa, e nient'altro
+| chiave | perché |
+|---|---|
+| `ControlContentThemeFontSize` | la legge **ogni** `ControlTheme` di Fluent, via dynamic resource |
+| `ToolTipContentThemeFontSize` | Fluent tiene i tooltip su una chiave propria (default 12) |
+| `TabItemHeaderFontSize` | la sua di Fluent è **24**; il port l'ha sempre sovrascritta |
+
+Il setter `FontSize` su `TabItem` in `ModernStyles.BuildBaseline` è **cancellato**: misurato, era lui a
+sovrascrivere la scelta dell'utente — con la chiave chrome a 15 **ogni** controllo riportava 15 e il
+solo `TabItem` riportava ancora 12. L'override ora è la risorsa, che legge il template di Fluent
+stesso. E la proprietà del 12px di baseline si sposta da `ModernStyles`
+(`InstallChromeFontSize`, cancellata) a `UiScaling`, chiamata da `App.Initialize` come
+`Apply(UiSize.Normal)`: due proprietari per un numero erano tollerabili finché il numero era fisso,
+non appena diventa un'opzione.
+
+### Pixel interi, e le percentuali non si dichiarano più
+90/100/110/125% di 12 fa 10,8 / 12 / 13,2 / 15: due valori frazionari, e una dimensione di chrome
+frazionaria si propaga in altezze di controllo e origini del testo frazionarie, che si leggono
+**morbide** — l'opposto di quello che chiede chi cambia la dimensione. Arrotondato a pixel interi:
+**11 / 12 / 13 / 15**, cioè rapporti reali **92 / 100 / 108 / 125%**. I mezzi pixel sono stati
+considerati e scartati (10,8 → 11,0 non è più vicino al nominale, e 13,2 → 13,5 è di nuovo
+frazionario). Le etichette del combo stampano quindi **i pixel** («Small (11px text)») e non le
+percentuali nominali: l'interfaccia non può dichiarare un rapporto che l'app non disegna.
+
+### Onesto nella UI, non solo nel report
+Sotto il controllo c'è **una riga**: *"Changes the interface text: buttons, labels, menus, tabs and
+list rows. The revision grid, the diff and the file lists keep their own text size, and some control
+heights are fixed."* Letterale inglese, come `Style` e come le etichette delle size (M80/M81: upstream
+non ha questa impostazione, non c'è id XLIFF da riusare). E la descrizione della categoria non dice
+più che le size *«scale the whole window, text and spacing together»*, che non è più vero.
+
+### Cosa segue la dimensione e cosa no — misurato, non dedotto
+**Segue** (chiave a 12 e a 15, `FontSize` effettiva letta dai controlli): `Button`, `TextBox`,
+`CheckBox`, `ComboBox`, `TreeView`, `ListBox`, `TextBlock` nudo, `ListBoxItem`, `TreeViewItem`,
+`ComboBoxItem`, `MenuItem` **a entrambi i livelli**, e `TabItem` dopo la modifica di cui sopra.
+**Non segue**: i 137 `FontSize` letterali delle view (`Metrics.Text.*` sono `const`, letti una volta
+quando la view viene costruita — griglia, diff, liste file), e le altezze minime fisse di Fluent (un
+`TextBox` misura 32px sia a font 12 sia a 15; un `Button` invece cresce, 23 → 25). Farli seguire
+significherebbe trasformare 137 assegnazioni in binding, non cambiare la tabella `Metrics`.
+
+### Verificato / non verificato
+111 asserzioni, `MainWindow` reale: baseline 12 su tutte e tre le chiavi all'avvio; su una finestra
+**già costruita**, `Button`/`TabItem`/`MenuItem`/`ComboBox` riportano 11/12/13/15 alle quattro size;
+**dentro i popup aperti** — un menu aperto e un dropdown aperto, con gli item verificati *realizzati*
+nel visual tree perché l'asserzione non sia vacua — `MenuItem` figlio e `ComboBoxItem` riportano la
+dimensione scelta: **i popup ora seguono l'opzione**, che è esattamente ciò che il transform non
+faceva. Poi: Settings aperta sopra `MainWindow` a ogni size, cambio size **da dentro** la dialog in
+ogni direzione (arriva anche alla finestra dietro), contenuto della finestra ancora popolato dopo la
+chiusura, e i quattro switch Classic/Modern × Light/Dark. Il contenuto di `MainWindow` è di nuovo il
+suo `DockPanel`, senza wrapper.
+
+**Non verificato**: niente a schermo (verifica GUI headless non funzionante su questa macchina), e i
+popup **nativi** di Windows — l'headless usa gli overlay popup. Qui però l'argomento è più forte che
+per il transform: la risoluzione di una risorsa non passa dal visual root ma dall'albero logico e
+dalle risorse d'applicazione, quindi un popup nativo legge la stessa chiave. Non è una misura, è un
+ragionamento, e va segnato come tale.
+
 ## ROUND 13 — iterazione 5: M83 (2026-08-03) — lo stesso meccanismo, il terzo difetto
 
 > Segnalazione dell'utente subito dopo M82: *«appena clicco su settings, la schermata lampeggia, si
@@ -2520,6 +2592,8 @@ rifiuta inoltre se il contenuto proposto è un **antenato** dell'host, così nes
 annidare l'host nel proprio sottoalbero.
 
 ### Il limite del meccanismo, misurato: i popup non scalano
+> Questa misura è ciò che ha deciso M84: il meccanismo è stato sostituito, e con la scala del font i
+> popup **seguono** l'opzione (verificato sugli item dentro un menu e un dropdown aperti).
 Verificato con identità di riferimento (non per tipo — `OverlayPopupHost` ha un
 `LayoutTransformControl` **suo**, che darebbe un falso positivo): il contenuto di un dropdown di
 `ComboBox` e di un `MenuItem` aperto **non è discendente del nostro host**. La catena è
@@ -2635,6 +2709,14 @@ la chiave passando a Classic renderebbe Classic **17% più grande** dell'aspetto
 riprodurre.
 
 ### (b) Poi l'opzione — perché un transform e non una scala di font
+> **SUPERATO DA M84.** Questo paragrafo argomenta la scelta del transform, e l'argomento **non ha
+> tenuto**: il transform non raggiunge i popup (menu, dropdown, tooltip — misurato in M83), quindi la
+> "coerenza" che lo giustificava non c'era, e in compenso mutava l'albero del contenuto da dentro una
+> callback di styling, producendo tre difetti di fila. M84 ha sostituito il meccanismo con la scala
+> del font, cioè con l'alternativa che qui sotto viene scartata. La parte **vera** di questo
+> paragrafo resta vera — i 137 letterali e i minimi fissi di Fluent **non** si muovono — ed è per
+> questo che ora la pagina Appearance lo **dice** invece di lasciarlo credere.
+
 Scalare il font di default e lasciare che i controlli seguano sarebbe stata un'**opzione finta**: le
 view assegnano `FontSize` letterale in **137 punti** (la griglia, il diff, le liste file — esattamente
 il contenuto denso per cui l'opzione viene chiesta) e le altezze di Fluent sono minimi fissi che il
@@ -2684,6 +2766,13 @@ dimensione ricordata invece di aprirsi al 100% e saltare.
    nessuno la ricontrolla.
 
 ### Verificato headless compilando i file veri nel probe (non una copia)
+> **Storico: descrive il meccanismo rimosso in M84.** Due delle voci qui sotto erano anche
+> **sbagliate**, e sono state smentite dai difetti successivi: il caso «`Content` sostituito dopo lo
+> styling» passava nel probe solo perché lì il wrapper aveva già un figlio (M83), e nel percorso reale
+> il transform veniva perso; e il wrap "verificato" al primo colpo crashava all'apertura di Settings
+> (M82). La lezione, registrata: un probe che costruisce lo scenario **a modo suo** può confermare una
+> proprietà che il percorso reale non ha.
+
 Non screenshot: su questa macchina la verifica GUI headless non funziona, quindi la prova è sulle
 **dimensioni misurate**. `UiScaling.cs`/`UiSize.cs` compilati dentro il probe insieme a Fluent:
 - baseline: `Button.FontSize = 12`, contenuto avvolto in `LayoutTransformControl`;
@@ -2708,9 +2797,11 @@ accanto a quello esistente: **non fatto**, e registrato qui come debito.
 ### Non toccato di proposito
 La voce nel menu **View**: M80 mise lì tema e stile perché sono due voci a testa, mentre quattro
 dimensioni allungherebbero il menu senza aggiungere una scelta che la pagina Appearance non offra già.
-Le **altezze minime di Fluent** (32 px) restano: scalano col transform, ma al 100% sono ancora più
-generose dei ~23 px di upstream — è la parte del divario che il font non spiegava, e ridurla è un
-lavoro sui `ControlTheme` a sé stante.
+Le **altezze minime di Fluent** (32 px) restano: al 100% sono più generose dei ~23 px di upstream — è
+la parte del divario che il font non spiegava, e ridurla è un lavoro sui `ControlTheme` a sé stante.
+*(Diceva «scalano col transform»: dopo M84 non scalano affatto — un `TextBox` misura 32 px sia a font
+12 sia a 15, mentre un `Button` cresce 23 → 25. È una delle cose che la riga in pagina Appearance
+dichiara.)*
 
 ## ROUND 13 — iterazione 2: M80 (2026-08-03) — lo stile è una scelta, non un fatto compiuto
 

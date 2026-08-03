@@ -100,8 +100,14 @@ public static class Metrics
 
         /// <summary>13 — one rank above body text. NOT the app default: since M81 the
         /// app-wide size is <see cref="Body"/> (12), which is what upstream Git
-        /// Extensions draws its chrome in and what ModernStyles installs through
-        /// Fluent's <c>ControlContentThemeFontSize</c>.</summary>
+        /// Extensions draws its chrome in and what <see cref="UiScaling"/> writes into
+        /// Fluent's <c>ControlContentThemeFontSize</c> at <see cref="UiSize.Normal"/>.
+        ///
+        /// <para>Every size in this table is a COMPILE-TIME literal, read once when a view
+        /// is built, so none of them follow the user's <see cref="UiSize"/> — which is
+        /// exactly why the Appearance page says the grid, the diff and the file lists keep
+        /// their own text size. Making them follow it would mean turning 137 assignment
+        /// sites into live bindings, not changing this table.</para></summary>
         public const double Subtitle = 13;
 
         /// <summary>16 — a section or dialog heading.</summary>
