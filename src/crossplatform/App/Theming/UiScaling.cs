@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.VisualTree;
 
 namespace GitExtensions.Avalonia.Theming;
 
@@ -129,35 +130,96 @@ public static class UiScaling
 
     private static void Attach(Window window)
     {
-        // ORDER MATTERS: the content has to be taken off the window BEFORE it is handed
-        // to the host, or Avalonia throws "The Control already has a parent" — a control
-        // may only have one logical parent, and assigning Child is what re-parents it.
-        object? content = window.Content;
-        window.Content = null;
+        LayoutTransformControl host = new() { LayoutTransform = Transform(CurrentScale) };
 
-        LayoutTransformControl host = new()
+        if (!TryReparent(window, host, window.Content))
         {
-            LayoutTransform = Transform(CurrentScale),
-            Child = AsControl(content),
-        };
+            // Declined — see TryReparent. The window keeps the content it had and is
+            // simply drawn unscaled; it is not registered in Hosts, so a later size
+            // change leaves it alone too.
+            return;
+        }
 
-        window.Content = host;
         Hosts.Add(new WeakReference<LayoutTransformControl>(host));
 
         // A window that assigns Content after it has been styled (or replaces it later,
         // as the settings dialog and the main window both do on a language switch) would
         // otherwise throw the transform away. Re-parent instead of re-wrapping, so the
         // host — and its entry in Hosts — stays the same object.
+        bool reparenting = false;
         window.PropertyChanged += (_, args) =>
         {
             if (args.Property == ContentControl.ContentProperty
+                && !reparenting
                 && !ReferenceEquals(window.Content, host))
             {
-                object? content = window.Content;
-                window.Content = host;
-                host.Child = AsControl(content);
+                // TryReparent writes Content twice at most, and both writes come back
+                // here; the flag is what stops the second one starting a new round.
+                reparenting = true;
+                try
+                {
+                    TryReparent(window, host, window.Content);
+                }
+                finally
+                {
+                    reparenting = false;
+                }
             }
         };
+    }
+
+    /// <summary>
+    ///  Makes <paramref name="host"/> the window's content and <paramref name="content"/>
+    ///  the host's child, or leaves the window exactly as it was and returns
+    ///  <see langword="false"/>.
+    ///
+    ///  <para><b>The window is not what parents its content.</b> The Window's
+    ///  <c>ContentPresenter</c> is, and it only picks up (or drops) a child on its next
+    ///  layout pass. So clearing <c>Window.Content</c> does NOT detach the old content
+    ///  there and then: hand it to <see cref="LayoutTransformControl.Child"/> in the same
+    ///  breath and Avalonia throws <c>InvalidOperationException: The Control already has
+    ///  a parent</c>. That is what crashed the Settings dialog — the style setter that
+    ///  calls <see cref="Attach"/> is applied from inside the window's first measure
+    ///  pass, by which point the presenter is already holding the content, and waiting
+    ///  for a later pass is therefore not available. <c>UpdateChild()</c> forces the
+    ///  presenter to reconcile immediately, which is what actually frees the control.</para>
+    ///
+    ///  <para>The parent check afterwards is not belt-and-braces: it is the contract.
+    ///  A window whose content cannot be freed — no presenter yet, a presenter that
+    ///  declined, a content control held elsewhere — must be left unscaled rather than
+    ///  bring the process down, because the UI size is an appearance option and no
+    ///  appearance option is worth a crash.</para>
+    /// </summary>
+    private static bool TryReparent(Window window, LayoutTransformControl host, object? content)
+    {
+        if (ReferenceEquals(content, host))
+        {
+            return true;
+        }
+
+        window.Content = host;
+        window.Presenter?.UpdateChild();
+
+        Control? child = AsControl(content);
+        if (child is not null && (child.Parent is not null || child.GetVisualParent() is not null))
+        {
+            window.Content = content;
+            return false;
+        }
+
+        host.Child = child;
+
+        // RE-ASSERTED, not redundant. LayoutTransformControl rewrites its own
+        // LayoutTransform as part of laying out (an assigned ScaleTransform comes back
+        // as the equivalent MatrixTransform), and when it lays out with NO child it
+        // clears the property outright. A window that is shown empty and given its
+        // content afterwards — MainWindow on a language switch, and every dialog that
+        // builds its body after Show — therefore reached this point with the transform
+        // already dropped, and would have been drawn unscaled until the next size
+        // change. Measured headless: without this line, such a window reports a null
+        // LayoutTransform at Small/Large/VeryLarge.
+        host.LayoutTransform = Transform(CurrentScale);
+        return true;
     }
 
     // Window.Content is an object: a control goes straight in, anything else (a string,
