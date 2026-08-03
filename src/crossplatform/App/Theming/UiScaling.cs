@@ -107,6 +107,10 @@ public static class UiScaling
         {
             if (Hosts[i].TryGetTarget(out LayoutTransformControl? host))
             {
+                // Assigning the transform is enough: LayoutTransformControl invalidates
+                // its own measure, so the window re-lays-out at the new scale on the next
+                // layout pass. Verified headless across all four sizes on an already-shown
+                // window — an explicit InvalidateMeasure() here changes nothing.
                 host.LayoutTransform = Transform(scale);
             }
             else
@@ -125,10 +129,16 @@ public static class UiScaling
 
     private static void Attach(Window window)
     {
+        // ORDER MATTERS: the content has to be taken off the window BEFORE it is handed
+        // to the host, or Avalonia throws "The Control already has a parent" — a control
+        // may only have one logical parent, and assigning Child is what re-parents it.
+        object? content = window.Content;
+        window.Content = null;
+
         LayoutTransformControl host = new()
         {
             LayoutTransform = Transform(CurrentScale),
-            Child = AsControl(window.Content),
+            Child = AsControl(content),
         };
 
         window.Content = host;

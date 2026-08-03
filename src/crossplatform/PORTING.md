@@ -2480,6 +2480,123 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 3: M81 (2026-08-03) — la UI era davvero più grande: 14 contro 12
+
+> Osservazione dell'utente confrontando il port con l'originale WinForms affiancati: *«in generale
+> sembra che la UI del porting sia leggermente più zoommata, magari potremmo aggiungere una opzione nel
+> menu di appearance in cui decidere la dimensione dell'ui»*. **Prima misurato, poi corretto, poi
+> l'opzione** — in quest'ordine, perché uno slider che compensa un default sbagliato non è una scelta
+> dell'utente, è una toppa. Base `b14bc03d1`, build `Errori: 0`.
+
+### La diagnosi, misurata (non dedotta dai commenti nel codice)
+Le chiavi risorsa dei font **non compaiono** come stringhe nella dll di Fluent 11.3.14 (a differenza di
+`ButtonBackground` & co. lette da M79 con `strings -el`): stanno nel blob `!AvaloniaResources`. Quindi
+la misura è stata fatta con un **probe headless** che istanzia Fluent e legge i valori effettivi.
+
+| | port, prima di M81 | upstream WinForms | delta |
+|---|---|---|---|
+| `Button`/`TextBox`/`CheckBox`/`ComboBox`/`MenuItem`/`TreeViewItem` | **14** px | 12 px | **+17%** |
+| `TextBlock` nudo | 14 px, riportato a 13 da uno stile app-wide | 12 px | +8% |
+| header dei `TabItem` | 13 px | 12 px | +8% |
+| righe della griglia revisioni | 12 px (`RowFontSize`), riga ~20-22 px | 12 px, riga **24** px (`_rowHeight = MeasureString("By") + Scale(9)`) | il port è **più stretto** |
+| literal `FontSize` nelle view | 12 in **77** punti, 11 in 17, 10 in 10 | — | già alla misura di upstream |
+
+- **`ControlContentThemeFontSize` = 14** è la causa: Fluent la imposta a 14, e **ogni** template di
+  controllo la legge. Upstream disegna la sua chrome in `SystemFonts.MessageBoxFont` — Segoe UI 9pt =
+  **12 px** a 100% DPI (`AppSettings.Font`, `GitCommands/Settings/AppSettings.cs:1550`).
+- Quindi il "leggermente più zoommata" **non era DPI scaling** e **non era la griglia**: era la chrome
+  ereditata a 14 attorno a un contenuto che era già a 12. La griglia, se mai, è più densa
+  dell'originale (riga 24 px contro ~20-22).
+- Le altezze fisse di Fluent (`TextBox`/`CheckBox`/`TreeViewItem` misurano **32 px** con font 12 come
+  con font 15) sono la parte **non** spiegata dal font: sono minimi del `ControlTheme`, e non si
+  muovono cambiando la tipografia.
+
+### (a) Prima la baseline — una chiave, non una patch per controllo
+`ModernStyles.InstallChromeFontSize` scrive `ControlContentThemeFontSize = Metrics.Text.Body` (12).
+Verificato col probe: con la chiave a 12, `Button`/`TextBox`/`CheckBox`/`TreeViewItem` riportano tutti
+`FontSize = 12`, e **anche un `TextBlock` non stilato** — motivo per cui lo stile app-wide
+`TextBlock → 13` di M77 è stato **rimosso**: faceva lo stesso lavoro con un numero diverso, e tenerlo
+avrebbe rialzato la prosa a 13 mentre bottoni e menu attorno stavano a 12. Un solo posto decide la
+dimensione. Lo `TabItem` scende a `Body` per la stessa ragione.
+Installata **una volta e mai rimossa**, fuori dallo `Snapshot`: la dimensione del testo non è una
+questione moderno-contro-classico — il riferimento del classico *è* upstream, che sta a 12. Restituire
+la chiave passando a Classic renderebbe Classic **17% più grande** dell'aspetto che è definito a
+riprodurre.
+
+### (b) Poi l'opzione — perché un transform e non una scala di font
+Scalare il font di default e lasciare che i controlli seguano sarebbe stata un'**opzione finta**: le
+view assegnano `FontSize` letterale in **137 punti** (la griglia, il diff, le liste file — esattamente
+il contenuto denso per cui l'opzione viene chiesta) e le altezze di Fluent sono minimi fissi che il
+font non muove. Quelle parti sarebbero rimaste ferme mentre le etichette attorno si spostavano.
+Quindi: un `LayoutTransformControl` sopra il contenuto di **ogni** finestra, che scala l'albero
+*misurato* con un unico fattore — font letterali, minimi fissi, box delle icone e il DAG disegnato a
+mano si muovono insieme.
+- **Come arriva a tutte le 34 finestre senza toccarne nessuna**: una `Style` app-wide su `Window` che
+  imposta una attached property la cui `Changed` fa il wrap. Prende anche le finestre che apre Avalonia
+  (il file chooser gestito) — che è il punto: nessuna classe da ricordare.
+- **Il prezzo, dichiarato**: il transform scala anche il rendering, quindi le PNG 16px del Classic
+  vengono ricampionate fuori dal 100% e perdono un po' di nitidezza (testo e glifi vettoriali sono
+  geometria e restano nitidi). È il costo di un'opzione **vera** su tutta la UI invece che solo sulle
+  parti che leggono un font.
+- **A `Normal` non viene installato alcun transform** (`LayoutTransform = null`): il default è
+  pixel-identico a una build senza l'opzione.
+- Quattro passi chiusi — `Small 90` / `Normal 100` / `Large 110` / `VeryLarge 125` — e non uno slider:
+  un valore libero non ha un nome da scrivere in `ui-state.json` o in una segnalazione.
+- **La size non è un terzo argomento di `ThemeManager.Apply`.** La regola di M80 (nessun call site
+  passa un letterale per la dimensione che l'utente non ha toccato) costa di più a ogni dimensione
+  aggiunta alla stessa chiamata. La size non condivide niente con la palette — è un transform, non un
+  brush — quindi ha un owner suo, `UiScaling.Apply(UiSize)` a un argomento, e i call site di
+  theme/style restano **esattamente** come li ha lasciati M80.
+
+### (c) Persistenza e ciclo del dialogo
+`UiSize` in **`ui-state.json`** accanto a `Theme` e `Style` (non `view-prefs.json`), normalizzato in
+`Sanitize` con lo stesso giro dell'enum, quindi un nome corrotto atterra su `Normal` invece di
+raggiungere il transform. Applicato **a caldo** come tema e stile: `PreviewUiSize` sulla
+`SelectionChanged`, ripristino su Cancel, spostamento della baseline su Apply/OK. E `OpenSettingsAsync`
+ri-sincronizza `UiSize` dal file insieme a `Theme`/`Style`, altrimenti la riserializzazione completa
+di `_uiState` alla chiusura della finestra principale disfaceva la scelta.
+`MainWindow` applica la size **prima** che la finestra venga stilata: il setter che installa il
+transform scatta durante lo styling e legge `UiScaling.CurrentScale`, quindi la finestra **nasce** alla
+dimensione ricordata invece di aprirsi al 100% e saltare.
+
+### Due difetti trovati dal probe, non dallo schermo
+1. **`InvalidOperationException: The Control already has a parent`** all'apertura di ogni finestra: nel
+   wrap il contenuto veniva passato a `Child` mentre era ancora figlio della `Window`. Va **staccato
+   prima** (`window.Content = null`). Sbagliato al primo colpo, e avrebbe fatto crashare l'avvio.
+2. Una `InvalidateMeasure()` aggiunta "per sicurezza" dopo il cambio di transform è **inutile**:
+   `LayoutTransformControl` invalida da sé. Rimossa dopo averlo verificato togliendola e rimisurando —
+   il commento che la giustificava era falso, ed è il tipo di riga che sopravvive per anni perché
+   nessuno la ricontrolla.
+
+### Verificato headless compilando i file veri nel probe (non una copia)
+Non screenshot: su questa macchina la verifica GUI headless non funziona, quindi la prova è sulle
+**dimensioni misurate**. `UiScaling.cs`/`UiSize.cs` compilati dentro il probe insieme a Fluent:
+- baseline: `Button.FontSize = 12`, contenuto avvolto in `LayoutTransformControl`;
+- **ridimensionamento a caldo** di una finestra **già aperta**: altezza radice 30 / 33 / 37 / 42 px per
+  90/100/110/125% — rapporti 0,909 / 1,000 / 1,121 / 1,273;
+- finestra **aperta** a 125%: `98x42` contro `78x33` al 100%;
+- `Content` **sostituito** dopo lo styling (il caso del cambio lingua): il wrapper resta, il transform
+  sopravvive, il nuovo contenuto finisce dentro, e il ritorno a `Normal` rimette `LayoutTransform` a
+  null;
+- round-trip di persistenza, `"garbage"`/`""` → `Normal`.
+
+### Localizzazione: dichiarata, non finta
+`UI size` e le quattro etichette sono **letterali inglesi**, con la stessa scelta che M80 fece per
+`Style`: il port non ha un overlay proprio per le stringhe che inventa, `TranslationService.T` risolve
+per id XLIFF di upstream o per testo sorgente, e upstream **non ha questa impostazione** (il suo unico
+controllo di scala è la checkbox `chkEnableAutoScale`, "Auto scale user interface when high DPI is
+used"). Non c'è quindi id da riusare né target italiano da ereditare: cercato in `Italian.xlf`, l'unico
+`Size` disponibile è `sizeColumnHeader.Text` → *"Simensioni"* (refuso di upstream compreso), che non
+c'entra. Aggiungere un dizionario locale solo per queste cinque stringhe sarebbe un meccanismo nuovo
+accanto a quello esistente: **non fatto**, e registrato qui come debito.
+
+### Non toccato di proposito
+La voce nel menu **View**: M80 mise lì tema e stile perché sono due voci a testa, mentre quattro
+dimensioni allungherebbero il menu senza aggiungere una scelta che la pagina Appearance non offra già.
+Le **altezze minime di Fluent** (32 px) restano: scalano col transform, ma al 100% sono ancora più
+generose dei ~23 px di upstream — è la parte del divario che il font non spiegava, e ridurla è un
+lavoro sui `ControlTheme` a sé stante.
+
 ## ROUND 13 — iterazione 2: M80 (2026-08-03) — lo stile è una scelta, non un fatto compiuto
 
 > Richiesta dell'utente subito dopo M79: *«dammi la possibilità di scegliere dalle impostazioni se
