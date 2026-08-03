@@ -254,11 +254,13 @@ public sealed class MainToolbar : UserControl
     // host's current layout state (checked caption + highlighted chrome).
     private Button? _splitButton;
     private TextBlock? _splitCaption;
+    private Image? _splitIcon;
 
     // Left-panel toggle (upstream toggleLeftPanel): a checked/pressed button whose
     // state mirrors whether the host's left panel is showing.
     private Button? _leftPanelButton;
     private TextBlock? _leftPanelCaption;
+    private Image? _leftPanelIcon;
     private bool _leftPanelVisible = true;
 
     // Commit-info position split button (upstream menuCommitInfoPosition): the body
@@ -468,46 +470,53 @@ public sealed class MainToolbar : UserControl
         OverflowPanel bar = new(_overflowButton)
         {
             VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 2,
-            Margin = new Thickness(6, 3),
+            // Upstream's ToolStripMain has Padding(0) and leaves its items on the
+            // default ToolStripButton Margin(0,1,0,2): NO horizontal gap between
+            // neighbours at all, the groups being told apart by the separators alone.
+            // The 4px left/right is toolPanel.TopToolStripPanel.Padding(4,0,4,0), and
+            // there is no vertical margin — upstream's strip is 25px tall in total.
+            Spacing = 0,
+            Margin = new Thickness(4, 0),
         };
         _bar = bar;
 
-        bar.AddItem(MakeButton("RepoOpen", T("FormBrowse/openToolStripMenuItem.Text", "Open"),
-            T("Dashboard/_openRepository.Text", "Open repository"), () => OpenRepoRequested?.Invoke()));
+        // The item order below follows ToolStripMain.Items.AddRange in
+        // FormBrowse.Designer.cs:205-224 group by group, including where its FIVE
+        // separators fall. Only two port-only commands are folded in (Open
+        // repository, New branch), each inside an existing group rather than earning
+        // a separator of its own.
 
-        // Inline repo-path + branch dropdowns near the left, echoing the original
-        // FormBrowse toolbar (a repository-path selector and a current-branch
-        // selector inline in the toolbar).
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeRepoPathButton(border));
-        bar.AddItem(MakeBranchButton(border));
+        // ---- refresh (upstream group 1: RefreshButton alone) ---------------------
+        bar.AddItem(IconOnly(MakeButton("RepoOpen", T("FormBrowse/openToolStripMenuItem.Text", "Open"),
+            T("Dashboard/_openRepository.Text", "Open repository"), () => OpenRepoRequested?.Invoke())));
+        bar.AddItem(IconOnly(MakeButton("ReloadRevisions", T("FormBrowse/RefreshButton.ToolTipText", "Refresh"),
+            T("FormBrowse/RefreshButton.ToolTipText", "Refresh"), () => RefreshRequested?.Invoke())));
 
+        // ---- view / layout group (upstream group 2) ------------------------------
         bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("PullFetch", T("FormBrowse/_pullFetch.Text", "Fetch"),
-            T("FormBrowse/fetchToolStripMenuItem.ToolTipText", "Fetch from remote"), () => FetchRequested?.Invoke()));
-        bar.AddItem(MakePullSplitButton(border));
-        _pushButton = MakeButton("Push", T("FormBrowse/toolStripButtonPush.Text", "Push"),
-            T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"), () => PushRequested?.Invoke(),
-            out _pushCaption, out _pushIcon);
-        bar.AddItem(_pushButton);
-        bar.AddItem(Separator(border));
-        _commitButton = MakeButton("CommitSummary", T("FormBrowse/toolStripButtonCommit.Text", "Commit"),
-            T("Commit changes"), () => CommitRequested?.Invoke(),
-            out _commitCaption, out _commitIcon);
-        bar.AddItem(_commitButton);
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeStashSplitButton(border));
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("ReloadRevisions", T("FormBrowse/RefreshButton.ToolTipText", "Refresh"),
-            T("FormBrowse/RefreshButton.ToolTipText", "Refresh"), () => RefreshRequested?.Invoke()));
-        bar.AddItem(Separator(border));
-        // Upstream's wording for the same command is "Create branch"; the port's
-        // shorter caption keeps the strip narrow but reuses that catalogue entry.
-        bar.AddItem(MakeButton("BranchCreate", T("TranslatedStrings/_buttonCreateBranch.Text", "New branch"),
-            T("FormCommit/createBranchToolStripButton.ToolTipText", "Create a new branch"), () => NewBranchRequested?.Invoke()));
 
-        // ---- submodules / worktrees split buttons --------------------------------
+        // Toggle left panel — upstream's toggleLeftPanel, which sits immediately
+        // before the split-view toggle and carries a pressed/checked state bound to
+        // whether the panel is showing (FormBrowse.RefreshLayoutToggleButtonStates).
+        _leftPanelButton = IconOnly(MakeButton("LayoutSidebarLeft", T("Left panel"),
+            TipWithGesture(T("FormBrowse/toggleLeftPanel.ToolTipText", "Toggle left panel"),
+                BrowseCommand.ToggleLeftPanel),
+            () => ToggleLeftPanelRequested?.Invoke(),
+            out _leftPanelCaption, out _leftPanelIcon));
+        bar.AddItem(_leftPanelButton);
+
+        // Split view is a TOGGLE: icon-only as upstream, so the "on" state now shows
+        // as a checked background on the button (upstream's ToolStripButton.Checked)
+        // instead of a ✓ in a caption. The ✓ stays in the collapsed caption because
+        // that is what labels the entry in the overflow menu.
+        _splitButton = IconOnly(MakeButton("LayoutFooter", T("Split view"),
+            T("Show the commit detail and the diff side by side in the Commit tab"),
+            () => SplitViewToggleRequested?.Invoke(),
+            out _splitCaption, out _splitIcon));
+        bar.AddItem(_splitButton);
+        bar.AddItem(MakeCommitInfoSplitButton(border));
+
+        // ---- submodules / worktrees / working dir / branch (upstream group 3) ----
         bar.AddItem(Separator(border));
         bar.AddItem(MakeRepoLinkButton("SubmodulesManage", T("TranslatedStrings/_submodulesText.Text", "Submodules"),
             T("Open a submodule (or the parent super-project) as the active repository"),
@@ -524,40 +533,49 @@ public sealed class MainToolbar : UserControl
             extraItems: WorktreeExtraItems);
         bar.AddItem(_worktreesHost);
 
-        // ---- view / layout group -------------------------------------------------
+        // Inline repo-path + branch dropdowns, in upstream's place: _NO_TRANSLATE_WorkingDir
+        // then branchSelect, closing the same group as the submodule/worktree buttons.
+        // These two and Commit are the only items upstream shows with a caption
+        // (DisplayStyle stays at its ImageAndText default); everything else is
+        // Image-only and speaks through its tooltip.
+        bar.AddItem(MakeRepoPathButton(border));
+        bar.AddItem(MakeBranchButton(border));
+
+        // Upstream's wording for the same command is "Create branch"; the port's
+        // shorter caption keeps the strip narrow but reuses that catalogue entry.
+        // Not in upstream's toolbar at all — folded in next to the branch selector.
+        bar.AddItem(IconOnly(MakeButton("BranchCreate", T("TranslatedStrings/_buttonCreateBranch.Text", "New branch"),
+            T("FormCommit/createBranchToolStripButton.ToolTipText", "Create a new branch"), () => NewBranchRequested?.Invoke())));
+
+        // ---- remote / commit group (upstream group 4) ----------------------------
+        // Fetch sits immediately before Pull, where FormBrowse.InitMenusAndToolbars
+        // inserts its fetch/pull shortcut buttons; then Pull, Push, Commit, Stash.
         bar.AddItem(Separator(border));
+        bar.AddItem(IconOnly(MakeButton("PullFetch", T("FormBrowse/_pullFetch.Text", "Fetch"),
+            T("FormBrowse/fetchToolStripMenuItem.ToolTipText", "Fetch from remote"), () => FetchRequested?.Invoke())));
+        bar.AddItem(MakePullSplitButton(border));
+        _pushButton = IconOnly(MakeButton("Push", T("FormBrowse/toolStripButtonPush.Text", "Push"),
+            T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"), () => PushRequested?.Invoke(),
+            out _pushCaption, out _pushIcon));
+        bar.AddItem(_pushButton);
+        _commitButton = MakeButton("CommitSummary", T("FormBrowse/toolStripButtonCommit.Text", "Commit"),
+            T("Commit changes"), () => CommitRequested?.Invoke(),
+            out _commitCaption, out _commitIcon);
+        bar.AddItem(_commitButton);
+        bar.AddItem(MakeStashSplitButton(border));
 
-        // Toggle left panel — upstream's toggleLeftPanel, which sits immediately
-        // before the split-view toggle and carries a pressed/checked state bound to
-        // whether the panel is showing (FormBrowse.RefreshLayoutToggleButtonStates).
-        _leftPanelButton = MakeButton("LayoutSidebarLeft", T("Left panel"),
-            TipWithGesture(T("FormBrowse/toggleLeftPanel.ToolTipText", "Toggle left panel"),
-                BrowseCommand.ToggleLeftPanel),
-            () => ToggleLeftPanelRequested?.Invoke(),
-            out _leftPanelCaption, out _);
-        bar.AddItem(_leftPanelButton);
-
-        // Split view is a TOGGLE: the caption carries a check mark while it is on,
-        // which also labels the entry the overflow menu builds from LiveCaption.
-        _splitButton = MakeButton("LayoutFooter", T("Split view"),
-            T("Show the commit detail and the diff side by side in the Commit tab"),
-            () => SplitViewToggleRequested?.Invoke(),
-            out _splitCaption, out _);
-        bar.AddItem(_splitButton);
-        bar.AddItem(MakeCommitInfoSplitButton(border));
-
-        // ---- external tools group ------------------------------------------------
+        // ---- external tools group (upstream group 5) ----------------------------
         bar.AddItem(Separator(border));
-        bar.AddItem(MakeButton("BrowseFileExplorer", T("FormBrowse/toolStripFileExplorer.ToolTipText", "File Explorer"),
+        bar.AddItem(IconOnly(MakeButton("BrowseFileExplorer", T("FormBrowse/toolStripFileExplorer.ToolTipText", "File Explorer"),
             T("Open the repository in the file manager"),
-            () => FileExplorerRequested?.Invoke()));
+            () => FileExplorerRequested?.Invoke())));
         bar.AddItem(MakeShellSplitButton(border));
 
         // Settings closes the external-tools group, exactly as upstream's
         // EditSettings closes ToolStripMain.
-        bar.AddItem(MakeButton("Settings", T("FormBrowse/EditSettings.ToolTipText", "Settings"),
+        bar.AddItem(IconOnly(MakeButton("Settings", T("FormBrowse/EditSettings.ToolTipText", "Settings"),
             TipWithGesture(T("FormBrowse/EditSettings.ToolTipText", "Settings"), BrowseCommand.OpenSettings),
-            () => SettingsRequested?.Invoke()));
+            () => SettingsRequested?.Invoke())));
 
         // ---- branch-scope + filter group (right side) ---------------------------
         // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
@@ -697,6 +715,7 @@ public sealed class MainToolbar : UserControl
                 ? string.Format(T("{0} ↓{1}"), T("FormBrowse/toolStripButtonPull.Text", "Pull"), behind)
                 : T("FormBrowse/toolStripButtonPull.Text", "Pull");
             _pullCaption.Foreground = lit ? accent : text;
+            ShowCaption(_pullCaption, lit);
             if (_pullIcon is not null)
             {
                 _pullIcon.Opacity = lit ? 1.0 : 0.85;
@@ -795,6 +814,7 @@ public sealed class MainToolbar : UserControl
 
         _splitCaption.Text = on ? string.Format(T("{0} ✓"), T("Split view")) : T("Split view");
         _splitCaption.Foreground = on ? Brush("App.Accent", "#3399FF") : Brush("App.Text", "#DCDCDC");
+        SetChecked(_splitButton, _splitIcon, on);
         if (_splitButton is not null)
         {
             ToolTip.SetTip(_splitButton, on
@@ -823,6 +843,7 @@ public sealed class MainToolbar : UserControl
         // the overflow menu picks up through LiveCaption) plus an accented colour.
         _leftPanelCaption.Text = visible ? string.Format(T("{0} ✓"), T("Left panel")) : T("Left panel");
         _leftPanelCaption.Foreground = visible ? Brush("App.Accent", "#3399FF") : Brush("App.Text", "#DCDCDC");
+        SetChecked(_leftPanelButton, _leftPanelIcon, visible);
     }
 
     /// <summary>
@@ -867,6 +888,8 @@ public sealed class MainToolbar : UserControl
             // stays in its plain resting state rather than claiming "0↑↓".
             _pushCaption!.Text = push;
             _pushCaption.Foreground = text;
+            // Icon-only in the resting state, as upstream's DisplayStyle = Image.
+            ShowCaption(_pushCaption, show: false);
             SetPushIcon("Push", lit: false);
             SetPushTip(T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"));
             return;
@@ -883,6 +906,11 @@ public sealed class MainToolbar : UserControl
         _pushCaption!.Text = string.Format(T("{0} {1}"), push, data.ToDisplay());
         bool lit = ahead > 0 || behind > 0 || _state.UpstreamGone;
         _pushCaption.Foreground = lit ? accent : text;
+
+        // The ahead/behind badge is the one thing worth widening the button for —
+        // upstream turns AutoSize on for exactly this (ToolStripPushButton.cs:31-33).
+        // "0↑↓" says nothing the icon does not, so it stays collapsed.
+        ShowCaption(_pushCaption, lit);
 
         // Upstream: "if (!string.IsNullOrEmpty(data.BehindCount)) Image = Images.Unstage".
         SetPushIcon(behind > 0 ? "Unstage" : "Push", lit);
@@ -1054,11 +1082,13 @@ public sealed class MainToolbar : UserControl
         {
             string stash = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash");
 
-            // Upstream puts the bare count in the button's Text ("(3)"); the port
-            // keeps the word too, because its buttons are captioned, not icon-only.
+            // Upstream puts the bare count in the button's Text ("(3)"); the port keeps
+            // the word too, because the same string labels the overflow-menu entry
+            // through LiveCaption — but the caption only shows while there is a count.
             _stashCaption.Text = _state.StashCount > 0
                 ? string.Format(T("{0} ({1})"), stash, _state.StashCount)
                 : stash;
+            ShowCaption(_stashCaption, _state.StashCount > 0);
             _stashCaption.Foreground = canStash
                 ? Brush("App.Text", "#DCDCDC")
                 : Brush("App.TextDim", "#8A8A8A");
@@ -1105,6 +1135,57 @@ public sealed class MainToolbar : UserControl
     private Button MakeButton(string iconName, string label, string tooltip, Action onClick)
         => MakeButton(iconName, label, tooltip, onClick, out _, out _);
 
+    /// <summary>
+    ///  Collapses a button's caption so it renders as icon-only, which is what
+    ///  fourteen of upstream's nineteen ToolStripMain items do (DisplayStyle = Image,
+    ///  or the ImageAndText default with no Text): a 16px image in a 23x22 cell, the
+    ///  wording living in the tooltip. The caption is hidden rather than never built,
+    ///  because it is still what the overflow menu labels its entry with
+    ///  (<see cref="OverflowEntry.LiveCaption"/>) and what the state updates write to.
+    ///  A button whose icon failed to load keeps its caption — it would otherwise be
+    ///  an empty cell.
+    /// </summary>
+    private static Button IconOnly(Button button)
+    {
+        if (button.Content is StackPanel { Children.Count: > 1 } content
+            && content.Children[^1] is TextBlock caption)
+        {
+            caption.IsVisible = false;
+        }
+
+        return button;
+    }
+
+    // Upstream tells a toggle's "on" state with ToolStripButton.Checked, which the
+    // renderer paints as a filled cell. The port has no Checked, so the two toggles
+    // paint the same way themselves: an accent-tinted fill and edge on the button.
+    // Set on the instance, not through a style, so no Theming file is involved.
+    private void SetChecked(Button? button, Image? icon, bool on)
+    {
+        if (button is null)
+        {
+            return;
+        }
+
+        button.Background = on ? Brush("App.AccentFill", "#264F78") : Brushes.Transparent;
+        button.BorderBrush = on ? Brush("App.Accent", "#007ACC") : Brushes.Transparent;
+        if (icon is not null)
+        {
+            icon.Opacity = on ? 1.0 : 0.85;
+        }
+    }
+
+    // Shows or hides an icon-only button's caption: the port's equivalent of
+    // upstream's ToolStripPushButton flipping AutoSize on when it has an ahead/behind
+    // badge to show, and back off when it has not.
+    private static void ShowCaption(TextBlock? caption, bool show)
+    {
+        if (caption is not null)
+        {
+            caption.IsVisible = show;
+        }
+    }
+
     // Variant that hands back the caption TextBlock and (optional) icon Image so
     // callers can keep references for later restyling (see UpdateState).
     private Button MakeButton(string iconName, string label, string tooltip, Action onClick,
@@ -1141,7 +1222,7 @@ public sealed class MainToolbar : UserControl
             // A 1px (resting-transparent) border keeps layout stable while the
             // hover/pressed styles paint a visible edge in the same space.
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1195,6 +1276,9 @@ public sealed class MainToolbar : UserControl
         _shellCaption = new TextBlock
         {
             Text = T("Terminal"),
+            // Upstream's userShell shows its icon only (no Text); the shell's name is
+            // in the tooltip, and this caption survives to label the overflow entry.
+            IsVisible = false,
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
@@ -1206,7 +1290,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1217,7 +1301,7 @@ public sealed class MainToolbar : UserControl
         Border divider = new()
         {
             Width = 1,
-            Margin = new Thickness(0, 4),
+            Margin = new Thickness(0, 3),
             Background = border,
         };
 
@@ -1232,7 +1316,7 @@ public sealed class MainToolbar : UserControl
             },
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 4),
+            Padding = new Thickness(2, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1424,6 +1508,9 @@ public sealed class MainToolbar : UserControl
         _stashCaption = new TextBlock
         {
             Text = T("FormBrowse/stashChangesToolStripMenuItem.Text", "Stash"),
+            // Upstream's toolStripSplitStash carries no Text at all; the port shows
+            // the caption only while there is a stash count worth reporting.
+            IsVisible = false,
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
@@ -1435,7 +1522,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1446,7 +1533,7 @@ public sealed class MainToolbar : UserControl
         Border divider = new()
         {
             Width = 1,
-            Margin = new Thickness(0, 4),
+            Margin = new Thickness(0, 3),
             Background = border,
         };
 
@@ -1461,7 +1548,7 @@ public sealed class MainToolbar : UserControl
             },
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 4),
+            Padding = new Thickness(2, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1608,7 +1695,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1620,7 +1707,7 @@ public sealed class MainToolbar : UserControl
         Border divider = new()
         {
             Width = 1,
-            Margin = new Thickness(0, 4),
+            Margin = new Thickness(0, 3),
             Background = border,
         };
 
@@ -1635,7 +1722,7 @@ public sealed class MainToolbar : UserControl
             },
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 4),
+            Padding = new Thickness(2, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1775,6 +1862,9 @@ public sealed class MainToolbar : UserControl
         _pullCaption = new TextBlock
         {
             Text = T("FormBrowse/toolStripButtonPull.Text", "Pull"),
+            // Upstream's toolStripButtonPull is DisplayStyle = Image: the caption only
+            // surfaces to carry the "behind" badge (see UpdateState).
+            IsVisible = false,
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = Brush("App.Text", "#DCDCDC"),
             FontSize = 12,
@@ -1786,7 +1876,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1797,7 +1887,7 @@ public sealed class MainToolbar : UserControl
         Border divider = new()
         {
             Width = 1,
-            Margin = new Thickness(0, 4),
+            Margin = new Thickness(0, 3),
             Background = border,
         };
 
@@ -1812,7 +1902,7 @@ public sealed class MainToolbar : UserControl
             },
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 4),
+            Padding = new Thickness(2, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2093,7 +2183,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
             Flyout = flyout,
@@ -2180,7 +2270,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2230,7 +2320,7 @@ public sealed class MainToolbar : UserControl
         Border divider = new()
         {
             Width = 1,
-            Margin = new Thickness(0, 4),
+            Margin = new Thickness(0, 3),
             Background = border,
         };
 
@@ -2245,7 +2335,7 @@ public sealed class MainToolbar : UserControl
             },
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 4),
+            Padding = new Thickness(2, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2424,7 +2514,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2510,7 +2600,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 4),
+            Padding = new Thickness(4, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2971,8 +3061,10 @@ public sealed class MainToolbar : UserControl
         Border sep = new()
         {
             Width = 1,
-            // Extra horizontal margin gives each button group some breathing room.
-            Margin = new Thickness(6, 4),
+            // Upstream's ToolStripSeparator is 6px wide in total (its Margin is 0),
+            // so the rule gets 1px of ink and 2.5px of air on either side — not the
+            // 13px the port used to spend on every group boundary.
+            Margin = new Thickness(2.5, 3),
             Background = brush,
             Tag = OverflowPanel.SeparatorTag,
         };
