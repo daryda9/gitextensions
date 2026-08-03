@@ -37,9 +37,8 @@ public class App : Application
 
         // Typography defaults, control corners, hover/pressed/disabled/focus states
         // and their transitions — all app-wide, none of it editing a view. The TabItem
-        // sizing that used to live right here moved into ModernStyles.Build, which also
-        // owns the app's baseline 12px chrome font size. Must run after
-        // ThemeManager.Initialize: every state colour is derived from the App.*
+        // sizing that used to live right here moved into ModernStyles.Build. Must run
+        // after ThemeManager.Initialize: every state colour is derived from the App.*
         // brush instances it registers. See Theming/ModernStyles.
         //
         // The style argument is what Settings can flip later: ModernStyles.Apply is
@@ -48,12 +47,13 @@ public class App : Application
         // matches ThemeManager's own default.
         Theming.ModernStyles.Apply(this, Theming.ThemeManager.CurrentStyle);
 
-        // Opts every window into the UI-size transform (see Theming/UiScaling). Added
-        // last so the Window setter sits after the theme and the style block, and never
-        // removed: it is style-agnostic, and at the default size it installs no
-        // transform at all. The size itself is read from ui-state.json by MainWindow,
-        // which is where the persisted appearance is applied.
-        Styles.Add(Theming.UiScaling.BuildStyles());
+        // Installs the interface text size (see Theming/UiScaling). Normal is NOT a
+        // no-op: it is the write that brings Fluent's 14px chrome down to upstream's
+        // 12px, so this call is the app's typography baseline and it belongs here rather
+        // than in ModernStyles — the size is not a modern-versus-classic question, and
+        // Classic's own reference is upstream's 12 too. MainWindow re-applies it from
+        // ui-state.json once the persisted appearance is known.
+        Theming.UiScaling.Apply(Theming.UiSize.Normal);
     }
 
     public override void OnFrameworkInitializationCompleted()

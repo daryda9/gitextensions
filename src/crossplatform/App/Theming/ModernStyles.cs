@@ -85,9 +85,14 @@ public static class ModernStyles
     ///  restored to what they held before (or removed), and the modern
     ///  <see cref="Style"/>s are taken OUT of <see cref="Application.Styles"/> rather
     ///  than neutralised. The baseline — the TabItem sizing, which lived in
-    ///  <c>App.Initialize</c> before M77, and the 12px chrome font size
-    ///  (<see cref="InstallChromeFontSize"/>) — is part of the classic look too, so it
-    ///  is installed separately and is never removed.</para>
+    ///  <c>App.Initialize</c> before M77 — is part of the classic look too, so it is
+    ///  installed separately and is never removed.</para>
+    ///
+    ///  <para><b>The app's text SIZE is not here.</b> It belongs to
+    ///  <see cref="UiScaling"/>, which owns the resource keys and the user-facing
+    ///  <see cref="UiSize"/> together (M84). This class used to write the 12px baseline
+    ///  itself, which meant two owners for one number the moment the size became an
+    ///  option.</para>
     /// </summary>
     public static void Apply(Application app, AppStyle style)
     {
@@ -95,7 +100,6 @@ public static class ModernStyles
 
         if (_baseline is null)
         {
-            InstallChromeFontSize(app);
             _baseline = BuildBaseline(app);
             app.Styles.Add(_baseline);
         }
@@ -109,45 +113,6 @@ public static class ModernStyles
             RemoveModern(app);
         }
     }
-
-    /// <summary>
-    ///  The Fluent resource every control template reads its content font size from.
-    ///  Fluent 11.3.14 sets it to <b>14</b>; upstream Git Extensions draws its chrome in
-    ///  <c>SystemFonts.MessageBoxFont</c> — Segoe UI 9pt, i.e. <b>12px</b> at 100% DPI
-    ///  (<c>AppSettings.Font</c>, GitCommands/Settings/AppSettings.cs:1550).
-    /// </summary>
-    private const string ChromeFontSizeKey = "ControlContentThemeFontSize";
-
-    /// <summary>
-    ///  Brings the app's baseline text size down to upstream's.
-    ///
-    ///  <para><b>This is the reason the port read "slightly more zoomed" than the
-    ///  original.</b> Everything Fluent templates — <c>Button</c>, <c>TextBox</c>,
-    ///  <c>CheckBox</c>, <c>ComboBox</c>, menu items, <c>TreeViewItem</c>, and a bare
-    ///  <c>TextBlock</c> — took its font size from <see cref="ChromeFontSizeKey"/> at
-    ///  <b>14</b>, against upstream's <b>12</b>: <b>+17%</b> on every label in the shell,
-    ///  inherited for free rather than chosen. The views' own literals were already
-    ///  upstream-sized (12 in 77 places), so the mismatch was between the content and
-    ///  the chrome around it.</para>
-    ///
-    ///  <para>Overriding the one resource key is what makes this a baseline fix and not
-    ///  a per-control patch: it is read by every Fluent <c>ControlTheme</c>, it applies
-    ///  live, and it needs no view edited. Measured against Fluent 11.3.14: with the key
-    ///  at 12, <c>Button</c>/<c>TextBox</c>/<c>CheckBox</c>/<c>TreeViewItem</c> all
-    ///  report <c>FontSize = 12</c>.</para>
-    ///
-    ///  <para><b>Never removed, and outside <see cref="Snapshot"/>.</b> Like the baseline
-    ///  <see cref="Style"/> in <see cref="BuildBaseline"/>, the size of the
-    ///  app's text is not a modern-versus-classic question — Classic's own reference,
-    ///  upstream, is 12px too. Handing this key back on a switch to Classic would make
-    ///  Classic 17% larger than the look it is defined to reproduce.</para>
-    ///
-    ///  <para><b>Not the same thing as <see cref="UiSize"/>.</b> This sets where 100% is;
-    ///  the user-facing option scales the whole tree away from it. Fixing the baseline
-    ///  first is what keeps the option an option instead of a workaround.</para>
-    /// </summary>
-    private static void InstallChromeFontSize(Application app)
-        => app.Resources[ChromeFontSizeKey] = Metrics.Text.Body;
 
     private static void RemoveModern(Application app)
     {
@@ -556,19 +521,22 @@ public static class ModernStyles
         // never had — Fluent's oversized tab headers.
         //
         // M81 REMOVED the companion `TextBlock -> FontSize 13` style that used to sit
-        // here. Its job was to undo Fluent's 14px default, and
-        // InstallChromeFontSize now does that at the source, for the chrome AND for bare
-        // TextBlocks alike (measured: with ControlContentThemeFontSize = 12, an
-        // unstyled TextBlock reports 12). Keeping the style would have re-raised prose
-        // to 13 while every button and menu item around it sat at upstream's 12 — two
-        // sources for one number, disagreeing. The app default now comes from one place.
+        // here. Its job was to undo Fluent's 14px default, and the chrome font size
+        // resource now does that at the source, for the chrome AND for bare TextBlocks
+        // alike (measured: with ControlContentThemeFontSize = 12, an unstyled TextBlock
+        // reports 12). Keeping the style would have re-raised prose to 13 while every
+        // button and menu item around it sat at upstream's 12 — two sources for one
+        // number, disagreeing. The app default comes from one place: UiScaling.
         //
-        // Fluent's tab headers are oversized for a dense tool. The size is
-        // Metrics.Text.Body, not Subtitle: upstream draws its tab strip in the same 12px
-        // as everything else, and after M81 so does the rest of the port's chrome — a
-        // 13px strip would now be the only thing out of step.
+        // NO FontSize SETTER HERE, and that is the point (M84). Fluent's tab headers are
+        // oversized for a dense tool (its TabItemHeaderFontSize is 24), so the port has
+        // always overridden them — but a literal here overrode the user's chosen size
+        // too, and measured it did: with the chrome key at 15 every control reported 15
+        // and TabItem alone still reported 12. UiScaling writes TabItemHeaderFontSize
+        // instead, which Fluent's own template reads, so the strip lands on upstream's 12
+        // at Normal and follows the option everywhere else. Only the weight and the
+        // metrics stay here.
         Style tabItem = new(x => x.OfType<TabItem>());
-        tabItem.Setters.Add(new Setter(TemplatedControl.FontSizeProperty, Metrics.Text.Body));
         tabItem.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, Metrics.Text.SubtitleWeight));
         // 12,6: the 6 is off the Space scale (Metrics.Space documents it as one of the
         // two values to retire). Kept exactly as it was because moving this style out

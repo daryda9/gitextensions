@@ -162,11 +162,11 @@ public sealed class MainWindow : Window
         _uiState = _uiStateService.Load();
         ApplyAppearance();
 
-        // The UI size, before this window is styled: the style setter that installs the
-        // transform fires during styling and reads UiScaling.CurrentScale, so setting it
-        // first is what makes the window open at the remembered size instead of at 100%
-        // and then jumping. Its own call, not folded into ApplyAppearance: the size is a
-        // transform rather than a palette (see Theming/UiScaling).
+        // The interface text size, before this window is built: the resource is read as
+        // each control is templated, so writing it first is what makes the window open at
+        // the remembered size instead of at the baseline and then reflowing. Its own call,
+        // not folded into ApplyAppearance: the size is a font size, not a palette (see
+        // Theming/UiScaling).
         Theming.UiScaling.Apply(Theming.UiSizes.Parse(_uiState.UiSize));
 
         Title = DefaultTitle;

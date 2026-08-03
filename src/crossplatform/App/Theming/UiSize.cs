@@ -1,44 +1,45 @@
 namespace GitExtensions.Avalonia.Theming;
 
 /// <summary>
-///  How large the whole interface is drawn, chosen from Settings → Appearance.
+///  How large the interface text is drawn, chosen from Settings → Appearance.
 ///
-///  <para><b>This is a zoom, not a font setting.</b> <see cref="UiSize.Normal"/> is
-///  the baseline the port is built at — after M81 that baseline is upstream's own
-///  12px chrome (see <see cref="ModernStyles"/>) — and every other member is a
-///  uniform scale factor applied to the entire visual tree of every window. Font
-///  sizes, paddings, row heights, icon boxes and the custom-drawn revision graph all
-///  move together, because they are all scaled by the same transform rather than each
-///  being re-derived from a font size.</para>
+///  <para><b>This is the size of the app's chrome text, not a zoom.</b>
+///  <see cref="UiSize.Normal"/> is the baseline the port is built at — upstream's own 12px
+///  chrome (M81) — and each other member moves that one number. Everything Fluent
+///  templates follows it: buttons, text boxes, check boxes, list and tree rows, tab
+///  headers, tooltips, menus and combo dropdowns. The revision grid, the diff and the
+///  file lists do <b>not</b> follow it: they set literal sizes from
+///  <see cref="Metrics.Text"/> when they are built. See <see cref="UiScaling"/> for what
+///  is written and for why the earlier layout-transform implementation was removed.</para>
 ///
-///  <para><b>Why a closed list and not a slider.</b> A free scale invites values that
-///  land text on half pixels for no benefit, and it has no name to put in a settings
-///  file or a bug report. Four named steps cover the reason the option exists (the
-///  port reads slightly larger or smaller than the user's other tools) without
-///  turning the window into a zoom control.</para>
+///  <para><b>Why a closed list and not a slider.</b> A free scale invites values that land
+///  text on fractional pixels for no benefit, and it has no name to put in a settings file
+///  or a bug report. Four named steps cover the reason the option exists (the port reads
+///  slightly larger or smaller than the user's other tools) without turning the window
+///  into a zoom control.</para>
 ///
 ///  <para>Orthogonal to both <see cref="AppStyle"/> and
-///  <see cref="Avalonia.Styling.ThemeVariant"/>: the transform is applied above the
-///  styled tree, so every size renders correctly in Classic and Modern alike.</para>
+///  <see cref="Avalonia.Styling.ThemeVariant"/>: a font size is not a palette, so every
+///  size renders correctly in Classic and Modern alike.</para>
 /// </summary>
 public enum UiSize
 {
-    /// <summary>90% — denser than the baseline.</summary>
+    /// <summary>11px — denser than the baseline.</summary>
     Small,
 
-    /// <summary>100% — the baseline, matching upstream's 12px chrome.</summary>
+    /// <summary>12px — the baseline, matching upstream's chrome.</summary>
     Normal,
 
-    /// <summary>110%.</summary>
+    /// <summary>13px.</summary>
     Large,
 
-    /// <summary>125% — the largest offered step.</summary>
+    /// <summary>15px — the largest offered step.</summary>
     VeryLarge,
 }
 
 /// <summary>
-///  The scale factor of each <see cref="UiSize"/> and its persisted name, kept
-///  together so the list of sizes exists in exactly one place.
+///  The text size of each <see cref="UiSize"/> and its persisted name, kept together so
+///  the list of sizes exists in exactly one place.
 ///
 ///  <para>The names are what goes into <c>ui-state.json</c>; they are the enum member
 ///  names, so adding a step needs no separate table.</para>
@@ -50,34 +51,46 @@ public static class UiSizes
         [UiSize.Small, UiSize.Normal, UiSize.Large, UiSize.VeryLarge];
 
     /// <summary>
-    ///  The scale factor. <see cref="UiSize.Normal"/> is exactly 1.0 — the option must
-    ///  be free at its default, i.e. no transform is installed and not a single pixel
-    ///  moves relative to a build that never had the option.
+    ///  The chrome font size in device-independent pixels.
+    ///
+    ///  <para><b>WHOLE PIXELS, deliberately.</b> The four steps were specified as 90 /
+    ///  100 / 110 / 125% of the 12px baseline, which is 10.8 / 12 / 13.2 / 15. Two of
+    ///  those are fractional, and a fractional chrome size propagates into fractional
+    ///  control heights and text origins — borders and glyph stems then straddle pixel
+    ///  boundaries and the whole shell reads faintly soft, which is the opposite of what
+    ///  someone asking for a size change wants. Rounded to whole pixels the steps are
+    ///  <b>11 / 12 / 13 / 15</b>, i.e. the realised ratios are 92 / 100 / 108 / 125%
+    ///  rather than the nominal ones. Half-pixel steps were considered and rejected: they
+    ///  would give 10.8 → 11.0, no closer to nominal than whole pixels, and 13.2 → 13.5,
+    ///  which is a fractional size again.</para>
+    ///
+    ///  <para><see cref="Label"/> prints these pixel values and not the nominal
+    ///  percentages, so the UI cannot claim a ratio the app does not draw.</para>
     /// </summary>
-    public static double Scale(UiSize size) => size switch
+    public static double FontSize(UiSize size) => size switch
     {
-        UiSize.Small => 0.90,
-        UiSize.Large => 1.10,
-        UiSize.VeryLarge => 1.25,
-        _ => 1.0,
+        UiSize.Small => 11,
+        UiSize.Large => 13,
+        UiSize.VeryLarge => 15,
+        _ => 12,
     };
 
-    /// <summary>The label shown in the Settings combo (and in the View menu).</summary>
+    /// <summary>The label shown in the Settings combo.</summary>
     public static string Label(UiSize size) => size switch
     {
-        UiSize.Small => "Small (90%)",
-        UiSize.Large => "Large (110%)",
-        UiSize.VeryLarge => "Very large (125%)",
-        _ => "Normal (100%)",
+        UiSize.Small => "Small (11px text)",
+        UiSize.Large => "Large (13px text)",
+        UiSize.VeryLarge => "Very large (15px text)",
+        _ => "Normal (12px text)",
     };
 
     /// <summary>The name written to <c>ui-state.json</c>.</summary>
     public static string Name(UiSize size) => size.ToString();
 
     /// <summary>
-    ///  Parses a persisted name, falling back to <see cref="UiSize.Normal"/> for
-    ///  anything unrecognised — same rule as <c>Theme</c> and <c>Style</c>, so a
-    ///  hand-edited or older file can never produce a size the app cannot draw.
+    ///  Parses a persisted name, falling back to <see cref="UiSize.Normal"/> for anything
+    ///  unrecognised — same rule as <c>Theme</c> and <c>Style</c>, so a hand-edited or
+    ///  older file can never produce a size the app cannot draw.
     /// </summary>
     public static UiSize Parse(string? name)
         => Enum.TryParse(name, ignoreCase: true, out UiSize size) && Array.IndexOf(All, size) >= 0

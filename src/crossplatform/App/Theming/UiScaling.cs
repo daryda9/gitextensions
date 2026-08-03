@@ -1,287 +1,98 @@
 using Avalonia;
-using Avalonia.Controls;
-using Avalonia.LogicalTree;
-using Avalonia.Media;
 using Avalonia.Styling;
-using Avalonia.VisualTree;
 
 namespace GitExtensions.Avalonia.Theming;
 
 /// <summary>
-///  Applies the chosen <see cref="UiSize"/> to every window, and owns the current
-///  size the way <see cref="ThemeManager"/> owns the theme and the style.
+///  Applies the chosen <see cref="UiSize"/>, and owns the current size the way
+///  <see cref="ThemeManager"/> owns the theme and the style.
 ///
-///  <para><b>Why a transform and not a font size.</b> The obvious implementation is to
-///  scale the app's default font size and let the controls follow. Measured on this
-///  tree, that would be a half-working option: the views assign literal font sizes in
-///  <b>137</b> places (77 of them <c>12</c>) — the revision grid rows, the diff, the
-///  file lists, i.e. exactly the dense content the option is asked for — and Fluent's
-///  control heights are fixed minimums (a <c>TextBox</c> measures 32px tall whether its
-///  font is 12 or 15, verified against Fluent 11.3.14). A font-size knob would leave
-///  all of that at one size while the labels around it moved. A
-///  <see cref="LayoutTransformControl"/> above the window content scales the whole
-///  measured tree — literal font sizes, fixed minimums, icon boxes, and the
-///  custom-drawn DAG — by one factor, which is the only way the parts stay coherent.</para>
+///  <para><b>The size is the app's text size.</b> Three theme resource keys are written,
+///  nothing else — no control is touched, no visual tree is modified. Every Fluent
+///  <c>ControlTheme</c> reads its content size from
+///  <see cref="ChromeFontSizeKey">ControlContentThemeFontSize</see> through a dynamic
+///  resource, so the whole chrome follows one write, live, including the parts that live
+///  in their own visual root. Measured against Fluent 11.3.14 with the key at 12 and at
+///  15: <c>Button</c>, <c>TextBox</c>, <c>CheckBox</c>, <c>ComboBox</c>, <c>TreeView</c>,
+///  <c>ListBox</c>, a bare <c>TextBlock</c>, <c>ListBoxItem</c>, <c>TreeViewItem</c>,
+///  <c>ComboBoxItem</c> and <c>MenuItem</c> at both levels all report the value written.</para>
 ///
-///  <para><b>The trade-off accepted.</b> The transform scales rendering as well as
-///  layout, so Classic's 16px PNG icons are resampled at 90/110/125% and lose a little
-///  crispness (text and the vector glyphs are geometry and stay sharp). That is
-///  visible, and it is the price of the option being real for every part of the UI
-///  instead of only the parts that read a font size. At
-///  <see cref="UiSize.Normal"/> nothing is installed at all, so the default build is
-///  pixel-identical to one without the option.</para>
+///  <para><b>What it provably does NOT scale, and why that is stated in the UI.</b> The
+///  views assign literal font sizes in <b>137</b> places (77 of them <c>12</c>) — the
+///  revision grid rows, the diff, the file lists — and those literals are
+///  <see cref="Metrics.Text"/> compile-time constants read once when a view is built, so
+///  they cannot follow a resource and do not move. Fluent's control heights are partly
+///  fixed minimums as well (a <c>TextBox</c> measures 32px tall at font 12 and at font
+///  15; a <c>Button</c> does grow, 23px to 25px). The Appearance page therefore says in
+///  one line that this option changes the interface text and not the grid, diff or file
+///  lists, rather than letting the option look like a zoom.</para>
 ///
-///  <para><b>What this approach does NOT reach: popups.</b> Measured by reference
-///  identity (a type test is a false positive — <c>OverlayPopupHost</c> contains a
-///  <see cref="LayoutTransformControl"/> of its own): the content of a
-///  <see cref="ComboBox"/> dropdown and of an open <see cref="MenuItem"/> is <b>not</b> a
-///  descendant of the host. Its visual chain reaches the <see cref="Window"/> through the
-///  overlay layer, bypassing the wrapper, and on Windows popups are native windows —
-///  separate visual roots — so they are further outside still. Menus, dropdowns, tooltips
-///  and context menus therefore stay at 100% while the window is at 90/110/125%. This is
-///  the one part a font-size knob WOULD have reached, since
-///  <c>ControlContentThemeFontSize</c> is an application resource that popups read like
-///  everything else.</para>
+///  <para><b>This replaced a per-window layout transform (M84).</b> The earlier
+///  implementation wrapped every window's content in a <c>LayoutTransformControl</c>
+///  installed by an app-wide style. It was chosen for coherence — one factor over the
+///  whole measured tree — but it did not deliver it: popup content is not a descendant of
+///  the window's content, so menus, dropdowns and tooltips stayed at 100% while the
+///  window scaled, which is a worse mismatch than the one above. It also mutated the
+///  content tree from inside a styling callback, and produced three defects in a row: a
+///  crash on every window (M82), a blank main window (M83), and a dropped transform on
+///  windows filled after being shown. Writing a resource has none of that surface: it
+///  cannot orphan a control, it cannot throw, and it reaches popups precisely because
+///  they read application resources like everything else.</para>
 ///
 ///  <para><b>Why the size is not a third argument to
-///  <see cref="ThemeManager.Apply(ThemeVariant, AppStyle)"/>.</b> M80's rule was that
-///  no call site may pass a literal for a dimension the user did not touch, and the
-///  cost of that rule grows with every dimension bolted onto the same call. The size
-///  shares nothing with the palette — it is a transform, not a brush — so it gets its
-///  own owner and its own single-argument <see cref="Apply(UiSize)"/>, and the
-///  theme/style call sites are left exactly as M80 left them.</para>
+///  <see cref="ThemeManager.Apply(ThemeVariant, AppStyle)"/>.</b> M80's rule was that no
+///  call site may pass a literal for a dimension the user did not touch, and the cost of
+///  that rule grows with every dimension bolted onto the same call. The size shares
+///  nothing with the palette, so it gets its own owner and its own single-argument
+///  <see cref="Apply(UiSize)"/>, and the theme/style call sites are left as M80 left
+///  them.</para>
 /// </summary>
 public static class UiScaling
 {
     /// <summary>The active size. Changed only through <see cref="Apply(UiSize)"/>.</summary>
     public static UiSize CurrentSize { get; private set; } = UiSize.Normal;
 
-    /// <summary>The active scale factor (1.0 at <see cref="UiSize.Normal"/>).</summary>
-    public static double CurrentScale => UiSizes.Scale(CurrentSize);
+    /// <summary>
+    ///  The Fluent resource every control template reads its content font size from.
+    ///  Fluent 11.3.14 sets it to <b>14</b>; upstream Git Extensions draws its chrome in
+    ///  <c>SystemFonts.MessageBoxFont</c> — Segoe UI 9pt, i.e. <b>12px</b> at 100% DPI
+    ///  (<c>AppSettings.Font</c>, GitCommands/Settings/AppSettings.cs:1550), which is
+    ///  what <see cref="UiSize.Normal"/> writes.
+    /// </summary>
+    private const string ChromeFontSizeKey = "ControlContentThemeFontSize";
+
+    // Fluent keeps tooltips on their own key (default 12). Left behind, a tooltip would
+    // be the one piece of chrome still at the baseline while everything around it moved.
+    private const string ToolTipFontSizeKey = "ToolTipContentThemeFontSize";
+
+    // Fluent's own tab header size is 24 — oversized for a dense tool, which is why the
+    // port has always overridden it. Since M84 the override IS this key (ModernStyles no
+    // longer sets FontSize on TabItem), so the tab strip follows the option instead of
+    // being pinned to a literal 12 while the rest of the chrome moved.
+    private const string TabHeaderFontSizeKey = "TabItemHeaderFontSize";
 
     /// <summary>
-    ///  Raised after the size changed and every open window has been re-scaled.
+    ///  Sets the interface text size. Applies live to every open window and to every
+    ///  window opened afterwards, because the keys are read through dynamic resources.
     ///
-    ///  <para>STATIC, like <see cref="ThemeManager.StyleChanged"/>: anything that
-    ///  subscribes from a control must unsubscribe when it detaches, or the handler
-    ///  list grows for the life of the process.</para>
-    /// </summary>
-    public static event Action? SizeChanged;
-
-    /// <summary>
-    ///  Set on every <see cref="Window"/> by the app-wide style
-    ///  <see cref="BuildStyles"/> returns. The property itself carries no meaning: its
-    ///  change handler is what wraps the window's content, and a style setter is the
-    ///  only way to reach every window — including the ones Avalonia opens itself,
-    ///  such as the managed file chooser — without editing 34 window classes and
-    ///  remembering the 35th.
-    /// </summary>
-    public static readonly AttachedProperty<bool> ScaledProperty =
-        AvaloniaProperty.RegisterAttached<Window, bool>("Scaled", typeof(UiScaling));
-
-    // The one host installed on a given window, remembered ON that window.
-    //
-    // THIS IS WHAT MAKES Attach IDEMPOTENT, and it is not optional. The style setter
-    // that drives Attach is re-evaluated whenever Application.Styles changes — adding or
-    // removing a style makes every styled element re-style, and the setter's value goes
-    // back to Unset (false) and then to true again. Opening the Settings dialog does
-    // exactly that, so Attach ran a SECOND time on the main window: it built a second
-    // host, and the first host's Content-swap handler then fought it for the window's
-    // Content until the real content was left parented to neither. The main window went
-    // blank — white client area, correct title bar — and stayed blank after the dialog
-    // closed. Attach now recognises a window it has already wrapped and does nothing.
-    private static readonly AttachedProperty<LayoutTransformControl?> HostProperty =
-        AvaloniaProperty.RegisterAttached<Window, LayoutTransformControl?>("Host", typeof(UiScaling));
-
-    // The transform hosts of the windows that are still alive. Weak, because a closed
-    // dialog must be collectable: the list is only ever walked to re-scale, and a
-    // window that has gone away needs no re-scaling. Compacted on every walk, so a
-    // long session does not accumulate dead slots.
-    private static readonly List<WeakReference<LayoutTransformControl>> Hosts = [];
-
-    static UiScaling()
-    {
-        ScaledProperty.Changed.AddClassHandler<Window>((window, args) =>
-        {
-            if (args.GetNewValue<bool>())
-            {
-                Attach(window);
-            }
-        });
-    }
-
-    /// <summary>
-    ///  The app-wide style that opts every window in. Add it to
-    ///  <see cref="Application.Styles"/> once, after the theme; it is never removed, and
-    ///  it is style-agnostic (Classic and Modern both go through it).
-    /// </summary>
-    public static Styles BuildStyles()
-    {
-        Style window = new(x => x.OfType<Window>());
-        window.Setters.Add(new Setter(ScaledProperty, true));
-        return [window];
-    }
-
-    /// <summary>
-    ///  Sets the size that new windows are created at and re-scales the open ones in
-    ///  place — live, like the theme and the style, and without rebuilding any view.
+    ///  <para>Call it once at start-up to install the baseline — <see cref="UiSize.Normal"/>
+    ///  is not a no-op, it is what brings Fluent's 14 down to upstream's 12 — and again
+    ///  whenever the user chooses a size.</para>
     /// </summary>
     public static void Apply(UiSize size)
     {
         CurrentSize = size;
-        double scale = UiSizes.Scale(size);
 
-        for (int i = Hosts.Count - 1; i >= 0; i--)
+        if (Application.Current is not Application app)
         {
-            if (Hosts[i].TryGetTarget(out LayoutTransformControl? host))
-            {
-                // Assigning the transform is enough: LayoutTransformControl invalidates
-                // its own measure, so the window re-lays-out at the new scale on the next
-                // layout pass. Verified headless across all four sizes on an already-shown
-                // window — an explicit InvalidateMeasure() here changes nothing.
-                host.LayoutTransform = Transform(scale);
-            }
-            else
-            {
-                Hosts.RemoveAt(i);
-            }
-        }
-
-        SizeChanged?.Invoke();
-    }
-
-    // null at 1.0: LayoutTransformControl with no transform is a pass-through, so the
-    // default size costs nothing beyond one extra element in the tree.
-    private static ITransform? Transform(double scale)
-        => scale == 1.0 ? null : new ScaleTransform(scale, scale);
-
-    private static void Attach(Window window)
-    {
-        if (window.GetValue(HostProperty) is LayoutTransformControl already)
-        {
-            // Already wrapped, and the style setter simply came round again (see
-            // HostProperty). A second host is never built: the existing one is the
-            // window's only wrapper for the rest of its life. The one thing worth
-            // re-checking is that it is still installed — the Content-swap handler below
-            // normally does that, but it cannot run for a change raised before it was
-            // subscribed.
-            if (!ReferenceEquals(window.Content, already))
-            {
-                TryReparent(window, already, window.Content);
-            }
-
+            // Before Initialize there is nothing to write to. CurrentSize is still
+            // recorded, so the start-up call installs the right value when it comes.
             return;
         }
 
-        LayoutTransformControl host = new() { LayoutTransform = Transform(CurrentScale) };
-
-        if (!TryReparent(window, host, window.Content))
-        {
-            // Declined — see TryReparent. The window keeps the content it had and is
-            // simply drawn unscaled; it is not registered in Hosts, so a later size
-            // change leaves it alone too.
-            return;
-        }
-
-        window.SetValue(HostProperty, host);
-        Hosts.Add(new WeakReference<LayoutTransformControl>(host));
-
-        // A window that assigns Content after it has been styled (or replaces it later,
-        // as the settings dialog and the main window both do on a language switch) would
-        // otherwise throw the transform away. Re-parent instead of re-wrapping, so the
-        // host — and its entry in Hosts — stays the same object.
-        bool reparenting = false;
-        window.PropertyChanged += (_, args) =>
-        {
-            if (args.Property == ContentControl.ContentProperty
-                && !reparenting
-                && !ReferenceEquals(window.Content, host))
-            {
-                // TryReparent writes Content twice at most, and both writes come back
-                // here; the flag is what stops the second one starting a new round.
-                reparenting = true;
-                try
-                {
-                    TryReparent(window, host, window.Content);
-                }
-                finally
-                {
-                    reparenting = false;
-                }
-            }
-        };
+        double px = UiSizes.FontSize(size);
+        app.Resources[ChromeFontSizeKey] = px;
+        app.Resources[ToolTipFontSizeKey] = px;
+        app.Resources[TabHeaderFontSizeKey] = px;
     }
-
-    /// <summary>
-    ///  Makes <paramref name="host"/> the window's content and <paramref name="content"/>
-    ///  the host's child, or leaves the window exactly as it was and returns
-    ///  <see langword="false"/>.
-    ///
-    ///  <para><b>The window is not what parents its content.</b> The Window's
-    ///  <c>ContentPresenter</c> is, and it only picks up (or drops) a child on its next
-    ///  layout pass. So clearing <c>Window.Content</c> does NOT detach the old content
-    ///  there and then: hand it to <see cref="LayoutTransformControl.Child"/> in the same
-    ///  breath and Avalonia throws <c>InvalidOperationException: The Control already has
-    ///  a parent</c>. That is what crashed the Settings dialog — the style setter that
-    ///  calls <see cref="Attach"/> is applied from inside the window's first measure
-    ///  pass, by which point the presenter is already holding the content, and waiting
-    ///  for a later pass is therefore not available. <c>UpdateChild()</c> forces the
-    ///  presenter to reconcile immediately, which is what actually frees the control.</para>
-    ///
-    ///  <para>The parent check afterwards is not belt-and-braces: it is the contract.
-    ///  A window whose content cannot be freed — no presenter yet, a presenter that
-    ///  declined, a content control held elsewhere — must be left unscaled rather than
-    ///  bring the process down, because the UI size is an appearance option and no
-    ///  appearance option is worth a crash.</para>
-    /// </summary>
-    private static bool TryReparent(Window window, LayoutTransformControl host, object? content)
-    {
-        if (ReferenceEquals(content, host))
-        {
-            return true;
-        }
-
-        // Never make the host a descendant of itself. Nothing in the port asks for this
-        // today — HostProperty stops the one path that did — but the cost of getting it
-        // wrong is the whole window going blank, silently, which is exactly the bug this
-        // guard is named after. Declining leaves the window as it is.
-        if (content is Control candidate && host.GetLogicalAncestors().Contains(candidate))
-        {
-            return false;
-        }
-
-        window.Content = host;
-        window.Presenter?.UpdateChild();
-
-        Control? child = AsControl(content);
-        if (child is not null && (child.Parent is not null || child.GetVisualParent() is not null))
-        {
-            window.Content = content;
-            return false;
-        }
-
-        host.Child = child;
-
-        // RE-ASSERTED, not redundant. LayoutTransformControl rewrites its own
-        // LayoutTransform as part of laying out (an assigned ScaleTransform comes back
-        // as the equivalent MatrixTransform), and when it lays out with NO child it
-        // clears the property outright. A window that is shown empty and given its
-        // content afterwards — MainWindow on a language switch, and every dialog that
-        // builds its body after Show — therefore reached this point with the transform
-        // already dropped, and would have been drawn unscaled until the next size
-        // change. Measured headless: without this line, such a window reports a null
-        // LayoutTransform at Small/Large/VeryLarge.
-        host.LayoutTransform = Transform(CurrentScale);
-        return true;
-    }
-
-    // Window.Content is an object: a control goes straight in, anything else (a string,
-    // or a value a DataTemplate will render) keeps its templating by going through a
-    // ContentControl, because LayoutTransformControl.Child is typed Control.
-    private static Control? AsControl(object? content) => content switch
-    {
-        null => null,
-        Control control => control,
-        _ => new ContentControl { Content = content },
-    };
 }

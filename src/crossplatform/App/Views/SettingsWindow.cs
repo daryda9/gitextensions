@@ -514,9 +514,8 @@ public sealed class SettingsWindow : Window
             AppearanceKey, AppearanceText,
             null, "The application colour theme, its visual style — \"Modern\" for the "
                 + "current vector icons and neutral palette, \"Classic\" for the earlier "
-                + "look — and how large the interface is drawn. \"Normal\" matches the "
-                + "original Git Extensions; the other sizes scale the whole window, text "
-                + "and spacing together. The three are independent, so any combination "
+                + "look — and the size of the interface text. \"Normal\" matches the "
+                + "original Git Extensions. The three are independent, so any combination "
                 + "works, and all of them are applied immediately as a preview and "
                 + "persisted on OK or Apply (reverted on Cancel).",
             text,
@@ -527,7 +526,14 @@ public sealed class SettingsWindow : Window
             // (its only scaling control is the high-DPI auto-scale checkbox), so there is
             // no id to borrow and no translated target to inherit.
             Field(null, "Style", _style, dim),
-            Field(null, "UI size", _uiSize, dim));
+            // The note is not optional politeness: this option moves the chrome text —
+            // buttons, labels, menus, tabs, tree and list rows — and provably does not
+            // move the revision grid, the diff or the file lists, which set their own
+            // sizes when they are built. Without the line the control reads like a zoom.
+            Field(null, "UI size", _uiSize, dim,
+                "Changes the interface text: buttons, labels, menus, tabs and list rows. "
+                    + "The revision grid, the diff and the file lists keep their own text "
+                    + "size, and some control heights are fixed."));
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
@@ -917,8 +923,9 @@ public sealed class SettingsWindow : Window
     private void PreviewAppearance()
         => ThemeManager.Apply(SelectedVariant, SelectedStyle);
 
-    // Live, like the theme and the style: UiScaling re-scales the open windows in place,
-    // this dialog included, so the preview is also the thing being previewed.
+    // Live, like the theme and the style: the size is a theme resource read through a
+    // dynamic reference, so every open window re-reads it — this dialog included, which
+    // means the preview is also the thing being previewed.
     private void PreviewUiSize() => UiScaling.Apply(SelectedUiSize);
 
     private UiSize SelectedUiSize
@@ -1315,6 +1322,26 @@ public sealed class SettingsWindow : Window
         Localize(label, labelKey, labelText);
         field.Children.Add(label);
         field.Children.Add(editor);
+        return field;
+    }
+
+    /// <summary>
+    ///  A <see cref="Field"/> with one line of small print under the editor, for a control
+    ///  whose effect is narrower than its name suggests. The note is a plain English
+    ///  literal, like the labels around it: upstream has no equivalent setting, so there is
+    ///  no trans-unit id to borrow (same call M80 made for "Style").
+    /// </summary>
+    private Control Field(string? labelKey, string labelText, Control editor, IBrush dim, string note)
+    {
+        StackPanel field = (StackPanel)Field(labelKey, labelText, editor, dim);
+        field.Children.Add(new TextBlock
+        {
+            Text = note,
+            Foreground = dim,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
         return field;
     }
 
