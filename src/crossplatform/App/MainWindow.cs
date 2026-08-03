@@ -162,6 +162,13 @@ public sealed class MainWindow : Window
         _uiState = _uiStateService.Load();
         ApplyAppearance();
 
+        // The UI size, before this window is styled: the style setter that installs the
+        // transform fires during styling and reads UiScaling.CurrentScale, so setting it
+        // first is what makes the window open at the remembered size instead of at 100%
+        // and then jumping. Its own call, not folded into ApplyAppearance: the size is a
+        // transform rather than a palette (see Theming/UiScaling).
+        Theming.UiScaling.Apply(Theming.UiSizes.Parse(_uiState.UiSize));
+
         Title = DefaultTitle;
         Width = _uiState.WindowWidth;
         Height = _uiState.WindowHeight;
@@ -3725,6 +3732,10 @@ public sealed class MainWindow : Window
         UiState saved = _uiStateService.Load();
         _uiState.Theme = saved.Theme;
         _uiState.Style = saved.Style;
+
+        // Same reason as the two above: PersistLayout() writes this instance in full on
+        // close, so a size chosen in the dialog would be undone by the exit save.
+        _uiState.UiSize = saved.UiSize;
     }
 
     // ---- plugins --------------------------------------------------------------------

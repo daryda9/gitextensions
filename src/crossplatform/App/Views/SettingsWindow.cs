@@ -88,6 +88,7 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox _pullAction;
     private readonly ComboBox _theme;
     private readonly ComboBox _style;
+    private readonly ComboBox _uiSize;
 
     // One three-state checkbox per GitConfigChoices entry, same order.
     private readonly CheckBox[] _gitConfigChecks;
@@ -151,6 +152,12 @@ public sealed class SettingsWindow : Window
     // pair, so a Cancel that put back only one would leave the other one previewed.
     private string _revertTheme;
     private string _revertStyle;
+
+    // Same contract as the two above, for the UI size. Its own field rather than a
+    // third element of a tuple: UiScaling.Apply takes one argument, so there is no
+    // pair to keep together here (see Theming/UiScaling for why the size is not a
+    // third argument to ThemeManager.Apply).
+    private UiSize _revertUiSize;
 
     private bool _applied;
 
@@ -491,18 +498,36 @@ public sealed class SettingsWindow : Window
         _style.Items.Add(new ComboBoxItem { Content = "Classic" });
         _style.SelectionChanged += (_, _) => PreviewAppearance();
 
+        _uiSize = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+
+        // Built from UiSizes.All so the combo cannot fall out of step with the sizes the
+        // engine actually knows how to apply; the item order IS the enum order, which is
+        // what makes SelectedIndex usable as the size below.
+        foreach (UiSize size in UiSizes.All)
+        {
+            _uiSize.Items.Add(new ComboBoxItem { Content = UiSizes.Label(size) });
+        }
+
+        _uiSize.SelectionChanged += (_, _) => PreviewUiSize();
+
         Panel appearancePanel = CategoryPanel(
             AppearanceKey, AppearanceText,
-            null, "The application colour theme and its visual style — \"Modern\" for the "
+            null, "The application colour theme, its visual style — \"Modern\" for the "
                 + "current vector icons and neutral palette, \"Classic\" for the earlier "
-                + "look. The two are independent, so any combination works. Both choices "
-                + "are applied immediately as a preview and persisted on OK or Apply "
-                + "(reverted on Cancel).",
+                + "look — and how large the interface is drawn. \"Normal\" matches the "
+                + "original Git Extensions; the other sizes scale the whole window, text "
+                + "and spacing together. The three are independent, so any combination "
+                + "works, and all of them are applied immediately as a preview and "
+                + "persisted on OK or Apply (reverted on Cancel).",
             text,
             dim,
             Field("ColorsSettingsPage/gbTheme.Text", "Theme", _theme, dim),
-            // No upstream trans-unit carries this label, so it is a plain literal.
-            Field(null, "Style", _style, dim));
+            // No upstream trans-unit carries either label, so both are plain literals —
+            // the same choice M80 made for "Style". Upstream has no equivalent setting
+            // (its only scaling control is the high-DPI auto-scale checkbox), so there is
+            // no id to borrow and no translated target to inherit.
+            Field(null, "Style", _style, dim),
+            Field(null, "UI size", _uiSize, dim));
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
@@ -639,6 +664,7 @@ public sealed class SettingsWindow : Window
                 ThemeManager.Apply(
                     _revertTheme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark,
                     _revertStyle == "Classic" ? AppStyle.Classic : AppStyle.Modern);
+                UiScaling.Apply(_revertUiSize);
             }
         };
     }
@@ -781,6 +807,12 @@ public sealed class SettingsWindow : Window
         // restores to.
         _theme.SelectedIndex = ui.Theme == "Light" ? 1 : 0;
         _style.SelectedIndex = ui.Style == "Classic" ? 1 : 0;
+
+        // The size the dialog previews from, and the one Cancel returns to. Read from
+        // the live engine rather than from the file: the host applied it at startup, and
+        // it is the engine that says what is on screen right now.
+        _revertUiSize = UiScaling.CurrentSize;
+        _uiSize.SelectedIndex = Array.IndexOf(UiSizes.All, _revertUiSize);
         return (ui.Theme, ui.Style);
     }
 
@@ -884,6 +916,13 @@ public sealed class SettingsWindow : Window
     // other — the two are orthogonal and all four combinations are reachable.
     private void PreviewAppearance()
         => ThemeManager.Apply(SelectedVariant, SelectedStyle);
+
+    // Live, like the theme and the style: UiScaling re-scales the open windows in place,
+    // this dialog included, so the preview is also the thing being previewed.
+    private void PreviewUiSize() => UiScaling.Apply(SelectedUiSize);
+
+    private UiSize SelectedUiSize
+        => UiSizes.All[Math.Max(0, _uiSize.SelectedIndex)];
 
     private ThemeVariant SelectedVariant
         => _theme.SelectedIndex == 1 ? ThemeVariant.Light : ThemeVariant.Dark;
@@ -993,10 +1032,12 @@ public sealed class SettingsWindow : Window
         UiState ui = _uiStateService.Load();
         ui.Theme = _theme.SelectedIndex == 1 ? "Light" : "Dark";
         ui.Style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
+        ui.UiSize = UiSizes.Name(SelectedUiSize);
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
         ThemeManager.Apply(SelectedVariant, SelectedStyle);
+        UiScaling.Apply(SelectedUiSize);
 
         // The host owns the live UiState instance and re-serialises it on close, which
         // would otherwise overwrite the value just written to the file. Telling it
@@ -1012,6 +1053,7 @@ public sealed class SettingsWindow : Window
         _applied = true;
         _revertTheme = ui.Theme;
         _revertStyle = ui.Style;
+        _revertUiSize = SelectedUiSize;
     }
 
     // ---- hotkeys ------------------------------------------------------------

@@ -129,6 +129,20 @@ public sealed class UiState
     public string Style { get; set; } = "Modern";
 
     /// <summary>
+    ///  How large the whole interface is drawn: the name of a
+    ///  <see cref="GitExtensions.Avalonia.Theming.UiSize"/> member ("Small", "Normal",
+    ///  "Large", "VeryLarge").
+    ///
+    ///  <para>Sits beside <see cref="Theme"/> and <see cref="Style"/> because it is the
+    ///  same kind of Appearance choice, and is independent of both: every size renders
+    ///  in all four theme/style combinations.</para>
+    ///
+    ///  <para>"Normal" is not a neutral placeholder — it is the baseline the port is
+    ///  built at (upstream's 12px chrome), so the default costs no transform at all.</para>
+    /// </summary>
+    public string UiSize { get; set; } = "Normal";
+
+    /// <summary>
     ///  UI language: the base name of a <c>Translation/*.xlf</c> catalogue
     ///  ("Italian", "German", …), or "English" for the untranslated literals.
     ///  Sits next to <see cref="Theme"/> because upstream treats both as
@@ -283,6 +297,10 @@ public sealed class UiStateService
         (s.DetailStar, s.DiffStar) = NormalizeSplit(s.DetailStar, s.DiffStar, 0.4);
         s.Theme = s.Theme == "Light" ? "Light" : "Dark";
         s.Style = s.Style == "Classic" ? "Classic" : "Modern";
+        // Round-tripped through the enum, so an unknown or hand-edited name lands on
+        // "Normal" rather than reaching the transform (see UiSizes.Parse).
+        s.UiSize = GitExtensions.Avalonia.Theming.UiSizes.Name(
+            GitExtensions.Avalonia.Theming.UiSizes.Parse(s.UiSize));
         s.BottomTab = string.IsNullOrWhiteSpace(s.BottomTab) ? "Commit" : s.BottomTab.Trim();
 
         // A corrupt coordinate is dropped rather than clamped: with no position the

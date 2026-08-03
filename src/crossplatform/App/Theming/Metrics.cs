@@ -98,7 +98,10 @@ public static class Metrics
         /// <summary>12 — dense body text: grids, diffs, file lists.</summary>
         public const double Body = 12;
 
-        /// <summary>13 — the app default (tab headers, dialog prose, labels).</summary>
+        /// <summary>13 — one rank above body text. NOT the app default: since M81 the
+        /// app-wide size is <see cref="Body"/> (12), which is what upstream Git
+        /// Extensions draws its chrome in and what ModernStyles installs through
+        /// Fluent's <c>ControlContentThemeFontSize</c>.</summary>
         public const double Subtitle = 13;
 
         /// <summary>16 — a section or dialog heading.</summary>

@@ -36,9 +36,9 @@ public class App : Application
         ManagedFileChooserTheming.Install(this);
 
         // Typography defaults, control corners, hover/pressed/disabled/focus states
-        // and their transitions — all app-wide, none of it editing a view. The two
-        // styles that used to live right here (TabItem sizing and the 13px TextBlock
-        // default) moved into ModernStyles.Build unchanged. Must run after
+        // and their transitions — all app-wide, none of it editing a view. The TabItem
+        // sizing that used to live right here moved into ModernStyles.Build, which also
+        // owns the app's baseline 12px chrome font size. Must run after
         // ThemeManager.Initialize: every state colour is derived from the App.*
         // brush instances it registers. See Theming/ModernStyles.
         //
@@ -47,6 +47,13 @@ public class App : Application
         // hands the Fluent keys back to their own ControlThemes. The startup value
         // matches ThemeManager's own default.
         Theming.ModernStyles.Apply(this, Theming.ThemeManager.CurrentStyle);
+
+        // Opts every window into the UI-size transform (see Theming/UiScaling). Added
+        // last so the Window setter sits after the theme and the style block, and never
+        // removed: it is style-agnostic, and at the default size it installs no
+        // transform at all. The size itself is read from ui-state.json by MainWindow,
+        // which is where the persisted appearance is applied.
+        Styles.Add(Theming.UiScaling.BuildStyles());
     }
 
     public override void OnFrameworkInitializationCompleted()
