@@ -2480,6 +2480,66 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 5: M83 (2026-08-03) — lo stesso meccanismo, il terzo difetto
+
+> Segnalazione dell'utente subito dopo M82: *«appena clicco su settings, la schermata lampeggia, si
+> apre il dialog di settings ma la GUI dietro il dialog diventa bianca. Se chiudo il dialog rimane
+> bianca.»* Base `44e434651`, `Errori: 0`.
+
+**Riprodotta headless sulla `MainWindow` vera, asserendo sull'albero** e non sull'assenza di
+eccezioni — questo guasto è **silenzioso**:
+
+```
+dopo Show:      LayoutTransformControl[1440x740] > DockPanel[1440x740]
+                body parent=LayoutTransformControl visualRoot=MainWindow attached=True
+dialog aperto:  LayoutTransformControl[1440x740] > LayoutTransformControl[1440x740]
+                body parent=<null>                visualRoot=<null>      attached=False
+```
+
+Il contenuto reale non era figlio di nulla. Una finestra vuota dipinge il suo sfondo: **bianco**.
+
+### Causa: `Attach` non era idempotente, e il setter di stile passa più di una volta
+Tracciato:
+
+```
+Scaled True -> False  prio=Unset      (ValueStore.EndStyling / ApplyStyling)
+Scaled False -> True  prio=Style
+```
+
+Aprire Settings **modifica `Application.Styles`**, e mutare quella collezione ri-stila **ogni**
+elemento: il setter viene disapplicato al default e riapplicato. `Attach` girava quindi una seconda
+volta su una finestra già avvolta, costruiva un **secondo host**, e il gestore di swap del primo si
+azzuffava col secondo per `Window.Content` finché il contenuto vero non restava figlio di nessuno.
+L'avvio sopravviveva perché durante l'avvio nulla ri-stila: **di nuovo** "sopravvissuto per tempismo",
+e di nuovo per la stessa ragione di fondo — **questo codice muta l'albero del contenuto da dentro una
+callback di styling**.
+
+La finestra ora ricorda il suo unico host in un attached property privato (`HostProperty`): `Attach`
+esce subito su una finestra già avvolta, quindi un secondo host non può esistere. `TryReparent`
+rifiuta inoltre se il contenuto proposto è un **antenato** dell'host, così nessun percorso può
+annidare l'host nel proprio sottoalbero.
+
+### Il limite del meccanismo, misurato: i popup non scalano
+Verificato con identità di riferimento (non per tipo — `OverlayPopupHost` ha un
+`LayoutTransformControl` **suo**, che darebbe un falso positivo): il contenuto di un dropdown di
+`ComboBox` e di un `MenuItem` aperto **non è discendente del nostro host**. La catena è
+`ContentPresenter < VisualLayerManager < LayoutTransformControl(di Avalonia) < OverlayPopupHost <
+OverlayLayer < VisualLayerManager < Panel < Window`, cioè arriva alla `Window` **scavalcando** il
+wrapper. Su Windows i popup sono per default finestre native, quindi visual root separati: a maggior
+ragione fuori. **Menu, dropdown, tooltip e menu contestuali restano al 100%** mentre la finestra sta
+a 90/110/125%. È esattamente il pezzo che un knob sul **font** invece raggiungerebbe, perché
+`ControlContentThemeFontSize` è una risorsa d'applicazione che i popup leggono come tutti.
+
+### Verificato / non verificato
+Tutte e quattro le size, `MainWindow` reale: contenuto ancora il **body originale**, parent logico
+l'host, attaccato al visual tree, bounds non collassati, scala giusta — dopo `Show`, con il dialog
+aperto, dopo la chiusura, e attraverso tutti e quattro gli switch Classic/Modern × Light/Dark (lo
+stesso trigger su `Application.Styles`, raggiungibile dai combo di Settings). Il body misura
+`1600x823` al 90% e `1152x592` al 125% dentro la stessa finestra `1440x740`, quindi la scala è reale
+e l'asserzione non è vacua. Le 64 asserzioni della suite precedente continuano a passare. **Non**
+verificato: nulla a schermo (verifica GUI headless non funzionante su questa macchina), e i popup
+**nativi** di Windows — testati solo nella variante overlay che usa l'headless.
+
 ## ROUND 13 — iterazione 4: M82 (2026-08-03) — non è la `Window` a fare da parent
 
 > Regressione segnalata dall'utente sull'app in esecuzione, subito dopo M81: *«quando provo ad aprire i

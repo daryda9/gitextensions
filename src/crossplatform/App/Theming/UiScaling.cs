@@ -31,6 +31,18 @@ namespace GitExtensions.Avalonia.Theming;
 ///  <see cref="UiSize.Normal"/> nothing is installed at all, so the default build is
 ///  pixel-identical to one without the option.</para>
 ///
+///  <para><b>What this approach does NOT reach: popups.</b> Measured by reference
+///  identity (a type test is a false positive — <c>OverlayPopupHost</c> contains a
+///  <see cref="LayoutTransformControl"/> of its own): the content of a
+///  <see cref="ComboBox"/> dropdown and of an open <see cref="MenuItem"/> is <b>not</b> a
+///  descendant of the host. Its visual chain reaches the <see cref="Window"/> through the
+///  overlay layer, bypassing the wrapper, and on Windows popups are native windows —
+///  separate visual roots — so they are further outside still. Menus, dropdowns, tooltips
+///  and context menus therefore stay at 100% while the window is at 90/110/125%. This is
+///  the one part a font-size knob WOULD have reached, since
+///  <c>ControlContentThemeFontSize</c> is an application resource that popups read like
+///  everything else.</para>
+///
 ///  <para><b>Why the size is not a third argument to
 ///  <see cref="ThemeManager.Apply(ThemeVariant, AppStyle)"/>.</b> M80's rule was that
 ///  no call site may pass a literal for a dimension the user did not touch, and the
