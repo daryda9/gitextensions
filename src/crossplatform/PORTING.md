@@ -2480,6 +2480,75 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 7: M85 (2026-08-03) — lo zoom vero: la strada esiste su X11, **non** su Win32
+
+> Richiesta dell'utente dopo M84, che rifiuta l'approccio a soli font: *«cambiando la dimensione cambia
+> solo il font e non la UI. […] lavorerei affinché zoommi tutta l'UI (e quindi di conseguenza anche il
+> testo), e imposterei due livelli di zoom, uno che rispecchia l'attuale zoom di git extensions e una
+> versione più zoomata.»* Base `004428869`. **Nessuna modifica di codice: è un'indagine che si è
+> fermata su un fatto misurato.** Il mandato era esplicito: se la strada
+> ambiente/platform-options non esiste, fermarsi e riportare, **senza** ripiegare sul
+> `LayoutTransform` per finestra rimosso in M84.
+
+### Il fatto: il knob di scala process-wide di Avalonia 11.3.14 è **solo del backend X11**
+Misurato sugli assembly che il port referenzia davvero (`~/.nuget/packages/*/11.3.14/lib/net8.0`),
+non sulla documentazione:
+
+| dove | cosa c'è | verdetto |
+|---|---|---|
+| `Avalonia.X11.dll` | `AVALONIA_GLOBAL_SCALE_FACTOR`, `AVALONIA_SCREEN_SCALE_FACTORS`, `AVALONIA_USE_PHYSICAL_DPI`, `QT_SCALE_FACTOR` + i tipi `IScalingProvider`, `UserConfiguredScalingProvider`, `PostMultiplyScalingProvider`, `XrdbScalingProvider`, `PhysicalDpiScalingProvider` | **la strada c'è** |
+| `Avalonia.Win32.dll` | **zero** stringhe `AVALONIA_*` | **la strada non c'è** |
+| `Avalonia.Win32PlatformOptions` | 9 proprietà pubbliche: `OverlayPopups`, `RenderingMode`, `CompositionMode`, `WinUICompositionBackdropCornerRadius`, `ShouldRenderOnUIThread`, `WglProfiles`, `CustomPlatformGraphics`, `DpiAwareness`, `GraphicsAdapterSelectionCallback` — **nessun fattore di scala** | idem |
+| `Avalonia.X11PlatformOptions` | 15 proprietà pubbliche, **nessun fattore di scala** (su X11 il knob è **solo** l'env var) | idem |
+| `Avalonia.Win32DpiAwareness` | `Unaware` / `SystemDpiAware` / `PerMonitorDpiAware` | **non è uno zoom** — vedi sotto |
+| `Avalonia.Controls.WindowBase.DesktopScalingOverride` | esiste, ma è `FamANDAssem` (`private protected`) **e per-istanza** | inaccessibile, e sarebbe di nuovo per-finestra |
+
+Semantica dell'env var, confermata sul sorgente upstream (`src/Avalonia.X11/Screens/X11Screens.Scaling.cs`,
+gli stessi nomi di classe presenti nell'assembly 11.3.14 pinnato): `if (global != 1) provider = new
+PostMultiplyScalingProvider(provider, global)`, e `GetScaling(screen, index) => _inner.GetScaling(...) *
+_factor`. È **esattamente** il meccanismo giusto: moltiplica la scala di **tutti** gli schermi, quindi
+cambia il DPI in cui crede l'intero toolkit — layout, rendering e popup nativi insieme — e non tocca
+**nessun** albero visuale, quindi non può orfanare contenuto come M82/M83.
+
+**`DpiAwareness.Unaware` non è un sostituto su Windows.** Fa credere al processo 96 DPI e lascia che
+l'OS stiri la finestra come bitmap: il fattore è quello del monitor, **non** una scelta dell'utente
+(su un display al 100% lo zoom è 1.0, cioè l'opzione «Large» non farebbe nulla), e il risultato è
+sfocato. Non può esprimere «Standard vs Large».
+
+### Perché questo blocca la richiesta invece di risolverla a metà
+`App/Program.cs:180` usa `.UsePlatformDetect()`, quindi **la piattaforma decide il backend**. Sulla
+macchina dell'utente — Windows 11 ARM64, la stessa dove gira `GitExtensions.Avalonia.exe` e dove sono
+state viste tutte le regressioni di questo round (cfr. M75) — il backend è **Win32**, dove la strada
+non esiste. Implementare l'env var darebbe uno zoom reale **sul target Linux del port** e
+**un'opzione inerte sulla piattaforma su cui l'utente lo sta valutando**: è precisamente la
+«fake option» che il vincolo vieta. Da qui lo stop.
+
+### Non tentato, per divieto esplicito
+Ripiegare sul `LayoutTransformControl` per finestra. Resta strutturalmente pericoloso (M82/M83).
+
+### Informazione nuova per la decisione: `OverlayPopups` esiste su **entrambi** i backend
+`Win32PlatformOptions.OverlayPopups` e `X11PlatformOptions.OverlayPopups` sono entrambe pubbliche in
+lettura/scrittura (misurato). Con i popup resi **non nativi** cadrebbe una delle due obiezioni al
+transform — quella misurata in M83, «il transform non raggiunge i popup» — perché il contenuto dei
+popup tornerebbe nello stesso visual root della finestra. **Non cadrebbe la seconda**, la mutazione
+dell'albero del contenuto; va però detto che quella era una conseguenza dell'*implementazione*
+(installare il wrapper da una `Style` app-wide, cioè da una callback di styling), non del transform in
+sé: un wrapper creato dalla finestra **alla costruzione**, nel codice della finestra, non passa da
+nessuna callback di styling. È un'opzione diversa, con un costo diverso (i popup overlay non escono
+dai bordi della finestra), e va portata all'utente insieme allo stop qui sopra — non decisa qui.
+
+### Verificato / non verificato
+**Verificato**: la presenza/assenza dei simboli e delle stringhe negli assembly 11.3.14 pinnati
+(scansione dei byte in UTF-16 e ASCII + dump dei metadati via `System.Reflection.Metadata`:
+visibilità, staticità e presenza del setter), e la semantica dell'env var sul sorgente upstream.
+**Nota sul metodo**: la prima scansione, fatta con `strings`, aveva dato *zero* risultati su tutti gli
+assembly — `strings` **non esiste** su questa macchina e il comando falliva silenziosamente. Il
+negativo su `Avalonia.Win32.dll` vale solo perché lo stesso metodo, corretto, trova 9 stringhe
+`AVALONIA_*` in `Avalonia.X11.dll`.
+**Non verificato**: che `AVALONIA_GLOBAL_SCALE_FACTOR` produca davvero lo zoom atteso a schermo. Non è
+verificabile qui — richiede il backend X11, e questa macchina è Windows (l'headless non usa né X11 né
+Win32). Nessuna misura è stata fatta su come apparirebbe la UI a un fattore diverso da 1.
+
 ## ROUND 13 — iterazione 6: M84 (2026-08-03) — il meccanismo sbagliato, sostituito
 
 > Decisione del coordinatore dopo M83, portata all'utente: **sostituire il transform per-finestra con
