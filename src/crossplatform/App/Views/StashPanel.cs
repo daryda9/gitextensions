@@ -76,6 +76,10 @@ public sealed class StashPanel : UserControl
     private readonly TextBlock _workTreeHeader;
 
     private string? _repoPath;
+    private long _repositoryGeneration;
+    private static readonly StringComparison PathComparison = OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
     private bool _busy;
     private CancellationTokenSource? _diffCts;
     private CancellationTokenSource? _filesCts;
@@ -415,7 +419,17 @@ public sealed class StashPanel : UserControl
     /// </summary>
     public void LoadRepository(string repoPath)
     {
-        _repoPath = repoPath;
+        _repoPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoPath));
+        _repositoryGeneration++;
+
+        // Supersede every read owned by the previous repository immediately.
+        // Mutations remain serialized by RunGit, but do not gate repository loads.
+        _diffCts?.Cancel();
+        _filesCts?.Cancel();
+        _stashList.ItemsSource = null;
+        SetFileRows([], []);
+        ShowDiffPlaceholder();
+
         RefreshStashes();
     }
 
@@ -437,8 +451,12 @@ public sealed class StashPanel : UserControl
             return;
         }
 
+        long generation = _repositoryGeneration;
+
         _status.Text = T("FormBrowse/_loading.Text", "Loading…");
-        RunGit(
+        RunRepositoryRead(
+            repo,
+            generation,
             () => _service.ListStashes(repo),
             stashes =>
             {
@@ -456,6 +474,10 @@ public sealed class StashPanel : UserControl
                     : F(T("{0} stash(es)."), stashes.Count);
             });
     }
+
+    private bool IsCurrentRepository(string repo, long generation)
+        => generation == _repositoryGeneration
+           && string.Equals(repo, _repoPath, PathComparison);
 
     private static string WorkingDirText()
         => T("FormStash/_currentWorkingDirChanges.Text", "Current working directory changes");
@@ -1159,6 +1181,38 @@ public sealed class StashPanel : UserControl
 
     // Runs a git operation off the UI thread and marshals the result (or error)
     // back onto it, disabling the action buttons while busy.
+    private void RunRepositoryRead<T>(
+        string repo,
+        long generation,
+        Func<T> work,
+        Action<T> onResult)
+    {
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                T result = work();
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (IsCurrentRepository(repo, generation))
+                    {
+                        onResult(result);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (IsCurrentRepository(repo, generation))
+                    {
+                        _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                    }
+                });
+            }
+        });
+    }
+
     private void RunGit<T>(Func<T> work, Action<T> onResult)
     {
         if (_busy)
@@ -1166,6 +1220,7 @@ public sealed class StashPanel : UserControl
             return;
         }
 
+        string? operationRepo = _repoPath;
         SetBusy(true);
         _ = Task.Run(() =>
         {
@@ -1175,7 +1230,10 @@ public sealed class StashPanel : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
-                    onResult(result);
+                    if (IsCurrentRepository(operationRepo))
+                    {
+                        onResult(result);
+                    }
                 });
             }
             catch (Exception ex)
@@ -1183,11 +1241,18 @@ public sealed class StashPanel : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
-                    _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                    if (IsCurrentRepository(operationRepo))
+                    {
+                        _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                    }
                 });
             }
         });
     }
+
+    private bool IsCurrentRepository(string? repo)
+        => repo is not null
+           && string.Equals(repo, _repoPath, PathComparison);
 
     private void SetBusy(bool busy)
     {
