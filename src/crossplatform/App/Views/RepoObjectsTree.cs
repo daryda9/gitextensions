@@ -192,6 +192,9 @@ public sealed class RepoObjectsTree : UserControl
     /// <summary>Requests a separate application instance for the current submodule.</summary>
     public event Action<string>? OpenRepositoryInNewInstanceRequested;
 
+    /// <summary>Raised when an activation cannot navigate and needs immediate user feedback.</summary>
+    public event Action<string>? FeedbackRequested;
+
     /// <summary>
     ///  Raised on the UI thread when a tree node wants a tab of the bottom panel
     ///  brought to the front, carrying the tab key used by <c>UiState.BottomTab</c>
@@ -279,7 +282,10 @@ public sealed class RepoObjectsTree : UserControl
         };
 
         _tree.SelectionChanged += (_, _) => OnSelectionChanged();
-        _tree.DoubleTapped += (_, _) => OnActivate();
+        // Selection may still point at the previous row when DoubleTapped bubbles from
+        // a newly clicked item. Route pointer activation from the event source itself;
+        // Enter deliberately continues to use the keyboard selection below.
+        _tree.DoubleTapped += (_, e) => OnActivateFromPointer(e.Source);
         // The hotkeys of upstream's "RepoObjectsTree" scope (RepoObjectsTree.Command.cs +
         // HotkeySettingsManager.cs:267-271): Delete deletes the selected node, F2 renames
         // it, F3 jumps to the next search hit. Enter is the port's own activation key and
@@ -2277,9 +2283,17 @@ public sealed class RepoObjectsTree : UserControl
     // (RemoteBranchNode.cs:73-76 — the port did nothing at all), a TAG creates a branch
     // from it (TagNode.cs:28-31), a STASH opens the stash (StashNode.cs:33-36), and a
     // worktree is opened unless it is the current or a deleted one (WorktreeNode).
-    private void OnActivate()
+    private void OnActivateFromPointer(object? source)
     {
-        switch (_tree.SelectedItem)
+        if (TryFindTreeItem(source, out TreeViewItem item))
+        {
+            OnActivate(item);
+        }
+    }
+
+    private void OnActivate(TreeViewItem? activationItem = null)
+    {
+        switch (activationItem ?? _tree.SelectedItem)
         {
             case TreeViewItem { Tag: BranchTagRow { IsTag: true } tag }:
                 _ = DoCreateBranchAsync(tag.Name, prefix: string.Empty);
@@ -2317,6 +2331,10 @@ public sealed class RepoObjectsTree : UserControl
                     {
                         OpenRepositoryRequested?.Invoke(SubmoduleFullPath(submodule));
                     }
+                }
+                else
+                {
+                    FeedbackRequested?.Invoke(TF("Submodule is not initialized or is missing: {0}", SubmoduleFullPath(submodule)));
                 }
 
                 break;

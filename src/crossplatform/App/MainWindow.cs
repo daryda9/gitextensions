@@ -1105,7 +1105,12 @@ public sealed class MainWindow : Theming.ZoomWindow
         _revisions.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
         _tree.OpenRepositoryRequested += OpenRepositoryPath;
-        _tree.OpenRepositoryInNewInstanceRequested += _toolbar.OpenRepositoryInNewInstance;
+        _tree.OpenRepositoryInNewInstanceRequested += path =>
+        {
+            _statusBar.SetText(TF("Opening repository in a new instance: {0}", path));
+            _toolbar.OpenRepositoryInNewInstance(path);
+        };
+        _tree.FeedbackRequested += message => _statusBar.SetText(message);
         // The tree cannot reach the bottom panel or the streaming remote ops itself;
         // without these its stash and fetch-all entries stay disabled rather than dead.
         _tree.BottomTabRequested += key =>
@@ -3935,6 +3940,23 @@ public sealed class MainWindow : Theming.ZoomWindow
     {
         if (Directory.Exists(path))
         {
+            if (SameRepositoryPath(path, _repoPath))
+            {
+                bool pending;
+                lock (_activeNavigationGate)
+                {
+                    pending = _activeNavigationLoadPending;
+                }
+
+                _statusBar.SetText(pending
+                    ? TF("Opening repository: {0}", path)
+                    : TF("Repository is already open: {0}", path));
+                return;
+            }
+
+            // This is intentionally synchronous and precedes warm-up/discovery: the
+            // pointer gesture must be visibly acknowledged even on a cold repository.
+            _statusBar.SetText(TF("Opening repository: {0}", path));
             OpenRepository(path);
         }
         else
