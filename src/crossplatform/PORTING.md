@@ -3236,6 +3236,75 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M83 (2026-08-04) — la riga sotto il puntatore si vede, e il flash bianco della toolbar sparisce
+
+> Due segnalazioni dell'utente con screenshot: *«il colore della riga su cui sono con il cursore è
+> uguale a quello delle righe scure normalmente presenti, preferirei un colore diverso, tipo
+> celestino»* e *«nel tema scuro, quando scorro sui pulsanti della toolbar e/o sui menu a tendina, fa
+> per un istante un hover del tasto completamente bianco, poi scompare la selezione di hover»*.
+
+### 1. L'hover della griglia era il colore della zebra
+`RevisionRowView.Sync` dipingeva l'hover con **`App.PanelAlt`**, che è *esattamente* il fondo delle
+righe dispari: sulle righe dispari l'hover non cambiava nulla, sulle pari sembrava la zebra.
+Tre chiavi nuove in tutte e quattro le famiglie (34 → 37 chiavi): `App.HoverRow`, `App.Hover`,
+`App.Pressed`.
+`App.HoverRow` è **l'unico fondo di riga con una tinta** — `App.Panel` tirato verso `#38BDF8` — quindi
+nessuna zebra può somigliargli. Misure (contrasto WCAG con le due inchiostrazioni che la riga porta e
+col marker verde dei ref):
+
+| famiglia | HoverRow | Text | TextDim | marker | vs Panel | vs PanelAlt |
+|---|---|---|---|---|---|---|
+| Modern dark | `#20333F` (14%) | 10,30 | **4,68** | 8,30 | 1,29 | 1,14 |
+| Modern light | `#D2EFFC` (22%) | 14,30 | **5,03** | 4,46 | 1,18 | 1,01 |
+| Classic dark | `#27343B` (10%) | 9,33 | **4,61** | 8,13 | 1,20 | 1,07 |
+| Classic light | `#D3F0FD` (22%) | 14,01 | **4,55** | 4,50 | 1,19 | 1,01 |
+
+Il vincolo che ha fissato le percentuali è `App.TextDim` (≥ 4,5:1), non il testo pieno; il marker
+verde resta ai valori che aveva già sulla zebra (4,51 → 4,46 chiaro, 9,45 → 8,30 scuro).
+
+### 2. Il flash bianco: `Brushes.Transparent` è bianco
+`Brushes.Transparent` **non** è "niente": è `#00FFFFFF`, cioè **bianco** con alpha 0. La superficie
+moderna fa il cross-fade del `Background` del `ContentPresenter`
+(`ModernStyles.PresenterTransitions`), quindi ogni hover interpolava *da bianco trasparente* al
+riempimento di hover, passando per **bianco semi-opaco**. Misurato sul pulsante `Commit info` in
+Modern dark: riposo `#2F3038` → **picco `#78787D` in 40 ms** → discesa al valore finale. Identico
+sulle voci dei menu a tendina, dove `MenuFlyoutItemBackground` era anch'esso `Brushes.Transparent`.
+
+Correzioni:
+- riposo dei `toolbtn` = **il colore di hover ad alpha 0** (`Fade(hover)`), così il fade è una pura
+  rampa di opacità e nessun terzo colore compare mai. Partendo invece dal colore *della barra* ad
+  alpha 0, il tema chiaro scendeva a `#BEBEC3` prima di risalire — misurato, e scartato;
+- i `toolbtn` **escono dal cross-fade** (`Transitions` vuote nello stile locale, che vince perché è
+  dichiarato sul controllo e non sull'`Application`): la transizione era ciò che rendeva visibile
+  l'artefatto, e una barra di pulsanti piccoli sotto un puntatore che si muove legge meglio se lo
+  stato scatta;
+- `MenuFlyoutItemBackground` / `…Disabled` = `panel`, che è esattamente ciò con cui è dipinto il
+  presenter del flyout: identico a riposo, senza bianco da attraversare.
+
+### 3. L'hover della toolbar era più scuro della toolbar
+`hover = App.PanelAlt`, `pressed = App.Panel`: **entrambi più scuri** di `App.Toolbar`, quindi "sotto
+il puntatore" si leggeva come un buco. Ora `App.Hover` / `App.Pressed` — la barra tirata al 10% e al
+20% verso l'inchiostro, la stessa regola che `ModernStyles` usa per ogni altro controllo, e infatti in
+Modern dark il valore coincide alla cifra con `surfaceHover` (`#41424A`).
+
+### Verifica (Xvfb `:219`, campionamento dei pixel ogni 15–20 ms durante l'hover)
+| combinazione | riga sotto il puntatore | pulsante di toolbar |
+|---|---|---|
+| Modern dark | `#26272D` → `#20333F` | `#2F3038` → `#41424A`, **un solo passo** |
+| Modern light | `#EBEBEF` → `#D2EFFC` | `#E2E2E8` → `#CECED4`, un solo passo |
+| Classic dark | `#252526` → `#27343B` | `#333337` → `#444448` |
+| Classic light | `#FFFFFF` → `#D3F0FD` | `#E4E4E4` → `#D0D0D0` |
+
+Voce di menu a tendina, Modern dark: `#1C1D21` → `#2A2B2F` **monotona**, nessun picco chiaro (prima
+il picco era a `#78787D`).
+
+### Da NON riscoprire
+`Brushes.Transparent` è bianco trasparente: come **valore di partenza di un'animazione** introduce un
+flash chiaro su qualunque fondo scuro. Se una proprietà animata parte da "invisibile", il valore
+giusto è *il colore di arrivo ad alpha 0*, non `Transparent`. Restano con `Brushes.Transparent` a
+riposo il `TabItem` (`ModernStyles`, fondo dietro non garantito) e le righe della griglia (il cui
+presenter non è animato): il primo è l'unico punto ancora esposto allo stesso artefatto.
+
 ## M82 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
 
 > Segnalazione dell'utente con due screenshot: *«sia in diff che in stash, se ridimensiono le sezioni

@@ -280,6 +280,21 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
+> ### ► **M83** (2026-08-04) — **la riga sotto il puntatore si vede**, e il flash bianco sparisce
+> Due segnalazioni con screenshot. (1) L'hover della griglia dipingeva `App.PanelAlt`, che **è** il
+> fondo delle righe dispari: invisibile. Tre chiavi nuove in tutte e quattro le famiglie (34 → 37):
+> `App.HoverRow` (l'unico fondo di riga con una **tinta**, `App.Panel` verso `#38BDF8`), `App.Hover`,
+> `App.Pressed`. Percentuali fissate da `App.TextDim` ≥ 4,5:1, non dal testo pieno.
+> (2) Il flash bianco era **`Brushes.Transparent`**, che è `#00FFFFFF` — bianco con alpha 0 — usato
+> come valore di riposo di una proprietà **animata** (`ModernStyles.PresenterTransitions`): ogni hover
+> interpolava attraverso bianco semi-opaco (misurato: picco `#78787D` su una toolbar `#2F3038`).
+> Riposo ora = colore di hover ad alpha 0, e i `toolbtn` escono dal cross-fade; `MenuFlyoutItemBackground`
+> passa a `panel`. Hover/pressed della toolbar lasciano `App.PanelAlt`/`App.Panel`, che erano più
+> **scuri** della barra.
+> **Da NON riscoprire**: `Brushes.Transparent` come punto di partenza di un'animazione = flash chiaro
+> su fondo scuro; il valore giusto è *il colore d'arrivo ad alpha 0*. Resta esposto solo il `TabItem`.
+> Misurato in tutte e quattro le combinazioni tema × stile. Dettaglio in `PORTING.md` → M83.
+
 > ### ► **M82** (2026-08-03) — **Diff e Stash seguono la larghezza a cui li trascini**
 > Segnalazione dell'utente con screenshot. La larghezza iniziale stava sul **figlio** dentro colonne
 > `Auto` (`_files.Width = 320`, `listPanel.Width = 340`, `_filesGrid.Width = 320`): il `GridSplitter`
