@@ -2480,6 +2480,46 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 14 — iterazioni 5-8: M89 (2026-08-04) — switch e menu repository senza attese duplicate
+
+Tre regressioni segnalate dopo M88: switch submodule lento/inaffidabile,
+scrollbar orizzontale centrata sul current e dropdown Submodules/Worktrees aperti
+solo dopo alcuni secondi.
+
+Diagnosi misurata sulla fixture profonda: `submodule status --recursive` richiede
+656–898 ms (picco 1.584 ms); una `DiscoverHierarchy` avvia circa 24 processi Git
+e costa 1,8–2,3 s. Ogni switch eseguiva due discovery concorrenti e ogni click
+dropdown una terza. Il tree serializzava inoltre il nuovo repository dietro il
+refresh obsoleto. `BringIntoView` rendeva visibile l'intera label lunga, spostando
+anche X. `StashPanel` poteva scartare un nuovo load quando busy e applicare il
+risultato del repository precedente.
+
+- Nuovo `RepositoryNavigationSnapshotService`: snapshot immutabile hierarchy +
+  worktree, single-flight per path normalizzato, invalidazione, retry dopo errori
+  e isolamento delle generazioni stale. Harness concorrente: PASS (10 caller =
+  una factory, invalidazione/retry/stale isolation).
+- `MainWindow`, `RepoObjectsTree` e toolbar condividono una sola snapshot per
+  switch. Il nuovo repository parte subito e scarta il vecchio epoch; il warm-up
+  core resta serializzato ma gira una sola volta in background; solo l'ultimo
+  switch avvia i pannelli. Callback toolbar hanno guardie task/epoch/path e marshal
+  esplicito sul dispatcher UI.
+- Dropdown Submodules/Go-to-superproject e Worktrees mostrano subito dati cached;
+  se il prefetch è ancora pending mostrano immediatamente `Loading…` e non
+  attendono Git prima di `ShowAt`. Il click successivo usa la cache; un task
+  fallito viene riacquisito single-flight.
+- `RepoObjectsTree` forza X=0 dopo `BringIntoView` su vero cambio repository e
+  ricerca, preservando Y; callback Loaded/Background sono protette da epoch/path.
+- `StashPanel` separa repository generation e load epoch: il nuovo repository
+  vince sui load vecchi, i refresh same-repo non invalidano mutazioni, e ogni
+  mutazione è vincolata a repo/generation attraverso i dialoghi asincroni.
+
+Commit M89: `32e981301`, `9e4aaea5e`, `a07c918c4`, `e226e5f97`,
+`ce8c82d2a`, `d969f028c`, `893e14590`, `05b265fd0`, `6096e07be`,
+`375dc0bf0`, `3b995372d`. Build: 0 errori. Harness navigation: PASS;
+harness gerarchia: PASS, 7 nodi. Review indipendente finale: nessun finding.
+Verifica manuale Windows richiesta per la sensazione reale dello switch e i click,
+perché l'automazione pointer della sessione DPI rimane inaffidabile.
+
 ## ROUND 14 — iterazione 4: M88 (2026-08-04) — il click di riga non collassa più i submodule
 
 Regressione segnalata dopo M87: cliccare l'header di una cartella o di un
