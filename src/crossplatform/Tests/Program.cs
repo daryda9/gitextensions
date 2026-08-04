@@ -33,7 +33,8 @@ try
     SubmoduleRow missing = hierarchy.Nodes.Single(n => n.Path == "missing-path");
     Check(!missing.Exists && missing.Status == SubmoduleState.NotInitialized, "missing node is graceful");
     SubmoduleRow named = hierarchy.Nodes.Single(n => n.Path == "modules/level-one");
-    Equal("display-name-differs", named.Name, "configured name differs from path");
+    EqualText("level-one", named.Name, "display name follows configured path basename");
+    EqualText("display-name-differs", named.ConfiguredName, "configured name retained as metadata");
     Equal(Normal(root), named.ParentRepositoryPath, "declaring repository");
     SubmoduleRow deepest = hierarchy.Nodes.Single(n => n.IsCurrent);
     Equal("leaf-path", deepest.PathInParent, "configured path in parent");
@@ -44,6 +45,23 @@ try
     File.AppendAllText(Path.Combine(root, ".gitmodules"), "\n[submodule \"broken\"]\n\tpath = broken\n");
     SubmoduleHierarchy incomplete = new SubmoduleService().DiscoverHierarchy(root);
     Equal(Normal(root), incomplete.RootPath, "incomplete config does not throw");
+
+    File.WriteAllText(Path.Combine(current, ".gitmodules"), "[submodule \"self-alias\"]\n\tpath = self\n\turl = .\n");
+    Directory.CreateDirectory(Path.Combine(current, "self"));
+    string currentGitFile = File.ReadAllText(Path.Combine(current, ".git")).Trim();
+    string currentGitDir = Normal(Path.Combine(current, currentGitFile["gitdir:".Length..].Trim()));
+    File.WriteAllText(Path.Combine(current, "self", ".git"), $"gitdir: {currentGitDir}\n");
+    Task<SubmoduleHierarchy> cyclicDiscovery = Task.Run(() => new SubmoduleService().DiscoverHierarchy(current));
+#pragma warning disable VSTHRD002 // Deliberate bounded wait: this assertion proves malformed recursion terminates.
+    Check(cyclicDiscovery.Wait(TimeSpan.FromSeconds(10)), "cyclic alias discovery terminates");
+    Check(cyclicDiscovery.Result.Nodes.Count < 130, "cycle/depth guard bounds traversal");
+    Check(cyclicDiscovery.Result.Nodes.Count(n => n.Path.EndsWith("/self", StringComparison.Ordinal)) == 1, "cyclic alias fixture is enumerated once");
+#pragma warning restore VSTHRD002
+
+    string linked = Path.Combine(sandbox, "linked-worktree");
+    Git(sibling, "worktree", "add", "-q", "-b", "linked-test", linked);
+    SubmoduleHierarchy worktree = new SubmoduleService().DiscoverHierarchy(linked);
+    Equal(Normal(linked), worktree.RootPath, "linked worktree gitdir discovery");
 
     Console.WriteLine($"PASS: {hierarchy.Nodes.Count} hierarchy nodes; root={hierarchy.RootPath}");
     return 0;
@@ -75,7 +93,7 @@ void Add(string parent, string source, string name, string path)
 
 void Git(string cwd, params string[] args)
 {
-    ProcessStartInfo start = new("git.exe")
+    ProcessStartInfo start = new(OperatingSystem.IsWindows() ? "git.exe" : "git")
     {
         WorkingDirectory = cwd,
         RedirectStandardOutput = true,
@@ -95,3 +113,4 @@ static string Normal(string path) => Path.TrimEndingDirectorySeparator(Path.GetF
 static StringComparer GetPathComparer() => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 static void Check(bool value, string message) { if (!value) throw new InvalidOperationException("FAIL: " + message); }
 static void Equal(string expected, string actual, string message) => Check(GetPathComparer().Equals(expected, actual), $"{message}: expected '{expected}', actual '{actual}'");
+static void EqualText(string expected, string actual, string message) => Check(string.Equals(expected, actual, StringComparison.Ordinal), $"{message}: expected '{expected}', actual '{actual}'");

@@ -4,9 +4,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Program.cs" />
     <ProjectReference Include="..\App\GitExtensions.Avalonia.csproj" />
   </ItemGroup>
 </Project>

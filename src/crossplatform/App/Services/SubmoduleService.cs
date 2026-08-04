@@ -2,6 +2,7 @@ using GitCommands;
 using GitExtensions.Extensibility;
 using GitExtUtils;
 using System.Diagnostics;
+using System.Text;
 
 namespace GitExtensions.Avalonia.Services;
 
@@ -55,11 +56,6 @@ public sealed record SubmoduleRow(string Path, string ShortSha, SubmoduleState S
     {
         get
         {
-            if (ConfiguredName.Length > 0)
-            {
-                return ConfiguredName;
-            }
-
             int slash = Path.LastIndexOf('/');
             return slash < 0 ? Path : Path[(slash + 1)..];
         }
@@ -156,59 +152,95 @@ public sealed class SubmoduleService
 
     private IReadOnlyList<SubmoduleRow> ListSubmodulesCore(string repoPath)
     {
-        GitModule module = GitContext.CreateModule(repoPath);
-        IReadOnlyList<string> paths = module.GetSubmodulesLocalPaths(recursive: true);
-        if (paths.Count == 0)
+        List<DiscoveredSubmodule> discovered = [];
+        HashSet<string> visitedRepositories = new(PathComparer);
+        Walk(repoPath, string.Empty, depth: 0);
+        if (discovered.Count == 0)
         {
             return [];
         }
 
         Dictionary<string, (string Sha, SubmoduleState State)> status = ReadStatus(repoPath);
-
-        // Ordinal, not OrdinalIgnoreCase, and sorted so that a super-project always
-        // precedes its own submodules: the tree builder relies on the parent row
-        // existing before the child asks for its host node.
-        List<string> ordered = [.. paths.OrderBy(p => p, StringComparer.Ordinal)];
-        HashSet<string> known = new(ordered, StringComparer.Ordinal);
+        List<DiscoveredSubmodule> ordered = [.. discovered.OrderBy(p => p.Path, StringComparer.Ordinal)];
 
         List<SubmoduleRow> rows = [];
-        foreach (string path in ordered)
+        foreach (DiscoveredSubmodule item in ordered)
         {
+            string path = item.Path;
             status.TryGetValue(path, out (string Sha, SubmoduleState State) info);
             SubmoduleState state = status.ContainsKey(path) ? info.State : SubmoduleState.NotInitialized;
-
-            // The declaring repository is the longest listed submodule path that is a
-            // proper prefix of this one; nothing means the top-level repository.
-            string parent = string.Empty;
-            foreach (string candidate in known)
-            {
-                if (path.StartsWith(candidate + "/", StringComparison.Ordinal) && candidate.Length > parent.Length)
-                {
-                    parent = candidate;
-                }
-            }
-
-            string pathInParent = parent.Length == 0 ? path : path[(parent.Length + 1)..];
-            string parentRepo = parent.Length == 0
-                ? repoPath
-                : Normalize(System.IO.Path.Combine(repoPath, Native(parent)));
-            string absolute = Normalize(System.IO.Path.Combine(repoPath, Native(path)));
             rows.Add(new SubmoduleRow(path, info.Sha ?? string.Empty, state)
             {
-                ParentPath = parent,
-                PathInParent = pathInParent,
-                AbsolutePath = absolute,
-                ParentRepositoryPath = parentRepo,
-                ConfiguredName = ReadConfiguredName(parentRepo, pathInParent),
-                Exists = Directory.Exists(absolute) && IsRepository(absolute),
+                ParentPath = item.ParentPath,
+                PathInParent = item.PathInParent,
+                AbsolutePath = item.AbsolutePath,
+                ParentRepositoryPath = item.ParentRepositoryPath,
+                ConfiguredName = ReadConfiguredName(item.ParentRepositoryPath, item.PathInParent),
+                Exists = Directory.Exists(item.AbsolutePath) && IsRepository(item.AbsolutePath),
                 Branch = state == SubmoduleState.NotInitialized
                     ? string.Empty
-                    : ReadBranch(absolute),
+                    : ReadBranch(item.AbsolutePath),
             });
         }
 
         return rows;
+
+        void Walk(string declaringRepo, string parentPath, int depth)
+        {
+            const int MaxDepth = 128;
+            string normalizedRepo = Normalize(declaringRepo);
+            if (depth >= MaxDepth || !IsRepository(normalizedRepo))
+            {
+                return;
+            }
+
+            string identity = RepositoryIdentity(normalizedRepo);
+            if (!visitedRepositories.Add(identity))
+            {
+                return;
+            }
+
+            IReadOnlyList<string> direct;
+            try
+            {
+                direct = GitContext.CreateModule(normalizedRepo).GetSubmodulesLocalPaths(recursive: false);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+            {
+                return;
+            }
+
+            foreach (string rawPath in direct.OrderBy(p => p, StringComparer.Ordinal))
+            {
+                string localPath = rawPath.Replace('\\', '/').Trim('/');
+                if (localPath.Length == 0)
+                {
+                    continue;
+                }
+
+                string path = parentPath.Length == 0 ? localPath : $"{parentPath}/{localPath}";
+                string absolute;
+                try
+                {
+                    absolute = Normalize(System.IO.Path.Combine(normalizedRepo, Native(localPath)));
+                }
+                catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    continue;
+                }
+
+                discovered.Add(new(path, parentPath, localPath, absolute, normalizedRepo));
+                Walk(absolute, path, depth + 1);
+            }
+        }
     }
+
+    private sealed record DiscoveredSubmodule(
+        string Path,
+        string ParentPath,
+        string PathInParent,
+        string AbsolutePath,
+        string ParentRepositoryPath);
 
     private static StringComparer PathComparer => OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
@@ -226,6 +258,23 @@ public sealed class SubmoduleService
 
     private static bool IsRepository(string path)
         => RunGit(path, "rev-parse --is-inside-work-tree") is { ExitCode: 0, Output: "true" };
+
+    private static string RepositoryIdentity(string path)
+    {
+        GitOutput result = RunGit(path, "rev-parse --absolute-git-dir");
+        if (result.ExitCode == 0 && result.Output.Length > 0)
+        {
+            try
+            {
+                return Normalize(result.Output);
+            }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+            }
+        }
+
+        return Normalize(path);
+    }
 
     private static string? TrySuperproject(string path)
     {
@@ -290,13 +339,31 @@ public sealed class SubmoduleService
                 return new(-1, string.Empty);
             }
 
-            string output = process.StandardOutput.ReadToEnd().Trim();
+            StringBuilder stdout = new();
+            StringBuilder stderr = new();
+            process.OutputDataReceived += (_, e) => Append(stdout, e.Data);
+            process.ErrorDataReceived += (_, e) => Append(stderr, e.Data);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
             process.WaitForExit();
-            return new(process.ExitCode, output);
+            return new(process.ExitCode, stdout.ToString().Trim());
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return new(-1, string.Empty);
+        }
+    }
+
+    private static void Append(StringBuilder target, string? line)
+    {
+        if (line is null)
+        {
+            return;
+        }
+
+        lock (target)
+        {
+            target.AppendLine(line);
         }
     }
 
