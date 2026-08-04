@@ -125,8 +125,10 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     private string? _repoPath;
     private int _repositoryEpoch;
-    private volatile string? _activeNavigationRepository;
-    private volatile Task<RepositoryNavigationSnapshot>? _activeNavigationSnapshot;
+    private readonly object _activeNavigationGate = new();
+    private string? _activeNavigationRepository;
+    private Task<RepositoryNavigationSnapshot>? _activeNavigationSnapshot;
+    private bool _activeNavigationLoadPending;
     private string? _lastSelectedHash;
 
     // True while the grid selection sits on an artificial row (working directory or
@@ -1252,9 +1254,10 @@ public sealed class MainWindow : Theming.ZoomWindow
                 return Array.Empty<RepoLink>();
             }
 
+            int epoch = _repositoryEpoch;
             await EnsureCoreWarmupAsync(repo).ConfigureAwait(false);
-            Task<RepositoryNavigationSnapshot>? active = _activeNavigationSnapshot;
-            if (active is null || !SameRepositoryPath(repo, _activeNavigationRepository))
+            Task<RepositoryNavigationSnapshot>? active = GetOrReacquireNavigation(repo, epoch);
+            if (active is null)
             {
                 return Array.Empty<RepoLink>();
             }
@@ -1290,9 +1293,10 @@ public sealed class MainWindow : Theming.ZoomWindow
                 return Array.Empty<RepoLink>();
             }
 
+            int epoch = _repositoryEpoch;
             await EnsureCoreWarmupAsync(repo).ConfigureAwait(false);
-            Task<RepositoryNavigationSnapshot>? active = _activeNavigationSnapshot;
-            if (active is null || !SameRepositoryPath(repo, _activeNavigationRepository))
+            Task<RepositoryNavigationSnapshot>? active = GetOrReacquireNavigation(repo, epoch);
+            if (active is null)
             {
                 return Array.Empty<RepoLink>();
             }
@@ -2906,8 +2910,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         string repo = _repoPath;
         int epoch = ++_repositoryEpoch;
-        _activeNavigationRepository = null;
-        _activeNavigationSnapshot = null;
+        BeginNavigationLoad();
         _ = LoadRepositoryAfterWarmupAsync(repo, epoch, refresh: true);
         // The continuation reloads the panels, then acknowledges the watcher so reads
         // performed by those loaders cannot schedule an endless refresh loop.
@@ -4000,8 +4003,7 @@ public sealed class MainWindow : Theming.ZoomWindow
     {
         _repoPath = repoPath;
         int epoch = ++_repositoryEpoch;
-        _activeNavigationRepository = null;
-        _activeNavigationSnapshot = null;
+        BeginNavigationLoad();
         _console.RepoPath = repoPath;
         _progressBanner.SetRepository(repoPath);
         ShowRepositoryView();
@@ -4032,6 +4034,17 @@ public sealed class MainWindow : Theming.ZoomWindow
         catch
         {
             // A disappearing or malformed repository simply restores the manage action.
+            lock (_activeNavigationGate)
+            {
+                if (epoch == _repositoryEpoch
+                    && SameRepositoryPath(repoPath, _repoPath)
+                    && ReferenceEquals(_activeNavigationSnapshot, navigation))
+                {
+                    _activeNavigationRepository = null;
+                    _activeNavigationSnapshot = null;
+                    _activeNavigationLoadPending = false;
+                }
+            }
         }
 
         if (epoch == _repositoryEpoch && SameRepositoryPath(repoPath, _repoPath))
@@ -4053,8 +4066,12 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         _navigationSnapshots.Invalidate(repoPath);
         Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(repoPath);
-        _activeNavigationRepository = repoPath;
-        _activeNavigationSnapshot = navigation;
+        lock (_activeNavigationGate)
+        {
+            _activeNavigationRepository = repoPath;
+            _activeNavigationSnapshot = navigation;
+            _activeNavigationLoadPending = false;
+        }
         _revisions.LoadRepository(repoPath);
         _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath, navigation);
@@ -4081,6 +4098,49 @@ public sealed class MainWindow : Theming.ZoomWindow
                 _ = new RevisionService().LoadRevisions(repoPath, 1);
             });
             return ObserveWarmupAsync(s_coreWarmupTask);
+        }
+    }
+
+    private void BeginNavigationLoad()
+    {
+        lock (_activeNavigationGate)
+        {
+            _activeNavigationRepository = null;
+            _activeNavigationSnapshot = null;
+            _activeNavigationLoadPending = true;
+        }
+    }
+
+    private Task<RepositoryNavigationSnapshot>? GetOrReacquireNavigation(string repoPath, int epoch)
+    {
+        lock (_activeNavigationGate)
+        {
+            if (epoch != _repositoryEpoch || _dashboardShowing || !SameRepositoryPath(repoPath, _repoPath))
+            {
+                return null;
+            }
+
+            if (_activeNavigationSnapshot is { } active
+                && SameRepositoryPath(repoPath, _activeNavigationRepository)
+                && !active.IsFaulted
+                && !active.IsCanceled)
+            {
+                return active;
+            }
+
+            // The repository-open continuation owns the first acquisition. Providers
+            // must not race it and turn one switch into two discoveries.
+            if (_activeNavigationLoadPending)
+            {
+                return null;
+            }
+
+            _navigationSnapshots.Invalidate(repoPath);
+            Task<RepositoryNavigationSnapshot> replacement = _navigationSnapshots.GetAsync(repoPath);
+            _activeNavigationRepository = repoPath;
+            _activeNavigationSnapshot = replacement;
+            _ = RefreshSubmoduleNavigationAsync(repoPath, replacement, epoch);
+            return replacement;
         }
     }
 
@@ -4172,8 +4232,12 @@ public sealed class MainWindow : Theming.ZoomWindow
         // No repository on screen → nothing to watch.
         _watcher.Stop();
         _repoPath = null;
-        _activeNavigationRepository = null;
-        _activeNavigationSnapshot = null;
+        lock (_activeNavigationGate)
+        {
+            _activeNavigationRepository = null;
+            _activeNavigationSnapshot = null;
+            _activeNavigationLoadPending = false;
+        }
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _ = LoadDashboardAsync();
         UpdateMenuRepositoryState();
