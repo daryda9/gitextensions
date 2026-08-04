@@ -3109,6 +3109,89 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M82 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
+
+> Segnalazione dell'utente con due screenshot: *«sia in diff che in stash, se ridimensiono le sezioni
+> di sotto, queste non si stickano alla larghezza del contenitore»*.
+
+**Causa**: in `DiffView` e `StashPanel` la larghezza iniziale stava sul **figlio** dentro colonne
+`Auto` — `_files.Width = 320`, `listPanel.Width = 340`, `_filesGrid.Width = 320`. Il `GridSplitter`
+ridimensiona la **colonna**: il figlio con `Width` propria restava alla sua misura e fra il suo bordo
+destro e lo splitter si apriva una **striscia morta**. Le colonne erano `Auto`, quindi la colonna
+seguiva lo splitter mentre il contenuto no.
+
+**Fix**: le larghezze passano alle `ColumnDefinition` (`320px`/`340px`), con `MinWidth = 120` così un
+pannello non si può trascinare a zero. Nessuna `Width` sui figli, che ora si stirano (default
+`Stretch`). `FileTreeView` faceva già così (`ColumnDefinitions("300,Auto,*")`) e non aveva il difetto:
+è la conferma che la differenza è quella e non altro.
+
+### Misure (Xvfb `:218`, scansione dei pixel su una riga del pannello)
+| | prima del drag | dopo il drag |
+|---|---|---|
+| Stash, colonna dei file | `x 901–1220` (320 px), splitter a `1221` | `x 901–1301` (401 px), splitter a `1302` |
+| Diff, lista dei file | 320 px | ~512 px, contigua allo splitter |
+
+Zero pixel fra il bordo del contenuto e lo splitter in tutti i casi — la striscia morta degli
+screenshot non c'è più. Cercati altri `GridSplitter` con lo stesso schema: solo questi due (gli altri
+undici usano colonne in pixel o in star).
+
+## M81 (2026-08-03) — i submodule dei submodule, e il doppio clic che li apre
+
+> Richiesta dell'utente con screenshot dell'originale a confronto: *«nella versione originale si
+> possono vedere anche i submodules dei submodules, a noi no, inoltre vorrei che quando faccio
+> doppio click sui submodules mi porta appunto sui submodules che ho selezionato»*. Fatto in diretta,
+> senza subagent: due file, `App/Services/SubmoduleService.cs` e `App/Views/RepoObjectsTree.cs`.
+
+### Cos'era rotto
+`ListSubmodules` chiamava `GetSubmodulesLocalPaths(recursive: **false**)` e `git submodule status`
+senza `--recursive`: la categoria era una lista **piatta** dei soli submodule del repo di primo
+livello. Un submodule di un submodule non c'era, e non c'era neanche un modo di arrivarci.
+
+### Le tre parti
+1. **Elenco ricorsivo** — `recursive: true` + `git submodule status --recursive`. Entrambi riportano
+   il path **completo dal repo di primo livello** (`pluma_orchestrator/core/graphs/tasks`), quindi le
+   chiavi delle due fonti combaciano senza normalizzazioni.
+2. **Gerarchia nell'albero** (`AddSubmodulesWithFolders`) — ogni riga si appende al nodo del proprio
+   super-project, e un segmento di path che è **solo una directory** (`core`, `graphs`) diventa un
+   nodo cartella intermedio. È la forma di `SubmoduleTree.AddTopAndNodesToTree` di upstream, che
+   crea un `SubmoduleFolderNode` per ogni parte del path che non è essa stessa un submodule.
+   Etichetta = **nome + branch** (`tasks (no branch)`), come `SubmoduleNode.DisplayText`; il path
+   completo e lo sha sono passati al **tooltip**, perché in una catena di quattro livelli lo sha su
+   ogni riga era solo rumore.
+3. **Doppio clic** — `OnActivate` apre il submodule come repository attivo, la stessa rotta della
+   voce «Open» del suo menu. Un submodule **non inizializzato** è escluso: la sua directory è vuota,
+   aprirla sposterebbe la finestra su un non-repo.
+
+### Il difetto che il nesting porta con sé, corretto nello stesso giro
+`git submodule update -- <path>` accetta **solo** un submodule del repository in cui gira. Con i
+nidificati visibili, l'«Update» del menu li avrebbe passati al repo di primo livello e fallito.
+Provato in chiaro sulla fixture:
+```
+$ git -C top          submodule update --init -- pluma_orchestrator/core/graphs/tasks   → exit 1
+  error: pathspec '...' did not match any file known to git
+$ git -C top/pluma_orchestrator submodule update --init -- core/graphs/tasks            → exit 0
+```
+Quindi `SubmoduleRow` porta ora `ParentPath` (il repo che **dichiara** il submodule) e
+`PathInParent`, e `Update`/`UpdateMerge` hanno un overload che prende la riga e gira nel posto
+giusto.
+
+### Il branch senza un processo per submodule
+Il branch mostrato **non** viene da un `git` per submodule (una catena profonda ne pagherebbe uno per
+livello, sopra ai due che il servizio già lancia): si legge il file `HEAD`. Il `.git` di un submodule
+è normalmente un **file** `gitdir: ../../.git/modules/<nome>`, quindi si risolve quello e si legge
+`ref: refs/heads/<branch>`; niente ref = detached, che l'albero mostra come `(no branch)` esattamente
+come `SubmoduleNode.BranchText`.
+
+### Verifica GUI (Xvfb `:217`, fixture `/tmp/nsub` a tre livelli reali)
+- `Submodules (3)` con dentro `pluma-UI (develop)` e `pluma_orchestrator (develop)`, e sotto
+  quest'ultimo la catena `core` → `graphs` → `tasks (no branch)`: **la stessa forma dello screenshot
+  dell'originale**.
+- Doppio clic su `tasks` → titolo finestra `tasks - Git Extensions`, path bar
+  `/tmp/nsub/top/pluma_orchestrator/core/graphs/tasks`, statusline `(detached HEAD)`, 1 commit.
+- Primo tentativo **sbagliato e corretto misurando**: appendevo al nodo del super-project
+  (`Host(row.ParentPath)`), e `core`/`graphs` **spariva**no — `tasks` compariva direttamente sotto
+  `pluma_orchestrator`. L'host giusto è la **dirname del path completo**.
+
 ## ROUND 13 — GUI moderna — iterazione 1: M79 (2026-08-02)
 
 > Direzione dell'utente: *«mantenere la struttura e le funzioni attuali, rendendo però più moderna la

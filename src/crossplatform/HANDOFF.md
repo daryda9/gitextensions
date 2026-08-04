@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | **merge delle due linee di lavoro** (locale `116a88d0d` + remoto `3b5ad6f04`). Avevano numerato in parallelo: **M75/M76** = mutazioni di ref (locale), **M77/M78** = grafo (erano M75/M76 sul remoto), **M79** = GUI moderna (era M77 sul remoto). Prossima libera: **M81** · `dcfb430e9` (**M80: lo stile e' una scelta, Classic/Modern**) · `3b5ad6f04` (M79: GUI moderna, iterazione 1) · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
+| HEAD al momento dell'handoff | **merge delle due linee di lavoro** (locale `116a88d0d` + remoto `3b5ad6f04`). Avevano numerato in parallelo: **M75/M76** = mutazioni di ref (locale), **M77/M78** = grafo (erano M75/M76 sul remoto), **M79** = GUI moderna (era M77 sul remoto). Prossima libera: **M83** · `044ce45dc` (**M82: i pannelli di Diff e Stash seguono la larghezza trascinata**) · `363961635` (**M81: submodule dei submodule nell'albero + doppio clic che li apre**) · `dcfb430e9` (**M80: lo stile e' una scelta, Classic/Modern**) · `3b5ad6f04` (M79: GUI moderna, iterazione 1) · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
 | Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -280,7 +280,33 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
-> ### ► ROUND 13 — iterazione 2: **M80** (2026-08-03) — **lo stile è una scelta**. Prossima milestone libera: **M81**
+> ### ► **M82** (2026-08-03) — **Diff e Stash seguono la larghezza a cui li trascini**
+> Segnalazione dell'utente con screenshot. La larghezza iniziale stava sul **figlio** dentro colonne
+> `Auto` (`_files.Width = 320`, `listPanel.Width = 340`, `_filesGrid.Width = 320`): il `GridSplitter`
+> ridimensiona la **colonna**, il figlio restava alla sua misura e fra il suo bordo e lo splitter si
+> apriva una **striscia morta**. Ora la larghezza sta nelle `ColumnDefinition`, con `MinWidth = 120`.
+> **Da NON riscoprire**: dentro un `Grid` con splitter la misura appartiene alla **colonna**, mai al
+> figlio — `FileTreeView` (`"300,Auto,*"`) era l'unico dei tredici a farlo giusto e l'unico senza il
+> difetto. Misurato: colonna dei file di Stash 320 → 401 px, contigua allo splitter, zero pixel morti.
+> Dettaglio in `PORTING.md` → M82.
+
+> ### ► **M81** (2026-08-03) — **submodule dei submodule** nell'albero, e il doppio clic che li apre. Prossima milestone libera: **M82**
+> Richiesta dell'utente con screenshot dell'originale a confronto. La categoria Submodules era una
+> lista **piatta** (`GetSubmodulesLocalPaths(recursive: false)`, `git submodule status` senza
+> `--recursive`): un submodule di un submodule non c'era. Ora è una **gerarchia** come
+> `SubmoduleTree` di upstream — ogni riga sotto il proprio super-project, un **nodo cartella** per il
+> segmento di path che è solo una directory (`core`, `graphs`), etichetta **nome + branch**, path e
+> sha nel tooltip. **Doppio clic** apre il submodule come repository attivo (upstream:
+> `SubmoduleNode.OnDoubleClick`), tranne quelli non inizializzati.
+> **Da NON riscoprire**: (a) `git submodule update -- <path>` accetta **solo** un submodule del repo
+> in cui gira, quindi un nidificato va aggiornato dal **suo** super-project — `SubmoduleRow.ParentPath`
+> / `PathInParent` esistono per questo, provato con `exit 1` dal top e `exit 0` dal padre; (b) il nodo
+> ospite di una riga è la **dirname del path completo**, non il nodo del super-project: appenderlo al
+> secondo fa sparire le cartelle intermedie (sbagliato al primo tentativo, visto a schermo);
+> (c) il branch si legge dal file `HEAD` risolvendo `gitdir:`, non con un `git` per submodule.
+> Dettaglio in `PORTING.md` → M81.
+
+> ### ► ROUND 13 — iterazione 2: **M80** (2026-08-03) — **lo stile è una scelta**
 > Richiesta dell'utente subito dopo M79 (*«dammi la possibilità di scegliere dalle impostazioni se
 > mantenere il vecchio stile/icone o quello nuovo»*), che **ribalta** la decisione di M79 di sostituire
 > l'aspetto senza affiancare una variante classica. Combo **Style** (Modern/Classic) accanto a Theme

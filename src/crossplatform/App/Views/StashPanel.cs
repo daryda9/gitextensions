@@ -243,15 +243,24 @@ public sealed class StashPanel : UserControl
         _filesGrid.Children.Add(_workTreeHeader);
         _filesGrid.Children.Add(_workTreeFiles);
 
+        // Starting widths on the COLUMNS, not on the children: a GridSplitter resizes
+        // the column, and a child with its own fixed Width would stay behind, leaving a
+        // dead strip between its right edge and the splitter instead of following the
+        // width the user dragged to.
         Grid split = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto,Auto,*"),
+            ColumnDefinitions = new ColumnDefinitions
+            {
+                new ColumnDefinition(340, GridUnitType.Pixel) { MinWidth = 120 },
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(320, GridUnitType.Pixel) { MinWidth = 120 },
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star) { MinWidth = 120 },
+            },
         };
         Grid.SetColumn(listPanel, 0);
-        listPanel.Width = 340;
 
         Grid.SetColumn(_filesGrid, 2);
-        _filesGrid.Width = 320;
 
         Grid.SetColumn(diffScroll, 4);
 

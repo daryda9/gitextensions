@@ -565,14 +565,22 @@ public sealed class DiffView : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
+        // The starting width belongs to the COLUMN, not to the file list: a
+        // GridSplitter resizes the column, so a child carrying its own fixed Width
+        // stops growing with it and leaves a dead strip between its right edge and the
+        // splitter — the pane no longer sticks to the width the user dragged to.
         Grid split = new()
         {
             Background = B("App.Panel"),
-            ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*"),
+            ColumnDefinitions = new ColumnDefinitions
+            {
+                new ColumnDefinition(320, GridUnitType.Pixel) { MinWidth = 120 },
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star) { MinWidth = 120 },
+            },
         };
 
         Grid.SetColumn(_files, 0);
-        _files.Width = 320;
 
         GridSplitter splitter = new()
         {
