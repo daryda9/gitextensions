@@ -38,6 +38,7 @@ public static class ThemeManager
         "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
         "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag",
         "App.Link",
+        "App.HoverRow", "App.Hover", "App.Pressed",
     ];
 
     // ------------------------------------------------------------------
@@ -180,6 +181,24 @@ public static class ThemeManager
         // so the link gets its own value: the same 204 deg hue lightened until it
         // clears 4.5:1 on the worst of the four, 4.75:1 on the toolbar.
         ["App.Link"] = Color.Parse("#4DA6E8"),
+
+        // NEW in M83. Row under the pointer in the revision grid. It used to reuse
+        // App.PanelAlt, which IS the colour of every second row: hovering a dark row
+        // changed nothing at all and hovering a light one just looked like the stripe.
+        // So the hover row is the only row background with a HUE — App.Panel pulled
+        // 10% toward #38BDF8 — which no stripe can be confused with. Held to AA for
+        // both inks it carries: App.Text 9.33:1, App.TextDim 4.61:1, and 8.13:1 for
+        // the green ref marker.
+        ["App.HoverRow"] = Color.Parse("#27343B"),
+
+        // Pointer-over / pressed surface for the flat toolbar buttons, which used to
+        // borrow App.PanelAlt (hover) and App.Panel (pressed) — both DARKER than the
+        // toolbar they sit on, so "under the pointer" read as a hole rather than a
+        // lift. Same rule as ModernStyles' derived states: the surface pulled 10% and
+        // 20% toward the ink, which inverts by itself between the two themes.
+        // App.Text measures 7.07:1 on hover and 5.42:1 on pressed.
+        ["App.Hover"] = Color.Parse("#444448"),
+        ["App.Pressed"] = Color.Parse("#555558"),
     };
 
     private static readonly Dictionary<string, Color> ClassicLight = new()
@@ -265,6 +284,14 @@ public static class ThemeManager
         // sits alone on. #0067AF is the same hue darkened to the lightest value that
         // clears 4.5:1 everywhere: 5.90 / 5.32 / 4.99 / 4.64:1.
         ["App.Link"] = Color.Parse("#0067AF"),
+
+        // NEW in M83 (see the dark block for the reasoning). Light half: the hue is
+        // the same #38BDF8, mixed into white at 22% — the darkest step that keeps the
+        // dimmed ink at AA (App.TextDim 4.55:1) and the green marker at the 4.54:1 it
+        // already had on the stripe; App.Text 14.01:1.
+        ["App.HoverRow"] = Color.Parse("#D3F0FD"),
+        ["App.Hover"] = Color.Parse("#D0D0D0"),
+        ["App.Pressed"] = Color.Parse("#BCBCBC"),
     };
 
     // ------------------------------------------------------------------
@@ -459,6 +486,20 @@ public static class ThemeManager
         // of App.Window / App.Panel / App.PanelAlt / App.Toolbar. 4.78:1 here.
         // NOTE: this only registers the key. The call sites still read App.Accent.
         ["App.Link"] = Color.Parse("#5B9CFF"),
+
+        // NEW in M83. The hovered row is the only row background with a hue: App.Panel
+        // pulled 14% toward #38BDF8. App.PanelAlt cannot serve — it is the colour of
+        // every second row, so hover on an odd row was literally invisible. AA on both
+        // inks (App.Text 10.30:1, App.TextDim 4.68:1) and 8.30:1 on the ref marker,
+        // and 1.14:1 against the alternate stripe, which is a hue change on top.
+        ["App.HoverRow"] = Color.Parse("#20333F"),
+
+        // Flat-toolbar-button states, the toolbar pulled 10% / 20% toward the ink —
+        // the same derivation ModernStyles uses for every other control, so a toolbar
+        // button and a real Button now lift by the same amount. Before this they
+        // borrowed App.PanelAlt / App.Panel, i.e. two surfaces DARKER than the toolbar.
+        ["App.Hover"] = Color.Parse("#41424A"),
+        ["App.Pressed"] = Color.Parse("#53545B"),
     };
 
     private static readonly Dictionary<string, Color> ModernLight = new()
@@ -568,6 +609,13 @@ public static class ThemeManager
         // App.Panel / App.PanelAlt / App.Toolbar, against 4.06:1 for the App.Accent the
         // links borrow today.
         ["App.Link"] = Color.Parse("#1A4FC4"),
+
+        // NEW in M83 (see the dark block). Light half: #38BDF8 mixed into App.Panel at
+        // 22%. App.TextDim 5.03:1, the green marker 4.46:1 (it was 4.51:1 on the
+        // stripe), App.Text 14.30:1.
+        ["App.HoverRow"] = Color.Parse("#D2EFFC"),
+        ["App.Hover"] = Color.Parse("#CECED4"),
+        ["App.Pressed"] = Color.Parse("#BABAC0"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
