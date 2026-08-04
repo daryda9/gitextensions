@@ -2480,6 +2480,27 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 14 — iterazione 9: M90 (2026-08-04) — doppio clic submodule deterministico e con feedback
+
+Regressione residua: il doppio clic su una riga Submodules era intermittente,
+senza feedback e talvolta lento. Causa: il routed event `DoubleTapped` ignorava
+`e.Source` e attivava `_tree.SelectedItem`; durante il cambio selezione poteva
+quindi usare il nodo precedente o nessun nodo.
+
+- Il doppio clic risolve ora il `TreeViewItem` dall'ancestor visuale del target
+  reale (testo/icona/header). Enter continua volutamente a usare la selezione.
+- Il chevron/`ToggleButton` è escluso: il suo doppio clic fa soltanto toggle e
+  non naviga. Folder e categorie restano inerti.
+- La status bar riconosce subito il gesto prima di warm-up/discovery; missing e
+  non inizializzati mostrano un messaggio esplicito. Il current conserva la
+  parità upstream “Open in new instance” ma ora dà feedback immediato.
+- Richieste duplicate sullo stesso target vengono coalesciate; un target diverso
+  successivo mantiene la semantica last-wins già protetta da epoch/path.
+
+Commit: `1e9a0bf5b`, `1a8abcd7c`. Build: 0 errori, 34 warning
+preesistenti. Review indipendente: nessun finding residuo. La verifica pointer
+reale resta manuale su questa sessione Windows/DPI.
+
 ## ROUND 14 — iterazioni 5-8: M89 (2026-08-04) — switch e menu repository senza attese duplicate
 
 Tre regressioni segnalate dopo M88: switch submodule lento/inaffidabile,
