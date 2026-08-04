@@ -277,6 +277,11 @@ public sealed class MainToolbar : UserControl
     // Worktrees split button: hidden entirely while the repository has a single
     // worktree, exactly as upstream's UpdateWorktreeToolStripVisibility does.
     private Control? _worktreesHost;
+    private Control? _submodulesHost;
+    private Image? _submodulesIcon;
+    private Button? _submodulesBody;
+    private Button? _submodulesArrow;
+    private string? _immediateSuperprojectPath;
 
     // Widest the Commit button has ever been, applied as a MinWidth so the strip
     // does not shuffle sideways every time the change count gains or loses a digit
@@ -518,9 +523,14 @@ public sealed class MainToolbar : UserControl
 
         // ---- submodules / worktrees / working dir / branch (upstream group 3) ----
         bar.AddItem(Separator(border));
-        bar.AddItem(MakeRepoLinkButton("SubmodulesManage", T("TranslatedStrings/_submodulesText.Text", "Submodules"),
+        _submodulesHost = MakeRepoLinkButton("SubmodulesManage", T("TranslatedStrings/_submodulesText.Text", "Submodules"),
             T("Open a submodule (or the parent super-project) as the active repository"),
-            () => SubmodulesProvider, border));
+            () => SubmodulesProvider, border,
+            primaryPath: () => _immediateSuperprojectPath,
+            showLabel: false,
+            captureIcon: icon => _submodulesIcon = icon,
+            captureSplitButtons: (body, arrow) => (_submodulesBody, _submodulesArrow) = (body, arrow));
+        bar.AddItem(_submodulesHost);
 
         // Worktrees is a real split button: the body opens "Manage worktrees" (as
         // upstream's toolStripWorktrees_ButtonClick does) and the drop-down lists the
@@ -653,6 +663,27 @@ public sealed class MainToolbar : UserControl
         };
 
         Content = bar;
+    }
+
+    public void SetSubmoduleNavigation(string? immediateSuperprojectPath)
+    {
+        _immediateSuperprojectPath = immediateSuperprojectPath;
+        bool canGoUp = !string.IsNullOrWhiteSpace(immediateSuperprojectPath);
+        Image? replacement = IconLoader.Image(canGoUp ? "NavigateUp" : "SubmodulesManage", 16);
+        if (_submodulesIcon is not null && replacement is not null)
+        {
+            _submodulesIcon.Source = replacement.Source;
+        }
+
+        if (_submodulesHost is not null)
+        {
+            string tooltip = canGoUp
+                ? T("Go to superproject")
+                : T("Open a submodule as the active repository");
+            ToolTip.SetTip(_submodulesHost, tooltip);
+            if (_submodulesBody is not null) ToolTip.SetTip(_submodulesBody, tooltip);
+            if (_submodulesArrow is not null) ToolTip.SetTip(_submodulesArrow, tooltip);
+        }
     }
 
     /// <summary>
@@ -2218,7 +2249,11 @@ public sealed class MainToolbar : UserControl
     private Control MakeRepoLinkButton(string iconName, string label, string tooltip,
         Func<Func<Task<IReadOnlyList<RepoLink>>>?> provider, IBrush border,
         Action? bodyAction = null,
-        Func<(string Icon, string Text, Action OnClick)[]>? extraItems = null)
+        Func<(string Icon, string Text, Action OnClick)[]>? extraItems = null,
+        Func<string?>? primaryPath = null,
+        bool showLabel = true,
+        Action<Image?>? captureIcon = null,
+        Action<Button, Button>? captureSplitButtons = null)
     {
         StackPanel content = new()
         {
@@ -2228,23 +2263,27 @@ public sealed class MainToolbar : UserControl
         };
 
         Image? icon = IconLoader.Image(iconName, 16);
+        captureIcon?.Invoke(icon);
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
             content.Children.Add(icon);
         }
 
-        content.Children.Add(new TextBlock
+        if (showLabel)
         {
-            Text = label,
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Brush("App.Text", "#DCDCDC"),
-            FontSize = 12,
-        });
+            content.Children.Add(new TextBlock
+            {
+                Text = label,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brush("App.Text", "#DCDCDC"),
+                FontSize = 12,
+            });
+        }
 
         // With a body action the chevron becomes its own button (see below), so it is
         // not part of the body's content.
-        if (bodyAction is null)
+        if (bodyAction is null && primaryPath is null)
         {
             content.Children.Add(new TextBlock
             {
@@ -2298,7 +2337,7 @@ public sealed class MainToolbar : UserControl
             }
         });
 
-        if (bodyAction is null)
+        if (bodyAction is null && primaryPath is null)
         {
             button.Click += (_, _) => ShowLinks(button);
             _overflow[button] = new OverflowEntry
@@ -2315,7 +2354,21 @@ public sealed class MainToolbar : UserControl
         // drops the list. Same two-real-Buttons-in-one-Border shape as the Pull and
         // Stash split buttons, so each half keeps its own hover feedback while the
         // overflow menu still sees a single item.
-        button.Click += (_, _) => bodyAction();
+        button.Click += (_, _) =>
+        {
+            if (primaryPath?.Invoke() is { Length: > 0 } path)
+            {
+                OpenRepositoryRequested?.Invoke(path);
+            }
+            else if (bodyAction is not null)
+            {
+                bodyAction();
+            }
+            else
+            {
+                ShowLinks(button);
+            }
+        };
 
         Border divider = new()
         {
@@ -2342,6 +2395,7 @@ public sealed class MainToolbar : UserControl
         arrow.Classes.Add("toolbtn");
         ToolTip.SetTip(arrow, tooltip);
         arrow.Click += (_, _) => ShowLinks(arrow);
+        captureSplitButtons?.Invoke(button, arrow);
 
         Border host = new()
         {

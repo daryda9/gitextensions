@@ -1244,16 +1244,20 @@ public sealed class MainWindow : Theming.ZoomWindow
                 return Array.Empty<RepoLink>();
             }
 
+            SubmoduleHierarchy hierarchy = new SubmoduleService().DiscoverHierarchy(repo);
             List<RepoLink> links = [];
-            if (FindSuperproject(repo) is { Length: > 0 } parent)
+            if (hierarchy.ImmediateSuperprojectPath is { Length: > 0 } parent)
             {
                 links.Add(new RepoLink($"⬆ Parent super-project ({Path.GetFileName(parent.TrimEnd('/', '\\'))})", parent, "NavigateUp"));
             }
 
-            foreach (SubmoduleRow row in new SubmoduleService().ListSubmodules(repo))
+            foreach (SubmoduleRow row in hierarchy.Nodes)
             {
-                string full = Path.GetFullPath(Path.Combine(repo, row.Path));
-                links.Add(new RepoLink(row.Display, full, "FolderSubmodule"));
+                if (row.Exists && !row.IsCurrent && row.AbsolutePath != hierarchy.ImmediateSuperprojectPath)
+                {
+                    string text = row.Path.Length == 0 ? Path.GetFileName(hierarchy.RootPath) : row.Display;
+                    links.Add(new RepoLink(text, row.AbsolutePath, "FolderSubmodule"));
+                }
             }
 
             return links;
@@ -3972,6 +3976,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath);
         _statusBar.LoadRepository(repoPath);
+        _ = RefreshSubmoduleNavigationAsync(repoPath);
         RefreshToolbarState();
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _menu.SetPlugins(PluginService.Instance.Plugins);
@@ -3983,6 +3988,24 @@ public sealed class MainWindow : Theming.ZoomWindow
         _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
         UpdateMenuRepositoryState();
+    }
+
+    private async Task RefreshSubmoduleNavigationAsync(string repoPath)
+    {
+        string? parent = null;
+        try
+        {
+            parent = await Task.Run(() => new SubmoduleService().DiscoverHierarchy(repoPath).ImmediateSuperprojectPath);
+        }
+        catch
+        {
+            // A disappearing or malformed repository simply restores the manage action.
+        }
+
+        if (_repoPath == repoPath)
+        {
+            _toolbar.SetSubmoduleNavigation(parent);
+        }
     }
 
     // Records the opened repository in the core MRU so it appears in "Open recent"
