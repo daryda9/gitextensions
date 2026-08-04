@@ -2319,8 +2319,52 @@ public sealed class MainToolbar : UserControl
 
         async Task ShowLinksAsync(Control anchor)
         {
-            await PopulateRepoLinksAsync(flyout, iconName, provider(), extraItems?.Invoke());
+            Func<Task<IReadOnlyList<RepoLink>>>? loadLinks = provider();
+            (string Icon, string Text, Action OnClick)[]? trailing = extraItems?.Invoke();
+            if (loadLinks is null)
+            {
+                await PopulateRepoLinksAsync(flyout, iconName, null, trailing);
+                flyout.ShowAt(anchor);
+                return;
+            }
+
+            Task<IReadOnlyList<RepoLink>> load;
+            try
+            {
+                load = loadLinks();
+            }
+            catch
+            {
+                await PopulateRepoLinksAsync(
+                    flyout,
+                    iconName,
+                    () => Task.FromException<IReadOnlyList<RepoLink>>(new InvalidOperationException()),
+                    trailing);
+                flyout.ShowAt(anchor);
+                return;
+            }
+
+            if (load.IsCompleted)
+            {
+                await PopulateRepoLinksAsync(flyout, iconName, () => load, trailing);
+                flyout.ShowAt(anchor);
+                return;
+            }
+
+            // The popup itself must respond to the click immediately. Its provider is
+            // already running from repository-open prefetch; a later click consumes the
+            // now-cached result without starting Git again. Do not mutate this visible
+            // MenuFlyout: Avalonia 11.3 does not remeasure it after ShowAt.
+            PopulateRepoLinksLoading(flyout, trailing);
             flyout.ShowAt(anchor);
+            try
+            {
+                await load;
+            }
+            catch
+            {
+                // The provider evicts failed snapshots, so the next click can retry.
+            }
         }
 
         // Click handlers return void, so an unobserved exception here would take the
@@ -2510,6 +2554,24 @@ public sealed class MainToolbar : UserControl
             flyout.Items.Add(item);
         }
 
+        AppendRepoLinkExtraItems(flyout, extraItems);
+    }
+
+    private void PopulateRepoLinksLoading(MenuFlyout flyout,
+        (string Icon, string Text, Action OnClick)[]? extraItems)
+    {
+        flyout.Items.Clear();
+        flyout.Items.Add(new MenuItem
+        {
+            Header = T("RevisionGridControl/_strLoading.Text", "Loading…"),
+            IsEnabled = false,
+        });
+        AppendRepoLinkExtraItems(flyout, extraItems);
+    }
+
+    private void AppendRepoLinkExtraItems(MenuFlyout flyout,
+        (string Icon, string Text, Action OnClick)[]? extraItems)
+    {
         if (extraItems is not { Length: > 0 })
         {
             return;
