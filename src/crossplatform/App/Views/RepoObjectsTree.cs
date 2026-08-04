@@ -124,6 +124,8 @@ public sealed class RepoObjectsTree : UserControl
     private int _refreshEpoch;
     private bool _refreshing;
     private bool _refreshQueued;
+    private string? _refreshingRepository;
+    private Task<RepositoryNavigationSnapshot>? _navigationSnapshotTask;
     private string? _expandedSubmoduleCurrentPath;
 
     // A repository switch rebuilds the tree and restores a still-valid absolute
@@ -630,13 +632,22 @@ public sealed class RepoObjectsTree : UserControl
     ///  Points the tree at <paramref name="repoPath"/> and loads its objects.
     /// </summary>
     public void LoadRepository(string repoPath)
+        => LoadRepository(repoPath, navigationSnapshot: null);
+
+    /// <summary>
+    /// Points the tree at a repository while sharing the host's prefetched navigation
+    /// snapshot with toolbar and super-project navigation.
+    /// </summary>
+    public void LoadRepository(string repoPath, Task<RepositoryNavigationSnapshot>? navigationSnapshot)
     {
-        if (!IsSameRepositoryPath(_repoPath, repoPath))
+        bool changed = !IsSameRepositoryPath(_repoPath, repoPath);
+        if (changed)
         {
             _horizontalHomeRepository = NormalizeRepositoryPath(repoPath);
         }
 
         _repoPath = repoPath;
+        _navigationSnapshotTask = navigationSnapshot;
         Refresh();
     }
 
@@ -663,7 +674,7 @@ public sealed class RepoObjectsTree : UserControl
         // Any pass already running was started against an older repository state.
         _refreshEpoch++;
 
-        if (_refreshing)
+        if (_refreshing && IsSameRepositoryPath(_refreshingRepository, repo))
         {
             // Do not start a second concurrent set of git processes; the pass in flight
             // will notice it has been superseded and re-run with the current state.
@@ -672,6 +683,7 @@ public sealed class RepoObjectsTree : UserControl
         }
 
         _refreshing = true;
+        _refreshingRepository = repo;
         StartRefresh(repo, _refreshEpoch);
     }
 
@@ -681,6 +693,7 @@ public sealed class RepoObjectsTree : UserControl
     // thread) nor leave the older result on screen.
     private void StartRefresh(string repo, int epoch)
     {
+        Task<RepositoryNavigationSnapshot>? navigationForPass = _navigationSnapshotTask;
         _ = Task.Run(async () =>
         {
             RepoSnapshot? snapshot = null;
@@ -708,17 +721,23 @@ public sealed class RepoObjectsTree : UserControl
                 Task<IReadOnlyList<StashRow>> stashes = bare
                     ? Task.FromResult<IReadOnlyList<StashRow>>([])
                     : Task.Run(() => _stashService.ListStashes(repo));
-                Task<SubmoduleHierarchy> submodules = bare
-                    ? Task.FromResult(new SubmoduleHierarchy(repo, repo, null, []))
-                    : Task.Run(() => _submoduleService.DiscoverHierarchy(repo));
-                Task<IReadOnlyList<WorktreeRow>> worktrees = Task.Run(() => _worktreeService.ListWorktrees(repo));
+                Task<RepositoryNavigationSnapshot> navigation = bare
+                    ? Task.FromResult(new RepositoryNavigationSnapshot(
+                        repo,
+                        new SubmoduleHierarchy(repo, repo, null, []),
+                        []))
+                    : navigationForPass ?? Task.Run(() => new RepositoryNavigationSnapshot(
+                        repo,
+                        _submoduleService.DiscoverHierarchy(repo),
+                        _worktreeService.ListWorktrees(repo)));
 
-                await Task.WhenAll(refs, stashes, submodules, worktrees).ConfigureAwait(false);
+                await Task.WhenAll(refs, stashes, navigation).ConfigureAwait(false);
+                RepositoryNavigationSnapshot navigationSnapshot = await navigation.ConfigureAwait(false);
                 snapshot = new RepoSnapshot(
                     await refs.ConfigureAwait(false),
                     await stashes.ConfigureAwait(false),
-                    await submodules.ConfigureAwait(false),
-                    await worktrees.ConfigureAwait(false));
+                    navigationSnapshot.Submodules,
+                    navigationSnapshot.Worktrees);
             }
             catch (Exception ex)
             {
@@ -728,9 +747,28 @@ public sealed class RepoObjectsTree : UserControl
 
             Dispatcher.UIThread.Post(() =>
             {
-                _refreshing = false;
+                if (epoch != _refreshEpoch)
+                {
+                    // A repository switch starts its own pass immediately. Only a
+                    // queued refresh for THIS same repository waits for this pass.
+                    if (_refreshQueued
+                        && IsSameRepositoryPath(repo, _repoPath)
+                        && IsSameRepositoryPath(repo, _refreshingRepository))
+                    {
+                        _refreshQueued = false;
+                        if (_repoPath is { Length: > 0 } current)
+                        {
+                            StartRefresh(current, _refreshEpoch);
+                        }
+                    }
 
-                if (_refreshQueued || epoch != _refreshEpoch)
+                    return;
+                }
+
+                _refreshing = false;
+                _refreshingRepository = null;
+
+                if (_refreshQueued)
                 {
                     // Superseded: this snapshot describes a state the repository has
                     // already left. Drop it (the synchronous HEAD-derived marker keeps the
@@ -739,6 +777,7 @@ public sealed class RepoObjectsTree : UserControl
                     if (_repoPath is { Length: > 0 } current)
                     {
                         _refreshing = true;
+                        _refreshingRepository = current;
                         StartRefresh(current, _refreshEpoch);
                     }
 

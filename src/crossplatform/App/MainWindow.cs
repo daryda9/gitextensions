@@ -62,6 +62,7 @@ public sealed class MainWindow : Theming.ZoomWindow
     private readonly StashOpsService _stashOps = new();
     private readonly ExternalToolService _externalTools = new();
     private readonly BisectService _bisect = new();
+    private readonly RepositoryNavigationSnapshotService _navigationSnapshots = new();
 
     private readonly UiStateService _uiStateService = new();
     private readonly UiState _uiState;
@@ -120,6 +121,7 @@ public sealed class MainWindow : Theming.ZoomWindow
     private double _normalHeight;
 
     private string? _repoPath;
+    private int _repositoryEpoch;
     private string? _lastSelectedHash;
 
     // True while the grid selection sits on an artificial row (working directory or
@@ -1238,14 +1240,20 @@ public sealed class MainWindow : Theming.ZoomWindow
         // thread; choosing an entry opens that path as the active repository. The
         // submodules list is prefixed with a "level-up" entry when the current repo
         // is itself a submodule/subdir of a parent (super-project).
-        _toolbar.SubmodulesProvider = () => Task.Run<IReadOnlyList<RepoLink>>(() =>
+        _toolbar.SubmodulesProvider = async () =>
         {
             if (_repoPath is not { Length: > 0 } repo)
             {
                 return Array.Empty<RepoLink>();
             }
 
-            SubmoduleHierarchy hierarchy = new SubmoduleService().DiscoverHierarchy(repo);
+            RepositoryNavigationSnapshot snapshot = await _navigationSnapshots.GetAsync(repo).ConfigureAwait(false);
+            if (!SameRepositoryPath(repo, _repoPath))
+            {
+                return Array.Empty<RepoLink>();
+            }
+
+            SubmoduleHierarchy hierarchy = snapshot.Submodules;
             List<RepoLink> links = [];
             if (hierarchy.ImmediateSuperprojectPath is { Length: > 0 } parent)
             {
@@ -1262,16 +1270,22 @@ public sealed class MainWindow : Theming.ZoomWindow
             }
 
             return links;
-        });
-        _toolbar.WorktreesProvider = () => Task.Run<IReadOnlyList<RepoLink>>(() =>
+        };
+        _toolbar.WorktreesProvider = async () =>
         {
             if (_repoPath is not { Length: > 0 } repo)
             {
                 return Array.Empty<RepoLink>();
             }
 
+            RepositoryNavigationSnapshot snapshot = await _navigationSnapshots.GetAsync(repo).ConfigureAwait(false);
+            if (!SameRepositoryPath(repo, _repoPath))
+            {
+                return Array.Empty<RepoLink>();
+            }
+
             List<RepoLink> links = [];
-            foreach (WorktreeRow row in new WorktreeService().ListWorktrees(repo))
+            foreach (WorktreeRow row in snapshot.Worktrees)
             {
                 // The current worktree is ticked and inert; a prunable one is dimmed.
                 bool current = row.IsSamePath(repo);
@@ -1283,7 +1297,7 @@ public sealed class MainWindow : Theming.ZoomWindow
             }
 
             return links;
-        });
+        };
         _toolbar.OpenRepositoryRequested += OpenRepositoryPath;
 
         // Inline branch dropdown: list the local branch names off the UI thread;
@@ -2871,10 +2885,12 @@ public sealed class MainWindow : Theming.ZoomWindow
             return;
         }
 
-        WarmUpCore(_repoPath);
+        _repositoryEpoch++;
+        _navigationSnapshots.Invalidate(_repoPath);
+        Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(_repoPath);
         _revisions.LoadRepository(_repoPath);
         _stash.LoadRepository(_repoPath);
-        _tree.LoadRepository(_repoPath);
+        _tree.LoadRepository(_repoPath, navigation);
         _statusBar.LoadRepository(_repoPath);
         // No-op while no file is shown in the history tab.
         _fileHistory.Reload();
@@ -2954,6 +2970,7 @@ public sealed class MainWindow : Theming.ZoomWindow
             return;
         }
 
+        int epoch = _repositoryEpoch;
         _ = Task.Run(() =>
         {
             int ahead = 0, behind = 0, staged = 0, unstaged = 0;
@@ -2993,6 +3010,11 @@ public sealed class MainWindow : Theming.ZoomWindow
             int fStaged = staged, fUnstaged = unstaged;
             Dispatcher.UIThread.Post(() =>
             {
+                if (epoch != _repositoryEpoch || !SameRepositoryPath(repoPath, _repoPath))
+                {
+                    return;
+                }
+
                 _toolbar.UpdateState(ahead, behind, fStaged, fUnstaged, repoPath, branch, probed);
                 UpdateWindowTitle(branch);
                 // Feed the artificial "Working directory" / "Commit index" rows
@@ -3968,16 +3990,18 @@ public sealed class MainWindow : Theming.ZoomWindow
     private void OpenRepository(string repoPath)
     {
         _repoPath = repoPath;
+        int epoch = ++_repositoryEpoch;
+        _navigationSnapshots.Invalidate(repoPath);
+        Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(repoPath);
         _console.RepoPath = repoPath;
         _progressBanner.SetRepository(repoPath);
         ShowRepositoryView();
-        WarmUpCore(repoPath);
-
+        _toolbar.SetSubmoduleNavigation(null);
         _revisions.LoadRepository(repoPath);
         _stash.LoadRepository(repoPath);
-        _tree.LoadRepository(repoPath);
+        _tree.LoadRepository(repoPath, navigation);
         _statusBar.LoadRepository(repoPath);
-        _ = RefreshSubmoduleNavigationAsync(repoPath);
+        _ = RefreshSubmoduleNavigationAsync(repoPath, navigation, epoch);
         RefreshToolbarState();
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _menu.SetPlugins(PluginService.Instance.Plugins);
@@ -3991,19 +4015,22 @@ public sealed class MainWindow : Theming.ZoomWindow
         UpdateMenuRepositoryState();
     }
 
-    private async Task RefreshSubmoduleNavigationAsync(string repoPath)
+    private async Task RefreshSubmoduleNavigationAsync(
+        string repoPath,
+        Task<RepositoryNavigationSnapshot> navigation,
+        int epoch)
     {
         string? parent = null;
         try
         {
-            parent = await Task.Run(() => new SubmoduleService().DiscoverHierarchy(repoPath).ImmediateSuperprojectPath);
+            parent = (await navigation.ConfigureAwait(true)).Submodules.ImmediateSuperprojectPath;
         }
         catch
         {
             // A disappearing or malformed repository simply restores the manage action.
         }
 
-        if (_repoPath == repoPath)
+        if (epoch == _repositoryEpoch && SameRepositoryPath(repoPath, _repoPath))
         {
             _toolbar.SetSubmoduleNavigation(parent);
         }
@@ -4062,6 +4089,7 @@ public sealed class MainWindow : Theming.ZoomWindow
     // Dashboard)" and on startup when no repository is found.
     private void ShowDashboard()
     {
+        _repositoryEpoch++;
         if (!_dashboardShowing)
         {
             _root.Children.Remove(_repositoryArea);
@@ -4281,22 +4309,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         cancel.Click += (_, _) => dlg.Close();
         await dlg.ShowDialog(this);
         return result;
-    }
-
-    // Touches the core's main read paths once, sequentially, so shared
-    // process-global lazy state initializes before concurrent panel loads.
-    private static void WarmUpCore(string repoPath)
-    {
-        try
-        {
-            GitCommands.GitModule module = GitContext.CreateModule(repoPath);
-            _ = module.GetCurrentCheckout();
-            _ = new RevisionService().LoadRevisions(repoPath, 1);
-        }
-        catch
-        {
-            // Best-effort; the panels report their own errors.
-        }
     }
 
     // Accept a subdirectory: walk up until a git working dir is found.
