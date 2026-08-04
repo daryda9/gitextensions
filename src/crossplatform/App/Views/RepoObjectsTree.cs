@@ -80,6 +80,7 @@ public sealed class RepoObjectsTree : UserControl
     // equivalent of upstream's TreeNode.GetFullNamePath() — because the item objects
     // themselves are new on every build.
     private readonly Dictionary<TreeViewItem, string> _nodeKey = new();
+    private readonly Dictionary<TreeViewItem, int> _expansionInputGeneration = new();
     private HashSet<string> _expandedKeys = new(StringComparer.Ordinal);
     private string? _selectedKey;
 
@@ -307,6 +308,7 @@ public sealed class RepoObjectsTree : UserControl
         // is dropped again on the next dispatcher pass, i.e. after that one selection
         // change has been delivered.
         _tree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+        _tree.AddHandler(KeyDownEvent, OnTreeExpansionKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
 
         _search = new TextBox
         {
@@ -757,6 +759,7 @@ public sealed class RepoObjectsTree : UserControl
 
         _nodeText.Clear();
         _nodeKey.Clear();
+        _expansionInputGeneration.Clear();
 
         List<BranchTagRow> local = [];
         List<BranchTagRow> remote = [];
@@ -2062,14 +2065,26 @@ public sealed class RepoObjectsTree : UserControl
     private void OnTreePointerPressed(object? sender, PointerPressedEventArgs e)
     {
         PointerPointProperties properties = e.GetCurrentPoint(_tree).Properties;
-        if (properties.IsLeftButtonPressed && TryFindTreeItem(e.Source, out TreeViewItem item) && !IsExpandToggle(e.Source))
+        if (TryFindTreeItem(e.Source, out TreeViewItem item))
         {
-            // Avalonia's TreeViewItem toggles a branch when its header is clicked. Upstream
-            // selects on an ordinary click and reserves collapse/expand for the chevron.
-            // Snapshot before the class handler runs, then restore after routed input has
-            // completed. A click on the actual ToggleButton is deliberately excluded.
-            bool expanded = item.IsExpanded;
-            Dispatcher.UIThread.Post(() => item.IsExpanded = expanded, DispatcherPriority.Background);
+            int generation = NextExpansionInputGeneration(item);
+            if (properties.IsLeftButtonPressed && !IsExpandToggle(e.Source))
+            {
+                // Avalonia's TreeViewItem toggles a branch when its header is clicked.
+                // Undo only the transition made by this routed input operation. A newer
+                // pointer/key operation invalidates this callback, and the chevron keeps
+                // its native intentional toggle.
+                bool expanded = item.IsExpanded;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_expansionInputGeneration.TryGetValue(item, out int currentGeneration)
+                        && currentGeneration == generation
+                        && item.IsExpanded != expanded)
+                    {
+                        item.IsExpanded = expanded;
+                    }
+                }, DispatcherPriority.Input);
+            }
         }
 
         if (!properties.IsRightButtonPressed || _suppressSelectionNotify)
@@ -2079,6 +2094,24 @@ public sealed class RepoObjectsTree : UserControl
 
         _suppressSelectionNotify = true;
         Dispatcher.UIThread.Post(() => _suppressSelectionNotify = false, DispatcherPriority.Background);
+    }
+
+    private void OnTreeExpansionKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Left or Key.Right or Key.Space
+            && _tree.SelectedItem is TreeViewItem item)
+        {
+            NextExpansionInputGeneration(item);
+        }
+    }
+
+    private int NextExpansionInputGeneration(TreeViewItem item)
+    {
+        int generation = _expansionInputGeneration.TryGetValue(item, out int current)
+            ? unchecked(current + 1)
+            : 1;
+        _expansionInputGeneration[item] = generation;
+        return generation;
     }
 
     private static bool TryFindTreeItem(object? source, out TreeViewItem item)
