@@ -812,7 +812,6 @@ public sealed class RepoObjectsTree : UserControl
 
         _nodeText.Clear();
         _nodeKey.Clear();
-        _expansionInputGeneration.Clear();
 
         List<BranchTagRow> local = [];
         List<BranchTagRow> remote = [];
