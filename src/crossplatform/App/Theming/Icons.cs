@@ -280,6 +280,28 @@ internal static class Icons
     // goes without borrowing Pull's arrow, which already means something else.
     private const string ListMinus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5";
 
+    // The bare pencil for renaming. It is FilePen without the page on purpose:
+    // the only call site renames a branch, so there is no file to draw, and
+    // keeping the same pencil ties it to the edited-thing family.
+    private const string Pencil = "M16.5 3.5l4 4-13 13H3.5v-4z M14 6l4 4";
+
+    // Removing a remote unhooks it, it does not destroy anything on the server,
+    // so it is the cloud every remote uses struck through — the same negation
+    // StarOff applies — rather than the bin.
+    private const string CloudOff = Cloud + " M4 4l16 16";
+
+    // Reordering: the same arrows as NavigateBackward and NavigateForward turned
+    // through a quarter turn, because moving a row is the same gesture.
+    private const string ArrowUp = "M12 20V4 M6 10l6-6 6 6";
+    private const string ArrowDown = "M12 4v16 M6 14l6 6 6-6";
+
+    // Expand is CollapseVertical mirrored: the rows part instead of closing up.
+    private const string ExpandVertical = "M7 10l5-5 5 5 M7 14l5 5 5-5";
+
+    // A plug for a plugin: prongs up, cord down. The puzzle piece Lucide uses
+    // loses its notches at 16px, this does not.
+    private const string Plug = "M9 3v5 M15 3v5 M7 8h10v3a5 5 0 0 1-10 0z M12 16v5";
+
     private static readonly Dictionary<string, string> Data = new(StringComparer.Ordinal)
     {
         // Repository and folders
@@ -404,11 +426,26 @@ internal static class Icons
         ["WorkingDirChanges"] = FolderPen,
         ["Unstage"] = ListMinus,
 
+        // A rename is an edit of the name, so it carries the same pencil as the
+        // other two, without the page: the call site renames a ref, not a file.
+        ["Renamed"] = Pencil,
+
+        // Removing a remote unhooks it rather than destroying anything, so it is
+        // the remotes' own cloud struck through and not the bin.
+        ["RemoteDelete"] = CloudOff,
+
         // Navigation
         ["NavigateBackward"] = ArrowLeft,
         ["NavigateForward"] = ArrowRight,
         ["CollapseAll"] = CollapseVertical,
+        ["ExpandAll"] = ExpandVertical,
+        ["ArrowUp"] = ArrowUp,
+        ["ArrowDown"] = ArrowDown,
         ["DeleteText"] = Backspace,
+
+        // Lower-case on purpose: Data is Ordinal and the call site asks for
+        // "plugin", so "Plugin" would silently miss and fall back to the PNG.
+        ["plugin"] = Plug,
 
         // Chrome
         ["Settings"] = Sliders,
