@@ -232,6 +232,43 @@ internal static class Icons
     // "delete" affordance does. Not the bin, which stands for deleting on disk.
     private const string Backspace = "M9 4h11v16H9L2.5 12z M13 9l5 6 M18 9l-5 6";
 
+    // The two files the repository menu offers to open are told apart by what
+    // they hold, not by the pencil they share: config carries the same sliders
+    // Settings uses, .gitignore carries the stroke that crosses lines out.
+    private const string FileSliders =
+        "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M9 12h6 M9 16.5h6 M11 10.5v3 M13 15v3";
+    private const string FileIgnore = "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M8 17.5l8-8";
+
+    // git maintenance is the servicing task behind the plumbing commands, so it
+    // is the tool rather than any one of their shapes.
+    private const string Wrench =
+        "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77"
+        + "a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91"
+        + "a6 6 0 0 1 7.94-7.94l-3.76 3.76z";
+
+    // Looking without opening.
+    private const string Eye = "M2.5 12q9.5-8 19 0 q-9.5 8-19 0 M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0";
+
+    // fsck pulls unreachable objects back out of the store: the crate is the
+    // object database and the arrow lifts something out of it, which is the one
+    // direction that distinguishes recovering from archiving.
+    private const string ArchiveRestore =
+        "M4.5 9h15v11h-15z M4.5 9l2-4h11l2 4 M12 17V11 M9.5 13.5l2.5-2.5 2.5 2.5";
+
+    // The marker laid over a line of text: the setting colours code, it does not
+    // change it, so the pen is over the line rather than on it.
+    private const string Highlighter =
+        "M6 14.5l6-6 4.5 4.5-6 6H6z M12.5 8l3.5-3.5 4 4-3.5 3.5 M4 21h16";
+
+    // The working directory with edits pending in it: the folder every path in
+    // this set uses, wearing the pencil that FilePen uses for a modified file.
+    private const string FolderPen =
+        "M3 18V6h6l2 3h5v2 M3 18h8 M18.5 11.5l2 2-6.5 6.5H11.5v-2.5z";
+
+    // Unstaging drops an entry from the staged list; the minus says which way it
+    // goes without borrowing Pull's arrow, which already means something else.
+    private const string ListMinus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5";
+
     private static readonly Dictionary<string, string> Data = new(StringComparer.Ordinal)
     {
         // Repository and folders
@@ -252,6 +289,10 @@ internal static class Icons
         ["CleanupRepo"] = Broom,
         ["CompressGitDatabase"] = Compress,
         ["DeleteIndexLock"] = LockOpen,
+        ["Maintenance"] = Wrench,
+        ["RecoverLostObjects"] = ArchiveRestore,
+        ["EditGitConfig"] = FileSliders,
+        ["EditGitIgnore"] = FileIgnore,
 
         // Branches
         ["Branch"] = Branch,
@@ -340,6 +381,13 @@ internal static class Icons
         ["EditFile"] = FilePen,
         ["DeleteFile"] = Bin,
         ["CopyToClipboard"] = Copy,
+        ["Preview"] = Eye,
+
+        // Working tree state. A modified file is an edited file, so it reuses the
+        // pencil; unstaging is a list operation, not a transfer.
+        ["FileStatusModified"] = FilePen,
+        ["WorkingDirChanges"] = FolderPen,
+        ["Unstage"] = ListMinus,
 
         // Navigation
         ["NavigateBackward"] = ArrowLeft,
@@ -359,6 +407,7 @@ internal static class Icons
         ["star"] = Star,
         ["StarRemove"] = StarOff,
         ["EditFilter"] = Filter,
+        ["SyntaxHighlighting"] = Highlighter,
     };
 
     /// <summary>
