@@ -2480,6 +2480,127 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 13 — iterazione 8: M86 (2026-08-04) — lo zoom vero, due livelli, e il transform torna senza le sue cause
+
+> Decisione dell'utente sulle tre opzioni di M85: **(b)**, cioè `OverlayPopups = true` più un layout
+> transform costruito dalla finestra, **accettando** che i popup restino confinati nei bordi della
+> finestra. Base `4ae181d4a`. `Errori: 0`. Commit `c78d9fbc3` (meccanismo), `09ad0ecd7` (il
+> `VisualLayerManager`, senza cui i popup non scalano).
+
+### La scoperta che ha cambiato l'implementazione: `OverlayPopups` **da solo non basta**
+Il brief dava per scontato che rendere i popup non-nativi bastasse a farli entrare nel transform.
+**Non basta, ed è misurato, non dedotto.** L'`OverlayLayer` di una finestra vive nel **template della
+finestra**, come *fratello* del `ContentPresenter` che contiene il nostro host: quindi un popup overlay
+raggiunge la `Window` **scavalcando** il transform esattamente come faceva quello nativo. La catena
+misurata in headless (che usa già gli overlay popup) è quella che M83 aveva registrato, verbatim:
+
+```
+ComboBoxItem < … < ContentPresenter < VisualLayerManager < LayoutTransformControl
+             < OverlayPopupHost < OverlayLayer < VisualLayerManager < Panel < ZoomWindow
+```
+
+**La correzione**: l'host porta **un `VisualLayerManager` proprio**, e il contenuto della finestra va
+dentro *quello*. `OverlayLayer.GetOverlayLayer` risolve al **più vicino** manager sopra il controllo che
+apre il popup, che adesso è il nostro, dentro il transform:
+
+```
+… < OverlayPopupHost < OverlayLayer < VisualLayerManager < LayoutTransformControl(nostro)
+  < ContentPresenter < VisualLayerManager < Panel < ZoomWindow
+```
+
+Senza questa aggiunta l'opzione (b) sarebbe stata **inutile**: transform sulla finestra, popup al 100%,
+cioè il difetto di M83 di nuovo.
+
+### Le due cause strutturali, rimosse — non tollerate
+| causa (M82/M83) | perché non c'è più |
+|---|---|
+| il wrapper era installato da una `Style` app-wide, cioè da una **callback di styling**, e mutare `Application.Styles` (apre Settings) ri-stila tutto e la richiamava su una finestra già avvolta | **nessuno stile e nessuna callback**: l'host lo installa la finestra, dal **costruttore** di `Theming/ZoomWindow`. Niente ri-entra quando `Application.Styles` cambia |
+| il crash `The Control already has a parent`: il presenter teneva già il contenuto quando il wrapper provava a prenderlo | nel costruttore la finestra **non ha ancora né `Content` né `ContentPresenter`**: l'host entra con figlio `null` e non c'è niente da staccare. Su quel percorso il crash **non è raggiungibile** |
+
+`Install` resta **idempotente** per finestra (`HostProperty`), **rifiuta invece di lanciare**, e non lascia
+mai il contenuto senza genitore. Il trucco `Presenter.UpdateChild()` di M82 è **conservato**, perché
+serve ancora alle scritture di `Content` *successive* (finestra riempita dopo `Show`, contenuto
+sostituito a caldo).
+
+### I due livelli
+| livello | fattore | perché |
+|---|---|---|
+| `Standard (like Git Extensions)` | **1.0**, **nessun transform** | è una *misura*, non una comodità: M81 aveva già corretto il chrome da 14 (Fluent) a **12** (upstream, Segoe UI 9pt), e le metriche del port sono prese da upstream (toolbar 25px, riga griglia 24px, bottoni 23x22 con icone 16px). A 1.0 il port **è già** alla scala di upstream: non resta niente da correggere con un fattore |
+| `Large (125%)` | **1.25** | primo passo convenzionale su Windows e GNOME, quindi il fattore che «più zoomata» più probabilmente significa; 110% sarebbe nel rumore di una modifica di font, cioè il meccanismo appena rifiutato. **150% scartato**: Git Extensions è denso e il suo valore è quanta storia sta a schermo, a 150% la griglia perde circa un terzo delle righe visibili. A 1.25 il chrome cade su 15px, che è la dimensione che M84 già spediva come passo massimo, quindi la leggibilità non è un'ipotesi |
+
+Uno zoom **non** può promettere pixel interi come poteva una dimensione di font: a 1.25 una toolbar da
+25px misura 31,25px e il compositor arrotonda. È inerente a qualsiasi scala non intera e non viene
+nascosto.
+
+**Vivo, non al riavvio.** Assegnare `LayoutTransform` invalida la misura dell'host, quindi ogni finestra
+aperta si ri-dispone al passo di layout successivo senza ricostruire nessuna view. Non c'è niente di
+mezzo-applicato da spiegare e nessun riavvio da chiedere: il requisito 6 è soddisfatto dal lato buono.
+
+### Rimosso
+La **scala** delle tre chiavi font di M84. Il **baseline 12px resta**, come scrittura fissa e
+indipendente dal livello: `UiScaling.Apply(UiSize.Normal)` in `App.Initialize` diventa
+`UiScaling.InstallChromeBaseline()`. Era la parte di M84 che aveva risolto la lamentela originale
+dell'utente, e sopravvive intatta; quella che spariva era il *knob*, perché due controlli di dimensione
+in concorrenza danno un prodotto che nessuno ha scelto.
+
+### Migrazione del valore persistito
+`UiSize` passa da quattro membri a due, e `UiSizes.Parse` **migra** invece di ripiegare:
+`Small`/`Normal` → `Standard`, `Large`/`VeryLarge` → `Large`. Il caso che conta è **`VeryLarge`**: se
+cadesse nel fallback, un utente che aveva scelto il passo **più grande** si troverebbe sul livello **più
+piccolo** dopo l'aggiornamento. La migrazione atterra su disco gratis, attraverso il round-trip di
+normalizzazione che `UiStateService` faceva già in lettura: il nome vecchio viene letto una volta e
+riscritto col nuovo. Stesso store, stesso posto nella pagina Appearance, stesso comportamento di
+Cancel (revert immediato, coerente perché l'applicazione è viva).
+
+### Onestà nella UI: la nota è stata riscritta perché era diventata una bugia
+La riga di M84 diceva che griglia, diff e liste file **non** seguono l'opzione. Con un transform la
+seguono, quindi quella frase andava rimossa, non ritoccata. Adesso dice cosa fa e **qual è il costo**:
+*«Zooms the whole interface — text, icons, spacing, toolbars, the revision grid, the diff and the file
+lists together. Applied immediately, no restart needed. Because menus and drop-downs are drawn inside
+the window so that they scale with it, they cannot extend past its edges: in a small dialog they open
+into less room than before.»* Letterale inglese, come M80/M81/M84. **Debito di traduzione**: due nuove
+etichette (`Standard (like Git Extensions)`, `Large (125%)`) e questa nota non hanno id XLIFF.
+
+Il costo vale a **entrambi** i livelli, non solo a Large, perché `OverlayPopups` è process-wide: la nota
+infatti non lo lega a un livello. Per la stessa ragione «Standard non installa nessun transform» **non**
+significa «Standard è identico a una build senza la feature», e il codice lo dice: host e
+`VisualLayerManager` sono nell'albero a entrambi i livelli, perché costruirli o toglierli al cambio di
+livello vorrebbe dire mutare l'albero del contenuto **proprio** nel momento che tutto questo design
+esiste per evitare. Sono pass-through di layout.
+
+### I popup: cosa si rompe, verificato
+Niente nel port dipende dai popup **nativi**: zero `new Popup`, zero override di `ShouldUseOverlayLayer`,
+nessun handle di finestra preso da un popup. I tipi in uso sono 4 `ContextMenu` (di cui due con
+`PlacementMode.Pointer`), 3 `ContextFlyout`, 6 `Flyout` (fra cui il pulsante MRU della griglia e
+l'overflow `»` della toolbar, che è la stessa forma) e i dropdown di `ComboBox`. **Asserito dentro
+l'host, a entrambi i livelli**: item realizzato di un dropdown aperto, `MenuItem` figlio di un submenu
+aperto, `ContextMenu` con `PlacementMode.Pointer`, e contenuto di un `Flyout`. Il costo misurato: in una
+finestra **320x200** a Large, un dropdown da 40 voci apre un `OverlayPopupHost` di **105x160**, cioè
+tagliato all'altezza disponibile dentro la finestra invece di sfondarne il bordo — è esattamente ciò che
+la nota dichiara.
+
+### Verificato / non verificato
+**273 asserzioni, 0 fallimenti**, harness headless fuori dall'albero. Oltre ai popup di cui sopra:
+baseline 12 su tutte e tre le chiavi a **entrambi** i livelli (cioè il knob font è davvero morto); i 10
+casi di `Parse` inclusi `VeryLarge`, il trim, il case e i nomi ignoti; **tutti** i percorsi che scrivono
+`Content` — initializer, corpo del costruttore, finestra mostrata **vuota** e riempita dopo `Show`,
+contenuto **sostituito a caldo**, contenuto non-`Control` (stringa), e `Install` chiamata **due volte**
+— ciascuno con contenuto ancora *il controllo originale*, attaccato, radice visuale giusta, bounds non
+collassati e transform giusto; `MainWindow` reale con `SettingsWindow` aperta sopra e poi chiusa; i
+quattro switch Classic/Modern × Light/Dark; e il cambio di livello a finestre aperte in entrambe le
+direzioni. Che lo zoom sia **reale** e l'asserzione non vacua: in una finestra fissa 1000x800 il body
+misura **1000** DIP a Standard e **800** a Large, rapporto **1,25** esatto.
+
+**Non verificato, e solo l'utente può confermarlo**: *niente a schermo*. La verifica GUI headless non
+funziona su questa macchina, quindi non è stata fatta **nessuna** misura di pixel renderizzati, di
+nitidezza del testo a 1.25, né di come stia effettivamente la griglia a 125% su un monitor vero. Tutte
+le asserzioni qui sopra sono sull'**albero visuale e sui bounds di layout**, non sul disegno. In
+particolare l'headless usa gli overlay popup **per costruzione**: che `OverlayPopups = true` abbia
+l'effetto atteso sul backend **Win32** non è misurato qui — è la ragione per cui l'opzione viene
+impostata esplicitamente su entrambi gli option object invece di essere data per acquisita. Da chiedere
+all'utente: se a `Large` la UI cresce davvero **tutta** (griglia e diff compresi, non solo il testo), e
+se il taglio dei dropdown nelle dialog piccole è accettabile nell'uso reale.
+
 ## ROUND 13 — iterazione 7: M85 (2026-08-03) — lo zoom vero: la strada esiste su X11, **non** su Win32
 
 > Richiesta dell'utente dopo M84, che rifiuta l'approccio a soli font: *«cambiando la dimensione cambia
@@ -2526,6 +2647,15 @@ non esiste. Implementare l'env var darebbe uno zoom reale **sul target Linux del
 ### Non tentato, per divieto esplicito
 Ripiegare sul `LayoutTransformControl` per finestra. Resta strutturalmente pericoloso (M82/M83).
 
+> **RISOLTO IN M86.** L'utente ha scelto l'opzione (b) qui sotto, e il transform è tornato — ma
+> **non** «così com'era»: le due cause strutturali sono state rimosse (installazione dal costruttore
+> invece che da una `Style`, quindi nessuna callback di styling e nessun presenter da svuotare). La
+> frase «resta strutturalmente pericoloso» era vera del **meccanismo di installazione di M81**, non
+> del transform in sé, e M86 lo dimostra. Va corretta anche l'aspettativa espressa nel paragrafo
+> seguente: `OverlayPopups` **da solo non basta** a far scalare i popup — serve anche un
+> `VisualLayerManager` dentro l'host, perché l'`OverlayLayer` della finestra sta nel *template* della
+> finestra, fuori dal transform. Misurato in M86.
+
 ### Informazione nuova per la decisione: `OverlayPopups` esiste su **entrambi** i backend
 `Win32PlatformOptions.OverlayPopups` e `X11PlatformOptions.OverlayPopups` sono entrambe pubbliche in
 lettura/scrittura (misurato). Con i popup resi **non nativi** cadrebbe una delle due obiezioni al
@@ -2550,6 +2680,11 @@ verificabile qui — richiede il backend X11, e questa macchina è Windows (l'he
 Win32). Nessuna misura è stata fatta su come apparirebbe la UI a un fattore diverso da 1.
 
 ## ROUND 13 — iterazione 6: M84 (2026-08-03) — il meccanismo sbagliato, sostituito
+
+> **SUPERATO DA M86**, su richiesta dell'utente: la scala del font è stata **rimossa** perché muoveva
+> il testo e lasciava la UI dov'era. Di M84 **sopravvive il baseline 12px** (fisso, non più funzione
+> della size). Due affermazioni di questa milestone non valgono più e sono corrette sul posto qui
+> sotto: le quattro size e la tabella «cosa non segue la dimensione».
 
 > Decisione del coordinatore dopo M83, portata all'utente: **sostituire il transform per-finestra con
 > la scala del font**. Le due ragioni che l'hanno decisa sono quelle misurate in M83 — il transform
@@ -2596,6 +2731,12 @@ non ha questa impostazione, non c'è id XLIFF da riusare). E la descrizione dell
 più che le size *«scale the whole window, text and spacing together»*, che non è più vero.
 
 ### Cosa segue la dimensione e cosa no — misurato, non dedotto
+> **CORRETTO DA M86 per quanto riguarda il «non segue».** Questa tabella è vera **della scala del
+> font**, che è il meccanismo rimosso. Con il transform di M86 i 137 `FontSize` letterali e le altezze
+> minime fisse di Fluent **scalano tutti**, perché un layout transform scala il risultato *misurato e
+> disegnato* e non gli importa se una dimensione venga da una risorsa o da un `const`. L'alternativa
+> citata qui sotto — trasformare 137 assegnazioni in binding — **non è servita**.
+
 **Segue** (chiave a 12 e a 15, `FontSize` effettiva letta dai controlli): `Button`, `TextBox`,
 `CheckBox`, `ComboBox`, `TreeView`, `ListBox`, `TextBlock` nudo, `ListBoxItem`, `TreeViewItem`,
 `ComboBoxItem`, `MenuItem` **a entrambi i livelli**, e `TabItem` dopo la modifica di cui sopra.
@@ -2663,6 +2804,14 @@ annidare l'host nel proprio sottoalbero.
 ### Il limite del meccanismo, misurato: i popup non scalano
 > Questa misura è ciò che ha deciso M84: il meccanismo è stato sostituito, e con la scala del font i
 > popup **seguono** l'opzione (verificato sugli item dentro un menu e un dropdown aperti).
+>
+> **M86: questa misura era giusta e resta giusta — la sua causa però era un'altra.** M86 l'ha
+> riprodotta verbatim, e non dipendeva dal fatto che i popup fossero finestre native: dipende dal fatto
+> che l'`OverlayLayer` sta nel **template della finestra**, fratello del `ContentPresenter`, quindi
+> fuori dall'host. Ecco perché `OverlayPopups = true` da solo non risolveva niente. Con un
+> `VisualLayerManager` **dentro** l'host la catena passa dal transform e i popup scalano: asserito su
+> dropdown, submenu, `ContextMenu` con `PlacementMode.Pointer` e `Flyout`, a entrambi i livelli. La
+> nota qui sotto sull'uso dell'identità di riferimento invece del tipo resta valida e M86 la segue.
 Verificato con identità di riferimento (non per tipo — `OverlayPopupHost` ha un
 `LayoutTransformControl` **suo**, che darebbe un falso positivo): il contenuto di un dropdown di
 `ComboBox` e di un `MenuItem` aperto **non è discendente del nostro host**. La catena è
