@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M87,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M88,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `d05017780` — **M87: gerarchia Submodules rooted al super-project + toolbar Go to superproject**. Commit della slice: `44a4b3b6c`, `e59bd6110`, `05cacd532`, `a88847b34`, `15ce1af15`, `d05017780`. Prossima libera: **M88**. Storico immediato: M86 zoom vero; M82 pannelli Diff/Stash; M81 submodule annidati. |
+| HEAD al momento dell'handoff | `268daf261` — **M88: click su cartella/submodule preserva l'espansione; solo il chevron fa toggle**. Commit M88: `257cc3fb5`, `268daf261`. M87: gerarchia rooted + toolbar superproject (`44a4b3b6c`…`d05017780`). Prossima libera: **M89**. |
 | Build | `Errori: 0` (31 warning preesistenti VSTHRD/CS). Harness M87: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |

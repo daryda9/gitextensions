@@ -2480,6 +2480,27 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 14 — iterazione 4: M88 (2026-08-04) — il click di riga non collassa più i submodule
+
+Regressione segnalata dopo M87: cliccare l'header di una cartella o di un
+submodule richiudeva il ramo. Diagnosi: il class handler Avalonia di
+`TreeViewItem` usa il click sull'intero header come toggle; il port lasciava
+passare il click sinistro e non era coinvolto alcun refresh. Inoltre la prima
+auto-espansione M87 cercava gli ancestor prima che `_nodeParent` fosse popolato.
+
+- `RepoObjectsTree` conserva `IsExpanded` sui normali click di riga e lascia il
+  toggle nativo soltanto al `ToggleButton`/chevron.
+- L'undo è confinato alla stessa operazione input con generation per nodo e
+  `DispatcherPriority.Input`: click successivi e tastiera Left/Right/Space
+  invalidano callback obsolete, evitando di annullare un toggle intenzionale.
+- La catena current usa una mappa parent locale costruita insieme ai nodi,
+  comprese le cartelle intermedie; refresh successivi continuano a usare
+  `HarvestState`/`RestoreState` per rispettare collassi volontari.
+- Commit: `257cc3fb5`, `268daf261`. Review indipendente: nessun finding residuo.
+  Build: 0 errori, 31 warning preesistenti. Harness gerarchia: PASS, 7 nodi.
+- Limite: la sessione Windows/DPI non offre un'automazione click affidabile; il
+  gesto reale resta da confermare manualmente nell'app aggiornata.
+
 ## ROUND 14 — iterazioni 1-3: M87 (2026-08-04) — parità gerarchia Submodules dal super-project
 
 Richiesta: quando il repository attivo è un submodule, mantenere nel
