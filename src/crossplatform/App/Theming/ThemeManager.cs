@@ -38,7 +38,7 @@ public static class ThemeManager
         "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
         "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag",
         "App.Link",
-        "App.HoverRow", "App.Hover", "App.Pressed",
+        "App.HoverRow", "App.Hover", "App.Pressed", "App.BorderStrong",
     ];
 
     // ------------------------------------------------------------------
@@ -199,6 +199,15 @@ public static class ThemeManager
         // App.Text measures 7.07:1 on hover and 5.42:1 on pressed.
         ["App.Hover"] = Color.Parse("#444448"),
         ["App.Pressed"] = Color.Parse("#555558"),
+
+        // NEW in M94. Outline for a control whose border is the ONLY thing that
+        // delimits it — WCAG 1.4.11 asks 3:1 of a non-text indicator, and App.Border
+        // measures 1.08:1 (modern dark) to 1.37:1 on the surfaces a control lands on.
+        // In the CLASSIC family it is deliberately the SAME value as App.Border:
+        // classic is defined as the look before M79, and a crisp outline round every
+        // input would be a new look, not the old one. The strong value lives in the
+        // modern families only, exactly like ModernStyles' own borderStrong.
+        ["App.BorderStrong"] = Color.Parse("#3F3F46"),
     };
 
     private static readonly Dictionary<string, Color> ClassicLight = new()
@@ -292,6 +301,9 @@ public static class ThemeManager
         ["App.HoverRow"] = Color.Parse("#D3F0FD"),
         ["App.Hover"] = Color.Parse("#D0D0D0"),
         ["App.Pressed"] = Color.Parse("#BCBCBC"),
+
+        // Classic keeps its own separator value here, see the dark block.
+        ["App.BorderStrong"] = Color.Parse("#C4C4C4"),
     };
 
     // ------------------------------------------------------------------
@@ -500,6 +512,15 @@ public static class ThemeManager
         // borrowed App.PanelAlt / App.Panel, i.e. two surfaces DARKER than the toolbar.
         ["App.Hover"] = Color.Parse("#41424A"),
         ["App.Pressed"] = Color.Parse("#53545B"),
+
+        // NEW in M94. App.Border pulled 45% toward the ink — the same derivation
+        // ModernStyles applies to the Fluent border keys, kept here as a palette entry
+        // because ~39 call sites draw their own control chrome and cannot reach a
+        // brush that lives inside that file. 45% is the FLOOR: it measures 3.30:1
+        // against the worst of the five surfaces a control border lands on (Window,
+        // Panel, PanelAlt, Toolbar, Selection), where 40% gives 2.92:1. App.Border
+        // itself measures 1.08:1 there and stays what it is — a separator.
+        ["App.BorderStrong"] = Color.Parse("#88898F"),
     };
 
     private static readonly Dictionary<string, Color> ModernLight = new()
@@ -616,6 +637,10 @@ public static class ThemeManager
         ["App.HoverRow"] = Color.Parse("#D2EFFC"),
         ["App.Hover"] = Color.Parse("#CECED4"),
         ["App.Pressed"] = Color.Parse("#BABAC0"),
+
+        // NEW in M94 (see the dark block). 3.32:1 on the worst of the five surfaces,
+        // against 1.32:1 for App.Border.
+        ["App.BorderStrong"] = Color.Parse("#77777E"),
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
