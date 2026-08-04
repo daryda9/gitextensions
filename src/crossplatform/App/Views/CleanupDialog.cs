@@ -96,6 +96,14 @@ public sealed class CleanupDialog : Theming.ZoomWindow
         IBrush dim = Brush("App.TextDim", "#9B9B9B");
         IBrush border = Brush("App.Border", "#3F3F46");
 
+        // The two path filters are plain editable TextBoxes on the dialog panel: the
+        // 1px outline is the ONLY thing that says where the typing area is, so it has
+        // to clear the 3:1 that WCAG 1.4.11 asks of a non-text indicator. App.Border
+        // is a separator value (1.58:1 on App.Panel in Modern dark) and cannot.
+        // App.BorderStrong is the same colour as App.Border in the Classic families,
+        // so the classic look is untouched.
+        IBrush borderStrong = Brush("App.BorderStrong", "#88898F");
+
         Title = T("FormCleanupRepository/$this.Text", "Clean working directory");
         Width = 660;
         Height = 620;
@@ -143,14 +151,14 @@ public sealed class CleanupDialog : Theming.ZoomWindow
             Foreground = text,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        _includePaths = FilterBox(border);
+        _includePaths = FilterBox(borderStrong);
         _useExcludeFilter = new CheckBox
         {
             Content = T("FormCleanupRepository/checkBoxExcludePathFilter.Text", "Do not clean these paths"),
             Foreground = text,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        _excludePaths = FilterBox(border);
+        _excludePaths = FilterBox(borderStrong);
 
         // Upstream's two "Add a path..." buttons (AddInclusivePath / AddExclusivePath):
         // a folder picker for the include filter, a file picker for the exclude filter.
