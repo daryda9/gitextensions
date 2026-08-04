@@ -1782,9 +1782,12 @@ public sealed class RepoObjectsTree : UserControl
         MenuItem open = MenuItem(T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row)));
         open.IsEnabled = row.Exists && !row.IsCurrent;
         menu.Items.Add(open);
-        menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnUpdateSubmodule.Text", "Update"), "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row))));
-        menu.Items.Add(MenuItem(T("Update (merge)…"), "Merge", () => _ = DoMergeSubmoduleAsync(row)));
+        if (row.Path.Length > 0)
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnUpdateSubmodule.Text", "Update"), "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row))));
+            menu.Items.Add(MenuItem(T("Update (merge)…"), "Merge", () => _ = DoMergeSubmoduleAsync(row)));
+        }
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("Copy name"), "CopyToClipboard", () => CopyText(row.Path)));
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnCopyWorktreePath.Text", "Copy path"), "CopyToClipboard", () => CopyText(SubmoduleFullPath(row))));
