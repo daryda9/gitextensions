@@ -514,10 +514,16 @@ public static class ModernStyles
             BorderBrush = accent,
             BorderThickness = new Thickness(FocusRingThickness),
             CornerRadius = Metrics.Radius.MdCorner,
-            // The adorner is laid over the control; a small negative margin puts the
-            // ring just OUTSIDE the control's own border instead of on top of it, so
-            // a focused-and-hovered control still shows both.
-            Margin = new Thickness(-FocusRingThickness),
+            // The ring is drawn INSIDE the control's own bounds. A negative margin
+            // reads better in the abstract — the ring sits just outside the border, so
+            // a focused-and-hovered control shows both — but it was measured on screen
+            // and the part that hangs outside is CLIPPED by whatever packs the control:
+            // a focused toolbar button showed the ring on its left and right edges and
+            // nothing above or below, because the strip is exactly as tall as the
+            // button. A focus indicator that depends on its container having slack is
+            // not an indicator. Inside the bounds it is always whole; the 1px App.Text
+            // halo below keeps its inner edge separated from every state fill.
+            Margin = new Thickness(0),
             Child = new Border
             {
                 BorderBrush = text,
