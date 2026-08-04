@@ -287,7 +287,10 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         helpContent.Children.Add(new TextBlock
         {
             Text = T("Help"),
-            Foreground = Brush("App.Accent", Brushes.DodgerBlue),
+            // App.Link is the text-grade blue; App.Accent is tuned as a fill and only
+            // reaches 3.40:1 on App.Panel in classic dark. Fallback is modern-dark
+            // App.Link so a missing key cannot silently restore the fill-grade colour.
+            Foreground = Brush("App.Link", new SolidColorBrush(Color.Parse("#5B9CFF"))),
             TextDecorations = TextDecorations.Underline,
             VerticalAlignment = VerticalAlignment.Center,
         });
