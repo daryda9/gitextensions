@@ -33,6 +33,9 @@ namespace GitExtensions.Avalonia;
 /// </summary>
 public sealed class MainWindow : Theming.ZoomWindow
 {
+    private static readonly object CoreWarmupGate = new();
+    private static Task? s_coreWarmupTask;
+
     private readonly MainMenu _menu = new();
     private readonly MainToolbar _toolbar = new();
     private readonly StatusBarView _statusBar = new();
@@ -122,6 +125,8 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     private string? _repoPath;
     private int _repositoryEpoch;
+    private volatile string? _activeNavigationRepository;
+    private volatile Task<RepositoryNavigationSnapshot>? _activeNavigationSnapshot;
     private string? _lastSelectedHash;
 
     // True while the grid selection sits on an artificial row (working directory or
@@ -1242,13 +1247,20 @@ public sealed class MainWindow : Theming.ZoomWindow
         // is itself a submodule/subdir of a parent (super-project).
         _toolbar.SubmodulesProvider = async () =>
         {
-            if (_repoPath is not { Length: > 0 } repo)
+            if (_dashboardShowing || _repoPath is not { Length: > 0 } repo)
             {
                 return Array.Empty<RepoLink>();
             }
 
-            RepositoryNavigationSnapshot snapshot = await _navigationSnapshots.GetAsync(repo).ConfigureAwait(false);
-            if (!SameRepositoryPath(repo, _repoPath))
+            await EnsureCoreWarmupAsync(repo).ConfigureAwait(false);
+            Task<RepositoryNavigationSnapshot>? active = _activeNavigationSnapshot;
+            if (active is null || !SameRepositoryPath(repo, _activeNavigationRepository))
+            {
+                return Array.Empty<RepoLink>();
+            }
+
+            RepositoryNavigationSnapshot snapshot = await active.ConfigureAwait(false);
+            if (_dashboardShowing || !SameRepositoryPath(repo, _repoPath))
             {
                 return Array.Empty<RepoLink>();
             }
@@ -1273,13 +1285,20 @@ public sealed class MainWindow : Theming.ZoomWindow
         };
         _toolbar.WorktreesProvider = async () =>
         {
-            if (_repoPath is not { Length: > 0 } repo)
+            if (_dashboardShowing || _repoPath is not { Length: > 0 } repo)
             {
                 return Array.Empty<RepoLink>();
             }
 
-            RepositoryNavigationSnapshot snapshot = await _navigationSnapshots.GetAsync(repo).ConfigureAwait(false);
-            if (!SameRepositoryPath(repo, _repoPath))
+            await EnsureCoreWarmupAsync(repo).ConfigureAwait(false);
+            Task<RepositoryNavigationSnapshot>? active = _activeNavigationSnapshot;
+            if (active is null || !SameRepositoryPath(repo, _activeNavigationRepository))
+            {
+                return Array.Empty<RepoLink>();
+            }
+
+            RepositoryNavigationSnapshot snapshot = await active.ConfigureAwait(false);
+            if (_dashboardShowing || !SameRepositoryPath(repo, _repoPath))
             {
                 return Array.Empty<RepoLink>();
             }
@@ -2885,23 +2904,13 @@ public sealed class MainWindow : Theming.ZoomWindow
             return;
         }
 
-        _repositoryEpoch++;
-        _navigationSnapshots.Invalidate(_repoPath);
-        Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(_repoPath);
-        _revisions.LoadRepository(_repoPath);
-        _stash.LoadRepository(_repoPath);
-        _tree.LoadRepository(_repoPath, navigation);
-        _statusBar.LoadRepository(_repoPath);
-        // No-op while no file is shown in the history tab.
-        _fileHistory.Reload();
-        _progressBanner.Refresh();
-        RefreshToolbarState();
-
-        // Tell the watcher the window is now up to date: it drops the events that
-        // led here and holds off briefly, so the reads this refresh performs (which
-        // do touch the repository) cannot schedule the next refresh — the endless
-        // refresh loop this guard exists to prevent.
-        _watcher.NotifyRefreshed();
+        string repo = _repoPath;
+        int epoch = ++_repositoryEpoch;
+        _activeNavigationRepository = null;
+        _activeNavigationSnapshot = null;
+        _ = LoadRepositoryAfterWarmupAsync(repo, epoch, refresh: true);
+        // The continuation reloads the panels, then acknowledges the watcher so reads
+        // performed by those loaders cannot schedule an endless refresh loop.
     }
 
     // Opens the dedicated modal commit window (mirroring the original Git
@@ -3991,18 +4000,13 @@ public sealed class MainWindow : Theming.ZoomWindow
     {
         _repoPath = repoPath;
         int epoch = ++_repositoryEpoch;
-        _navigationSnapshots.Invalidate(repoPath);
-        Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(repoPath);
+        _activeNavigationRepository = null;
+        _activeNavigationSnapshot = null;
         _console.RepoPath = repoPath;
         _progressBanner.SetRepository(repoPath);
         ShowRepositoryView();
         _toolbar.SetSubmoduleNavigation(null);
-        _revisions.LoadRepository(repoPath);
-        _stash.LoadRepository(repoPath);
-        _tree.LoadRepository(repoPath, navigation);
-        _statusBar.LoadRepository(repoPath);
-        _ = RefreshSubmoduleNavigationAsync(repoPath, navigation, epoch);
-        RefreshToolbarState();
+        _ = LoadRepositoryAfterWarmupAsync(repoPath, epoch, refresh: false);
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _menu.SetPlugins(PluginService.Instance.Plugins);
 
@@ -4033,6 +4037,70 @@ public sealed class MainWindow : Theming.ZoomWindow
         if (epoch == _repositoryEpoch && SameRepositoryPath(repoPath, _repoPath))
         {
             _toolbar.SetSubmoduleNavigation(parent);
+        }
+    }
+
+    // Git Extensions core owns process-global lazy state. Initialize it once on a
+    // worker before panels fan out into concurrent reads. A rapid A -> B switch shares
+    // the prerequisite, then the generation guard starts loaders for B alone.
+    private async Task LoadRepositoryAfterWarmupAsync(string repoPath, int epoch, bool refresh)
+    {
+        await EnsureCoreWarmupAsync(repoPath).ConfigureAwait(true);
+        if (epoch != _repositoryEpoch || _dashboardShowing || !SameRepositoryPath(repoPath, _repoPath))
+        {
+            return;
+        }
+
+        _navigationSnapshots.Invalidate(repoPath);
+        Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(repoPath);
+        _activeNavigationRepository = repoPath;
+        _activeNavigationSnapshot = navigation;
+        _revisions.LoadRepository(repoPath);
+        _stash.LoadRepository(repoPath);
+        _tree.LoadRepository(repoPath, navigation);
+        _statusBar.LoadRepository(repoPath);
+        _ = RefreshSubmoduleNavigationAsync(repoPath, navigation, epoch);
+        RefreshToolbarState();
+
+        if (refresh)
+        {
+            _fileHistory.Reload();
+            _progressBanner.Refresh();
+            _watcher.NotifyRefreshed();
+        }
+    }
+
+    private static Task EnsureCoreWarmupAsync(string repoPath)
+    {
+        lock (CoreWarmupGate)
+        {
+            s_coreWarmupTask ??= Task.Run(() =>
+            {
+                GitCommands.GitModule module = GitContext.CreateModule(repoPath);
+                _ = module.GetCurrentCheckout();
+                _ = new RevisionService().LoadRevisions(repoPath, 1);
+            });
+            return ObserveWarmupAsync(s_coreWarmupTask);
+        }
+    }
+
+    private static async Task ObserveWarmupAsync(Task warmup)
+    {
+        try
+        {
+            await warmup.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Continue through the panels' existing safe error paths and let the next
+            // repository open retry rather than poisoning the process-wide prerequisite.
+            lock (CoreWarmupGate)
+            {
+                if (ReferenceEquals(s_coreWarmupTask, warmup))
+                {
+                    s_coreWarmupTask = null;
+                }
+            }
         }
     }
 
@@ -4103,6 +4171,9 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         // No repository on screen → nothing to watch.
         _watcher.Stop();
+        _repoPath = null;
+        _activeNavigationRepository = null;
+        _activeNavigationSnapshot = null;
         _menu.SetFavoriteRepositories(_favoritesService.Load());
         _ = LoadDashboardAsync();
         UpdateMenuRepositoryState();
