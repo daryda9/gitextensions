@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M74,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M87,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,8 +11,8 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | **merge delle due linee di lavoro** (locale `116a88d0d` + remoto `3b5ad6f04`). Avevano numerato in parallelo: **M75/M76** = mutazioni di ref (locale), **M77/M78** = grafo (erano M75/M76 sul remoto), **M79** = GUI moderna (era M77 sul remoto). Prossima libera: **M83** · `044ce45dc` (**M82: i pannelli di Diff e Stash seguono la larghezza trascinata**) · `363961635` (**M81: submodule dei submodule nell'albero + doppio clic che li apre**) · `dcfb430e9` (**M80: lo stile e' una scelta, Classic/Modern**) · `3b5ad6f04` (M79: GUI moderna, iterazione 1) · `15db999b3` (**M78: linee del grafo non spezzate**) · `a1d0bc899` (M77: il grafo non unisce più branch che non lo sono) · `116a88d0d` (M76: `Keep dialog open` persistito + `Delete branch` riparato) · `3fafaa1f9` (M75: mutazioni di ref nel process dialog + diagnosi 13.1) · `62715851b` (M74: pannello di aiuto del merge) · `a1a40c3ce` (M73: superficie del rebase) · `963e99119` (round 12, M71–M72) · storico: `6b5dff330` (round 11, M67–M70) · storico: `3b73b44bc` (… + **round 9 completo: M52–M61** + **M62 fix del tema scuro sulle console**) |
-| Build | `Errori: 0` (31 warning pre-esistenti VSTHRD/CS; nessuno dal codice del round 12) |
+| HEAD al momento dell'handoff | `d05017780` — **M87: gerarchia Submodules rooted al super-project + toolbar Go to superproject**. Commit della slice: `44a4b3b6c`, `e59bd6110`, `05cacd532`, `a88847b34`, `15ce1af15`, `d05017780`. Prossima libera: **M88**. Storico immediato: M86 zoom vero; M82 pannelli Diff/Stash; M81 submodule annidati. |
+| Build | `Errori: 0` (31 warning preesistenti VSTHRD/CS). Harness M87: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Coda aperta | **PRIORITÀ UTENTE del 31/07/2026**: 13.2 (create branch senza process dialog) e 13.3 (doppio clic = checkout col process dialog) **CHIUSE in M75** su tutti e 10 i call-site. **Resta 13.1** — `Create branch…` inerte al primo clic: **non riprodotto**, ipotesi "refresh che smonta il nodo" e "target letto dalla selezione" **falsificate con prova diretta**, causa residua `_busy` a certezza **MEDIA**; i due difetti reali del flag sono comunque corretti. Sonda diagnostica nel branch locale `diag/13.1-probe` (`16bfc40c7`). **Da riverificare con l'utente.** Dettaglio in `PORTING.md` → M75 e "Coda round 13" |

@@ -2480,6 +2480,51 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 14 — iterazioni 1-3: M87 (2026-08-04) — parità gerarchia Submodules dal super-project
+
+Richiesta: quando il repository attivo è un submodule, mantenere nel
+`RepoObjectsTree` l'intera gerarchia dalla radice, con parent, sibling e figli;
+allineare inoltre il pulsante toolbar icon-only a `Go to superproject`.
+
+- Confrontata integralmente la semantica upstream (`GitModule.GetTopModule`,
+  `SubmoduleStatusProvider`, `SubmoduleTree`, `SubmoduleNode`) prima del porting.
+- `SubmoduleService.DiscoverHierarchy` trova la catena completa dei super-project
+  tramite Git, normalizza i path assoluti e costruisce dalla radice una traversal
+  ricorsiva controllata. I nodi conservano repository dichiarante, path configurato,
+  nome config, stato, branch, esistenza e marker current. Missing/non inizializzati
+  restano rappresentati. Identità `--absolute-git-dir`, visited set e limite 128
+  evitano ricorsioni infinite e coprono `.git` file e linked worktree.
+- `RepoObjectsTree` usa lo snapshot rooted nel `Task.Run` già protetto da epoch:
+  nodo root esplicito, cartelle intermedie, sibling/discendenti, catena current
+  espansa e current in accent/grassetto con `▶`. Apertura e azioni usano path
+  assoluti e repository dichiarante; i nodi mancanti non sono apribili. Il nodo
+  current mantiene la parità upstream con `Open in new instance` reale.
+- Toolbar senza label `Submodules`: alla radice mantiene `SubmodulesManage`; in un
+  submodule mostra `NavigateUp`, tooltip `Go to superproject` e il body apre il
+  parent immediato. Stato ripristinato dopo `Rebuild` e azzerato in Dashboard.
+- Commit integrati, in ordine: `44a4b3b6c`, `e59bd6110`, `05cacd532`,
+  `a88847b34`, `15ce1af15`, `d05017780`. Tutti confinati a
+  `src/crossplatform/`; nessun push.
+
+Prove automatiche:
+
+- `dotnet build App/GitExtensions.Avalonia.csproj -v q --no-restore`: **0 errori**,
+  31 warning preesistenti.
+- `dotnet run --project Tests/SubmoduleHierarchy.Harness.csproj --no-restore`:
+  **PASS, 7 nodi**. Fixture reale con due sibling, catena ≥4, foglia corrente,
+  missing/deinit, nome config diverso dal path, config incompleta, alias ciclico
+  con timeout e linked worktree.
+
+Verifica GUI Windows (niente Xvfb disponibile): fixture persistente in
+`C:\tmp\ge-submodule-gui`, manifest `states.json`, screenshot in
+`C:\tmp\ge-submodule-shots`. Cinque catture reali confermano pannello mai vuoto,
+nodo root esplicito, marker current sulla root, icona manage alla radice, cerchio
+blu/freccia su nei submodule e label assente. Limite ambientale dichiarato: il
+desktop remoto è 1453×775 e Avalonia/DPI rende inaffidabili click sintetici e
+scroll; i figli profondi restano sotto il clipping. Catena/current profondo,
+missing visibile e interazioni toolbar/doppio clic/menu richiedono quindi conferma
+manuale Windows. Non sono dichiarati verificati sulla sola build.
+
 ## ROUND 13 — iterazione 8: M86 (2026-08-04) — lo zoom vero, due livelli, e il transform torna senza le sue cause
 
 > Decisione dell'utente sulle tre opzioni di M85: **(b)**, cioè `OverlayPopups = true` più un layout
