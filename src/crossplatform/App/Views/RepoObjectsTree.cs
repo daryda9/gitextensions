@@ -7,6 +7,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Avalonia.Services;
@@ -122,6 +123,7 @@ public sealed class RepoObjectsTree : UserControl
     private int _refreshEpoch;
     private bool _refreshing;
     private bool _refreshQueued;
+    private string? _expandedSubmoduleCurrentPath;
 
     // Guards NotifyBusy against stacking one refusal modal on top of another.
     private bool _busyNoticeOpen;
@@ -1148,6 +1150,10 @@ public sealed class RepoObjectsTree : UserControl
             [hierarchy.RootPath] = root,
         };
         Dictionary<string, TreeViewItem> folders = new(PathComparer);
+        Dictionary<TreeViewItem, TreeViewItem> hierarchyParents = new()
+        {
+            [root] = parent,
+        };
 
         foreach (SubmoduleRow row in hierarchy.Nodes.Where(row => row.Path.Length > 0))
         {
@@ -1172,6 +1178,7 @@ public sealed class RepoObjectsTree : UserControl
                     _nodeKey[folder] = "submodules/folder/" + folderPath;
                     folders[folderPath] = folder;
                     host.Items.Add(folder);
+                    hierarchyParents[folder] = host;
                 }
 
                 host = folder;
@@ -1179,18 +1186,25 @@ public sealed class RepoObjectsTree : UserControl
 
             TreeViewItem leaf = SubmoduleLeaf(row, row.Name, "submodules/" + row.AbsolutePath);
             host.Items.Add(leaf);
+            hierarchyParents[leaf] = host;
             repositories[row.AbsolutePath] = leaf;
         }
 
-        parent.IsExpanded = true;
-        root.IsExpanded = true;
-        TreeViewItem? current = hierarchy.Nodes.FirstOrDefault(row => row.IsCurrent) is { } currentRow
-            && repositories.TryGetValue(currentRow.AbsolutePath, out TreeViewItem? currentNode)
-                ? currentNode
-                : null;
-        for (TreeViewItem? node = current; node is not null; node = ParentOf(node))
+        bool activeRepositoryChanged = !PathComparer.Equals(_expandedSubmoduleCurrentPath, hierarchy.CurrentPath);
+        _expandedSubmoduleCurrentPath = hierarchy.CurrentPath;
+        if (activeRepositoryChanged)
         {
-            node.IsExpanded = true;
+            TreeViewItem? chainNode = hierarchy.Nodes.FirstOrDefault(row => row.IsCurrent) is { } currentRow
+                && repositories.TryGetValue(currentRow.AbsolutePath, out TreeViewItem? currentNode)
+                    ? currentNode
+                    : null;
+            while (chainNode is not null)
+            {
+                chainNode.IsExpanded = true;
+                chainNode = hierarchyParents.TryGetValue(chainNode, out TreeViewItem? chainParent)
+                    ? chainParent
+                    : null;
+            }
         }
 
         TreeViewItem SubmoduleLeaf(SubmoduleRow row, string name, string key)
@@ -2047,13 +2061,57 @@ public sealed class RepoObjectsTree : UserControl
 
     private void OnTreePointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (!e.GetCurrentPoint(_tree).Properties.IsRightButtonPressed || _suppressSelectionNotify)
+        PointerPointProperties properties = e.GetCurrentPoint(_tree).Properties;
+        if (properties.IsLeftButtonPressed && TryFindTreeItem(e.Source, out TreeViewItem item) && !IsExpandToggle(e.Source))
+        {
+            // Avalonia's TreeViewItem toggles a branch when its header is clicked. Upstream
+            // selects on an ordinary click and reserves collapse/expand for the chevron.
+            // Snapshot before the class handler runs, then restore after routed input has
+            // completed. A click on the actual ToggleButton is deliberately excluded.
+            bool expanded = item.IsExpanded;
+            Dispatcher.UIThread.Post(() => item.IsExpanded = expanded, DispatcherPriority.Background);
+        }
+
+        if (!properties.IsRightButtonPressed || _suppressSelectionNotify)
         {
             return;
         }
 
         _suppressSelectionNotify = true;
         Dispatcher.UIThread.Post(() => _suppressSelectionNotify = false, DispatcherPriority.Background);
+    }
+
+    private static bool TryFindTreeItem(object? source, out TreeViewItem item)
+    {
+        for (Visual? visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+        {
+            if (visual is TreeViewItem treeItem)
+            {
+                item = treeItem;
+                return true;
+            }
+        }
+
+        item = null!;
+        return false;
+    }
+
+    private static bool IsExpandToggle(object? source)
+    {
+        for (Visual? visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+        {
+            if (visual is ToggleButton)
+            {
+                return true;
+            }
+
+            if (visual is TreeViewItem)
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     // Double-click / Enter. Upstream gives each node type its own OnDoubleClick:
