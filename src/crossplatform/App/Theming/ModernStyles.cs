@@ -222,14 +222,27 @@ public static class ModernStyles
         SolidColorBrush selectionHover = Derived(selection, text, 0.10);
         SolidColorBrush selectionPressed = Derived(selection, text, 0.18);
 
-        // A border that reads as "this control is under the pointer" is a non-text
-        // indicator and needs 3:1 of its own. App.Border is a quiet separator — it
-        // measures 1.23:1 on the toolbar in the dark theme — so the hover border pulls
-        // it 45% toward the ink. 0.45 is the smallest step on the scale that clears
-        // 3:1 against ALL THREE surfaces a control border can land on (App.Toolbar,
-        // App.Control, App.Selection) in BOTH themes; the worst case is 3.30:1 on the
-        // selection surface. At 0.35 the toolbar case was 2.98:1 dark / 2.73:1 light.
+        // A border that is the ONLY thing delimiting a control is a non-text indicator
+        // and needs 3:1 against every surface it can land on (WCAG 1.4.11). App.Border
+        // does not come close: it measures 1.23:1 on the toolbar and 1.08:1 on the
+        // selection surface in the modern dark theme, 1.37:1 / 1.32:1 light. It is a
+        // fine separator between two things and a hopeless outline around one.
+        //
+        // borderStrong pulls it 45% toward the ink. 0.45 is the SMALLEST step on the
+        // scale that clears 3:1 against all five surfaces a control border can land on
+        // (App.Window, App.Panel, App.Toolbar, App.Control, App.Selection) in both
+        // modern themes: worst case 3.30:1 dark and 3.32:1 light, both on the selection
+        // surface. At 0.40 that same case is 2.92:1 / 2.97:1 — a fail, which is why the
+        // step is not smaller. This is now the RESTING outline of every control whose
+        // fill matches what is behind it (M94), not just a hover colour.
         SolidColorBrush borderStrong = Derived(border, text, 0.45);
+
+        // With the resting outline at 3:1, hover needs a step BEYOND it or the pointer
+        // stops being visible on the border at all. 0.65 puts 1.50:1 (dark) / 1.67:1
+        // (light) between the two tones — a visible change on a 1px hairline — while
+        // staying 1.83:1 / 2.32:1 BELOW App.Text, so the outline still reads as chrome
+        // and never as ink. Worst case against the five surfaces is 4.96:1 / 5.52:1.
+        SolidColorBrush borderHover = Derived(border, text, 0.65);
 
         // ---- Button ---------------------------------------------------------------
         // Fluent's stock ButtonBackground* are TRANSLUCENT overlays over whatever is
@@ -243,15 +256,21 @@ public static class ModernStyles
         Set(map, "ButtonForegroundPointerOver", text);
         Set(map, "ButtonForegroundPressed", text);
         Set(map, "ButtonForegroundDisabled", textDim);
-        Set(map, "ButtonBorderBrush", border);
-        Set(map, "ButtonBorderBrushPointerOver", borderStrong);
+        // A button's resting fill IS App.Toolbar, and a toolbar button sits ON the
+        // toolbar — same colour on both sides of the edge, so the border is the only
+        // thing that says where the button is. It carries the 3:1 outline.
+        Set(map, "ButtonBorderBrush", borderStrong);
+        Set(map, "ButtonBorderBrushPointerOver", borderHover);
         // Pressed keeps the HOVER border, not the accent. An accent hairline on the
         // pressed fill measures 2.05:1 in the dark theme (#3B82F6 on #53545B) — below
         // the 3:1 a non-text indicator needs, i.e. a promise the colour cannot keep.
         // Pressed is already unmistakable from the fill alone: the background moves by
         // two full steps of the ramp. The accent is reserved for FOCUS, where it is
         // the only signal and where it does measure (3.57:1 worst case).
-        Set(map, "ButtonBorderBrushPressed", borderStrong);
+        Set(map, "ButtonBorderBrushPressed", borderHover);
+        // Disabled keeps the QUIET border. 1.4.11 exempts inactive components, and that
+        // exemption is the whole point here: a disabled button that keeps a 3:1 outline
+        // while its fill and label go dim looks like a live button drawn wrong.
         Set(map, "ButtonBorderBrushDisabled", border);
 
         // ---- ToggleButton ---------------------------------------------------------
@@ -281,17 +300,17 @@ public static class ModernStyles
         Set(map, "ToggleButtonForegroundDisabled", textDim);
         Set(map, "ToggleButtonForegroundCheckedDisabled", textDim);
         Set(map, "ToggleButtonForegroundIndeterminateDisabled", textDim);
-        Set(map, "ToggleButtonBorderBrush", border);
-        Set(map, "ToggleButtonBorderBrushPointerOver", borderStrong);
-        Set(map, "ToggleButtonBorderBrushPressed", borderStrong);
+        Set(map, "ToggleButtonBorderBrush", borderStrong);
+        Set(map, "ToggleButtonBorderBrushPointerOver", borderHover);
+        Set(map, "ToggleButtonBorderBrushPressed", borderHover);
         Set(map, "ToggleButtonBorderBrushChecked", accent);
         Set(map, "ToggleButtonBorderBrushCheckedPointerOver", accent);
         Set(map, "ToggleButtonBorderBrushCheckedPressed", accent);
         Set(map, "ToggleButtonBorderBrushDisabled", border);
         Set(map, "ToggleButtonBorderBrushCheckedDisabled", border);
-        Set(map, "ToggleButtonBorderBrushIndeterminate", border);
-        Set(map, "ToggleButtonBorderBrushIndeterminatePointerOver", borderStrong);
-        Set(map, "ToggleButtonBorderBrushIndeterminatePressed", borderStrong);
+        Set(map, "ToggleButtonBorderBrushIndeterminate", borderStrong);
+        Set(map, "ToggleButtonBorderBrushIndeterminatePointerOver", borderHover);
+        Set(map, "ToggleButtonBorderBrushIndeterminatePressed", borderHover);
         Set(map, "ToggleButtonBorderBrushIndeterminateDisabled", border);
 
         // ---- TextBox --------------------------------------------------------------
@@ -308,8 +327,8 @@ public static class ModernStyles
         Set(map, "TextControlForegroundPointerOver", text);
         Set(map, "TextControlForegroundFocused", text);
         Set(map, "TextControlForegroundDisabled", textDim);
-        Set(map, "TextControlBorderBrush", border);
-        Set(map, "TextControlBorderBrushPointerOver", borderStrong);
+        Set(map, "TextControlBorderBrush", borderStrong);
+        Set(map, "TextControlBorderBrushPointerOver", borderHover);
         Set(map, "TextControlBorderBrushFocused", accent);
         Set(map, "TextControlBorderBrushDisabled", border);
         Set(map, "TextControlPlaceholderForeground", textDim);
@@ -335,11 +354,11 @@ public static class ModernStyles
         Set(map, "ComboBoxBackgroundPointerOver", inputHover);
         Set(map, "ComboBoxBackgroundPressed", inputPressed);
         Set(map, "ComboBoxBackgroundDisabled", surfaceDisabled);
-        Set(map, "ComboBoxBackgroundBorderBrushUnfocused", border);
+        Set(map, "ComboBoxBackgroundBorderBrushUnfocused", borderStrong);
         Set(map, "ComboBoxBackgroundBorderBrushFocused", accent);
-        Set(map, "ComboBoxBorderBrush", border);
-        Set(map, "ComboBoxBorderBrushPointerOver", borderStrong);
-        Set(map, "ComboBoxBorderBrushPressed", borderStrong);
+        Set(map, "ComboBoxBorderBrush", borderStrong);
+        Set(map, "ComboBoxBorderBrushPointerOver", borderHover);
+        Set(map, "ComboBoxBorderBrushPressed", borderHover);
         Set(map, "ComboBoxBorderBrushDisabled", border);
         Set(map, "ComboBoxForeground", text);
         Set(map, "ComboBoxForegroundFocused", text);
