@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Presenters;
+using Avalonia.Controls.Primitives;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Styling;
@@ -18,12 +19,26 @@ namespace GitExtensions.Avalonia.Theming;
 ///  reasons, and M86 brings it back with <em>both</em> of those reasons eliminated rather
 ///  than tolerated:</para>
 ///  <list type="number">
-///   <item><b>"The transform never reached popups" (M83).</b> True while popups were
-///    separate visual roots — native windows on Win32 by default. M86 sets
-///    <c>OverlayPopups = true</c> on both backends (<c>Program.BuildAvaloniaApp</c>), so
-///    popup content is hosted in the window's own <c>OverlayLayer</c>, inside our host,
-///    and therefore scales with it. The cost is real and is stated in the UI: an overlay
-///    popup cannot extend beyond the window's bounds.</item>
+///   <item><b>"The transform never reached popups" (M83).</b> True, and fixing it took
+///    <em>two</em> changes, not one. <c>OverlayPopups = true</c> on both backends
+///    (<c>Program.BuildAvaloniaApp</c>) stops popups being separate visual roots — native
+///    windows, as they are by default on Win32. That alone is <b>not enough</b>, and this
+///    was measured, not assumed: a window's <c>OverlayLayer</c> lives in the
+///    <em>window's own template</em>, as a sibling of the <see cref="ContentPresenter"/>
+///    that holds our host, so an overlay popup still reached the window while bypassing
+///    the transform. The measured chain was
+///    <c>… &lt; OverlayPopupHost &lt; OverlayLayer &lt; VisualLayerManager &lt; Panel &lt;
+///    Window</c> — exactly what M83 recorded, and M83 was already running in the overlay
+///    configuration, which is why its finding held. So the host also carries <b>its own
+///    <see cref="VisualLayerManager"/></b> (see <see cref="TryReparent"/>):
+///    <c>OverlayLayer.GetOverlayLayer</c> resolves to the <em>nearest</em> one above the
+///    control that opens the popup, which is now ours, inside the transform. Verified: the
+///    chain becomes <c>… &lt; OverlayPopupHost &lt; OverlayLayer &lt; VisualLayerManager
+///    &lt; LayoutTransformControl(ours) &lt; ContentPresenter &lt; … &lt; Window</c>, and a
+///    realised <c>ComboBoxItem</c> inside an open dropdown is a visual descendant of the
+///    host. The cost is real and is stated in the UI: an overlay popup cannot extend
+///    beyond the window's bounds, and that applies at <em>both</em> levels because the
+///    option is set process-wide.</item>
 ///   <item><b>"It mutated the content tree from inside a styling callback" (M82/M83).</b>
 ///    That was a property of the <em>installation route</em>, not of the transform. M81
 ///    opted windows in with an app-wide <see cref="Style"/> whose setter ran during the
@@ -230,10 +245,16 @@ public static class UiScaling
         }
     }
 
-    // null at 1.0, so Standard costs nothing beyond one pass-through element in the tree:
-    // a LayoutTransformControl with no transform measures and arranges its child exactly
-    // as its parent would have. This is what lets Standard be honestly described as "no
-    // transform at all".
+    // null at 1.0, so at Standard there is no transform: a LayoutTransformControl with no
+    // LayoutTransform measures and arranges its child exactly as its parent would have.
+    //
+    // Precisely: "no transform" is not "no wrapper". The host and its VisualLayerManager
+    // are in the tree at both levels, because building or removing them on a level change
+    // would mean mutating the content tree at exactly the moment the app must not — the
+    // hazard the whole design is built to avoid. Both are layout pass-throughs when idle,
+    // so Standard behaves as an unzoomed build; the one behaviour it does inherit is
+    // overlay popups, which are process-wide (Program.BuildAvaloniaApp) and therefore
+    // clipped to the window at Standard too.
     private static ITransform? Transform(double scale)
         => scale == 1.0 ? null : new ScaleTransform(scale, scale);
 
@@ -286,7 +307,14 @@ public static class UiScaling
             return false;
         }
 
-        host.Child = child;
+        // The content goes inside the host's OWN VisualLayerManager, not straight into the
+        // host. This is what makes popups scale, and without it OverlayPopups buys nothing
+        // for the zoom — see item 1 of the class remarks for the measurement. The manager
+        // is created once per host and reused, so a later Content write swaps ITS child and
+        // the popup-hosting layer is never rebuilt.
+        VisualLayerManager layers = host.Child as VisualLayerManager ?? new VisualLayerManager();
+        layers.Child = child;
+        host.Child = layers;
 
         // RE-ASSERTED, not redundant. LayoutTransformControl rewrites its own
         // LayoutTransform as part of laying out (an assigned ScaleTransform comes back as

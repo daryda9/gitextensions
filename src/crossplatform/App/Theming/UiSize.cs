@@ -55,8 +55,14 @@ public static class UiSizes
     ///  measured off upstream too: main toolbar 25px, revision grid row 24px, image-only
     ///  toolbar buttons 23x22 with 16px icons. So at 1.0 the port is already at upstream's
     ///  scale and there is nothing left to correct with a factor. Standard therefore
-    ///  installs <b>no transform</b>, and the default path through the app is identical to
-    ///  a build without this feature.</para>
+    ///  installs <b>no transform</b>: the host is a layout pass-through and the window is
+    ///  measured, arranged and drawn exactly as an unzoomed build would.</para>
+    ///
+    ///  <para>One honest caveat about Standard: "no transform" is not "no change at all".
+    ///  The zoom needs popups to be drawn inside the window (<c>OverlayPopups</c>) and that
+    ///  is a process-wide setting, so it applies at Standard as well. A Standard user
+    ///  therefore still gets popups clipped to the window bounds, which is why the
+    ///  Appearance page states that cost without tying it to one level.</para>
     ///
     ///  <para><b>Large is 1.25.</b> 125% is the conventional first step on both Windows
     ///  display scaling and GNOME, so it is the factor a user asking for "more zoomed"
