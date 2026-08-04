@@ -21,7 +21,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  newest entry; "Close" dismisses the window. Styled from the shared App.*
 ///  brushes to match the active theme, mirroring <see cref="ReflogWindow"/>.
 /// </summary>
-public sealed class CommandLogWindow : Window
+public sealed class CommandLogWindow : Theming.ZoomWindow
 {
     private readonly TextBox _log;
     private readonly ScrollViewer _scroll;

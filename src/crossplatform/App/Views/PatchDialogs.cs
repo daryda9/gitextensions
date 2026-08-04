@@ -13,7 +13,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  headers in the accent colour, and file/meta headers dimmed. Styled from the
 ///  shared App.* brushes so it matches the active (dark) theme.
 /// </summary>
-public sealed class PatchViewerWindow : Window
+public sealed class PatchViewerWindow : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 
@@ -138,7 +138,7 @@ public sealed class PatchViewerWindow : Window
 ///  <c>git apply</c>), shown in a monospace scrollable pane. Used to surface the
 ///  full message when a patch apply fails.
 /// </summary>
-public sealed class PatchOutputWindow : Window
+public sealed class PatchOutputWindow : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 

@@ -49,7 +49,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  whether the working directory needs a refresh.
 ///  </para>
 /// </summary>
-public sealed class CleanupDialog : Window
+public sealed class CleanupDialog : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 

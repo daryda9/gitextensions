@@ -50,7 +50,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="ClonedRepoPath"/>.
 ///  </para>
 /// </summary>
-public sealed class CloneDialog : Window
+public sealed class CloneDialog : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 

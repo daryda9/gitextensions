@@ -22,7 +22,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  Colors come from the shared dark palette in <c>App.cs</c>
 ///  (<c>App.Window</c>/<c>App.Text</c>/<c>App.TextDim</c>).
 /// </summary>
-public sealed class AboutDialog : Window
+public sealed class AboutDialog : Theming.ZoomWindow
 {
     private readonly TextBlock _gitVersion;
 

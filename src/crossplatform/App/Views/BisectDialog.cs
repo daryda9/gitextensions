@@ -54,7 +54,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  is reported in the output box, and the state is re-read afterwards so the buttons
 ///  always end up agreeing with the repository.</para>
 /// </summary>
-public sealed class BisectDialog : Window
+public sealed class BisectDialog : Theming.ZoomWindow
 {
     private readonly BisectService _bisect = new();
     private readonly string _repoPath;
@@ -459,7 +459,7 @@ public sealed class BisectDialog : Window
 
         Button yes = new() { Content = T("Confirm"), Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = T("FormCommit/Cancel.Text", "Cancel"), IsCancel = true };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = T("FormBisect/$this.Text", "Bisect"),
             Width = 380,

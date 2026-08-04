@@ -44,7 +44,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  caller can refresh the main view. Styled from the shared App.* brushes to
 ///  match the active theme, mirroring <see cref="ReflogWindow"/>.
 /// </summary>
-public sealed class SparseDialog : Window
+public sealed class SparseDialog : Theming.ZoomWindow
 {
     private readonly SparseService _service = new();
     private readonly string _repoPath;

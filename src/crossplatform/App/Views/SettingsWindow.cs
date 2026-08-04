@@ -77,7 +77,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  wraps, and the window carries a <see cref="Window.MinWidth"/> that keeps the
 ///  three buttons inside the frame.</para>
 /// </summary>
-public sealed class SettingsWindow : Window
+public sealed class SettingsWindow : Theming.ZoomWindow
 {
     private readonly string? _repoPath;
     private readonly UiStateService _uiStateService = new();
@@ -514,7 +514,7 @@ public sealed class SettingsWindow : Window
             AppearanceKey, AppearanceText,
             null, "The application colour theme, its visual style — \"Modern\" for the "
                 + "current vector icons and neutral palette, \"Classic\" for the earlier "
-                + "look — and the size of the interface text. \"Normal\" matches the "
+                + "look — and how large the interface is drawn. \"Standard\" matches the "
                 + "original Git Extensions. The three are independent, so any combination "
                 + "works, and all of them are applied immediately as a preview and "
                 + "persisted on OK or Apply (reverted on Cancel).",
@@ -526,14 +526,18 @@ public sealed class SettingsWindow : Window
             // (its only scaling control is the high-DPI auto-scale checkbox), so there is
             // no id to borrow and no translated target to inherit.
             Field(null, "Style", _style, dim),
-            // The note is not optional politeness: this option moves the chrome text —
-            // buttons, labels, menus, tabs, tree and list rows — and provably does not
-            // move the revision grid, the diff or the file lists, which set their own
-            // sizes when they are built. Without the line the control reads like a zoom.
+            // REWRITTEN in M86, because the old note became a lie. Until M84 this option
+            // scaled three font resources, so the note had to warn that the grid, the diff
+            // and the file lists did NOT follow it. It is now a real zoom of the whole
+            // window, so they do — and what is worth warning about instead is the one cost
+            // the zoom brought with it: popups are drawn inside the window so that they
+            // scale with it, which means they cannot spill past its edges.
             Field(null, "UI size", _uiSize, dim,
-                "Changes the interface text: buttons, labels, menus, tabs and list rows. "
-                    + "The revision grid, the diff and the file lists keep their own text "
-                    + "size, and some control heights are fixed."));
+                "Zooms the whole interface — text, icons, spacing, toolbars, the revision "
+                    + "grid, the diff and the file lists together. Applied immediately, no "
+                    + "restart needed. Because menus and drop-downs are drawn inside the "
+                    + "window so that they scale with it, they cannot extend past its "
+                    + "edges: in a small dialog they open into less room than before."));
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 

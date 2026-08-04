@@ -51,7 +51,7 @@ public sealed record CheckoutBranchChoice(
 ///  <para>The lighter <see cref="CheckoutBranchDialog"/> is untouched and still serves the
 ///  fast path (a ref is already known, only the local-changes question remains).</para>
 /// </summary>
-public sealed class CheckoutBranchForm : Window
+public sealed class CheckoutBranchForm : Theming.ZoomWindow
 {
     private readonly CheckoutBranchData _data;
     private readonly Func<string, string>? _aheadBehind;

@@ -38,7 +38,7 @@ namespace GitExtensions.Avalonia.Views;
 ///
 ///  Only the chrome resolves from the shared App.* brushes via <see cref="Brush"/>.
 /// </summary>
-public sealed class PushDialog : Window
+public sealed class PushDialog : Theming.ZoomWindow
 {
     /// <summary>
     ///  One attempt at a push. <paramref name="forceOverride"/> lets the SAME
@@ -1382,7 +1382,7 @@ public sealed class PushDialog : Window
     {
         TaskCompletionSource<PushRejectedAnswer?> tcs = new();
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = string.Format(T("FormPush/_pullRepositoryCaption.Text", "Push was rejected from \"{0}\""), remote),
             Width = 520,
@@ -1468,7 +1468,7 @@ public sealed class PushDialog : Window
     // (default pull action not actionable, and the rebase-a-merge-commit refusal).
     private async Task NoteAsync(Window owner, string message)
     {
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = Title,
             Width = 440,
@@ -1717,7 +1717,7 @@ public sealed class PushDialog : Window
     {
         TaskCompletionSource<bool?> tcs = new();
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = Title,
             Width = 420,

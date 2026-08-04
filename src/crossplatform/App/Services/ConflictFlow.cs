@@ -365,7 +365,7 @@ public static class ConflictFlow
         };
         buttons.Children.Add(primary);
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = title,
             Width = 420,

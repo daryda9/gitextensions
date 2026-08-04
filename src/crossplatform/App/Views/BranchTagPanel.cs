@@ -551,7 +551,7 @@ public sealed class BranchTagPanel : UserControl
 
         Button yes = new() { Content = "Delete", Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Confirm",
             Width = 340,

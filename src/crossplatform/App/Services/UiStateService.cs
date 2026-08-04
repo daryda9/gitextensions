@@ -130,17 +130,24 @@ public sealed class UiState
 
     /// <summary>
     ///  How large the whole interface is drawn: the name of a
-    ///  <see cref="GitExtensions.Avalonia.Theming.UiSize"/> member ("Small", "Normal",
-    ///  "Large", "VeryLarge").
+    ///  <see cref="GitExtensions.Avalonia.Theming.UiSize"/> member — since M86 either
+    ///  <b>"Standard"</b> (zoom 1.0) or <b>"Large"</b> (zoom 1.25).
     ///
     ///  <para>Sits beside <see cref="Theme"/> and <see cref="Style"/> because it is the
-    ///  same kind of Appearance choice, and is independent of both: every size renders
-    ///  in all four theme/style combinations.</para>
+    ///  same kind of Appearance choice, and is independent of both: both levels render in
+    ///  all four theme/style combinations.</para>
     ///
-    ///  <para>"Normal" is not a neutral placeholder — it is the baseline the port is
-    ///  built at (upstream's 12px chrome), so the default costs no transform at all.</para>
+    ///  <para><b>Files written before M86 hold one of the four older names</b> ("Small",
+    ///  "Normal", "Large", "VeryLarge"). They are migrated on read, not rejected —
+    ///  <c>UiSizes.Parse</c> owns the mapping, and in particular sends "VeryLarge" to
+    ///  "Large" so that upgrading cannot demote a user who had chosen the largest step
+    ///  down to the smallest level.</para>
+    ///
+    ///  <para>"Standard" is not a neutral placeholder — it is the scale the port is built
+    ///  at, which is upstream Git Extensions' own, so the default installs no transform at
+    ///  all.</para>
     /// </summary>
-    public string UiSize { get; set; } = "Normal";
+    public string UiSize { get; set; } = "Standard";
 
     /// <summary>
     ///  UI language: the base name of a <c>Translation/*.xlf</c> catalogue
@@ -298,7 +305,11 @@ public sealed class UiStateService
         s.Theme = s.Theme == "Light" ? "Light" : "Dark";
         s.Style = s.Style == "Classic" ? "Classic" : "Modern";
         // Round-tripped through the enum, so an unknown or hand-edited name lands on
-        // "Normal" rather than reaching the transform (see UiSizes.Parse).
+        // "Standard" rather than reaching the zoom (see UiSizes.Parse). This round trip is
+        // ALSO where the M86 migration lands on disk: a file holding one of the four older
+        // names ("Small"/"Normal"/"Large"/"VeryLarge") is normalised to the two-level
+        // vocabulary here and saved back under the new name, so the old value is read
+        // correctly once and then never seen again.
         s.UiSize = GitExtensions.Avalonia.Theming.UiSizes.Name(
             GitExtensions.Avalonia.Theming.UiSizes.Parse(s.UiSize));
         s.BottomTab = string.IsNullOrWhiteSpace(s.BottomTab) ? "Commit" : s.BottomTab.Trim();

@@ -39,7 +39,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  key/agent-based. Upstream hides the whole panel in exactly this situation, so
 ///  omitting it IS the upstream behaviour, not a gap.</para>
 /// </summary>
-public sealed class RemotesDialog : Window
+public sealed class RemotesDialog : Theming.ZoomWindow
 {
     private readonly RemoteService _service = new();
     private readonly string _repoPath;
@@ -851,7 +851,7 @@ public sealed class RemotesDialog : Window
         TaskCompletionSource<bool> tcs = new();
 
         Button ok = new() { Content = "OK", HorizontalAlignment = HorizontalAlignment.Right };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = label,
             Width = 480,
@@ -905,7 +905,7 @@ public sealed class RemotesDialog : Window
 
         Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Confirm",
             Width = 340,
@@ -936,7 +936,7 @@ public sealed class RemotesDialog : Window
         TextBox input = new() { Text = initial };
         Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
         Button cancel = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Remote",
             Width = 420,

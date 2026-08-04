@@ -41,7 +41,7 @@ public enum ResetChangesAction
 ///  <see cref="SelectedAction"/>, so the caller keeps every command on a background
 ///  thread.</para>
 /// </summary>
-public sealed class ResetChangesDialog : Window
+public sealed class ResetChangesDialog : Theming.ZoomWindow
 {
     private readonly CheckBox _deleteNew;
 

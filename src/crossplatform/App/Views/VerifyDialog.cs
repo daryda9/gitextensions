@@ -54,7 +54,7 @@ public sealed class LostObjectEntry(LostObject item)
 ///  <para>Every git call runs through <see cref="Task.Run"/>: the service blocks on git
 ///  and must never be touched from the UI thread.</para>
 /// </summary>
-public sealed class VerifyDialog : Window
+public sealed class VerifyDialog : Theming.ZoomWindow
 {
     private readonly VerifyService _service = new();
     private readonly string _repoPath;
@@ -700,7 +700,7 @@ public sealed class VerifyDialog : Window
 
         Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Confirm",
             Width = 400,
@@ -731,7 +731,7 @@ public sealed class VerifyDialog : Window
         TextBox input = new() { Text = initial };
         Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
         Button cancel = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Recover lost object",
             Width = 460,

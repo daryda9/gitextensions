@@ -20,7 +20,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="Changed"/> is set when any mutation succeeds so the caller can
 ///  refresh the repository tree after the dialog closes.
 /// </summary>
-public sealed class WorktreesDialog : Window
+public sealed class WorktreesDialog : Theming.ZoomWindow
 {
     private readonly WorktreeService _service = new();
     private readonly string _repoPath;
@@ -302,7 +302,7 @@ public sealed class WorktreesDialog : Window
 
         Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Confirm",
             Width = 340,
@@ -333,7 +333,7 @@ public sealed class WorktreesDialog : Window
         TextBox input = new() { Text = initial };
         Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
         Button cancel = new() { Content = "Cancel" };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = "Worktree",
             Width = 460,

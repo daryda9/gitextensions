@@ -28,7 +28,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  successful commit; the dialog deliberately does NOT auto-close so the user can
 ///  make several commits before closing the window.
 /// </summary>
-public sealed class CommitDialog : Window
+public sealed class CommitDialog : Theming.ZoomWindow
 {
     private readonly string _repoPath;
     private readonly WorkingDirectoryService _service = new();
@@ -1135,7 +1135,7 @@ public sealed class CommitDialog : Window
             caption = string.Format(T("FormFileHistory/$this.Text", "File History - {0}"), row.Path);
         }
 
-        Window window = new()
+        Theming.ZoomWindow window = new()
         {
             Title = caption,
             Width = 900,
@@ -1376,7 +1376,7 @@ public sealed class CommitDialog : Window
     /// </summary>
     private async Task<string?> PromptTextAsync(string caption, string label, string initial)
     {
-        Window prompt = new()
+        Theming.ZoomWindow prompt = new()
         {
             Title = caption,
             Width = 520,
@@ -2973,7 +2973,7 @@ public sealed class CommitDialog : Window
     // and unstaged changes over to the new branch, exactly like the original form.
     private async void PromptCreateBranch()
     {
-        Window prompt = new()
+        Theming.ZoomWindow prompt = new()
         {
             Title = T("FormCreateBranch/$this.Text", "Create branch"),
             Width = 440,
@@ -3434,7 +3434,7 @@ public sealed class CommitDialog : Window
     /// </summary>
     private async Task<int> ChooseAsync(string prompt, string? caption, IReadOnlyList<string> choices)
     {
-        Window confirm = new()
+        Theming.ZoomWindow confirm = new()
         {
             Title = caption ?? T("Confirm"),
             Width = 460,

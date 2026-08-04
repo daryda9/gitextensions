@@ -1077,7 +1077,7 @@ public sealed class StashPanel : UserControl
         content.Children.Add(untracked);
         content.Children.Add(buttons);
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = T("FormBrowse/stashChangesToolStripMenuItem.ToolTipText", "Stash changes"),
             Width = 380,
@@ -1131,7 +1131,7 @@ public sealed class StashPanel : UserControl
         content.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap });
         content.Children.Add(buttons);
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = title,
             Width = 360,

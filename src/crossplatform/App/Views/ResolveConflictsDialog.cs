@@ -46,7 +46,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  <c>git mergetool</c> stages the file on a successful exit and the list would
 ///  otherwise be stale.</para>
 /// </summary>
-public sealed class ResolveConflictsDialog : Window
+public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 {
     // Upstream's documentation anchor for this form: gotoUserManualControl1 with
     // ManualSectionSubfolder = "modify_history", ManualSectionAnchorName =
@@ -979,7 +979,7 @@ public sealed class ResolveConflictsDialog : Window
 
         Button yes = new() { Content = T("Yes"), MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = T("No"), MinWidth = 80, IsCancel = true };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = caption,
             Width = 460,

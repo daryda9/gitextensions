@@ -20,7 +20,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  <c>this[SettingsSource]</c> indexer against the plugin's container source, so
 ///  they persist to git config exactly as the WinForms host would write them.</para>
 /// </summary>
-public sealed class PluginSettingsWindow : Window
+public sealed class PluginSettingsWindow : Theming.ZoomWindow
 {
     private readonly IGitPlugin _plugin;
     private readonly SettingsSource _source;

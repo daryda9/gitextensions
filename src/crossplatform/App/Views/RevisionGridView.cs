@@ -3909,7 +3909,7 @@ public sealed class RevisionGridView : UserControl
         }
 
         Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK") };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = T("Information"),
             Width = 380,
@@ -6267,7 +6267,7 @@ public sealed class RevisionGridView : UserControl
         TaskCompletionSource<bool> tcs = new();
         Button yes = new() { Content = T("TranslatedStrings/_yes.Text", "Yes"), Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = T("TranslatedStrings/_no.Text", "No") };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = T("Confirm"),
             Width = 380,
@@ -6303,7 +6303,7 @@ public sealed class RevisionGridView : UserControl
         TextBox input = new() { Text = initial };
         Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK"), Margin = new Thickness(0, 0, 6, 0) };
         Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = title,
             Width = 380,

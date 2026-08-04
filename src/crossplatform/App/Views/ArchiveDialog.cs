@@ -42,7 +42,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  Styled from the shared App.* brushes so it matches the active theme.
 ///  </para>
 /// </summary>
-public sealed class ArchiveDialog : Window
+public sealed class ArchiveDialog : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 

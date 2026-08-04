@@ -34,7 +34,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  handed to the constructor, because the git services block synchronously on
 ///  async work and deadlock when touched from the UI thread.</para>
 /// </summary>
-public sealed class PullDialog : Window
+public sealed class PullDialog : Theming.ZoomWindow
 {
     /// <summary>
     ///  How upstream shows "every remote" in the remotes combo. Selecting it makes

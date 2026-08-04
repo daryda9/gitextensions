@@ -58,7 +58,7 @@ public sealed record MergeDialogResult(
 ///  constructor — the git services block synchronously on async work and deadlock
 ///  when called from the UI thread.</para>
 /// </summary>
-public sealed class MergeDialog : Window
+public sealed class MergeDialog : Theming.ZoomWindow
 {
     /// <summary>
     ///  The strategies upstream's combo offers (<c>FormMergeBranch.Designer.cs</c>).

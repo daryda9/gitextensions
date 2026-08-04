@@ -178,6 +178,25 @@ internal static class Program
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
+            // OVERLAY POPUPS, on both backends, and this is load-bearing for the UI zoom
+            // (M86). By default a popup — a menu, a ComboBox dropdown, a context menu, a
+            // tooltip — is a NATIVE window on Win32, i.e. its own visual root. That is
+            // precisely why the per-window layout transform of M81 provably never scaled
+            // popups (measured in M83: the popup's visual chain reaches the Window while
+            // bypassing our host), and it is the reason M84 abandoned the transform.
+            // Hosting popups in the window's own OverlayLayer puts their content back
+            // INSIDE the zoom host, so a menu over a window at 125% is drawn at 125% too.
+            //
+            // The cost is real and is stated on the Appearance page rather than hidden: an
+            // overlay popup is clipped to its window's bounds, so a dropdown near the
+            // bottom edge of a SMALL dialog has less room to open into than a native one
+            // would. Avalonia's positioner flips and constrains it to fit.
+            //
+            // Set on both option objects because UsePlatformDetect picks the backend at
+            // run time: Win32 here, X11 on the Linux target. Options for a backend that is
+            // not selected are simply never read.
+            .With(new Win32PlatformOptions { OverlayPopups = true })
+            .With(new X11PlatformOptions { OverlayPopups = true })
             // Every `Browse…` in the app went through Avalonia's X11 StorageProvider, which on this
             // desktop never reaches the XDG portal at all: measured on a real Wayland/XWayland
             // session with a working portal (a manual `org.freedesktop.portal.FileChooser.OpenFile`

@@ -20,7 +20,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="NoteText"/> and reports <see cref="Accepted"/>, so the caller can
 ///  keep the write on a background thread.</para>
 /// </summary>
-public sealed class AddNotesDialog : Window
+public sealed class AddNotesDialog : Theming.ZoomWindow
 {
     private readonly TextBox _editor;
 

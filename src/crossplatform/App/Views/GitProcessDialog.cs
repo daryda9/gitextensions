@@ -41,7 +41,7 @@ public sealed record GitProcessOutcome(bool Success, string Output, bool Aborted
 ///  supplied <paramref name="operation"/> runs on a background thread; all UI
 ///  mutation happens on the UI thread.
 /// </summary>
-public sealed class GitProcessDialog : Window, Services.IGitPtyHost
+public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 {
     // Fixed console look, matching the original Windows dialog (intentionally
     // not theme-driven): warm beige background, near-black text.

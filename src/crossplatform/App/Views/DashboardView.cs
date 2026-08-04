@@ -709,7 +709,7 @@ public sealed class DashboardView : UserControl
             TextWrapping = TextWrapping.Wrap,
         };
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = T("FormDashboardCategoryTitle/$this.Text", "Enter Caption"),
             Width = 420,

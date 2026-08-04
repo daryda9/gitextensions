@@ -28,7 +28,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  already loaded; the static <c>AskAsync</c> helpers do that loading in
 ///  <see cref="Task.Run"/> before constructing the window.</para>
 /// </summary>
-public sealed class CheckoutBranchDialog : Window
+public sealed class CheckoutBranchDialog : Theming.ZoomWindow
 {
     private readonly RadioButton _dontChange;
     private readonly RadioButton _merge;
@@ -290,7 +290,7 @@ public sealed record CreateBranchRequest(string Name, bool Checkout);
 ///  Existing branch names are passed in so the name can be validated without
 ///  touching git from the UI thread.
 /// </summary>
-public sealed class CreateBranchDialog : Window
+public sealed class CreateBranchDialog : Theming.ZoomWindow
 {
     private readonly TextBox _name;
     private readonly CheckBox _checkout;
@@ -456,7 +456,7 @@ public sealed record CreateTagRequest(
 ///  signed with a specific key), <b>Force</b>, and an optional
 ///  <b>push to remote</b> right after creating it.
 /// </summary>
-public sealed class CreateTagDialog : Window
+public sealed class CreateTagDialog : Theming.ZoomWindow
 {
     private readonly TextBox _name;
     private readonly TextBox _message;

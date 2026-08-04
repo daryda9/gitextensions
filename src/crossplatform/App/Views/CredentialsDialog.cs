@@ -14,7 +14,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  and resolves to a <see cref="GitCredentials"/> on OK, or <see langword="null"/>
 ///  on cancel / close.
 /// </summary>
-public sealed class CredentialsDialog : Window
+public sealed class CredentialsDialog : Theming.ZoomWindow
 {
     private readonly TextBox _username;
     private readonly TextBox _password;

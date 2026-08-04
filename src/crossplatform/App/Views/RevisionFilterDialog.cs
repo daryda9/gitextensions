@@ -22,7 +22,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="RevisionService"/> turns into <c>git log</c> arguments — the filter
 ///  is applied by git during the walk, never by sifting loaded rows.</para>
 /// </summary>
-public sealed class RevisionFilterDialog : Window
+public sealed class RevisionFilterDialog : Theming.ZoomWindow
 {
     private readonly Row _author;
     private readonly Row _committer;

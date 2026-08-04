@@ -31,7 +31,7 @@ namespace GitExtensions.Avalonia;
 ///  and a status bar. All views are self-contained
 ///  <see cref="UserControl"/>s driven over the reused core via <see cref="GitContext"/>.
 /// </summary>
-public sealed class MainWindow : Window
+public sealed class MainWindow : Theming.ZoomWindow
 {
     private readonly MainMenu _menu = new();
     private readonly MainToolbar _toolbar = new();
@@ -2116,7 +2116,7 @@ public sealed class MainWindow : Window
 
         Button ok = new() { Content = okText ?? T("FormCompareToBranch/btnCompare.Text", "Compare"), MinWidth = 90 };
         Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = title ?? T("FormCompareToBranch/$this.Text", "Compare to branch"),
             Width = 420,
@@ -2773,7 +2773,7 @@ public sealed class MainWindow : Window
         };
 
         string? result = null;
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = T("FileStatusList/tsmiFindFile.Text", "Find file..."),
             Width = 620,
@@ -3197,7 +3197,7 @@ public sealed class MainWindow : Window
             Children = { undo, cancel },
         });
 
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = UndoLastCommitCaption,
             Width = 460,
@@ -3291,7 +3291,7 @@ public sealed class MainWindow : Window
         Button reset = new() { Content = T("FormResetChanges/btnReset.Text", "Reset"), MinWidth = 90 };
         Button cancel = new() { Content = T("FormResetChanges/btnCancel.Text", "Cancel"), MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
 
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = ResetChangesCaption,
             Width = 460,
@@ -3830,7 +3830,7 @@ public sealed class MainWindow : Window
     private async Task PickRepositoryAsync()
     {
         RepositoryPickerView picker = new();
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = T("Open Git repository"),
             Width = 640,
@@ -4134,7 +4134,7 @@ public sealed class MainWindow : Window
     private async Task InfoAsync(string title, string message)
     {
         Button ok = new() { Content = T("OK"), MinWidth = 80 };
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = title,
             Width = 420,
@@ -4165,7 +4165,7 @@ public sealed class MainWindow : Window
     {
         Button yes = new() { Content = T("TranslatedStrings/_yes.Text", "Yes"), MinWidth = 80 };
         Button no = new() { Content = T("TranslatedStrings/_no.Text", "No"), MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = T("Confirm"),
             Width = 420,
@@ -4208,7 +4208,7 @@ public sealed class MainWindow : Window
         }
         Button ok = new() { Content = T("OK"), MinWidth = 80 };
         Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel"), MinWidth = 80, Margin = new Thickness(8, 0, 0, 0) };
-        Window dlg = new()
+        Theming.ZoomWindow dlg = new()
         {
             Title = title,
             Width = 420,

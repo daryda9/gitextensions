@@ -19,7 +19,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  is set when any mutation succeeds so the caller can refresh the repository
 ///  tree after the dialog closes.
 /// </summary>
-public sealed class SubmodulesDialog : Window
+public sealed class SubmodulesDialog : Theming.ZoomWindow
 {
     private readonly SubmoduleService _service = new();
     private readonly string _repoPath;

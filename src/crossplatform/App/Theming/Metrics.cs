@@ -100,14 +100,20 @@ public static class Metrics
 
         /// <summary>13 — one rank above body text. NOT the app default: since M81 the
         /// app-wide size is <see cref="Body"/> (12), which is what upstream Git
-        /// Extensions draws its chrome in and what <see cref="UiScaling"/> writes into
-        /// Fluent's <c>ControlContentThemeFontSize</c> at <see cref="UiSize.Normal"/>.
+        /// Extensions draws its chrome in and what
+        /// <see cref="UiScaling.InstallChromeBaseline"/> writes into Fluent's
+        /// <c>ControlContentThemeFontSize</c>.
         ///
-        /// <para>Every size in this table is a COMPILE-TIME literal, read once when a view
-        /// is built, so none of them follow the user's <see cref="UiSize"/> — which is
-        /// exactly why the Appearance page says the grid, the diff and the file lists keep
-        /// their own text size. Making them follow it would mean turning 137 assignment
-        /// sites into live bindings, not changing this table.</para></summary>
+        /// <para><b>These literals DO follow the user's <see cref="UiSize"/> since M86, and
+        /// the paragraph that stood here saying they do not is withdrawn.</b> Every size in
+        /// this table is still a compile-time literal read once when a view is built, so it
+        /// never follows a font <em>resource</em> — that was M84's mechanism and its real
+        /// limitation. The zoom is not a resource: it is a layout transform over the whole
+        /// window content (<see cref="UiScaling"/>), which scales the measured and rendered
+        /// result of these literals along with everything else. So the grid, the diff and
+        /// the file lists grow with the rest of the UI, and the Appearance page no longer
+        /// claims otherwise. Turning the 137 assignment sites into live bindings was the
+        /// alternative, and it is not needed.</para></summary>
         public const double Subtitle = 13;
 
         /// <summary>16 — a section or dialog heading.</summary>

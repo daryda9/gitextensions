@@ -35,7 +35,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  report it rather than try to open it as one (see <see cref="IsCentral"/>).
 ///  </para>
 /// </summary>
-public sealed class InitDialog : Window
+public sealed class InitDialog : Theming.ZoomWindow
 {
     private readonly AutoCompleteBox _directory;
     private readonly RadioButton _personal;

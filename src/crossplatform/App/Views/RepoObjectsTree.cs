@@ -3056,7 +3056,7 @@ public sealed class RepoObjectsTree : UserControl
             try
             {
                 Button ok = new() { Content = T("OK"), HorizontalAlignment = HorizontalAlignment.Right };
-                Window dialog = new()
+                Theming.ZoomWindow dialog = new()
                 {
                     Title = T("TranslatedStrings/_error.Text", "Error"),
                     Width = 340,
@@ -3103,7 +3103,7 @@ public sealed class RepoObjectsTree : UserControl
         // trans-unit upstream, and it matches the shell's own confirmation dialog.
         Button yes = new() { Content = T("TranslatedStrings/_yes.Text", "Yes"), Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = T("TranslatedStrings/_no.Text", "No") };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = T("Confirm"),
             Width = 340,
@@ -3144,7 +3144,7 @@ public sealed class RepoObjectsTree : UserControl
         TextBox input = new() { Text = initial };
         Button ok = new() { Content = T("OK"), Margin = new Thickness(0, 0, 6, 0) };
         Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = title,
             Width = 340,

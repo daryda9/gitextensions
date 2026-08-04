@@ -47,13 +47,17 @@ public class App : Application
         // matches ThemeManager's own default.
         Theming.ModernStyles.Apply(this, Theming.ThemeManager.CurrentStyle);
 
-        // Installs the interface text size (see Theming/UiScaling). Normal is NOT a
-        // no-op: it is the write that brings Fluent's 14px chrome down to upstream's
-        // 12px, so this call is the app's typography baseline and it belongs here rather
-        // than in ModernStyles — the size is not a modern-versus-classic question, and
-        // Classic's own reference is upstream's 12 too. MainWindow re-applies it from
-        // ui-state.json once the persisted appearance is known.
-        Theming.UiScaling.Apply(Theming.UiSize.Normal);
+        // The app's chrome font baseline: 12px, upstream's own chrome size, over Fluent's
+        // 14 (see Theming/UiScaling). It belongs here rather than in ModernStyles — the
+        // baseline is not a modern-versus-classic question, and Classic's reference is
+        // upstream's 12 too.
+        //
+        // Since M86 this is a FIXED write and no longer the UI-size option. The option is
+        // now a real zoom of each window's content (a layout transform installed by
+        // Theming/ZoomWindow), so text grows as a consequence of everything growing;
+        // varying these font resources as well would be a second, competing size knob.
+        // MainWindow applies the persisted zoom level from ui-state.json once it is known.
+        Theming.UiScaling.InstallChromeBaseline();
     }
 
     public override void OnFrameworkInitializationCompleted()

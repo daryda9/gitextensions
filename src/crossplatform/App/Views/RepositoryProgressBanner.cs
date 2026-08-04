@@ -990,7 +990,7 @@ public sealed class RepositoryProgressBanner : UserControl
         Button yes = new() { Content = T("Confirm"), Margin = new Thickness(0, 0, 6, 0) };
         Button no = new() { Content = T("FormCommit/Cancel.Text", "Cancel"), IsCancel = true };
 
-        Window dialog = new()
+        Theming.ZoomWindow dialog = new()
         {
             Title = caption,
             Width = 420,

@@ -60,7 +60,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  </list>
 ///  </para>
 /// </summary>
-public sealed class ApplyPatchDialog : Window
+public sealed class ApplyPatchDialog : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 

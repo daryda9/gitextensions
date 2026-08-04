@@ -25,7 +25,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  handler is exception-guarded and reports failures as text rather than
 ///  throwing on the UI thread. Colors come from the shared <c>App.*</c> palette.
 /// </summary>
-public sealed class MaintenanceDialog : Window
+public sealed class MaintenanceDialog : Theming.ZoomWindow
 {
     private readonly string _repoPath;
     private readonly MaintenanceService _service = new();

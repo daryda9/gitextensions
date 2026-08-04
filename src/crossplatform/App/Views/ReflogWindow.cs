@@ -21,7 +21,7 @@ namespace GitExtensions.Avalonia.Views;
 ///  brushes so it matches the active (dark) theme, mirroring
 ///  <see cref="RemotesDialog"/>.
 /// </summary>
-public sealed class ReflogWindow : Window
+public sealed class ReflogWindow : Theming.ZoomWindow
 {
     private readonly ReflogService _service = new();
     private readonly string _repoPath;
