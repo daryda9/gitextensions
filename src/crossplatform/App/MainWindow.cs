@@ -1256,7 +1256,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
             int epoch = _repositoryEpoch;
             await EnsureCoreWarmupAsync(repo).ConfigureAwait(false);
-            Task<RepositoryNavigationSnapshot>? active = GetOrReacquireNavigation(repo, epoch);
+            Task<RepositoryNavigationSnapshot>? active = GetOrReacquireNavigationAsync(repo, epoch);
             if (active is null)
             {
                 return Array.Empty<RepoLink>();
@@ -1295,7 +1295,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
             int epoch = _repositoryEpoch;
             await EnsureCoreWarmupAsync(repo).ConfigureAwait(false);
-            Task<RepositoryNavigationSnapshot>? active = GetOrReacquireNavigation(repo, epoch);
+            Task<RepositoryNavigationSnapshot>? active = GetOrReacquireNavigationAsync(repo, epoch);
             if (active is null)
             {
                 return Array.Empty<RepoLink>();
@@ -4027,30 +4027,42 @@ public sealed class MainWindow : Theming.ZoomWindow
         int epoch)
     {
         string? parent = null;
+        bool failed = false;
         try
         {
-            parent = (await navigation.ConfigureAwait(true)).Submodules.ImmediateSuperprojectPath;
+            parent = (await navigation.ConfigureAwait(false)).Submodules.ImmediateSuperprojectPath;
         }
         catch
         {
-            // A disappearing or malformed repository simply restores the manage action.
+            failed = true;
+        }
+
+        // This method is also started by provider retry continuations, which run on a
+        // pool thread. Never rely on their captured context: both the final identity
+        // check and the control update belong to Avalonia's dispatcher.
+        Dispatcher.UIThread.Post(() =>
+        {
+            bool applies;
             lock (_activeNavigationGate)
             {
-                if (epoch == _repositoryEpoch
+                applies = epoch == _repositoryEpoch
+                    && !_dashboardShowing
                     && SameRepositoryPath(repoPath, _repoPath)
-                    && ReferenceEquals(_activeNavigationSnapshot, navigation))
+                    && SameRepositoryPath(repoPath, _activeNavigationRepository)
+                    && ReferenceEquals(_activeNavigationSnapshot, navigation);
+                if (applies && failed)
                 {
                     _activeNavigationRepository = null;
                     _activeNavigationSnapshot = null;
                     _activeNavigationLoadPending = false;
                 }
             }
-        }
 
-        if (epoch == _repositoryEpoch && SameRepositoryPath(repoPath, _repoPath))
-        {
-            _toolbar.SetSubmoduleNavigation(parent);
-        }
+            if (applies)
+            {
+                _toolbar.SetSubmoduleNavigation(parent);
+            }
+        });
     }
 
     // Git Extensions core owns process-global lazy state. Initialize it once on a
@@ -4111,7 +4123,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
     }
 
-    private Task<RepositoryNavigationSnapshot>? GetOrReacquireNavigation(string repoPath, int epoch)
+    private Task<RepositoryNavigationSnapshot>? GetOrReacquireNavigationAsync(string repoPath, int epoch)
     {
         lock (_activeNavigationGate)
         {
