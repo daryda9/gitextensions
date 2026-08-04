@@ -80,7 +80,6 @@ public sealed class RepoObjectsTree : UserControl
     // equivalent of upstream's TreeNode.GetFullNamePath() — because the item objects
     // themselves are new on every build.
     private readonly Dictionary<TreeViewItem, string> _nodeKey = new();
-    private readonly Dictionary<TreeViewItem, int> _expansionInputGeneration = new();
     private HashSet<string> _expandedKeys = new(StringComparer.Ordinal);
     private string? _selectedKey;
 
@@ -282,10 +281,6 @@ public sealed class RepoObjectsTree : UserControl
         };
 
         _tree.SelectionChanged += (_, _) => OnSelectionChanged();
-        // Selection may still point at the previous row when DoubleTapped bubbles from
-        // a newly clicked item. Route pointer activation from the event source itself;
-        // Enter deliberately continues to use the keyboard selection below.
-        _tree.DoubleTapped += (_, e) => OnActivateFromPointer(e.Source);
         // The hotkeys of upstream's "RepoObjectsTree" scope (RepoObjectsTree.Command.cs +
         // HotkeySettingsManager.cs:267-271): Delete deletes the selected node, F2 renames
         // it, F3 jumps to the next search hit. Enter is the port's own activation key and
@@ -323,7 +318,6 @@ public sealed class RepoObjectsTree : UserControl
         // is dropped again on the next dispatcher pass, i.e. after that one selection
         // change has been delivered.
         _tree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
-        _tree.AddHandler(KeyDownEvent, OnTreeExpansionKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
 
         _search = new TextBox
         {
@@ -2196,26 +2190,24 @@ public sealed class RepoObjectsTree : UserControl
     private void OnTreePointerPressed(object? sender, PointerPressedEventArgs e)
     {
         PointerPointProperties properties = e.GetCurrentPoint(_tree).Properties;
-        if (TryFindTreeItem(e.Source, out TreeViewItem item))
+        if (properties.IsLeftButtonPressed
+            && !IsExpandToggle(e.Source)
+            && TryFindTreeItem(e.Source, out TreeViewItem item))
         {
-            int generation = NextExpansionInputGeneration(item);
-            if (properties.IsLeftButtonPressed && !IsExpandToggle(e.Source))
+            // TreeViewItem's class handler toggles IsExpanded for a press anywhere in
+            // the header. Handle ordinary row presses in the tunnel instead: selection
+            // remains immediate, but only the real chevron reaches the native toggle.
+            // Activating on the second press also keeps the exact pointer row and avoids
+            // a DoubleTapped event whose visual source may disappear during navigation.
+            item.IsSelected = true;
+            item.Focus();
+            e.Handled = true;
+            if (e.ClickCount == 2)
             {
-                // Avalonia's TreeViewItem toggles a branch when its header is clicked.
-                // Undo only the transition made by this routed input operation. A newer
-                // pointer/key operation invalidates this callback, and the chevron keeps
-                // its native intentional toggle.
-                bool expanded = item.IsExpanded;
-                Dispatcher.UIThread.Post(() =>
-                {
-                    if (_expansionInputGeneration.TryGetValue(item, out int currentGeneration)
-                        && currentGeneration == generation
-                        && item.IsExpanded != expanded)
-                    {
-                        item.IsExpanded = expanded;
-                    }
-                }, DispatcherPriority.Input);
+                OnActivate(item);
             }
+
+            return;
         }
 
         if (!properties.IsRightButtonPressed || _suppressSelectionNotify)
@@ -2225,24 +2217,6 @@ public sealed class RepoObjectsTree : UserControl
 
         _suppressSelectionNotify = true;
         Dispatcher.UIThread.Post(() => _suppressSelectionNotify = false, DispatcherPriority.Background);
-    }
-
-    private void OnTreeExpansionKeyDown(object? sender, KeyEventArgs e)
-    {
-        if (e.Key is Key.Left or Key.Right or Key.Space
-            && _tree.SelectedItem is TreeViewItem item)
-        {
-            NextExpansionInputGeneration(item);
-        }
-    }
-
-    private int NextExpansionInputGeneration(TreeViewItem item)
-    {
-        int generation = _expansionInputGeneration.TryGetValue(item, out int current)
-            ? unchecked(current + 1)
-            : 1;
-        _expansionInputGeneration[item] = generation;
-        return generation;
     }
 
     private static bool TryFindTreeItem(object? source, out TreeViewItem item)
@@ -2283,19 +2257,6 @@ public sealed class RepoObjectsTree : UserControl
     // (RemoteBranchNode.cs:73-76 — the port did nothing at all), a TAG creates a branch
     // from it (TagNode.cs:28-31), a STASH opens the stash (StashNode.cs:33-36), and a
     // worktree is opened unless it is the current or a deleted one (WorktreeNode).
-    private void OnActivateFromPointer(object? source)
-    {
-        if (IsExpandToggle(source))
-        {
-            return;
-        }
-
-        if (TryFindTreeItem(source, out TreeViewItem item))
-        {
-            OnActivate(item);
-        }
-    }
-
     private void OnActivate(TreeViewItem? activationItem = null)
     {
         switch (activationItem ?? _tree.SelectedItem)
