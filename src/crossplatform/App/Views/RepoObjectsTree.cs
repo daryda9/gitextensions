@@ -126,6 +126,13 @@ public sealed class RepoObjectsTree : UserControl
     private bool _refreshQueued;
     private string? _expandedSubmoduleCurrentPath;
 
+    // A repository switch rebuilds the tree and restores a still-valid absolute
+    // submodule selection. Avalonia's BringIntoView then reveals the complete (often
+    // very long) header horizontally. Keep ordinary refreshes at the user's offset,
+    // but return a newly opened repository to the left edge once its layout is ready.
+    private string? _horizontalHomeRepository;
+    private ScrollViewer? _treeScrollViewer;
+
     // Guards NotifyBusy against stacking one refusal modal on top of another.
     private bool _busyNoticeOpen;
 
@@ -539,6 +546,8 @@ public sealed class RepoObjectsTree : UserControl
 
         node.IsSelected = true;
         node.BringIntoView();
+        ScrollTreeToHorizontalHome();
+        Dispatcher.UIThread.Post(ScrollTreeToHorizontalHome, DispatcherPriority.Background);
     }
 
     private TreeViewItem? ParentOf(TreeViewItem node)
@@ -622,6 +631,11 @@ public sealed class RepoObjectsTree : UserControl
     /// </summary>
     public void LoadRepository(string repoPath)
     {
+        if (!IsSameRepositoryPath(_repoPath, repoPath))
+        {
+            _horizontalHomeRepository = NormalizeRepositoryPath(repoPath);
+        }
+
         _repoPath = repoPath;
         Refresh();
     }
@@ -929,6 +943,7 @@ public sealed class RepoObjectsTree : UserControl
         _tree.ItemsSource = roots;
 
         RestoreState(roots);
+        ScheduleHorizontalHomeAfterRepositoryChange();
         _firstBuild = false;
 
         // Final reconciliation against the real HEAD. In the normal case this is a
@@ -1355,6 +1370,77 @@ public sealed class RepoObjectsTree : UserControl
 
                 Walk(node.Items.OfType<TreeViewItem>());
             }
+        }
+    }
+
+    private void ScheduleHorizontalHomeAfterRepositoryChange()
+    {
+        if (_horizontalHomeRepository is not { } repository
+            || !IsSameRepositoryPath(repository, _repoPath))
+        {
+            return;
+        }
+
+        int epoch = _refreshEpoch;
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (epoch != _refreshEpoch
+                    || !IsSameRepositoryPath(repository, _repoPath)
+                    || !PathComparer.Equals(repository, _horizontalHomeRepository))
+                {
+                    return;
+                }
+
+                // RestoreState queued its BringIntoView at Loaded before this callback.
+                // Apply once after it and once more after the remaining layout work.
+                ScrollTreeToHorizontalHome();
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (epoch == _refreshEpoch
+                        && IsSameRepositoryPath(repository, _repoPath)
+                        && PathComparer.Equals(repository, _horizontalHomeRepository))
+                    {
+                        ScrollTreeToHorizontalHome();
+                        _horizontalHomeRepository = null;
+                    }
+                }, DispatcherPriority.Background);
+            },
+            DispatcherPriority.Loaded);
+    }
+
+    private void ScrollTreeToHorizontalHome()
+    {
+        // The TreeView owns one template ScrollViewer. Resolve lazily because its
+        // template is not realised in the constructor, then retain it for subsequent
+        // searches/rebuilds rather than walking the visual tree on every interaction.
+        if (_treeScrollViewer?.GetVisualRoot() != _tree.GetVisualRoot())
+        {
+            _treeScrollViewer = _tree.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+        }
+
+        if (_treeScrollViewer is { } scroll)
+        {
+            scroll.Offset = HorizontalHomeOffset(scroll.Offset);
+        }
+    }
+
+    internal static Vector HorizontalHomeOffset(Vector offset) => new(0, offset.Y);
+
+    private static bool IsSameRepositoryPath(string? left, string? right)
+        => left is null || right is null
+            ? left == right
+            : PathComparer.Equals(NormalizeRepositoryPath(left), NormalizeRepositoryPath(right));
+
+    private static string NormalizeRepositoryPath(string path)
+    {
+        try
+        {
+            return System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(path));
+        }
+        catch
+        {
+            return System.IO.Path.TrimEndingDirectorySeparator(path);
         }
     }
 
