@@ -385,10 +385,16 @@ public static class ModernStyles
         // its own states (the menu bar and the context menus share it).
         Set(map, "MenuFlyoutPresenterBackground", panel);
         Set(map, "MenuFlyoutPresenterBorderBrush", border);
-        Set(map, "MenuFlyoutItemBackground", Brushes.Transparent);
+        // The resting fill is the presenter's OWN colour, not Brushes.Transparent —
+        // which is transparent WHITE (#00FFFFFF). MenuItem's Border is cross-faded
+        // (BorderTransitions<MenuItem> below), so a transparent-white start walks
+        // through half-opaque white on the way to the hover fill: a white flash on
+        // every item the pointer passes over. Opaque panel looks identical at rest,
+        // because panel is exactly what the flyout presenter is painted with.
+        Set(map, "MenuFlyoutItemBackground", panel);
         Set(map, "MenuFlyoutItemBackgroundPointerOver", panelHover);
         Set(map, "MenuFlyoutItemBackgroundPressed", panelPressed);
-        Set(map, "MenuFlyoutItemBackgroundDisabled", Brushes.Transparent);
+        Set(map, "MenuFlyoutItemBackgroundDisabled", panel);
         Set(map, "MenuFlyoutItemForeground", text);
         Set(map, "MenuFlyoutItemForegroundPointerOver", text);
         Set(map, "MenuFlyoutItemForegroundPressed", text);

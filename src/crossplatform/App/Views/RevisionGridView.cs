@@ -6634,7 +6634,10 @@ public sealed class RevisionGridView : UserControl
             }
             else if (hover)
             {
-                Background = B("App.PanelAlt");
+                // App.HoverRow, not App.PanelAlt: PanelAlt IS the alternate stripe, so
+                // hovering an odd row changed nothing and hovering an even one merely
+                // looked like the stripe. HoverRow is the one row background with a hue.
+                Background = B("App.HoverRow");
             }
             else
             {
