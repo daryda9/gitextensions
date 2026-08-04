@@ -538,7 +538,11 @@ public sealed class HelpImagePanel : UserControl
         Content = new TextBlock
         {
             Text = string.Empty,
-            Foreground = Brush("App.Accent", Brushes.DodgerBlue),
+            // App.Link, not App.Accent: this is link ink, and the accent is calibrated
+            // as a fill — 3.70:1 on App.Window in classic dark, under the 4.5:1 text
+            // floor. The fallback is the modern-dark App.Link so a missing key degrades
+            // to a text-grade blue instead of back to the fill-grade one.
+            Foreground = Brush("App.Link", new SolidColorBrush(Color.Parse("#5B9CFF"))),
             TextDecorations = TextDecorations.Underline,
         },
     };
