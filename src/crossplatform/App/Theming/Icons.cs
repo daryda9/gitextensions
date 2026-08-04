@@ -192,6 +192,46 @@ internal static class Icons
     private const string Search = "M6 11a5 5 0 1 0 10 0a5 5 0 1 0-10 0 M15.5 15.5l4.5 4.5";
     private const string Filter = "M3 5h18l-7 8v7l-4-2v-5z";
 
+    // A bisect is a halving of a range, so the glyph is a range: a history line
+    // with both ends capped and an arrow singling out the commit in the middle.
+    // Deliberately not the plain Commit dot, which stands for one commit.
+    private const string Bisect =
+        "M12 4v16 M9 4h6 M9 20h6 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 "
+        + "M2.5 12h7 M5.5 9l-3 3 3 3";
+
+    // Handing the working directory to another program: the folder plus the
+    // arrow that every "leaves this window" affordance uses.
+    private const string FolderExternal =
+        "M2.5 19.5V8h5l1.75 2.25H13v9.25Z M16 4h5.5v5.5 M16 9.5l5.5-5.5";
+
+    // git clean sweeps untracked files out of the working tree, which is a
+    // broom and not the bin: nothing tracked is being deleted.
+    private const string Broom = "M12 2v8 M7.5 10h9l1.5 5.5H6z M9 15.5v4 M12 15.5v4 M15 15.5v4";
+
+    // A clone is a copy pulled down from a remote, so it is the same cloud the
+    // remote names use with the download arrow through its floor.
+    private const string CloudDownload =
+        "M7 13h9a3.25 3.25 0 0 0 0-6.5 6 6 0 0 0-9.6-1.2A4.5 4.5 0 0 0 7 13 "
+        + "M12 13v8 M8.5 17.5l3.5 3.5 3.5-3.5";
+
+    // Two chevrons folding towards the middle: the rows come together. The
+    // mirror image would read as expand, so the direction carries the meaning.
+    private const string CollapseVertical = "M7 5l5 5 5-5 M7 19l5-5 5 5";
+
+    // Packing the object database is a squeeze, not a sweep: the store is the
+    // box and the two arrows press it from both sides. Kept distinct from
+    // Broom so gc and clean cannot be confused in the same menu.
+    private const string Compress =
+        "M4.5 10h15v4h-15z M12 2.5v5 M9.5 5l2.5 2.5 2.5-2.5 M12 21.5v-5 M9.5 19l2.5-2.5 2.5 2.5";
+
+    // Removing a stale index.lock releases the repository rather than destroying
+    // anything, so the shackle springs open instead of a bin closing over it.
+    private const string LockOpen = "M5.5 11h13v9.5h-13z M8.5 11V7.5a3.5 3.5 0 0 1 6.8-1.2";
+
+    // The backspace key: clearing what was typed, which is what the text-box
+    // "delete" affordance does. Not the bin, which stands for deleting on disk.
+    private const string Backspace = "M9 4h11v16H9L2.5 12z M13 9l5 6 M18 9l-5 6";
+
     private static readonly Dictionary<string, string> Data = new(StringComparer.Ordinal)
     {
         // Repository and folders
@@ -202,7 +242,16 @@ internal static class Icons
         ["DashboardFolderGit"] = FolderGit,
         ["DashboardFolderError"] = FolderError,
         ["RepoCreate"] = FolderGit,
+        ["CloneRepoGit"] = CloudDownload,
+        ["BrowseFileExplorer"] = FolderExternal,
         ["RecentRepositories"] = History,
+
+        // Repository maintenance. Each plumbing command gets its own shape:
+        // sweeping the working tree, packing the object store and unlocking the
+        // index are three different things and share nothing but the menu.
+        ["CleanupRepo"] = Broom,
+        ["CompressGitDatabase"] = Compress,
+        ["DeleteIndexLock"] = LockOpen,
 
         // Branches
         ["Branch"] = Branch,
@@ -240,6 +289,7 @@ internal static class Icons
         ["CommitSummary"] = Commit,
         ["CommitId"] = Commit,
         ["GotoCommit"] = Commit,
+        ["Bisect"] = Bisect,
         ["RevertCommit"] = Undo,
         ["ResetCurrentBranchToHere"] = Rewind,
         ["ResetAnotherBranchToHere"] = Rewind,
@@ -294,6 +344,8 @@ internal static class Icons
         // Navigation
         ["NavigateBackward"] = ArrowLeft,
         ["NavigateForward"] = ArrowRight,
+        ["CollapseAll"] = CollapseVertical,
+        ["DeleteText"] = Backspace,
 
         // Chrome
         ["Settings"] = Sliders,
