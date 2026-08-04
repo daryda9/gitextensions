@@ -3236,7 +3236,7 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
-## M83 (2026-08-04) — la riga sotto il puntatore si vede, e il flash bianco della toolbar sparisce
+## M93 (2026-08-04) — la riga sotto il puntatore si vede, e il flash bianco della toolbar sparisce
 
 > Due segnalazioni dell'utente con screenshot: *«il colore della riga su cui sono con il cursore è
 > uguale a quello delle righe scure normalmente presenti, preferirei un colore diverso, tipo
@@ -3305,7 +3305,7 @@ giusto è *il colore di arrivo ad alpha 0*, non `Transparent`. Restano con `Brus
 riposo il `TabItem` (`ModernStyles`, fondo dietro non garantito) e le righe della griglia (il cui
 presenter non è animato): il primo è l'unico punto ancora esposto allo stesso artefatto.
 
-## M82 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
+## M92 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
 
 > Segnalazione dell'utente con due screenshot: *«sia in diff che in stash, se ridimensiono le sezioni
 > di sotto, queste non si stickano alla larghezza del contenitore»*.
@@ -3331,7 +3331,7 @@ Zero pixel fra il bordo del contenuto e lo splitter in tutti i casi — la stris
 screenshot non c'è più. Cercati altri `GridSplitter` con lo stesso schema: solo questi due (gli altri
 undici usano colonne in pixel o in star).
 
-## M81 (2026-08-03) — i submodule dei submodule, e il doppio clic che li apre
+## M91 (2026-08-03) — i submodule dei submodule, e il doppio clic che li apre
 
 > Richiesta dell'utente con screenshot dell'originale a confronto: *«nella versione originale si
 > possono vedere anche i submodules dei submodules, a noi no, inoltre vorrei che quando faccio

@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M91**. |
+| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M94** · `5c5a03a64` (**M93: hover della riga + fine del flash bianco**) · `044ce45dc` (**M92: larghezze dei pannelli**) · `363961635` (**M91: submodule nidificati**). |
 | Build | `Errori: 0` (31 warning preesistenti VSTHRD/CS). Harness M87: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -280,7 +280,7 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
-> ### ► **M83** (2026-08-04) — **la riga sotto il puntatore si vede**, e il flash bianco sparisce
+> ### ► **M93** (2026-08-04) — **la riga sotto il puntatore si vede**, e il flash bianco sparisce
 > Due segnalazioni con screenshot. (1) L'hover della griglia dipingeva `App.PanelAlt`, che **è** il
 > fondo delle righe dispari: invisibile. Tre chiavi nuove in tutte e quattro le famiglie (34 → 37):
 > `App.HoverRow` (l'unico fondo di riga con una **tinta**, `App.Panel` verso `#38BDF8`), `App.Hover`,
@@ -293,9 +293,9 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > **scuri** della barra.
 > **Da NON riscoprire**: `Brushes.Transparent` come punto di partenza di un'animazione = flash chiaro
 > su fondo scuro; il valore giusto è *il colore d'arrivo ad alpha 0*. Resta esposto solo il `TabItem`.
-> Misurato in tutte e quattro le combinazioni tema × stile. Dettaglio in `PORTING.md` → M83.
+> Misurato in tutte e quattro le combinazioni tema × stile. Dettaglio in `PORTING.md` → M93.
 
-> ### ► **M82** (2026-08-03) — **Diff e Stash seguono la larghezza a cui li trascini**
+> ### ► **M92** (2026-08-03) — **Diff e Stash seguono la larghezza a cui li trascini**
 > Segnalazione dell'utente con screenshot. La larghezza iniziale stava sul **figlio** dentro colonne
 > `Auto` (`_files.Width = 320`, `listPanel.Width = 340`, `_filesGrid.Width = 320`): il `GridSplitter`
 > ridimensiona la **colonna**, il figlio restava alla sua misura e fra il suo bordo e lo splitter si
@@ -303,9 +303,9 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > **Da NON riscoprire**: dentro un `Grid` con splitter la misura appartiene alla **colonna**, mai al
 > figlio — `FileTreeView` (`"300,Auto,*"`) era l'unico dei tredici a farlo giusto e l'unico senza il
 > difetto. Misurato: colonna dei file di Stash 320 → 401 px, contigua allo splitter, zero pixel morti.
-> Dettaglio in `PORTING.md` → M82.
+> Dettaglio in `PORTING.md` → M92.
 
-> ### ► **M81** (2026-08-03) — **submodule dei submodule** nell'albero, e il doppio clic che li apre. Prossima milestone libera: **M82**
+> ### ► **M91** (2026-08-03) — **submodule dei submodule** nell'albero, e il doppio clic che li apre
 > Richiesta dell'utente con screenshot dell'originale a confronto. La categoria Submodules era una
 > lista **piatta** (`GetSubmodulesLocalPaths(recursive: false)`, `git submodule status` senza
 > `--recursive`): un submodule di un submodule non c'era. Ora è una **gerarchia** come
@@ -319,7 +319,7 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > ospite di una riga è la **dirname del path completo**, non il nodo del super-project: appenderlo al
 > secondo fa sparire le cartelle intermedie (sbagliato al primo tentativo, visto a schermo);
 > (c) il branch si legge dal file `HEAD` risolvendo `gitdir:`, non con un `git` per submodule.
-> Dettaglio in `PORTING.md` → M81.
+> Dettaglio in `PORTING.md` → M91.
 
 > ### ► ROUND 13 — iterazione 2: **M80** (2026-08-03) — **lo stile è una scelta**
 > Richiesta dell'utente subito dopo M79 (*«dammi la possibilità di scegliere dalle impostazioni se

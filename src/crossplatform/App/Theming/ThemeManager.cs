@@ -182,7 +182,7 @@ public static class ThemeManager
         // clears 4.5:1 on the worst of the four, 4.75:1 on the toolbar.
         ["App.Link"] = Color.Parse("#4DA6E8"),
 
-        // NEW in M83. Row under the pointer in the revision grid. It used to reuse
+        // NEW in M93. Row under the pointer in the revision grid. It used to reuse
         // App.PanelAlt, which IS the colour of every second row: hovering a dark row
         // changed nothing at all and hovering a light one just looked like the stripe.
         // So the hover row is the only row background with a HUE — App.Panel pulled
@@ -285,7 +285,7 @@ public static class ThemeManager
         // clears 4.5:1 everywhere: 5.90 / 5.32 / 4.99 / 4.64:1.
         ["App.Link"] = Color.Parse("#0067AF"),
 
-        // NEW in M83 (see the dark block for the reasoning). Light half: the hue is
+        // NEW in M93 (see the dark block for the reasoning). Light half: the hue is
         // the same #38BDF8, mixed into white at 22% — the darkest step that keeps the
         // dimmed ink at AA (App.TextDim 4.55:1) and the green marker at the 4.54:1 it
         // already had on the stripe; App.Text 14.01:1.
@@ -487,7 +487,7 @@ public static class ThemeManager
         // NOTE: this only registers the key. The call sites still read App.Accent.
         ["App.Link"] = Color.Parse("#5B9CFF"),
 
-        // NEW in M83. The hovered row is the only row background with a hue: App.Panel
+        // NEW in M93. The hovered row is the only row background with a hue: App.Panel
         // pulled 14% toward #38BDF8. App.PanelAlt cannot serve — it is the colour of
         // every second row, so hover on an odd row was literally invisible. AA on both
         // inks (App.Text 10.30:1, App.TextDim 4.68:1) and 8.30:1 on the ref marker,
@@ -610,7 +610,7 @@ public static class ThemeManager
         // links borrow today.
         ["App.Link"] = Color.Parse("#1A4FC4"),
 
-        // NEW in M83 (see the dark block). Light half: #38BDF8 mixed into App.Panel at
+        // NEW in M93 (see the dark block). Light half: #38BDF8 mixed into App.Panel at
         // 22%. App.TextDim 5.03:1, the green marker 4.46:1 (it was 4.51:1 on the
         // stripe), App.Text 14.30:1.
         ["App.HoverRow"] = Color.Parse("#D2EFFC"),
