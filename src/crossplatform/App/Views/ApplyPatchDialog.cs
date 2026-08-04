@@ -90,6 +90,7 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
     private readonly IBrush _text;
     private readonly IBrush _dim;
     private readonly IBrush _border;
+    private readonly IBrush _borderStrong;
     private readonly IBrush _panel;
     private readonly IBrush _panelAlt;
     private readonly IBrush _current;
@@ -116,6 +117,7 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
         _text = Brush("App.Text", "#DCDCDC");
         _dim = Brush("App.TextDim", "#9B9B9B");
         _border = Brush("App.Border", "#3F3F46");
+        _borderStrong = Brush("App.BorderStrong", "#88898F");
         _panel = Brush("App.Panel", "#252526");
         _panelAlt = Brush("App.PanelAlt", "#2D2D30");
         _current = Brush("App.RepoStateDirty", "#FFA07A");
@@ -306,7 +308,12 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
         Border gridBorder = new()
         {
             Background = _panel,
-            BorderBrush = _border,
+            // App.BorderStrong, not App.Border: this frame is what says where the
+            // patch grid — a selectable, scrollable list — begins and ends. The
+            // App.Panel fill does not do it, being 1.08:1 against the dialog's
+            // App.Window in Modern dark, so the 1px line is the only signal and
+            // WCAG 1.4.11 wants 3:1 out of it. Identical to App.Border in Classic.
+            BorderBrush = _borderStrong,
             BorderThickness = new Thickness(1),
             Margin = new Thickness(12, 10, 12, 0),
             Child = gridPanel,
