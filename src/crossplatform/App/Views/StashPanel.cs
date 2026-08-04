@@ -506,9 +506,12 @@ public sealed class StashPanel : UserControl
         bool keepIndex = _keepIndexCheck.IsChecked == true;
 
         _status.Text = T("Saving stash…");
+        long generation = _repositoryGeneration;
         RunGit(
+            repo,
+            generation,
             () => _service.StashSave(repo, message, untracked, keepIndex),
-            result => OnMutated(result, T("Stash saved."), ClearDraft));
+            result => OnMutated(repo, generation, result, T("Stash saved."), ClearDraft));
     }
 
     /// <summary>
@@ -534,9 +537,12 @@ public sealed class StashPanel : UserControl
         bool keepIndex = _keepIndexCheck.IsChecked == true;
 
         _status.Text = T("Saving stash…");
+        long generation = _repositoryGeneration;
         RunGit(
+            repo,
+            generation,
             () => _service.StashSave(repo, message, untracked, keepIndex, files),
-            result => OnMutated(result, F(T("{0} file(s) stashed."), files.Count), ClearDraft));
+            result => OnMutated(repo, generation, result, F(T("{0} file(s) stashed."), files.Count), ClearDraft));
     }
 
     // The message box shows the selected stash's message while a stash is
@@ -563,16 +569,21 @@ public sealed class StashPanel : UserControl
         string message = DraftMessage();
 
         _status.Text = T("Stashing staged changes…");
+        long generation = _repositoryGeneration;
         RunGit(
+            repo,
+            generation,
             () => _service.StashStaged(repo, message),
-            result => OnMutated(result, T("Staged changes stashed."), ClearDraft));
+            result => OnMutated(repo, generation, result, T("Staged changes stashed."), ClearDraft));
     }
 
     private async Task DoStashDialogAsync()
     {
+        string? repo = _repoPath;
+        long generation = _repositoryGeneration;
         try
         {
-            if (_repoPath is not { Length: > 0 } repo)
+            if (repo is not { Length: > 0 })
             {
                 return;
             }
@@ -582,14 +593,24 @@ public sealed class StashPanel : UserControl
                 return;
             }
 
+            if (!IsCurrentRepository(repo, generation))
+            {
+                return;
+            }
+
             _status.Text = T("Saving stash…");
             RunGit(
+                repo,
+                generation,
                 () => _service.StashSaveMessage(repo, prompt.Message, prompt.IncludeUntracked),
-                result => OnMutated(result, T("Stash saved."), ClearDraft));
+                result => OnMutated(repo, generation, result, T("Stash saved."), ClearDraft));
         }
         catch (Exception ex)
         {
-            _status.Text = F(FailedFormat(), ex.Message);
+            if (repo is not null && IsCurrentRepository(repo, generation))
+            {
+                _status.Text = F(FailedFormat(), ex.Message);
+            }
         }
     }
 
@@ -601,9 +622,12 @@ public sealed class StashPanel : UserControl
         }
 
         _status.Text = T("Applying…");
+        long generation = _repositoryGeneration;
         RunGit(
+            repo,
+            generation,
             () => _service.StashApply(repo, stash.Name),
-            result => OnMutated(result, T("Stash applied.")));
+            result => OnMutated(repo, generation, result, T("Stash applied.")));
     }
 
     private void DoPop()
@@ -614,16 +638,21 @@ public sealed class StashPanel : UserControl
         }
 
         _status.Text = T("Popping…");
+        long generation = _repositoryGeneration;
         RunGit(
+            repo,
+            generation,
             () => _service.StashPop(repo, stash.Name),
-            result => OnMutated(result, T("Stash popped.")));
+            result => OnMutated(repo, generation, result, T("Stash popped.")));
     }
 
     private async Task DoDropAsync()
     {
+        string? repo = _repoPath;
+        long generation = _repositoryGeneration;
         try
         {
-            if (SelectedStash() is not { } stash || _repoPath is not { Length: > 0 } repo)
+            if (SelectedStash() is not { } stash || repo is not { Length: > 0 })
             {
                 return;
             }
@@ -638,24 +667,39 @@ public sealed class StashPanel : UserControl
 
             bool confirmed = await ConfirmAsync(
                 F("{0}\n\n{1}\n\n{2}", stash.Name, stash.Message, question), title);
-            if (!confirmed)
+            if (!confirmed || !IsCurrentRepository(repo, generation))
             {
                 return;
             }
 
             _status.Text = T("Dropping…");
             RunGit(
+                repo,
+                generation,
                 () => _service.StashDrop(repo, stash.Name),
-                result => OnMutated(result, T("Stash dropped.")));
+                result => OnMutated(repo, generation, result, T("Stash dropped.")));
         }
         catch (Exception ex)
         {
-            _status.Text = F(FailedFormat(), ex.Message);
+            if (repo is not null && IsCurrentRepository(repo, generation))
+            {
+                _status.Text = F(FailedFormat(), ex.Message);
+            }
         }
     }
 
-    private void OnMutated(StashOpResult result, string okText, Action? onSuccess = null)
+    private void OnMutated(
+        string repo,
+        long generation,
+        StashOpResult result,
+        string okText,
+        Action? onSuccess = null)
     {
+        if (!IsCurrentRepository(repo, generation))
+        {
+            return;
+        }
+
         if (result.Success)
         {
             onSuccess?.Invoke();
@@ -671,20 +715,26 @@ public sealed class StashPanel : UserControl
         // `stash apply`/`pop` is a real merge, so it can leave conflicts: ask, as
         // upstream does. Fire-and-forget because this runs from a result callback;
         // the probe is a no-op when the index is clean.
-        _ = AskAboutConflictsAsync();
+        _ = AskAboutConflictsAsync(repo, generation);
     }
 
-    private async Task AskAboutConflictsAsync()
+    private async Task AskAboutConflictsAsync(string repo, long generation)
     {
         try
         {
-            if (_repoPath is not { Length: > 0 } repo
+            if (!IsCurrentRepository(repo, generation)
                 || TopLevel.GetTopLevel(this) is not Window owner)
             {
                 return;
             }
 
-            if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })
+            ConflictFlowResult result = await ConflictFlow.HandleAsync(owner, repo);
+            if (!IsCurrentRepository(repo, generation))
+            {
+                return;
+            }
+
+            if (result is { HadConflicts: true })
             {
                 RefreshStashes();
                 OperationCompleted?.Invoke();
@@ -1213,14 +1263,17 @@ public sealed class StashPanel : UserControl
         });
     }
 
-    private void RunGit<T>(Func<T> work, Action<T> onResult)
+    private void RunGit<T>(
+        string operationRepo,
+        long operationGeneration,
+        Func<T> work,
+        Action<T> onResult)
     {
         if (_busy)
         {
             return;
         }
 
-        string? operationRepo = _repoPath;
         SetBusy(true);
         _ = Task.Run(() =>
         {
@@ -1230,7 +1283,7 @@ public sealed class StashPanel : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
-                    if (IsCurrentRepository(operationRepo))
+                    if (IsCurrentRepository(operationRepo, operationGeneration))
                     {
                         onResult(result);
                     }
@@ -1241,7 +1294,7 @@ public sealed class StashPanel : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
-                    if (IsCurrentRepository(operationRepo))
+                    if (IsCurrentRepository(operationRepo, operationGeneration))
                     {
                         _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                     }
@@ -1249,10 +1302,6 @@ public sealed class StashPanel : UserControl
             }
         });
     }
-
-    private bool IsCurrentRepository(string? repo)
-        => repo is not null
-           && string.Equals(repo, _repoPath, PathComparison);
 
     private void SetBusy(bool busy)
     {
