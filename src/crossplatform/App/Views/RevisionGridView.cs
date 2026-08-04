@@ -605,7 +605,10 @@ public sealed class RevisionGridView : UserControl
             Watermark = QuickFilterWatermark,
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            // App.BorderStrong, not App.Border: the quick filter is an editable box on
+            // the search bar's App.Toolbar fill, which App.Panel only clears by 1.13:1,
+            // so the 1px outline is the sole boundary and WCAG 1.4.11 wants 3:1 of it.
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             FontSize = 12,
             Padding = new Thickness(6, 3, 4, 3),
@@ -2724,7 +2727,10 @@ public sealed class RevisionGridView : UserControl
             Content = text,
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            // A flat bar button has no fill contrast against the strip it sits on
+            // (App.Panel over App.Toolbar is 1.13:1), so the outline is the whole
+            // affordance and has to reach the 3:1 of WCAG 1.4.11.
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(8, 3, 8, 3),
             FontSize = 12,
@@ -2826,7 +2832,8 @@ public sealed class RevisionGridView : UserControl
             Watermark = T("Find a ref…"),
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            // Editable box inside the ref picker flyout: outline is the only boundary.
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             FontSize = 12,
             Padding = new Thickness(5, 2, 4, 2),
@@ -4034,7 +4041,8 @@ public sealed class RevisionGridView : UserControl
             Watermark = T("hash (full or short)"),
             Background = B("App.Window"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            // Editable hash entry in the Go-to flyout: outline is the only boundary.
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             FontSize = 12,
             MinWidth = 150,
@@ -4049,7 +4057,9 @@ public sealed class RevisionGridView : UserControl
             Content = text,
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            // Flyout command button with no fill contrast of its own: the outline is
+            // the affordance, so App.BorderStrong.
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(8, 3, 8, 3),
             FontSize = 12,
