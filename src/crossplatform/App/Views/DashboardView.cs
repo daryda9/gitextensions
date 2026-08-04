@@ -405,7 +405,10 @@ public sealed class DashboardView : UserControl
         TextBlock name = new()
         {
             Text = FolderName(entry.Path),
-            Foreground = entry.Exists ? B("App.Accent") : B("App.TextDim"),
+            // App.Link, not App.Accent: the row is click-to-open with a hand cursor and
+            // the name stands for a repository path, so this is link ink. The accent is
+            // calibrated as a fill and fell as low as 3.04:1 on the classic-dark tile.
+            Foreground = entry.Exists ? B("App.Link") : B("App.TextDim"),
             FontSize = 13,
             FontWeight = FontWeight.SemiBold,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -466,7 +469,9 @@ public sealed class DashboardView : UserControl
             bool isSelected = ReferenceEquals(entry, selected);
             labels[0].Foreground = isSelected
                 ? B("App.Text")
-                : entry.Exists ? B("App.Accent") : B("App.TextDim");
+                // Same link ink as the initial render above, so deselecting a row puts
+                // back exactly what BuildRow painted.
+                : entry.Exists ? B("App.Link") : B("App.TextDim");
             labels[1].Foreground = isSelected ? B("App.Text") : B("App.TextDim");
             labels[2].Foreground = isSelected ? B("App.Text") : B("App.GraphGreen");
         }
@@ -1124,7 +1129,9 @@ public sealed class DashboardView : UserControl
         row.Children.Add(new TextBlock
         {
             Text = text,
-            Foreground = B("App.Accent"),
+            // A "Start" entry is a link in everything but the underline: hand cursor and
+            // a click that runs an action. It takes the text-grade blue.
+            Foreground = B("App.Link"),
             FontSize = 13,
             VerticalAlignment = VerticalAlignment.Center,
         });
