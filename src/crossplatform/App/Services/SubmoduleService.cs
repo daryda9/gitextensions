@@ -1,6 +1,7 @@
 using GitCommands;
 using GitExtensions.Extensibility;
 using GitExtUtils;
+using System.Diagnostics;
 
 namespace GitExtensions.Avalonia.Services;
 
@@ -22,6 +23,11 @@ namespace GitExtensions.Avalonia.Services;
 /// </param>
 public sealed record SubmoduleRow(string Path, string ShortSha, SubmoduleState Status)
 {
+    public string AbsolutePath { get; init; } = string.Empty;
+    public string ParentRepositoryPath { get; init; } = string.Empty;
+    public string ConfiguredName { get; init; } = string.Empty;
+    public bool Exists { get; init; }
+    public bool IsCurrent { get; init; }
     /// <summary>
     ///  Path of the repository that DECLARES this submodule, relative to the top-level
     ///  super-project (empty for a submodule of the top-level repository itself).
@@ -49,6 +55,11 @@ public sealed record SubmoduleRow(string Path, string ShortSha, SubmoduleState S
     {
         get
         {
+            if (ConfiguredName.Length > 0)
+            {
+                return ConfiguredName;
+            }
+
             int slash = Path.LastIndexOf('/');
             return slash < 0 ? Path : Path[(slash + 1)..];
         }
@@ -58,6 +69,18 @@ public sealed record SubmoduleRow(string Path, string ShortSha, SubmoduleState S
 
     public override string ToString() => Display;
 }
+
+/// <summary>
+/// Complete submodule graph rooted at the highest super-project Git can resolve.
+/// Paths are normalized absolute paths. Discovery is synchronous and performs git and
+/// filesystem I/O; callers must invoke it from a worker thread (the Avalonia callers use
+/// <c>Task.Run</c>).
+/// </summary>
+public sealed record SubmoduleHierarchy(
+    string RootPath,
+    string CurrentPath,
+    string? ImmediateSuperprojectPath,
+    IReadOnlyList<SubmoduleRow> Nodes);
 
 /// <summary>
 ///  Working state of a submodule as reported by <c>git submodule status</c>.
@@ -83,6 +106,40 @@ public sealed record SubmoduleOpResult(bool Success, string Output);
 /// </summary>
 public sealed class SubmoduleService
 {
+    /// <summary>Discovers the top project, parent chain, siblings and descendants.</summary>
+    public SubmoduleHierarchy DiscoverHierarchy(string repoPath)
+    {
+        string current = Normalize(repoPath);
+        List<string> chain = [current];
+        HashSet<string> visited = new(PathComparer);
+        visited.Add(current);
+
+        string cursor = current;
+        while (TrySuperproject(cursor) is { Length: > 0 } parent && visited.Add(parent))
+        {
+            chain.Add(parent);
+            cursor = parent;
+        }
+
+        string root = chain[^1];
+        string? immediateParent = chain.Count > 1 ? chain[1] : null;
+        IReadOnlyList<SubmoduleRow> listed = ListSubmodulesCore(root);
+        List<SubmoduleRow> nodes = new(listed.Count + 1)
+        {
+            new(string.Empty, string.Empty, SubmoduleState.Initialized)
+            {
+                AbsolutePath = root,
+                ParentRepositoryPath = string.Empty,
+                ConfiguredName = DirectoryName(root),
+                Exists = Directory.Exists(root),
+                IsCurrent = SamePath(root, current),
+            },
+        };
+
+        nodes.AddRange(listed.Select(row => row with { IsCurrent = SamePath(row.AbsolutePath, current) }));
+        return new(root, current, immediateParent, nodes);
+    }
+
     /// <summary>
     ///  Lists the repository's submodules, RECURSIVELY: a submodule of a submodule is
     ///  listed too, with its whole path from the top-level repository, exactly like the
@@ -95,6 +152,9 @@ public sealed class SubmoduleService
     ///  Returns an empty list when the repository has no submodules.
     /// </summary>
     public IReadOnlyList<SubmoduleRow> ListSubmodules(string repoPath)
+        => ListSubmodulesCore(Normalize(repoPath));
+
+    private IReadOnlyList<SubmoduleRow> ListSubmodulesCore(string repoPath)
     {
         GitModule module = GitContext.CreateModule(repoPath);
         IReadOnlyList<string> paths = module.GetSubmodulesLocalPaths(recursive: true);
@@ -103,7 +163,7 @@ public sealed class SubmoduleService
             return [];
         }
 
-        Dictionary<string, (string Sha, SubmoduleState State)> status = ReadStatus(module);
+        Dictionary<string, (string Sha, SubmoduleState State)> status = ReadStatus(repoPath);
 
         // Ordinal, not OrdinalIgnoreCase, and sorted so that a super-project always
         // precedes its own submodules: the tree builder relies on the parent row
@@ -128,18 +188,119 @@ public sealed class SubmoduleService
                 }
             }
 
+            string pathInParent = parent.Length == 0 ? path : path[(parent.Length + 1)..];
+            string parentRepo = parent.Length == 0
+                ? repoPath
+                : Normalize(System.IO.Path.Combine(repoPath, Native(parent)));
+            string absolute = Normalize(System.IO.Path.Combine(repoPath, Native(path)));
             rows.Add(new SubmoduleRow(path, info.Sha ?? string.Empty, state)
             {
                 ParentPath = parent,
-                PathInParent = parent.Length == 0 ? path : path[(parent.Length + 1)..],
+                PathInParent = pathInParent,
+                AbsolutePath = absolute,
+                ParentRepositoryPath = parentRepo,
+                ConfiguredName = ReadConfiguredName(parentRepo, pathInParent),
+                Exists = Directory.Exists(absolute) && IsRepository(absolute),
                 Branch = state == SubmoduleState.NotInitialized
                     ? string.Empty
-                    : ReadBranch(System.IO.Path.Combine(repoPath, path.Replace('/', System.IO.Path.DirectorySeparatorChar))),
+                    : ReadBranch(absolute),
             });
         }
 
         return rows;
     }
+
+    private static StringComparer PathComparer => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+
+    private static string Native(string path) => path.Replace('/', System.IO.Path.DirectorySeparatorChar);
+
+    private static string Normalize(string path)
+        => System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(path));
+
+    private static bool SamePath(string left, string right) => PathComparer.Equals(Normalize(left), Normalize(right));
+
+    private static string DirectoryName(string path)
+        => new DirectoryInfo(System.IO.Path.TrimEndingDirectorySeparator(path)).Name;
+
+    private static bool IsRepository(string path)
+        => RunGit(path, "rev-parse --is-inside-work-tree") is { ExitCode: 0, Output: "true" };
+
+    private static string? TrySuperproject(string path)
+    {
+        GitOutput result = RunGit(path, "rev-parse --show-superproject-working-tree");
+        if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Output))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Normalize(result.Output);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    private static string ReadConfiguredName(string parentRepo, string pathInParent)
+    {
+        GitOutput result = RunGit(parentRepo, "config --file .gitmodules --get-regexp ^submodule\\..*\\.path$");
+        if (result.ExitCode != 0)
+        {
+            return string.Empty;
+        }
+
+        foreach (string line in result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int separator = line.IndexOfAny([' ', '\t']);
+            if (separator <= 0 || !string.Equals(line[(separator + 1)..].Trim().Replace('\\', '/'), pathInParent, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            const string Prefix = "submodule.";
+            const string Suffix = ".path";
+            string key = line[..separator];
+            return key.StartsWith(Prefix, StringComparison.Ordinal) && key.EndsWith(Suffix, StringComparison.Ordinal)
+                ? key[Prefix.Length..^Suffix.Length]
+                : string.Empty;
+        }
+
+        return string.Empty;
+    }
+
+    private static GitOutput RunGit(string workingDirectory, string arguments)
+    {
+        try
+        {
+            ProcessStartInfo start = new("git", arguments)
+            {
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using Process? process = Process.Start(start);
+            if (process is null)
+            {
+                return new(-1, string.Empty);
+            }
+
+            string output = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit();
+            return new(process.ExitCode, output);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return new(-1, string.Empty);
+        }
+    }
+
+    private readonly record struct GitOutput(int ExitCode, string Output);
 
     // Branch of a submodule's own HEAD, without spawning a process per submodule (a
     // deep chain would cost one `git` launch each, on top of the two this service
@@ -298,21 +459,20 @@ public sealed class SubmoduleService
     //   <prefix><sha1> <path> (<describe>)
     // where <prefix> is ' ' (in sync), '-' (not initialized), '+' (checked out
     // commit differs from index), or 'U' (merge conflicts).
-    private static Dictionary<string, (string Sha, SubmoduleState State)> ReadStatus(GitModule module)
+    private static Dictionary<string, (string Sha, SubmoduleState State)> ReadStatus(string repoPath)
     {
         Dictionary<string, (string, SubmoduleState)> map = new(StringComparer.Ordinal);
 
         // --recursive so a submodule of a submodule reports too, with its path relative
         // to THIS repository (git prints the full chain), matching the keys used by the
         // recursive path list. Uninitialized submodules are simply not descended into.
-        GitArgumentBuilder args = new("submodule") { "status", "--recursive" };
-        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
-        if (!result.ExitedSuccessfully)
+        GitOutput result = RunGit(repoPath, "submodule status --recursive");
+        if (result.ExitCode != 0)
         {
             return map;
         }
 
-        foreach (string raw in result.StandardOutput.Split('\n'))
+        foreach (string raw in result.Output.Split('\n'))
         {
             string line = raw.TrimEnd('\r');
             if (line.Length < 2)
@@ -355,7 +515,9 @@ public sealed class SubmoduleService
 
     // Working directory of the repository that declares the row's submodule.
     private static string ParentRepo(string repoPath, SubmoduleRow row)
-        => row.ParentPath.Length == 0
+        => row.ParentRepositoryPath.Length > 0
+            ? row.ParentRepositoryPath
+            : row.ParentPath.Length == 0
             ? repoPath
             : System.IO.Path.Combine(repoPath, row.ParentPath.Replace('/', System.IO.Path.DirectorySeparatorChar));
 
