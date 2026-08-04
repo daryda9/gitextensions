@@ -199,6 +199,17 @@ internal static class Icons
         "M12 4v16 M9 4h6 M9 20h6 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 "
         + "M2.5 12h7 M5.5 9l-3 3 3 3";
 
+    // The four bisect verdicts sit side by side in FormBisect's button row, so
+    // they share one ring — they are outcomes of a single command — and carry
+    // four inner marks that stay apart at 16px: tick, cross, jump, halt. The
+    // ring also keeps them clear of the bare Check, which already means
+    // checkout in the same context menu.
+    private const string Ring = "M3.5 12a8.5 8.5 0 1 0 17 0a8.5 8.5 0 1 0-17 0";
+    private const string RingCheck = Ring + " M8 12.5l3 3 5.5-6";
+    private const string RingCross = Ring + " M9 9l6 6 M15 9l-6 6";
+    private const string RingSkip = Ring + " M9 8.5l3.5 3.5-3.5 3.5 M15.5 8.5v7";
+    private const string RingStop = Ring + " M9.5 9.5h5v5h-5z";
+
     // Handing the working directory to another program: the folder plus the
     // arrow that every "leaves this window" affordance uses.
     private const string FolderExternal =
@@ -331,6 +342,10 @@ internal static class Icons
         ["CommitId"] = Commit,
         ["GotoCommit"] = Commit,
         ["Bisect"] = Bisect,
+        ["BisectGood"] = RingCheck,
+        ["BisectBad"] = RingCross,
+        ["BisectSkip"] = RingSkip,
+        ["BisectStop"] = RingStop,
         ["RevertCommit"] = Undo,
         ["ResetCurrentBranchToHere"] = Rewind,
         ["ResetAnotherBranchToHere"] = Rewind,
