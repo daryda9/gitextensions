@@ -687,9 +687,9 @@ public sealed class RepoObjectsTree : UserControl
                 Task<IReadOnlyList<StashRow>> stashes = bare
                     ? Task.FromResult<IReadOnlyList<StashRow>>([])
                     : Task.Run(() => _stashService.ListStashes(repo));
-                Task<IReadOnlyList<SubmoduleRow>> submodules = bare
-                    ? Task.FromResult<IReadOnlyList<SubmoduleRow>>([])
-                    : Task.Run(() => _submoduleService.ListSubmodules(repo));
+                Task<SubmoduleHierarchy> submodules = bare
+                    ? Task.FromResult(new SubmoduleHierarchy(repo, repo, null, []))
+                    : Task.Run(() => _submoduleService.DiscoverHierarchy(repo));
                 Task<IReadOnlyList<WorktreeRow>> worktrees = Task.Run(() => _worktreeService.ListWorktrees(repo));
 
                 await Task.WhenAll(refs, stashes, submodules, worktrees).ConfigureAwait(false);
@@ -762,7 +762,7 @@ public sealed class RepoObjectsTree : UserControl
 
         IReadOnlyList<BranchTagRow> tags = snapshot.Refs.Tags;
         IReadOnlyList<StashRow> stashes = snapshot.Stashes;
-        IReadOnlyList<SubmoduleRow> submodules = snapshot.Submodules;
+        SubmoduleHierarchy submodules = snapshot.Submodules;
         IReadOnlyList<WorktreeRow> worktrees = snapshot.Worktrees;
 
         // Built by id, emitted in _categoryOrder further down (see CategoryOrder).
@@ -858,7 +858,8 @@ public sealed class RepoObjectsTree : UserControl
         // Submodules. The root node carries "Update all"; each leaf carries
         // "Open" (open the submodule as the active repository, via
         // OpenRepositoryRequested) plus "Update" for its own path.
-        TreeViewItem submodulesNode = Category(T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), "SubmodulesManage", submodules.Count, "submodules");
+        int submoduleCount = Math.Max(0, submodules.Nodes.Count - 1);
+        TreeViewItem submodulesNode = Category(T("RepoObjectsTree/tsbShowSubmodules.ToolTipText", "Submodules"), "SubmodulesManage", submoduleCount, "submodules");
         submodulesNode.ContextMenu = SubmoduleRootMenu();
         AddSubmodulesWithFolders(submodulesNode, submodules);
 
@@ -1127,20 +1128,71 @@ public sealed class RepoObjectsTree : UserControl
     ///  <para>The rows arrive sorted so that a super-project always precedes its
     ///  submodules, hence a child always finds its host node already built.</para>
     /// </summary>
-    private void AddSubmodulesWithFolders(TreeViewItem parent, IReadOnlyList<SubmoduleRow> rows)
+    private void AddSubmodulesWithFolders(TreeViewItem parent, SubmoduleHierarchy hierarchy)
     {
-        // Both submodule nodes and pure-directory nodes, keyed by their path relative to
-        // the top-level repository, so a nested row can find whichever of the two is its
-        // parent.
-        Dictionary<string, TreeViewItem> nodes = new(StringComparer.Ordinal);
-
-        foreach (SubmoduleRow row in rows)
+        SubmoduleRow? rootRow = hierarchy.Nodes.FirstOrDefault(row => row.Path.Length == 0);
+        if (rootRow is null)
         {
-            // Upstream's SubmoduleNode displays "name [branch]" — the name only, the
-            // branch of the submodule's own HEAD, and "no branch" when detached. The
-            // commit it sits at stays in the tooltip: in a chain four levels deep the
-            // sha was pure noise on every line.
-            string label = row.Name;
+            return;
+        }
+
+        string rootLabel = System.IO.Path.GetFileName(hierarchy.RootPath.TrimEnd('/', '\\'));
+        TreeViewItem root = SubmoduleLeaf(rootRow, rootLabel, "submodules/root");
+        parent.Items.Add(root);
+
+        Dictionary<string, TreeViewItem> repositories = new(PathComparer)
+        {
+            [hierarchy.RootPath] = root,
+        };
+        Dictionary<string, TreeViewItem> folders = new(PathComparer);
+
+        foreach (SubmoduleRow row in hierarchy.Nodes.Where(row => row.Path.Length > 0))
+        {
+            if (!repositories.TryGetValue(row.ParentRepositoryPath, out TreeViewItem? host))
+            {
+                host = root;
+            }
+
+            string[] parts = row.PathInParent.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            string folderPath = row.ParentRepositoryPath;
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                folderPath = System.IO.Path.Combine(folderPath, parts[i]);
+                if (!folders.TryGetValue(folderPath, out TreeViewItem? folder))
+                {
+                    folder = new TreeViewItem
+                    {
+                        Header = HeaderPanel(parts[i], "FolderClosed", bold: false),
+                        Foreground = Brush("App.Text", Brushes.Gainsboro),
+                    };
+                    _nodeText[folder] = row.Path;
+                    _nodeKey[folder] = "submodules/folder/" + folderPath;
+                    folders[folderPath] = folder;
+                    host.Items.Add(folder);
+                }
+
+                host = folder;
+            }
+
+            TreeViewItem leaf = SubmoduleLeaf(row, row.Name, "submodules/" + row.AbsolutePath);
+            host.Items.Add(leaf);
+            repositories[row.AbsolutePath] = leaf;
+        }
+
+        parent.IsExpanded = true;
+        root.IsExpanded = true;
+        TreeViewItem? current = hierarchy.Nodes.FirstOrDefault(row => row.IsCurrent) is { } currentRow
+            && repositories.TryGetValue(currentRow.AbsolutePath, out TreeViewItem? currentNode)
+                ? currentNode
+                : null;
+        for (TreeViewItem? node = current; node is not null; node = ParentOf(node))
+        {
+            node.IsExpanded = true;
+        }
+
+        TreeViewItem SubmoduleLeaf(SubmoduleRow row, string name, string key)
+        {
+            string label = name;
             if (row.Status != SubmoduleState.NotInitialized)
             {
                 label += row.Branch.Length > 0 ? $" ({row.Branch})" : $" ({T("no branch")})";
@@ -1150,60 +1202,34 @@ public sealed class RepoObjectsTree : UserControl
             {
                 SubmoduleState.NotInitialized => TF("{0} (not initialized)", label),
                 SubmoduleState.OutOfDate => TF("{0} (out of date)", label),
+                _ when !row.Exists => TF("{0} (missing)", label),
                 _ => label,
             };
+            if (row.IsCurrent)
+            {
+                label = "▶ " + label;
+            }
 
-            // Host on the path's own directory, not on the declaring submodule: between
-            // the two there can be plain directories ("core", "graphs" of
-            // pluma_orchestrator/core/graphs/tasks), and upstream shows each of them as
-            // its own folder node.
-            int slash = row.Path.LastIndexOf('/');
-            TreeViewItem host = Host(slash < 0 ? string.Empty : row.Path[..slash]);
-            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, isCurrent: false, "submodules/" + row.Path);
+            TreeViewItem leaf = Leaf(label, "FolderSubmodule", row, row.IsCurrent, key);
+            if (row.IsCurrent)
+            {
+                leaf.Foreground = Brush("App.Accent", Brushes.DodgerBlue);
+            }
+            else if (!row.Exists)
+            {
+                leaf.Foreground = Brush("App.TextDim", Brushes.Gray);
+            }
+
             leaf.ContextMenu = SubmoduleMenu(row);
-            ToolTip.SetTip(leaf, row.ShortSha.Length > 0 ? $"{row.Path} @ {row.ShortSha}" : row.Path);
-
-            // Searchable on the whole path, like the ref folders: a filter typed as the
-            // super-project's name still reaches the nested submodules.
-            _nodeText[leaf] = row.Path;
-
-            nodes[row.Path] = leaf;
-            host.Items.Add(leaf);
-        }
-
-        return;
-
-        // The node a path should hang off: the deepest already-built node (submodule or
-        // directory) on the way down, creating the missing directory levels.
-        TreeViewItem Host(string path)
-        {
-            if (path.Length == 0)
-            {
-                return parent;
-            }
-
-            if (nodes.TryGetValue(path, out TreeViewItem? existing))
-            {
-                return existing;
-            }
-
-            int slash = path.LastIndexOf('/');
-            TreeViewItem host = Host(slash < 0 ? string.Empty : path[..slash]);
-
-            TreeViewItem folder = new()
-            {
-                Header = HeaderPanel(slash < 0 ? path : path[(slash + 1)..], "FolderClosed", bold: false),
-                Foreground = Brush("App.Text", Brushes.Gainsboro),
-            };
-
-            _nodeText[folder] = path;
-            _nodeKey[folder] = "submodules/" + path;
-
-            nodes[path] = folder;
-            host.Items.Add(folder);
-            return folder;
+            ToolTip.SetTip(leaf, row.ShortSha.Length > 0 ? $"{row.AbsolutePath} @ {row.ShortSha}" : row.AbsolutePath);
+            _nodeText[leaf] = row.Path.Length > 0 ? row.Path : hierarchy.RootPath;
+            return leaf;
         }
     }
+
+    private static StringComparer PathComparer => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
 
     // --- Expand / selection state across a rebuild (R1) --------------------
 
@@ -1753,7 +1779,9 @@ public sealed class RepoObjectsTree : UserControl
         ContextMenu menu = new();
         // "Open" makes the submodule the active repository, routed to the host via
         // OpenRepositoryRequested (the tree never references MainWindow directly).
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row))));
+        MenuItem open = MenuItem(T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row)));
+        open.IsEnabled = row.Exists && !row.IsCurrent;
+        menu.Items.Add(open);
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnUpdateSubmodule.Text", "Update"), "SubmodulesUpdate", () => RunSubmodule(() => _submoduleService.Update(_repoPath!, row))));
         menu.Items.Add(MenuItem(T("Update (merge)…"), "Merge", () => _ = DoMergeSubmoduleAsync(row)));
@@ -1979,7 +2007,9 @@ public sealed class RepoObjectsTree : UserControl
 
     // Absolute filesystem path of a submodule (its Path is repo-relative).
     private string SubmoduleFullPath(SubmoduleRow row)
-        => _repoPath is { Length: > 0 } repo
+        => row.AbsolutePath.Length > 0
+            ? row.AbsolutePath
+            : _repoPath is { Length: > 0 } repo
             ? System.IO.Path.GetFullPath(System.IO.Path.Combine(repo, row.Path))
             : row.Path;
 
@@ -2044,7 +2074,7 @@ public sealed class RepoObjectsTree : UserControl
             // initialized has no repository to open: its directory is empty, so opening it
             // would only swap the window onto a non-repo path.
             case TreeViewItem { Tag: SubmoduleRow submodule }:
-                if (submodule.Status != SubmoduleState.NotInitialized)
+                if (submodule.Exists && !submodule.IsCurrent)
                 {
                     OpenRepositoryRequested?.Invoke(SubmoduleFullPath(submodule));
                 }
@@ -3279,5 +3309,5 @@ public sealed class RepoObjectsTree : UserControl
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;
 
-    private sealed record RepoSnapshot(BranchTagListing Refs, IReadOnlyList<StashRow> Stashes, IReadOnlyList<SubmoduleRow> Submodules, IReadOnlyList<WorktreeRow> Worktrees);
+    private sealed record RepoSnapshot(BranchTagListing Refs, IReadOnlyList<StashRow> Stashes, SubmoduleHierarchy Submodules, IReadOnlyList<WorktreeRow> Worktrees);
 }
