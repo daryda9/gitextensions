@@ -177,6 +177,9 @@ public sealed class RepoObjectsTree : UserControl
     /// </summary>
     public event Action<string>? OpenRepositoryRequested;
 
+    /// <summary>Requests a separate application instance for the current submodule.</summary>
+    public event Action<string>? OpenRepositoryInNewInstanceRequested;
+
     /// <summary>
     ///  Raised on the UI thread when a tree node wants a tab of the bottom panel
     ///  brought to the front, carrying the tab key used by <c>UiState.BottomTab</c>
@@ -1779,8 +1782,19 @@ public sealed class RepoObjectsTree : UserControl
         ContextMenu menu = new();
         // "Open" makes the submodule the active repository, routed to the host via
         // OpenRepositoryRequested (the tree never references MainWindow directly).
-        MenuItem open = MenuItem(T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open"), "RepoOpen", () => OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row)));
-        open.IsEnabled = row.Exists && !row.IsCurrent;
+        string openText = row.IsCurrent ? T("Open in new instance") : T("RepoObjectsTree/mnubtnOpenSubmodule.Text", "Open");
+        MenuItem open = MenuItem(openText, "RepoOpen", () =>
+        {
+            if (row.IsCurrent)
+            {
+                OpenRepositoryInNewInstanceRequested?.Invoke(SubmoduleFullPath(row));
+            }
+            else
+            {
+                OpenRepositoryRequested?.Invoke(SubmoduleFullPath(row));
+            }
+        });
+        open.IsEnabled = row.Exists;
         menu.Items.Add(open);
         if (row.Path.Length > 0)
         {
@@ -2077,9 +2091,16 @@ public sealed class RepoObjectsTree : UserControl
             // initialized has no repository to open: its directory is empty, so opening it
             // would only swap the window onto a non-repo path.
             case TreeViewItem { Tag: SubmoduleRow submodule }:
-                if (submodule.Exists && !submodule.IsCurrent)
+                if (submodule.Exists)
                 {
-                    OpenRepositoryRequested?.Invoke(SubmoduleFullPath(submodule));
+                    if (submodule.IsCurrent)
+                    {
+                        OpenRepositoryInNewInstanceRequested?.Invoke(SubmoduleFullPath(submodule));
+                    }
+                    else
+                    {
+                        OpenRepositoryRequested?.Invoke(SubmoduleFullPath(submodule));
+                    }
                 }
 
                 break;

@@ -1096,6 +1096,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         _revisions.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
         _tree.OpenRepositoryRequested += OpenRepositoryPath;
+        _tree.OpenRepositoryInNewInstanceRequested += _toolbar.OpenRepositoryInNewInstance;
         // The tree cannot reach the bottom panel or the streaming remote ops itself;
         // without these its stash and fetch-all entries stay disabled rather than dead.
         _tree.BottomTabRequested += key =>
@@ -1253,7 +1254,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
             foreach (SubmoduleRow row in hierarchy.Nodes)
             {
-                if (row.Exists && !row.IsCurrent && row.AbsolutePath != hierarchy.ImmediateSuperprojectPath)
+                if (row.Exists && !row.IsCurrent && !SameRepositoryPath(row.AbsolutePath, hierarchy.ImmediateSuperprojectPath))
                 {
                     string text = row.Path.Length == 0 ? Path.GetFileName(hierarchy.RootPath) : row.Display;
                     links.Add(new RepoLink(text, row.AbsolutePath, "FolderSubmodule"));
@@ -4008,6 +4009,25 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
     }
 
+    private static bool SameRepositoryPath(string path, string? other)
+    {
+        if (string.IsNullOrWhiteSpace(other))
+        {
+            return false;
+        }
+
+        try
+        {
+            string left = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            string right = Path.TrimEndingDirectorySeparator(Path.GetFullPath(other));
+            return string.Equals(left, right, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     // Records the opened repository in the core MRU so it appears in "Open recent"
     // and on the dashboard next time. Best-effort; never blocks the open.
     private static async Task RecordRecentAsync(string repoPath)
@@ -4064,6 +4084,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         // would otherwise keep showing the old path, branch and counters.
         UpdateWindowTitle(branch: null);
         _toolbar.UpdateState(0, 0, 0, 0, repoPath: string.Empty, branch: string.Empty);
+        _toolbar.SetSubmoduleNavigation(null);
         _statusBar.SetText(T("FormBrowse/dashboardToolStripMenuItem.Text", "Dashboard"));
     }
 

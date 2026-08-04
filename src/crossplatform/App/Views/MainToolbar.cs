@@ -450,6 +450,7 @@ public sealed class MainToolbar : UserControl
         SetSplitView(_splitViewOn);
         SetLeftPanelVisible(_leftPanelVisible);
         SetCommitInfoPosition(_commitInfoPosition);
+        SetSubmoduleNavigation(_immediateSuperprojectPath);
     }
 
     /// <summary>
@@ -2991,6 +2992,9 @@ public sealed class MainToolbar : UserControl
         args.Add(path);
         _ = Task.Run(() => new ExternalToolService().LaunchDetached(exe, args, workingDir: path));
     }
+
+    /// <summary>Starts a separate application instance browsing <paramref name="path"/>.</summary>
+    public void OpenRepositoryInNewInstance(string path) => OpenRepoLink(path, newInstance: true);
 
     // Favorites for the working-directory drop-down. The host may supply its own
     // provider; otherwise the toolbar reads the same favorites.json the rest of the
