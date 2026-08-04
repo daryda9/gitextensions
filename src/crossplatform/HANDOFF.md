@@ -1,7 +1,7 @@
 # HANDOFF — port Linux/Avalonia di Git Extensions
 
 Documento di passaggio per chi (umano o agente) riprende il lavoro.
-Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M90,
+Fonte di verità dettagliata: **`src/crossplatform/PORTING.md`** (milestone M1–M91,
 checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 
 ---
@@ -11,8 +11,8 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M91**. |
-| Build | `Errori: 0` (31 warning preesistenti VSTHRD/CS). Harness M87: PASS, 7 nodi, inclusi ciclo e linked worktree. |
+| HEAD applicativo al momento dell'handoff | `b1b525c91` — **M91: doppio clic sui parent deterministico, senza toggle concorrente**. Commit M91: `36b9fc9af`, `b1b525c91`. M90: `1e9a0bf5b`, `1a8abcd7c`. Prossima libera: **M92**. |
+| Build | `Errori: 0` (34 warning preesistenti VSTHRD/CS). Harness navigation snapshot: PASS; hierarchy M87/M91: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
 | Coda aperta | **PRIORITÀ UTENTE del 31/07/2026**: 13.2 (create branch senza process dialog) e 13.3 (doppio clic = checkout col process dialog) **CHIUSE in M75** su tutti e 10 i call-site. **Resta 13.1** — `Create branch…` inerte al primo clic: **non riprodotto**, ipotesi "refresh che smonta il nodo" e "target letto dalla selezione" **falsificate con prova diretta**, causa residua `_busy` a certezza **MEDIA**; i due difetti reali del flag sono comunque corretti. Sonda diagnostica nel branch locale `diag/13.1-probe` (`16bfc40c7`). **Da riverificare con l'utente.** Dettaglio in `PORTING.md` → M75 e "Coda round 13" |

@@ -2480,6 +2480,30 @@ altezza per le lane che passano dritte, ma `ComputeGraphRelatives` distingue le 
 `bottomHalf = seg.FromY >= 0.5` per propagare i flag relative/gray: andrebbe cambiato in
 `seg.ToY >= 1.0`, e non vale il rischio per un pixel.
 
+## ROUND 14 — iterazione 10: M91 (2026-08-04) — attivazione dei parent senza toggle concorrente
+
+Follow-up al doppio clic M90: passando da un submodule profondo al repository
+parent, il ramo lampeggiava chiudendosi e riaprendosi e la navigazione poteva non
+partire. La causa era il workaround M88: ogni pressione sull'header raggiungeva
+il class handler nativo di `TreeViewItem`, che alternava l'espansione, mentre un
+callback asincrono tentava poi di ripristinarla. Sul parent espanso il visual
+poteva quindi essere smontato prima di `DoubleTapped`.
+
+- Il tunnel di `PointerPressed` intercetta ora soltanto il tasto sinistro sulle
+  righe, seleziona/focalizza subito il `TreeViewItem` esatto e impedisce il toggle
+  nativo concorrente.
+- `ClickCount == 2` attiva una sola volta il nodo risolto. Il terzo clic non
+  riattiva; folder e categorie senza target restano inerti.
+- Il chevron (`ToggleButton`) bypassa il tunnel e conserva il toggle nativo.
+  Menu contestuale, Enter e navigazione tastiera restano invariati.
+- Rimossi callback/generation del vecchio ripristino differito, incluso un
+  riferimento residuo rilevato dalla prima build d'integrazione.
+
+Commit applicativi: `36b9fc9af`, `b1b525c91`. Review indipendente: nessun
+finding. Build finale: 0 errori, 34 warning preesistenti. Harness navigation
+snapshot: PASS; hierarchy multilivello: PASS, 7 nodi. La verifica del gesto
+pointer reale resta manuale in questa sessione Windows/DPI.
+
 ## ROUND 14 — iterazione 9: M90 (2026-08-04) — doppio clic submodule deterministico e con feedback
 
 Regressione residua: il doppio clic su una riga Submodules era intermittente,
