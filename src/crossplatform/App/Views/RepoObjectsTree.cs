@@ -2285,6 +2285,11 @@ public sealed class RepoObjectsTree : UserControl
     // worktree is opened unless it is the current or a deleted one (WorktreeNode).
     private void OnActivateFromPointer(object? source)
     {
+        if (IsExpandToggle(source))
+        {
+            return;
+        }
+
         if (TryFindTreeItem(source, out TreeViewItem item))
         {
             OnActivate(item);
