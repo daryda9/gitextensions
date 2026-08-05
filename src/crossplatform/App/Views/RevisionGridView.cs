@@ -929,7 +929,28 @@ public sealed class RevisionGridView : UserControl
         // A language switch re-labels this view in place — no restart, and no
         // loss of filter / scope / selection (see Relabel).
         TranslationService.LanguageChanged += OnLanguageChanged;
+
+        // The row height is a per-STYLE number (RowMinHeight) and this grid draws its
+        // own rows, so no Style can reach it: the rows have to be rebuilt. Viewport
+        // preserved, because the user did not ask for a different SET of rows — they
+        // changed the appearance, and losing the scroll position over that would be the
+        // "never acceptable" case documented on RebindRows. Subscribed here and not
+        // unsubscribed, like LanguageChanged above: both instances of this view
+        // (MainWindow, FileHistoryView) are readonly fields that live as long as the
+        // app, so there is nothing to leak.
+        ThemeManager.StyleChanged += OnStyleChanged;
     }
+
+    /// <summary>
+    ///  The height of a revision row, per app style: <see cref="Metrics.Density.RowHeight"/>
+    ///  (22) in modern, the original 20 in classic.
+    ///
+    ///  <para>20 leaves 12px of text with 4px above and below; 22 gives it 5, which is
+    ///  the difference between rows that scan and rows that touch, and costs ~4 rows on
+    ///  a 900px window. Classic keeps 20 because that is upstream's grid.</para>
+    /// </summary>
+    private static double RowMinHeight
+        => ThemeManager.CurrentStyle == AppStyle.Modern ? Metrics.Density.RowHeight : 20;
 
     // Keyboard handling for the grid, on the TUNNEL stage (see the registration in
     // the constructor). Plain ↑/↓ are deliberately left to the ListBox.
@@ -1109,6 +1130,11 @@ public sealed class RevisionGridView : UserControl
     private static string Chevron(string caption) => string.Format("{0} ▾", caption);
 
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(Relabel);
+
+    // Posted, not called inline: ThemeManager raises StyleChanged in the middle of
+    // installing the style block, and RebindRows assigns ItemsSource, which runs a
+    // layout pass. Let the switch finish first.
+    private void OnStyleChanged() => Dispatcher.UIThread.Post(() => RebindRows(preserveViewport: true));
 
     /// <summary>
     ///  Re-captions every piece of chrome this view owns after a language change.
@@ -4773,7 +4799,7 @@ public sealed class RevisionGridView : UserControl
 
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(10, 0, 10, 0);
-        grid.MinHeight = 20;
+        grid.MinHeight = RowMinHeight;
 
         // Subtle alternating-row background (App.Panel / App.PanelAlt). It lives on
         // the RevisionRowView wrapper (full row width, no margin) so the selection
@@ -4935,7 +4961,7 @@ public sealed class RevisionGridView : UserControl
     {
         Grid grid = MakeColumns();
         grid.Margin = new Thickness(10, 0, 10, 0);
-        grid.MinHeight = 20;
+        grid.MinHeight = RowMinHeight;
 
         int index = IndexOf(_rows, row);
         RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
