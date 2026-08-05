@@ -695,7 +695,7 @@ public sealed class MainToolbar : UserControl
     {
         _immediateSuperprojectPath = immediateSuperprojectPath;
         bool canGoUp = !string.IsNullOrWhiteSpace(immediateSuperprojectPath);
-        Image? replacement = IconLoader.Image(canGoUp ? "NavigateUp" : "SubmodulesManage", 16);
+        Image? replacement = IconLoader.Image(canGoUp ? "NavigateUp" : "SubmodulesManage");
         if (_submodulesIcon is not null && replacement is not null)
         {
             _submodulesIcon.Source = replacement.Source;
@@ -1255,7 +1255,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        icon = IconLoader.Image(iconName, 16);
+        icon = IconLoader.Image(iconName);
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -1323,7 +1323,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        _shellIcon = IconLoader.Image("Console", 16);
+        _shellIcon = IconLoader.Image("Console");
         if (_shellIcon is not null)
         {
             _shellIcon.VerticalAlignment = VerticalAlignment.Center;
@@ -1514,7 +1514,7 @@ public sealed class MainToolbar : UserControl
                     Text = shell.Name,
                     FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
                 },
-                Icon = IconLoader.Image(shell.IconName, 16),
+                Icon = IconLoader.Image(shell.IconName),
             };
             ToolTip.SetTip(item, shell.Name);
 
@@ -1555,7 +1555,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        Image? icon = IconLoader.Image("stash", 16);
+        Image? icon = IconLoader.Image("stash");
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -1698,7 +1698,7 @@ public sealed class MainToolbar : UserControl
         MenuItem item = new()
         {
             Header = header,
-            Icon = IconLoader.Image(icon, 16),
+            Icon = IconLoader.Image(icon),
         };
 
         if (command is { } c && GestureFor(c) is { } gesture)
@@ -1732,7 +1732,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        _commitInfoIcon = IconLoader.Image(activeIcon, 16);
+        _commitInfoIcon = IconLoader.Image(activeIcon);
         if (_commitInfoIcon is not null)
         {
             _commitInfoIcon.VerticalAlignment = VerticalAlignment.Center;
@@ -1844,7 +1844,7 @@ public sealed class MainToolbar : UserControl
             MenuItem item = new()
             {
                 Header = label,
-                Icon = IconLoader.Image(icon, 16),
+                Icon = IconLoader.Image(icon),
                 ToggleType = MenuItemToggleType.Radio,
                 IsChecked = position == _commitInfoPosition,
             };
@@ -1909,7 +1909,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        _pullIcon = IconLoader.Image(PullIcon(_defaultPullAction), 16);
+        _pullIcon = IconLoader.Image(PullIcon(_defaultPullAction));
         if (_pullIcon is not null)
         {
             _pullIcon.VerticalAlignment = VerticalAlignment.Center;
@@ -2022,7 +2022,7 @@ public sealed class MainToolbar : UserControl
         MenuItem openDialog = new()
         {
             Header = T("FormBrowse/_pullOpenDialog.Text", "Open pull dialog…"),
-            Icon = IconLoader.Image("Pull", 16),
+            Icon = IconLoader.Image("Pull"),
             // Display only (the window-level HotkeyService owns the real binding).
             InputGesture = OpenPullDialogGesture,
             // Nothing wired yet → shown, but inert rather than misleading.
@@ -2042,7 +2042,7 @@ public sealed class MainToolbar : UserControl
             MenuItem item = new()
             {
                 Header = label,
-                Icon = IconLoader.Image(PullIcon(action), 16),
+                Icon = IconLoader.Image(PullIcon(action)),
             };
             GitPullAction captured = action;
             item.Click += (_, _) => RaisePull(captured);
@@ -2066,7 +2066,7 @@ public sealed class MainToolbar : UserControl
             MenuItem item = new()
             {
                 Header = label,
-                Icon = IconLoader.Image(PullIcon(action), 16),
+                Icon = IconLoader.Image(PullIcon(action)),
                 ToggleType = MenuItemToggleType.Radio,
                 IsChecked = action == _defaultPullAction,
             };
@@ -2199,7 +2199,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        Image? icon = IconLoader.Image(iconName, 16);
+        Image? icon = IconLoader.Image(iconName);
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -2225,7 +2225,7 @@ public sealed class MainToolbar : UserControl
         foreach ((string ic, string text, Action onClick) in items)
         {
             MenuItem menuItem = new() { Header = text };
-            Image? mIcon = IconLoader.Image(ic, 16);
+            Image? mIcon = IconLoader.Image(ic);
             if (mIcon is not null)
             {
                 menuItem.Icon = mIcon;
@@ -2288,7 +2288,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        Image? icon = IconLoader.Image(iconName, 16);
+        Image? icon = IconLoader.Image(iconName);
         captureIcon?.Invoke(icon);
         if (icon is not null)
         {
@@ -2567,7 +2567,7 @@ public sealed class MainToolbar : UserControl
             }
             else
             {
-                Image? mIcon = IconLoader.Image(string.IsNullOrEmpty(link.Icon) ? fallbackIcon : link.Icon, 16);
+                Image? mIcon = IconLoader.Image(string.IsNullOrEmpty(link.Icon) ? fallbackIcon : link.Icon);
                 if (mIcon is not null)
                 {
                     item.Icon = mIcon;
@@ -2605,7 +2605,7 @@ public sealed class MainToolbar : UserControl
         flyout.Items.Add(new MenuSeparator());
         foreach ((string ic, string text, Action onClick) in extraItems)
         {
-            MenuItem item = new() { Header = text, Icon = IconLoader.Image(ic, 16) };
+            MenuItem item = new() { Header = text, Icon = IconLoader.Image(ic) };
             item.Click += (_, _) => onClick();
             flyout.Items.Add(item);
         }
@@ -2624,7 +2624,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        Image? icon = IconLoader.Image("Branch", 16);
+        Image? icon = IconLoader.Image("Branch");
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -2710,7 +2710,7 @@ public sealed class MainToolbar : UserControl
             Spacing = 4,
         };
 
-        Image? icon = IconLoader.Image("RepoOpen", 16);
+        Image? icon = IconLoader.Image("RepoOpen");
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -2876,7 +2876,7 @@ public sealed class MainToolbar : UserControl
         MenuItem open = new()
         {
             Header = T("FormBrowse/openToolStripMenuItem.Text", "Open repository…"),
-            Icon = IconLoader.Image("RepoOpen", 16),
+            Icon = IconLoader.Image("RepoOpen"),
             InputGesture = GestureFor(BrowseCommand.OpenRepo),
         };
         open.Click += (_, _) => OpenRepoRequested?.Invoke();
@@ -2890,7 +2890,7 @@ public sealed class MainToolbar : UserControl
             MenuItem close = new()
             {
                 Header = T("FormBrowse/closeToolStripMenuItem.Text", "Close (go to Dashboard)"),
-                Icon = IconLoader.Image("DashboardFolderGit", 16),
+                Icon = IconLoader.Image("DashboardFolderGit"),
                 InputGesture = GestureFor(BrowseCommand.CloseRepository),
             };
             close.Click += (_, _) => CloseRepositoryRequested.Invoke();
@@ -2944,7 +2944,7 @@ public sealed class MainToolbar : UserControl
         MenuItem root = new()
         {
             Header = T("FormBrowse/tsmiFavouriteRepositories.Text", "Favorite repositories"),
-            Icon = IconLoader.Image("star", 16),
+            Icon = IconLoader.Image("star"),
         };
 
         List<Control> items = [];
@@ -2971,7 +2971,7 @@ public sealed class MainToolbar : UserControl
             {
                 // A category name is user data, so its underscores need escaping too.
                 Header = group.Key.Replace("_", "__"),
-                Icon = IconLoader.Image("star", 16),
+                Icon = IconLoader.Image("star"),
             };
 
             List<Control> children = [];
@@ -3017,7 +3017,7 @@ public sealed class MainToolbar : UserControl
             // The number prefix is added afterwards precisely so its own single
             // underscore survives as an access key, exactly as upstream's "&1:" is.
             Header = (numberPrefix ?? string.Empty) + link.Label.Replace("_", "__"),
-            Icon = IconLoader.Image(link.Icon is { Length: > 0 } i ? i : iconName, 16),
+            Icon = IconLoader.Image(link.Icon is { Length: > 0 } i ? i : iconName),
             Tag = link.Label + " " + link.Path,
         };
         ToolTip.SetTip(item, link.Path);
@@ -3160,7 +3160,7 @@ public sealed class MainToolbar : UserControl
         MenuItem checkout = new()
         {
             Header = T("FormBrowse/checkoutBranchToolStripMenuItem.Text", "Checkout branch..."),
-            Icon = IconLoader.Image("BranchCheckout", 16),
+            Icon = IconLoader.Image("BranchCheckout"),
             InputGesture = GestureFor(BrowseCommand.CheckoutBranch),
             // Nothing wired yet → shown, but inert rather than misleading.
             IsEnabled = CheckoutBranchRequested is not null,
@@ -3175,7 +3175,7 @@ public sealed class MainToolbar : UserControl
             return;
         }
 
-        Image? currentIcon = IconLoader.Image("Branch", 16);
+        Image? currentIcon = IconLoader.Image("Branch");
 
         // Upstream caps the list at 100 refs: "Git Extensions will hang when the drop
         // down is too large".
@@ -3418,10 +3418,10 @@ public sealed class MainToolbar : UserControl
 
             case OverflowKind.Menu:
             {
-                MenuItem parent = new() { Header = label, Icon = IconLoader.Image(entry.Icon, 16) };
+                MenuItem parent = new() { Header = label, Icon = IconLoader.Image(entry.Icon) };
                 foreach ((string ic, string text, Action onClick) in entry.SubItems ?? [])
                 {
-                    MenuItem child = new() { Header = text, Icon = IconLoader.Image(ic, 16) };
+                    MenuItem child = new() { Header = text, Icon = IconLoader.Image(ic) };
                     child.Click += (_, _) => onClick();
                     parent.Items.Add(child);
                 }
@@ -3435,7 +3435,7 @@ public sealed class MainToolbar : UserControl
                 // submenu here: choosing this item closes the overflow menu and then
                 // re-opens the item's own (freshly populated) flyout at the "»"
                 // button — the same populate-before-ShowAt discipline used inline.
-                MenuItem lazy = new() { Header = label + " …", Icon = IconLoader.Image(entry.Icon, 16) };
+                MenuItem lazy = new() { Header = label + " …", Icon = IconLoader.Image(entry.Icon) };
                 Func<Control, Task>? show = entry.ShowMenu;
                 if (show is not null)
                 {
@@ -3457,7 +3457,7 @@ public sealed class MainToolbar : UserControl
 
             default:
             {
-                MenuItem command = new() { Header = label, Icon = IconLoader.Image(entry.Icon, 16) };
+                MenuItem command = new() { Header = label, Icon = IconLoader.Image(entry.Icon) };
                 Action? invoke = entry.Invoke;
                 if (invoke is not null)
                 {

@@ -514,7 +514,7 @@ public sealed class BisectDialog : Theming.ZoomWindow
 
         string text = RevisionFilterDialog.StripMnemonic(caption);
 
-        if (icon is { Length: > 0 } && IconLoader.Image(icon, 16) is { } image)
+        if (icon is { Length: > 0 } && IconLoader.Image(icon) is { } image)
         {
             button.Content = new StackPanel
             {

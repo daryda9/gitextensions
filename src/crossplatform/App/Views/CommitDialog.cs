@@ -3979,7 +3979,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
             Padding = new Thickness(4, 2),
             Margin = new Thickness(0, 0, 2, 0),
             Background = Brush("App.Toolbar", Brushes.DimGray),
-            Content = (Control?)Theming.IconLoader.Image(icon, 16)
+            Content = (Control?)Theming.IconLoader.Image(icon)
                 ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
         };
         b.Click += (_, _) => onClick();

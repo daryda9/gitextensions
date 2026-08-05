@@ -390,7 +390,7 @@ public sealed class DashboardView : UserControl
         // Upstream marks a broken entry by swapping the tile icon
         // (DashboardFolderGit → DashboardFolderError); both are already linked
         // by the csproj icon glob, so the port can say the same thing.
-        Image? icon = IconLoader.Image(entry.Exists ? "DashboardFolderGit" : "DashboardFolderError", 16);
+        Image? icon = IconLoader.Image(entry.Exists ? "DashboardFolderGit" : "DashboardFolderError");
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -1120,7 +1120,7 @@ public sealed class DashboardView : UserControl
             HorizontalAlignment = HorizontalAlignment.Left,
         };
 
-        if (IconLoader.Image(iconName, 16) is { } icon)
+        if (IconLoader.Image(iconName) is { } icon)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
             row.Children.Add(icon);

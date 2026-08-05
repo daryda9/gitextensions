@@ -214,7 +214,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
                 new ColumnDefinition(GridLength.Auto),
             },
         };
-        Control infoIcon = IconLoader.Image("information", 16) as Control
+        Control infoIcon = IconLoader.Image("information") as Control
             ?? new TextBlock { Text = "i", Foreground = dim };
         infoIcon.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(infoIcon, 0);
@@ -281,7 +281,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
             Spacing = 5,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        if (IconLoader.Image("GotoManual", 16) is { } helpIcon)
+        if (IconLoader.Image("GotoManual") is { } helpIcon)
         {
             helpIcon.VerticalAlignment = VerticalAlignment.Center;
             helpContent.Children.Add(helpIcon);

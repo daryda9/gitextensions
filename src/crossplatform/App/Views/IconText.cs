@@ -19,7 +19,7 @@ internal static class IconText
     /// </summary>
     internal static object Header(string? icon, string text)
     {
-        if (icon is null || IconLoader.Image(icon, 16) is not { } img)
+        if (icon is null || IconLoader.Image(icon) is not { } img)
         {
             return text;
         }

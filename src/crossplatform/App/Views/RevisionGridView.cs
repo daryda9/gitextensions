@@ -5693,7 +5693,7 @@ public sealed class RevisionGridView : UserControl
             _routedCommands.Add(registered);
             MenuItem item = new() { Header = Strip(caption ?? registered) };
 
-            if (icon is { Length: > 0 } && IconLoader.Image(icon, 16) is { } image)
+            if (icon is { Length: > 0 } && IconLoader.Image(icon) is { } image)
             {
                 item.Icon = image;
             }

@@ -111,7 +111,13 @@ public static class IconLoader
     ///  <see cref="Icons.Accent"/>. Ignored by the PNG fallback, whose colours
     ///  are baked into the bitmap.
     /// </param>
-    public static Image? Image(string name, double size = 16, string tintKey = Icons.Text)
+    /// <param name="size">
+    ///  Square edge in px. Defaults to <see cref="Metrics.Density.IconSize"/> (16), the
+    ///  size the chrome draws every icon at: the 42 call sites that used to repeat the
+    ///  literal now say nothing and get it from one place. The one deliberate exception
+    ///  passes an explicit size (the 48px product logo in the About dialog).
+    /// </param>
+    public static Image? Image(string name, double size = Metrics.Density.IconSize, string tintKey = Icons.Text)
     {
         if (Icons.Get(name) is { } glyph)
         {

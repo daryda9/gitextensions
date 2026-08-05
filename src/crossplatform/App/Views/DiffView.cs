@@ -1223,7 +1223,7 @@ public sealed class DiffView : UserControl
     // when that resource exists (IconLoader returns null when it does not).
     private ToggleButton ToggleTool(string glyph, bool isChecked, Action<bool> onChanged, string? icon = null)
     {
-        Control face = icon is not null && IconLoader.Image(icon, 16) is Image image
+        Control face = icon is not null && IconLoader.Image(icon) is Image image
             ? image
             : new TextBlock
             {

@@ -634,7 +634,7 @@ public sealed class MainMenu : UserControl
     private MenuItem BuildGitMaintenance()
     {
         MenuItem maintenance = new() { Header = T("FormBrowse/gitMaintenanceToolStripMenuItem.Text", "Git maintenance") };
-        if (IconLoader.Image("Maintenance", 16) is { } icon)
+        if (IconLoader.Image("Maintenance") is { } icon)
         {
             maintenance.Icon = icon;
         }
@@ -1052,7 +1052,7 @@ public sealed class MainMenu : UserControl
 
         if (iconName is not null)
         {
-            Image? icon = IconLoader.Image(iconName, 16);
+            Image? icon = IconLoader.Image(iconName);
             if (icon is not null)
             {
                 item.Icon = icon;

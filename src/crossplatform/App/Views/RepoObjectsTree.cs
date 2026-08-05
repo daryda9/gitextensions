@@ -405,7 +405,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         Button button = new()
         {
-            Content = IconLoader.Image(icon, 16),
+            Content = IconLoader.Image(icon),
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(4, 3),
@@ -424,7 +424,7 @@ public sealed class RepoObjectsTree : UserControl
     {
         ToggleButton toggle = new()
         {
-            Content = IconLoader.Image(icon, 16),
+            Content = IconLoader.Image(icon),
             IsChecked = initial,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
@@ -1670,7 +1670,7 @@ public sealed class RepoObjectsTree : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        if (icon is not null && IconLoader.Image(icon, 16) is { } img)
+        if (icon is not null && IconLoader.Image(icon) is { } img)
         {
             img.VerticalAlignment = VerticalAlignment.Center;
             panel.Children.Add(img);
@@ -1801,7 +1801,7 @@ public sealed class RepoObjectsTree : UserControl
             Header = T("MenuItemsStrings/Reset.Text", "Reset current branch to here…"),
         };
 
-        if (IconLoader.Image("ResetCurrentBranchToHere", 16) is { } img)
+        if (IconLoader.Image("ResetCurrentBranchToHere") is { } img)
         {
             reset.Icon = img;
         }
@@ -2008,7 +2008,7 @@ public sealed class RepoObjectsTree : UserControl
     private static MenuItem MenuItem(string text, string? icon, Action onClick)
     {
         MenuItem item = new() { Header = text };
-        if (icon is not null && IconLoader.Image(icon, 16) is { } img)
+        if (icon is not null && IconLoader.Image(icon) is { } img)
         {
             item.Icon = img;
         }
