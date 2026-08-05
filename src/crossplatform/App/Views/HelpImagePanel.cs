@@ -124,7 +124,7 @@ public sealed class HelpImagePanel : UserControl
             HorizontalAlignment = HorizontalAlignment.Left,
             Background = Brush("App.Control", Brushes.DimGray),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderBrush = Brush("App.BorderStrong", new SolidColorBrush(Color.Parse("#88898F"))),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(10, 4),
 

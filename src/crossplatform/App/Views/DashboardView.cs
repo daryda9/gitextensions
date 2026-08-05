@@ -117,7 +117,7 @@ public sealed class DashboardView : UserControl
             Watermark = T("Search repositories…"),
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(0, 14, 0, 8),
             MaxWidth = 460,
@@ -702,7 +702,7 @@ public sealed class DashboardView : UserControl
         {
             Background = B("App.Control"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
         };
 

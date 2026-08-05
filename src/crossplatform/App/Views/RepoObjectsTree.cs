@@ -333,7 +333,9 @@ public sealed class RepoObjectsTree : UserControl
             VerticalContentAlignment = VerticalAlignment.Center,
             Background = Brush("App.Control", Brushes.Transparent),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            // App.BorderStrong: the filter box is delimited by its outline alone, and
+            // App.Border measures 1.23:1 on the panel it sits on.
+            BorderBrush = Brush("App.BorderStrong", new SolidColorBrush(Color.Parse("#88898F"))),
         };
         _search.TextChanged += (_, _) => OnFilterChanged();
 

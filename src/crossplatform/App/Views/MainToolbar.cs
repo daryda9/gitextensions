@@ -2822,7 +2822,7 @@ public sealed class MainToolbar : UserControl
             Margin = new Thickness(0, 2),
             Background = Brush("App.Panel", "#252526"),
             Foreground = Brush("App.Text", "#DCDCDC"),
-            BorderBrush = Brush("App.Border", "#3F3F46"),
+            BorderBrush = Brush("App.BorderStrong", "#88898F"),
             FontSize = 12,
         };
         filterBox.TextChanged += (_, _) =>
@@ -3365,7 +3365,7 @@ public sealed class MainToolbar : UserControl
                     Watermark = source?.Watermark,
                     Background = Brush("App.Panel", "#252526"),
                     Foreground = Brush("App.Text", "#DCDCDC"),
-                    BorderBrush = Brush("App.Border", "#3F3F46"),
+                    BorderBrush = Brush("App.BorderStrong", "#88898F"),
                     BorderThickness = new Thickness(1),
                     FontSize = 12,
                     Padding = new Thickness(6, 2, 4, 2),
