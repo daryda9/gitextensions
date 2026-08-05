@@ -46,7 +46,8 @@ public static class TextBoxSurface
     /// <param name="foreground">Text (and caret) colour for every state.</param>
     /// <param name="border">
     ///  Border brush for every state; defaults to the box's current
-    ///  <see cref="TemplatedControl.BorderBrush"/>, else <c>App.Border</c>.
+    ///  <see cref="TemplatedControl.BorderBrush"/>, else <c>App.BorderStrong</c>
+    ///  (<c>App.Border</c> only if that key is missing).
     /// </param>
     /// <param name="selectionBackground">
     ///  Selection highlight; defaults to <c>App.Accent</c>.
@@ -72,7 +73,13 @@ public static class TextBoxSurface
         ArgumentNullException.ThrowIfNull(background);
         ArgumentNullException.ThrowIfNull(foreground);
 
-        border ??= box.BorderBrush ?? Resource("App.Border") ?? foreground;
+        // App.BorderStrong before App.Border: a text box is delimited by its outline
+        // alone, and App.Border measures 1.08:1 (modern dark) on the surfaces it lands
+        // on — WCAG 1.4.11 asks 3:1 of a non-text indicator. The Fluent keys were raised
+        // for the same reason, but they never reach a pinned box: these per-instance
+        // resources are exactly what out-shouts them. In the classic families
+        // App.BorderStrong IS App.Border, so the classic look is unchanged.
+        border ??= box.BorderBrush ?? Resource("App.BorderStrong") ?? Resource("App.Border") ?? foreground;
         selectionBackground ??= Resource("App.Accent") ?? Brushes.SteelBlue;
         selectionForeground ??= DefaultSelectionForeground;
         placeholderForeground ??= Resource("App.TextDim") ?? foreground;

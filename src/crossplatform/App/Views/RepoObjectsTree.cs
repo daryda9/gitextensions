@@ -327,7 +327,9 @@ public sealed class RepoObjectsTree : UserControl
             VerticalContentAlignment = VerticalAlignment.Center,
             Background = Brush("App.Control", Brushes.Transparent),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            // App.BorderStrong: the filter box is delimited by its outline alone, and
+            // App.Border measures 1.23:1 on the panel it sits on.
+            BorderBrush = Brush("App.BorderStrong", new SolidColorBrush(Color.Parse("#88898F"))),
         };
         _search.TextChanged += (_, _) => OnFilterChanged();
 
@@ -341,7 +343,12 @@ public sealed class RepoObjectsTree : UserControl
             Margin = new Thickness(3, 0, 3, 3),
         };
         searchRow.Children.Add(_search);
-        Button searchButton = IconButton("Preview", T("RepoObjectsTree/btnSearch.toolTip", "Search"), SelectNextMatch);
+        // "Search", not upstream's "Preview" icon name: the button walks the matches of
+        // the filter, and the 2015 PNG behind that name happened to be a magnifier. Once
+        // the name had a real vector glyph it became an EYE — right for a preview,
+        // wrong for a search. The name is ours to choose here; the tooltip already
+        // said Search.
+        Button searchButton = IconButton("Search", T("RepoObjectsTree/btnSearch.toolTip", "Search"), SelectNextMatch);
         Grid.SetColumn(searchButton, 1);
         searchRow.Children.Add(searchButton);
 

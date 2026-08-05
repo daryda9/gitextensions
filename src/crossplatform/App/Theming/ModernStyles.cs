@@ -222,14 +222,27 @@ public static class ModernStyles
         SolidColorBrush selectionHover = Derived(selection, text, 0.10);
         SolidColorBrush selectionPressed = Derived(selection, text, 0.18);
 
-        // A border that reads as "this control is under the pointer" is a non-text
-        // indicator and needs 3:1 of its own. App.Border is a quiet separator — it
-        // measures 1.23:1 on the toolbar in the dark theme — so the hover border pulls
-        // it 45% toward the ink. 0.45 is the smallest step on the scale that clears
-        // 3:1 against ALL THREE surfaces a control border can land on (App.Toolbar,
-        // App.Control, App.Selection) in BOTH themes; the worst case is 3.30:1 on the
-        // selection surface. At 0.35 the toolbar case was 2.98:1 dark / 2.73:1 light.
+        // A border that is the ONLY thing delimiting a control is a non-text indicator
+        // and needs 3:1 against every surface it can land on (WCAG 1.4.11). App.Border
+        // does not come close: it measures 1.23:1 on the toolbar and 1.08:1 on the
+        // selection surface in the modern dark theme, 1.37:1 / 1.32:1 light. It is a
+        // fine separator between two things and a hopeless outline around one.
+        //
+        // borderStrong pulls it 45% toward the ink. 0.45 is the SMALLEST step on the
+        // scale that clears 3:1 against all five surfaces a control border can land on
+        // (App.Window, App.Panel, App.Toolbar, App.Control, App.Selection) in both
+        // modern themes: worst case 3.30:1 dark and 3.32:1 light, both on the selection
+        // surface. At 0.40 that same case is 2.92:1 / 2.97:1 — a fail, which is why the
+        // step is not smaller. This is now the RESTING outline of every control whose
+        // fill matches what is behind it (M94), not just a hover colour.
         SolidColorBrush borderStrong = Derived(border, text, 0.45);
+
+        // With the resting outline at 3:1, hover needs a step BEYOND it or the pointer
+        // stops being visible on the border at all. 0.65 puts 1.50:1 (dark) / 1.67:1
+        // (light) between the two tones — a visible change on a 1px hairline — while
+        // staying 1.83:1 / 2.32:1 BELOW App.Text, so the outline still reads as chrome
+        // and never as ink. Worst case against the five surfaces is 4.96:1 / 5.52:1.
+        SolidColorBrush borderHover = Derived(border, text, 0.65);
 
         // ---- Button ---------------------------------------------------------------
         // Fluent's stock ButtonBackground* are TRANSLUCENT overlays over whatever is
@@ -243,15 +256,21 @@ public static class ModernStyles
         Set(map, "ButtonForegroundPointerOver", text);
         Set(map, "ButtonForegroundPressed", text);
         Set(map, "ButtonForegroundDisabled", textDim);
-        Set(map, "ButtonBorderBrush", border);
-        Set(map, "ButtonBorderBrushPointerOver", borderStrong);
+        // A button's resting fill IS App.Toolbar, and a toolbar button sits ON the
+        // toolbar — same colour on both sides of the edge, so the border is the only
+        // thing that says where the button is. It carries the 3:1 outline.
+        Set(map, "ButtonBorderBrush", borderStrong);
+        Set(map, "ButtonBorderBrushPointerOver", borderHover);
         // Pressed keeps the HOVER border, not the accent. An accent hairline on the
         // pressed fill measures 2.05:1 in the dark theme (#3B82F6 on #53545B) — below
         // the 3:1 a non-text indicator needs, i.e. a promise the colour cannot keep.
         // Pressed is already unmistakable from the fill alone: the background moves by
         // two full steps of the ramp. The accent is reserved for FOCUS, where it is
         // the only signal and where it does measure (3.57:1 worst case).
-        Set(map, "ButtonBorderBrushPressed", borderStrong);
+        Set(map, "ButtonBorderBrushPressed", borderHover);
+        // Disabled keeps the QUIET border. 1.4.11 exempts inactive components, and that
+        // exemption is the whole point here: a disabled button that keeps a 3:1 outline
+        // while its fill and label go dim looks like a live button drawn wrong.
         Set(map, "ButtonBorderBrushDisabled", border);
 
         // ---- ToggleButton ---------------------------------------------------------
@@ -281,17 +300,17 @@ public static class ModernStyles
         Set(map, "ToggleButtonForegroundDisabled", textDim);
         Set(map, "ToggleButtonForegroundCheckedDisabled", textDim);
         Set(map, "ToggleButtonForegroundIndeterminateDisabled", textDim);
-        Set(map, "ToggleButtonBorderBrush", border);
-        Set(map, "ToggleButtonBorderBrushPointerOver", borderStrong);
-        Set(map, "ToggleButtonBorderBrushPressed", borderStrong);
+        Set(map, "ToggleButtonBorderBrush", borderStrong);
+        Set(map, "ToggleButtonBorderBrushPointerOver", borderHover);
+        Set(map, "ToggleButtonBorderBrushPressed", borderHover);
         Set(map, "ToggleButtonBorderBrushChecked", accent);
         Set(map, "ToggleButtonBorderBrushCheckedPointerOver", accent);
         Set(map, "ToggleButtonBorderBrushCheckedPressed", accent);
         Set(map, "ToggleButtonBorderBrushDisabled", border);
         Set(map, "ToggleButtonBorderBrushCheckedDisabled", border);
-        Set(map, "ToggleButtonBorderBrushIndeterminate", border);
-        Set(map, "ToggleButtonBorderBrushIndeterminatePointerOver", borderStrong);
-        Set(map, "ToggleButtonBorderBrushIndeterminatePressed", borderStrong);
+        Set(map, "ToggleButtonBorderBrushIndeterminate", borderStrong);
+        Set(map, "ToggleButtonBorderBrushIndeterminatePointerOver", borderHover);
+        Set(map, "ToggleButtonBorderBrushIndeterminatePressed", borderHover);
         Set(map, "ToggleButtonBorderBrushIndeterminateDisabled", border);
 
         // ---- TextBox --------------------------------------------------------------
@@ -308,8 +327,8 @@ public static class ModernStyles
         Set(map, "TextControlForegroundPointerOver", text);
         Set(map, "TextControlForegroundFocused", text);
         Set(map, "TextControlForegroundDisabled", textDim);
-        Set(map, "TextControlBorderBrush", border);
-        Set(map, "TextControlBorderBrushPointerOver", borderStrong);
+        Set(map, "TextControlBorderBrush", borderStrong);
+        Set(map, "TextControlBorderBrushPointerOver", borderHover);
         Set(map, "TextControlBorderBrushFocused", accent);
         Set(map, "TextControlBorderBrushDisabled", border);
         Set(map, "TextControlPlaceholderForeground", textDim);
@@ -335,11 +354,11 @@ public static class ModernStyles
         Set(map, "ComboBoxBackgroundPointerOver", inputHover);
         Set(map, "ComboBoxBackgroundPressed", inputPressed);
         Set(map, "ComboBoxBackgroundDisabled", surfaceDisabled);
-        Set(map, "ComboBoxBackgroundBorderBrushUnfocused", border);
+        Set(map, "ComboBoxBackgroundBorderBrushUnfocused", borderStrong);
         Set(map, "ComboBoxBackgroundBorderBrushFocused", accent);
-        Set(map, "ComboBoxBorderBrush", border);
-        Set(map, "ComboBoxBorderBrushPointerOver", borderStrong);
-        Set(map, "ComboBoxBorderBrushPressed", borderStrong);
+        Set(map, "ComboBoxBorderBrush", borderStrong);
+        Set(map, "ComboBoxBorderBrushPointerOver", borderHover);
+        Set(map, "ComboBoxBorderBrushPressed", borderHover);
         Set(map, "ComboBoxBorderBrushDisabled", border);
         Set(map, "ComboBoxForeground", text);
         Set(map, "ComboBoxForegroundFocused", text);
@@ -385,10 +404,16 @@ public static class ModernStyles
         // its own states (the menu bar and the context menus share it).
         Set(map, "MenuFlyoutPresenterBackground", panel);
         Set(map, "MenuFlyoutPresenterBorderBrush", border);
-        Set(map, "MenuFlyoutItemBackground", Brushes.Transparent);
+        // The resting fill is the presenter's OWN colour, not Brushes.Transparent —
+        // which is transparent WHITE (#00FFFFFF). MenuItem's Border is cross-faded
+        // (BorderTransitions<MenuItem> below), so a transparent-white start walks
+        // through half-opaque white on the way to the hover fill: a white flash on
+        // every item the pointer passes over. Opaque panel looks identical at rest,
+        // because panel is exactly what the flyout presenter is painted with.
+        Set(map, "MenuFlyoutItemBackground", panel);
         Set(map, "MenuFlyoutItemBackgroundPointerOver", panelHover);
         Set(map, "MenuFlyoutItemBackgroundPressed", panelPressed);
-        Set(map, "MenuFlyoutItemBackgroundDisabled", Brushes.Transparent);
+        Set(map, "MenuFlyoutItemBackgroundDisabled", panel);
         Set(map, "MenuFlyoutItemForeground", text);
         Set(map, "MenuFlyoutItemForegroundPointerOver", text);
         Set(map, "MenuFlyoutItemForegroundPressed", text);
@@ -415,13 +440,19 @@ public static class ModernStyles
         // it is the only one with a surface, full-strength ink, a semibold label and
         // an accent pipe (see the :selected style below). That is the
         // "weight and colour before size" rule from Metrics.Text.
-        Set(map, "TabItemHeaderBackgroundUnselected", Brushes.Transparent);
+        //
+        // "Transparent" here is panelHover AT ALPHA 0, for the reason spelled out in
+        // Faded: BorderTransitions<TabItem> animates the template root's Background on
+        // any TabItem, including one that fell back to Fluent's template, and
+        // Brushes.Transparent (#00FFFFFF) as the resting end of that animation is a
+        // white flash. Alpha 0 is just as invisible at rest.
+        Set(map, "TabItemHeaderBackgroundUnselected", Faded(panelHover));
         Set(map, "TabItemHeaderBackgroundUnselectedPointerOver", panelHover);
         Set(map, "TabItemHeaderBackgroundUnselectedPressed", panelPressed);
         Set(map, "TabItemHeaderBackgroundSelected", selection);
         Set(map, "TabItemHeaderBackgroundSelectedPointerOver", selectionHover);
         Set(map, "TabItemHeaderBackgroundSelectedPressed", selectionPressed);
-        Set(map, "TabItemHeaderBackgroundDisabled", Brushes.Transparent);
+        Set(map, "TabItemHeaderBackgroundDisabled", Faded(panelHover));
         Set(map, "TabItemHeaderForegroundUnselected", textDim);
         Set(map, "TabItemHeaderForegroundUnselectedPointerOver", text);
         Set(map, "TabItemHeaderForegroundUnselectedPressed", text);
@@ -483,10 +514,16 @@ public static class ModernStyles
             BorderBrush = accent,
             BorderThickness = new Thickness(FocusRingThickness),
             CornerRadius = Metrics.Radius.MdCorner,
-            // The adorner is laid over the control; a small negative margin puts the
-            // ring just OUTSIDE the control's own border instead of on top of it, so
-            // a focused-and-hovered control still shows both.
-            Margin = new Thickness(-FocusRingThickness),
+            // The ring is drawn INSIDE the control's own bounds. A negative margin
+            // reads better in the abstract — the ring sits just outside the border, so
+            // a focused-and-hovered control shows both — but it was measured on screen
+            // and the part that hangs outside is CLIPPED by whatever packs the control:
+            // a focused toolbar button showed the ring on its left and right edges and
+            // nothing above or below, because the strip is exactly as tall as the
+            // button. A focus indicator that depends on its container having slack is
+            // not an indicator. Inside the bounds it is always whole; the 1px App.Text
+            // halo below keeps its inner edge separated from every state fill.
+            Margin = new Thickness(0),
             Child = new Border
             {
                 BorderBrush = text,
@@ -608,6 +645,14 @@ public static class ModernStyles
         SolidColorBrush stripHover = Derived(window, text, 0.08);
         SolidColorBrush selectionHover = Derived(selection, text, 0.10);
 
+        // The RESTING values of the three properties this template cross-fades, each
+        // one its own arrival colour at alpha 0. See Faded: Brushes.Transparent here
+        // was a white flash on every hover, because Transparent is transparent WHITE
+        // and BorderTransitions<TabItem> animates exactly these properties.
+        SolidColorBrush stripHoverAtRest = Faded(stripHover);
+        SolidColorBrush hoverBorderAtRest = Faded(border);
+        SolidColorBrush barAtRest = Faded(accent);
+
         // Rounded on the two edges that face away from the page body only; the bottom
         // corners stay square because the selected tab is meant to run INTO the body.
         CornerRadius topCorners = new(Metrics.Radius.Sm / 2, Metrics.Radius.Sm / 2, 0, 0);
@@ -618,9 +663,13 @@ public static class ModernStyles
             {
                 Name = "PART_SelectedBar",
                 Height = TabSelectedBarThickness,
-                // Transparent, not collapsed: the row is reserved on EVERY tab, so
-                // selecting one does not shift its label by 2px.
-                Background = Brushes.Transparent,
+                // Invisible, not collapsed: the row is reserved on EVERY tab, so
+                // selecting one does not shift its label by 2px. The colour is
+                // App.Accent AT ALPHA 0, not Brushes.Transparent: this Border is inside
+                // a TabItem template, so BorderTransitions<TabItem> animates its
+                // Background too, and a transparent-WHITE start made the bar flash
+                // white on its way to the accent every time the selection moved.
+                Background = barAtRest,
             };
             bar.RegisterInNameScope(scope);
 
@@ -672,10 +721,16 @@ public static class ModernStyles
         // BorderThickness is the same on every tab so that turning the border ON is a
         // colour change, not a layout change: no tab ever moves by a pixel. The bottom
         // edge is 0 on purpose — that is what lets the selected tab join the page.
+        //
+        // Both resting colours are INVISIBLE but not Brushes.Transparent: each is the
+        // colour the hover state fades TO, at alpha 0 (see Faded). An unselected tab
+        // therefore still shows whatever panel is behind the strip, exactly as before,
+        // but the cross-fade into hover is now a pure opacity ramp instead of a trip
+        // through half-opaque white.
         Style tab = new(x => x.OfType<TabItem>());
         tab.Setters.Add(new Setter(TemplatedControl.TemplateProperty, template));
-        tab.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
-        tab.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, Brushes.Transparent));
+        tab.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, stripHoverAtRest));
+        tab.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, hoverBorderAtRest));
         tab.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(1, 1, 1, 0)));
         tab.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, textDim));
         styles.Add(tab);
@@ -714,9 +769,12 @@ public static class ModernStyles
         bar.Setters.Add(new Setter(Border.BackgroundProperty, accent));
         styles.Add(bar);
 
+        // Same two invisible-at-rest brushes as the base style. A disabled tab never
+        // gets :pointerover, but it CAN be disabled while the pointer is already on it,
+        // and that transition is animated too.
         Style disabled = new(x => x.OfType<TabItem>().Class(":disabled"));
-        disabled.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Brushes.Transparent));
-        disabled.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, Brushes.Transparent));
+        disabled.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, stripHoverAtRest));
+        disabled.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, hoverBorderAtRest));
         disabled.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, textDim));
         styles.Add(disabled);
 
@@ -891,6 +949,52 @@ public static class ModernStyles
 
         from.PropertyChanged += Recompute;
         to.PropertyChanged += Recompute;
+
+        Live.Add(result);
+        return result;
+    }
+
+    /// <summary>
+    ///  The same colour as <paramref name="source"/> at ALPHA 0 — invisible, and it
+    ///  follows <paramref name="source"/> for the lifetime of the app.
+    ///
+    ///  <para><b>Why not <see cref="Brushes.Transparent"/>.</b> Transparent is
+    ///  <c>#00FFFFFF</c>: transparent WHITE. That is harmless as a static value, but
+    ///  fatal as the RESTING value of a property this file cross-fades
+    ///  (<see cref="BorderTransitions{T}"/>). A <c>BrushTransition</c> interpolates the
+    ///  four ARGB channels independently and NON-premultiplied, so between transparent
+    ///  white and an opaque dark fill the alpha rises while the RGB is still nearly
+    ///  white — half-opaque white over the strip, i.e. a white flash on every hover.
+    ///  Measured on the modern dark palette the composite peaked at relative luminance
+    ///  0.0885 against endpoints of 0.0075 and 0.0194: 4.6x brighter than either end of
+    ///  the animation. Starting from the ARRIVAL colour at alpha 0 makes the same
+    ///  cross-fade a pure opacity ramp — every intermediate is a straight blend of the
+    ///  two endpoints, so no third colour is ever on screen — and it costs nothing at
+    ///  rest, because alpha 0 is alpha 0 whatever the hue. This is the M93 cure, which
+    ///  fixed the identical defect on the toolbar buttons (App/Views/MainToolbar.cs);
+    ///  unlike M93's local helper this one is LIVE, so it keeps tracking a palette that
+    ///  changes under it.</para>
+    ///
+    ///  <para>It also avoids naming a colour for the surface BEHIND the control, which
+    ///  this file does not know: the tab strip's backdrop is set by whoever hosts the
+    ///  <see cref="TabControl"/>. An opaque guess would be wrong the moment a tab strip
+    ///  is placed on a different panel; alpha 0 cannot be.</para>
+    /// </summary>
+    private static SolidColorBrush Faded(SolidColorBrush source)
+    {
+        static Color Clear(Color c) => Color.FromArgb(0, c.R, c.G, c.B);
+
+        SolidColorBrush result = new(Clear(source.Color));
+
+        void Recompute(object? _, AvaloniaPropertyChangedEventArgs e)
+        {
+            if (e.Property == SolidColorBrush.ColorProperty)
+            {
+                result.Color = Clear(source.Color);
+            }
+        }
+
+        source.PropertyChanged += Recompute;
 
         Live.Add(result);
         return result;

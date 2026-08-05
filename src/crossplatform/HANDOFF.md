@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD applicativo al momento dell'handoff | `b1b525c91` — **M91: doppio clic sui parent deterministico, senza toggle concorrente**. Commit M91: `36b9fc9af`, `b1b525c91`. M90: `1e9a0bf5b`, `1a8abcd7c`. Prossima libera: **M92**. |
+| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M96** · `35a98fd3d` (**M95: chrome moderna piatta**) · `7fe3726a8` (**M94: icone complete, App.Link, contorni a 3:1, focus non tagliato**) · `5c5a03a64` (**M93: hover della riga + fine del flash bianco**) · `044ce45dc` (**M92: larghezze dei pannelli**) · `363961635` (**M91: submodule nidificati**). |
 | Build | `Errori: 0` (34 warning preesistenti VSTHRD/CS). Harness navigation snapshot: PASS; hierarchy M87/M91: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -280,7 +280,60 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
-> ### ► **M82** (2026-08-03) — **Diff e Stash seguono la larghezza a cui li trascini**
+> ### ► **M95** (2026-08-05) — **chrome moderna piatta**: la toolbar non è più un'altra tinta
+> Segnalazione utente: nel dark la toolbar è di un colore diverso dal resto. Misurato sullo
+> screenshot: barra dei menu **a due tonalità** (`#1C1D21` fino a x≈748, `#2F3038` a destra — il
+> controllo `Menu` dipinge il proprio fondo sopra il contenitore, dove finisce riappare il colore
+> del contenitore) e striscia toolbar `#2F3038` contro `#1C1D21` di ogni pannello.
+> **Fix**: nelle sole famiglie Modern `App.Toolbar` = `App.Panel`. Un valore, e si appiattiscono
+> tutte le 15 barre che leggono quella chiave: cambiare solo `MainMenu`/`MainToolbar` avrebbe reso
+> *quelle* le nuove diverse. Precedente già nel file: `App.Control` **è** `App.Panel` dal M77 — una
+> superficie si può fondere col fondo se il contorno la delimita, e dal M94 quel contorno misura 3:1.
+> Separazione chrome/contenuto = la regola da 1px già in fondo a `MainToolbar`.
+> Nessun contrasto decade: App.Toolbar era la superficie **più chiara**, togliendola i minimi
+> salgono (`App.TextDim` 4.70 → 5.75:1 dark, 4.67 → 5.29:1 light). Conseguenza da sapere:
+> `App.PanelAlt` è ora la più chiara della rampa, quindi le strisce della griglia sono più chiare
+> delle barre. **Classic intatta di proposito** (`#333337` è la firma del 2015), verificato a schermo
+> su Modern Dark / Modern Light / Classic Dark. Dettaglio in `PORTING.md` → M95.
+
+> ### ► **M94** (2026-08-05) — **coda di modernizzazione: icone, link, contorni, tab, focus**
+> Chiusi gli step 4/3/5/7/6 con quattro subagent in worktree + il loop.
+> **Icone**: 23 glifi nuovi, i nomi senza glifo passano da **18 a 1** (`GitForWindows`, marchio,
+> lasciato di proposito); ogni path ricamminato aritmeticamente dentro il box 0..24.
+> **Link**: `App.Link` da **0 a 10** call site; `App.Accent` mancava il 4,5:1 in 9 delle 16
+> combinazioni superficie x famiglia, `App.Link` le passa tutte. La colonna Commit ID è stata
+> verificata **non cliccabile** e lasciata.
+> **Contorni**: `App.Border` misura 1,08:1 e non può delimitare un controllo (1.4.11 chiede 3:1).
+> Alzati su **tre** livelli — chiavi Fluent, nuova chiave di palette `App.BorderStrong`, default di
+> `TextBoxSurface` — perché ognuno batte il precedente. Nelle famiglie Classic `App.BorderStrong` **è**
+> `App.Border`, così il classico non si muove (verificato a schermo).
+> **Tab**: stessa causa di M93; una terza proprietà l'aveva senza che nessuno lo sapesse
+> (`PART_SelectedBar`: la barra d'accento lampeggiava bianca a ogni cambio di tab). Rampa vecchia con
+> picco 4,6x l'estremo più chiaro, nuova monotona.
+> **pressed/focus** fotografati per la prima volta: pressed `#53545B`, anello di focus 2px accento +
+> alone 1px. **Difetto trovato qui**: l'anello stava *fuori* dal controllo con un margine negativo ed
+> era **tagliato** dal contenitore — un pulsante di toolbar mostrava solo i lati. Ora è dentro i limiti.
+> **Da NON riscoprire**: chiave Fluent < valore locale < risorsa pinnata sull'istanza — alzare solo la
+> prima non si vede; un nome di icona di upstream può essere semanticamente sbagliato per il suo call
+> site e accorgersene solo quando il PNG "giusto per caso" diventa un glifo (`Preview` → occhio dove
+> serviva una lente). Dettaglio in `PORTING.md` → M94.
+
+> ### ► **M93** (2026-08-04) — **la riga sotto il puntatore si vede**, e il flash bianco sparisce
+> Due segnalazioni con screenshot. (1) L'hover della griglia dipingeva `App.PanelAlt`, che **è** il
+> fondo delle righe dispari: invisibile. Tre chiavi nuove in tutte e quattro le famiglie (34 → 37):
+> `App.HoverRow` (l'unico fondo di riga con una **tinta**, `App.Panel` verso `#38BDF8`), `App.Hover`,
+> `App.Pressed`. Percentuali fissate da `App.TextDim` ≥ 4,5:1, non dal testo pieno.
+> (2) Il flash bianco era **`Brushes.Transparent`**, che è `#00FFFFFF` — bianco con alpha 0 — usato
+> come valore di riposo di una proprietà **animata** (`ModernStyles.PresenterTransitions`): ogni hover
+> interpolava attraverso bianco semi-opaco (misurato: picco `#78787D` su una toolbar `#2F3038`).
+> Riposo ora = colore di hover ad alpha 0, e i `toolbtn` escono dal cross-fade; `MenuFlyoutItemBackground`
+> passa a `panel`. Hover/pressed della toolbar lasciano `App.PanelAlt`/`App.Panel`, che erano più
+> **scuri** della barra.
+> **Da NON riscoprire**: `Brushes.Transparent` come punto di partenza di un'animazione = flash chiaro
+> su fondo scuro; il valore giusto è *il colore d'arrivo ad alpha 0*. Resta esposto solo il `TabItem`.
+> Misurato in tutte e quattro le combinazioni tema × stile. Dettaglio in `PORTING.md` → M93.
+
+> ### ► **M92** (2026-08-03) — **Diff e Stash seguono la larghezza a cui li trascini**
 > Segnalazione dell'utente con screenshot. La larghezza iniziale stava sul **figlio** dentro colonne
 > `Auto` (`_files.Width = 320`, `listPanel.Width = 340`, `_filesGrid.Width = 320`): il `GridSplitter`
 > ridimensiona la **colonna**, il figlio restava alla sua misura e fra il suo bordo e lo splitter si
@@ -288,9 +341,9 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > **Da NON riscoprire**: dentro un `Grid` con splitter la misura appartiene alla **colonna**, mai al
 > figlio — `FileTreeView` (`"300,Auto,*"`) era l'unico dei tredici a farlo giusto e l'unico senza il
 > difetto. Misurato: colonna dei file di Stash 320 → 401 px, contigua allo splitter, zero pixel morti.
-> Dettaglio in `PORTING.md` → M82.
+> Dettaglio in `PORTING.md` → M92.
 
-> ### ► **M81** (2026-08-03) — **submodule dei submodule** nell'albero, e il doppio clic che li apre. Prossima milestone libera: **M82**
+> ### ► **M91** (2026-08-03) — **submodule dei submodule** nell'albero, e il doppio clic che li apre
 > Richiesta dell'utente con screenshot dell'originale a confronto. La categoria Submodules era una
 > lista **piatta** (`GetSubmodulesLocalPaths(recursive: false)`, `git submodule status` senza
 > `--recursive`): un submodule di un submodule non c'era. Ora è una **gerarchia** come
@@ -304,7 +357,7 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > ospite di una riga è la **dirname del path completo**, non il nodo del super-project: appenderlo al
 > secondo fa sparire le cartelle intermedie (sbagliato al primo tentativo, visto a schermo);
 > (c) il branch si legge dal file `HEAD` risolvendo `gitdir:`, non con un `git` per submodule.
-> Dettaglio in `PORTING.md` → M81.
+> Dettaglio in `PORTING.md` → M91.
 
 > ### ► ROUND 13 — iterazione 2: **M80** (2026-08-03) — **lo stile è una scelta**
 > Richiesta dell'utente subito dopo M79 (*«dammi la possibilità di scegliere dalle impostazioni se

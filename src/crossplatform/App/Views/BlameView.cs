@@ -369,7 +369,7 @@ public sealed class BlameView : UserControl
             Margin = new Thickness(8, 4, 8, 4),
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -797,7 +797,7 @@ public sealed class BlameView : UserControl
         Padding = new Thickness(6, 2, 6, 2),
         Background = B("App.Panel"),
         Foreground = B("App.Text"),
-        BorderBrush = B("App.Border"),
+        BorderBrush = B("App.BorderStrong"),
         BorderThickness = new Thickness(1),
         VerticalAlignment = VerticalAlignment.Center,
     };
@@ -814,7 +814,7 @@ public sealed class BlameView : UserControl
             Margin = new Thickness(2, 0, 2, 0),
             Background = B("App.Control"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };

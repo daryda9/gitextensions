@@ -436,7 +436,9 @@ public sealed class DiffView : UserControl
             MinHeight = 0,
             Background = B("App.Panel"),
             Foreground = B("App.Text"),
-            BorderBrush = B("App.Border"),
+            // Same reasoning as FindTextBox: an editable box on the toolbar strip whose
+            // only boundary is this line, so it needs App.BorderStrong's 3:1.
+            BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -1468,7 +1470,10 @@ public sealed class DiffView : UserControl
         Padding = new Thickness(6, 2, 6, 2),
         Background = B("App.Panel"),
         Foreground = B("App.Text"),
-        BorderBrush = B("App.Border"),
+        // App.BorderStrong: the find/goto boxes are editable TextBoxes sitting on the
+        // find bar's App.Toolbar fill, and App.Panel is only 1.13:1 against it, so the
+        // 1px outline alone says where the typing area is. WCAG 1.4.11 asks 3:1 there.
+        BorderBrush = B("App.BorderStrong"),
         BorderThickness = new Thickness(1),
         VerticalAlignment = VerticalAlignment.Center,
         VerticalContentAlignment = VerticalAlignment.Center,

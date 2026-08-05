@@ -3260,7 +3260,212 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
-## M82 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
+## M95 (2026-08-05) — la chrome moderna è piatta: la toolbar non è più una fascia di un altro colore
+
+> Richiesta dell'utente (screenshot della fascia superiore): «Di default la toolbar è di colore
+> diverso rispetto al resto nella modalità dark, fixa». Base `1b9a53aa0`.
+
+**Misura prima del fix**, campionando lo screenshot dell'utente: la barra dei menu era **a due
+tonalità** — `#1C1D21` (App.Panel) fino a x≈748, `#2F3038` (App.Toolbar) da lì a destra — e la
+striscia della toolbar sotto era `#2F3038` per tutta la larghezza, contro `#1C1D21` di ogni
+pannello del contenuto. Due difetti, una causa: **App.Toolbar era un gradino a sé** nella rampa.
+Il taglio verticale nella barra dei menu è il controllo `Menu` che dipinge il proprio fondo
+(`MenuFlyoutItemBackground` = panel dal M93) sopra il contenitore `MainMenu`, che dipingeva
+App.Toolbar: dove il `Menu` finisce, riappare il colore del contenitore.
+
+**Fix**: nelle sole famiglie **Modern**, `App.Toolbar` = `App.Panel` (`#1C1D21` dark, `#FDFDFD`
+light). Un solo valore, e ogni barra dell'app si appiattisce insieme — non solo menu e toolbar
+principale, ma anche i 15 call-site che leggono `App.Toolbar` (RevisionGridView, DiffView,
+BlameView, FileTreeView, RepoObjectsTree, CommitDetailView, FileHistoryView, ConsoleView,
+CommitDialog). Correggere solo `MainMenu`/`MainToolbar` avrebbe reso *quelle* barre le nuove
+diverse. Precedente esatto già nel file: `App.Control` (le superfici di input) **è** `App.Panel`
+dal M77, e gli input si vedono per il contorno, non per il fondo — dal M94 quel contorno misura
+3:1 (`App.BorderStrong`), quindi la condizione era già soddisfatta prima di appiattire.
+La separazione fra chrome e contenuto resta la **regola da 1px** già presente in fondo a
+`MainToolbar` (`BorderThickness = 0,0,0,1`).
+
+Nessun numero di contrasto del M67/M70/M77/M94 decade: `App.Toolbar` era la superficie **più
+chiara** del tema dark e la peggiore per ogni inchiostro, quindi togliendola i minimi **salgono**
+— `App.TextDim` 4.70 → 5.75:1, `App.Border` 1.23 → 1.58:1. In light idem (`App.TextDim`
+4.67 → 5.29:1). L'unica conseguenza da registrare è che `App.PanelAlt` (`#26272D`) ora è la
+superficie più chiara della rampa: le strisce alternate della griglia sono più chiare delle barre,
+non più il contrario.
+
+**Classic resta intatta di proposito**: `#333337` sotto la barra dei menu è la firma del 2015, e
+lo stile classico esiste per riprodurla. Verificato a schermo su tre configurazioni con Xvfb —
+Modern Dark `#1C1D21` uniforme su menu + toolbar + barra filtri + tab strip, Modern Light
+`#FDFDFD` uniforme, Classic Dark ancora `#333337` sulla fascia e `#252526`/`#2D2D30` sotto.
+
+## M94 (2026-08-05) — icone complete, link con il loro inchiostro, contorni che misurano, focus che non si taglia
+
+> Richiesta dell'utente: chiudere gli step 4, 3, 5, 7 e 6 della coda di modernizzazione. Quattro
+> subagent in worktree isolati su file disgiunti + il loop. Base `64e2522f9`.
+
+### Step 4 — copertura icone: da 18 nomi sul PNG a **uno**
+`Icons.cs` guadagna 23 glifi nuovi. Le forme non sono riempitivi: `CleanupRepo` è una **scopa**
+(`git clean` spazza gli untracked, non distrugge i tracked, quindi non il cestino), `DeleteIndexLock` è
+un **lucchetto aperto** (rilascia il repo), `CompressGitDatabase` è la scatola dell'object store
+schiacciata (volutamente diversa dalla scopa), `RemoteDelete` è la **nuvola dei remote sbarrata** e non
+un cestino (scollega, non cancella sul server), i quattro `Bisect*` si distinguono **fra loro** perché
+l'utente li vede in fila. `plugin` è minuscolo: il dizionario è `Ordinal` e la chiave maiuscola
+sarebbe caduta sul PNG in silenzio.
+Verificato sull'app: il log `[IconLoader] icon '…' has no vector glyph` passa da **18 nomi a 1**, e
+l'unico rimasto è **`GitForWindows`**, lasciato di proposito — è un marchio di prodotto, e nessuna
+line art 24x24 dice quello che dice il logo.
+Ogni path nuovo è stato **ricamminato aritmeticamente** (M/L/h/v/H/V/a/q/z, archi e quadratiche
+campionate): tutti dentro il box 0..24 su entrambi gli assi, i più estesi `Wrench` (x 3..22, y 2..21) e
+`Compress` (y 2,5..21,5), quindi con tratto 2 nessuno tocca il clip.
+
+**Difetto trovato dalla verifica a schermo, non dal codice**: il pulsante di ricerca dell'albero
+chiedeva l'icona di upstream chiamata **`Preview`**, il cui PNG del 2015 era *per caso* una lente.
+Appena quel nome ha avuto un glifo vero, il pulsante è diventato un **occhio**. Il call site ora chiede
+`Search`, e la lente — che aveva il `const` ma **nessuna chiave** nel dizionario — è registrata.
+
+### Step 3 — `App.Link` ha finalmente dei call site
+Erano **zero**: tutti i link leggevano `App.Accent`, che è tarato come riempimento. Ora 10 call site
+(`CommitDetailView` x5, `HelpImagePanel`, `ResolveConflictsDialog`, `DashboardView` x3). Il criterio è
+*cliccabile*, non *blu*: restano su `App.Accent` i bordi delle pill, gli `@@` degli hunk (enfasi, non
+link), i badge ahead/behind, il caret del terminale, i riempimenti dei banner.
+**La colonna Commit ID è stata verificata e lasciata**: `AddCell` imposta solo il foreground, non c'è
+handler di click né hit-test — è codice colorato, non un link.
+
+| superficie | Classic dark | Classic light | Modern dark | Modern light |
+|---|---|---|---|---|
+| App.Window | 3,70 → **6,30** | 4,06 → **5,32** | 4,96 → **6,65** | 6,05 → **6,41** |
+| App.Panel | 3,40 → **5,79** | 4,51 → **5,90** | 4,58 → **6,13** | 6,59 → **6,98** |
+| App.PanelAlt | 3,04 → **5,19** | 3,82 → **4,99** | 4,05 → **5,42** | 5,64 → **5,97** |
+| App.Toolbar | 2,79 → **4,75** | 3,55 → **4,64** | 3,57 → **4,78** | 5,19 → **5,50** |
+
+`App.Accent` mancava il 4,5:1 in **9 delle 16** combinazioni; `App.Link` le passa tutte.
+
+### Step 5 — un contorno che può delimitare un controllo da solo
+`App.Border` misura **1,08:1** (Modern dark) e 1,32 (light) contro le superfici su cui un controllo
+sta: va bene come separatore, non come contorno (WCAG 1.4.11 chiede 3:1).
+Fatto su tre livelli, perché ognuno può out-shoutare il precedente:
+1. **chiavi Fluent** in `ModernStyles`: bordo a riposo su `borderStrong` (0,45 → 3,30:1 / 3,32:1) e
+   hover su un nuovo `borderHover` (0,65 → 4,96:1 / 5,52:1). 0,45 è il **pavimento**: a 0,40 sono
+   2,92 / 2,97;
+2. **chiave di palette `App.BorderStrong`** (nuova, tutte e quattro le famiglie) perché ~39 call site
+   disegnano la propria chrome e non possono raggiungere un brush interno a quel file;
+3. **`TextBoxSurface`**, che pinna il bordo nelle `Resources` dell'**istanza** — cioè esattamente ciò
+   che batte le chiavi Fluent — e il cui default passa a `App.BorderStrong`.
+
+Nelle famiglie **Classic** `App.BorderStrong` **è** `App.Border`: il classico è definito come
+l'aspetto di prima, e un contorno nitido attorno a ogni input sarebbe un aspetto nuovo. Verificato a
+schermo: Classic dark mostra ancora `#3F3F46` su `#252526`.
+Convertiti i contorni di controllo in 11 file (filtri e caselle di ricerca di albero, dashboard,
+toolbar e sua copia in overflow; griglia delle patch; input di encoding/find; picker di blame; il box
+del messaggio di merge, che la checkbox rende editabile; la lista dei conflitti; il pulsante di aiuto).
+**Restano su `App.Border`**, con ragione: filetti da 1px, `GridSplitter`, separatori dentro gli split
+button, cornici di raggruppamento (`HeaderedContentControl`, i `Border` dei radio group), pannelli
+informativi non interattivi, superfici console opache e **tutti** gli stati `*Disabled` — 1.4.11
+esclude i componenti inattivi, e un controllo spento con un contorno nitido si legge come un controllo
+attivo disegnato male.
+
+### Step 7 — il `TabItem` non può più lampeggiare
+Stessa causa di M93: `Brushes.Transparent` è `#00FFFFFF`. Tre proprietà ce l'avevano, e una è stata
+scoperta leggendo — il selettore `OfType<TabItem>().Template().OfType<Border>()` prende **anche**
+`PART_SelectedBar`, quindi la barra d'accento lampeggiava bianca a ogni cambio di tab. Ogni riposo è
+ora il colore d'arrivo ad alpha 0 (helper `Faded()`, che segue la palette).
+Misurato sulla luminanza relativa, Modern dark (`#141518` → `#252629`): la vecchia rampa arrivava a
+**0,0885** contro un estremo massimo di 0,0194 — **4,6x** — la nuova sale monotona da 0,0086 a 0,0177 e
+non esce mai dall'intervallo. A schermo: `#141518` → `#252629` senza picchi.
+
+### Step 6 — pressed e focus, fotografati per la prima volta
+- **pressed**: pulsante di toolbar `#2F3038` → hover `#41424A` → **`#53545B`**; un `Button` normale
+  fa hover `#41424A` e pressed `#53545B`. Coincidono alla cifra con `surfaceHover`/`surfacePressed` di
+  `ModernStyles`, che è la conferma che le chiavi nuove di M93 hanno la stessa derivazione del resto.
+- **focus**: l'anello si vede — 2px `#3B82F6` (3,57:1 sulla toolbar) con l'alone `#E4E4E7` da 1px.
+- **Difetto trovato qui, e corretto**: l'anello aveva un **margine negativo** per stare *fuori* dal
+  bordo del controllo, e la parte esterna era **tagliata** da chi impacchetta il controllo. Misurato:
+  un pulsante di toolbar focalizzato mostrava l'anello a sinistra e a destra e **niente sopra e sotto**,
+  perché la barra è alta esattamente quanto il pulsante. *Un indicatore di focus che dipende dallo
+  spazio libero del contenitore non è un indicatore.* Disegnato dentro i limiti è intero su tutti i
+  controlli provati (pulsante icona di toolbar, tab del pannello inferiore, riga della griglia).
+
+### Da NON riscoprire
+- **Tre livelli possono sovrascriversi**: chiave Fluent < valore locale sul call site < risorsa pinnata
+  sull'istanza. Alzare solo il primo non basta e **non si vede** — è quello che è successo con i
+  `TextBox` di `TextBoxSurface` e con i 39 call site.
+- Un nome di icona di upstream può essere **semanticamente sbagliato** per il suo call site e non
+  accorgersene finché il PNG casualmente giusto viene sostituito da un glifo (`Preview` → lente →
+  occhio).
+- Il watchdog dei 600 s ha ucciso **cinque volte** i quattro subagent, sempre per analisi lunga prima
+  del primo commit. Ciò che ha funzionato: dire *un file finito = un commit immediato*, dare un tetto
+  di due minuti per file con l'obbligo di dichiarare "non deciso", e vietare di avviare Xvfb (la
+  verifica GUI resta nel loop). Due volte il lavoro utile era **non committato** nel worktree: si
+  recupera con `git -C <worktree> diff` e `git apply`, senza rilanciare nulla.
+
+## M93 (2026-08-04) — la riga sotto il puntatore si vede, e il flash bianco della toolbar sparisce
+
+> Due segnalazioni dell'utente con screenshot: *«il colore della riga su cui sono con il cursore è
+> uguale a quello delle righe scure normalmente presenti, preferirei un colore diverso, tipo
+> celestino»* e *«nel tema scuro, quando scorro sui pulsanti della toolbar e/o sui menu a tendina, fa
+> per un istante un hover del tasto completamente bianco, poi scompare la selezione di hover»*.
+
+### 1. L'hover della griglia era il colore della zebra
+`RevisionRowView.Sync` dipingeva l'hover con **`App.PanelAlt`**, che è *esattamente* il fondo delle
+righe dispari: sulle righe dispari l'hover non cambiava nulla, sulle pari sembrava la zebra.
+Tre chiavi nuove in tutte e quattro le famiglie (34 → 37 chiavi): `App.HoverRow`, `App.Hover`,
+`App.Pressed`.
+`App.HoverRow` è **l'unico fondo di riga con una tinta** — `App.Panel` tirato verso `#38BDF8` — quindi
+nessuna zebra può somigliargli. Misure (contrasto WCAG con le due inchiostrazioni che la riga porta e
+col marker verde dei ref):
+
+| famiglia | HoverRow | Text | TextDim | marker | vs Panel | vs PanelAlt |
+|---|---|---|---|---|---|---|
+| Modern dark | `#20333F` (14%) | 10,30 | **4,68** | 8,30 | 1,29 | 1,14 |
+| Modern light | `#D2EFFC` (22%) | 14,30 | **5,03** | 4,46 | 1,18 | 1,01 |
+| Classic dark | `#27343B` (10%) | 9,33 | **4,61** | 8,13 | 1,20 | 1,07 |
+| Classic light | `#D3F0FD` (22%) | 14,01 | **4,55** | 4,50 | 1,19 | 1,01 |
+
+Il vincolo che ha fissato le percentuali è `App.TextDim` (≥ 4,5:1), non il testo pieno; il marker
+verde resta ai valori che aveva già sulla zebra (4,51 → 4,46 chiaro, 9,45 → 8,30 scuro).
+
+### 2. Il flash bianco: `Brushes.Transparent` è bianco
+`Brushes.Transparent` **non** è "niente": è `#00FFFFFF`, cioè **bianco** con alpha 0. La superficie
+moderna fa il cross-fade del `Background` del `ContentPresenter`
+(`ModernStyles.PresenterTransitions`), quindi ogni hover interpolava *da bianco trasparente* al
+riempimento di hover, passando per **bianco semi-opaco**. Misurato sul pulsante `Commit info` in
+Modern dark: riposo `#2F3038` → **picco `#78787D` in 40 ms** → discesa al valore finale. Identico
+sulle voci dei menu a tendina, dove `MenuFlyoutItemBackground` era anch'esso `Brushes.Transparent`.
+
+Correzioni:
+- riposo dei `toolbtn` = **il colore di hover ad alpha 0** (`Fade(hover)`), così il fade è una pura
+  rampa di opacità e nessun terzo colore compare mai. Partendo invece dal colore *della barra* ad
+  alpha 0, il tema chiaro scendeva a `#BEBEC3` prima di risalire — misurato, e scartato;
+- i `toolbtn` **escono dal cross-fade** (`Transitions` vuote nello stile locale, che vince perché è
+  dichiarato sul controllo e non sull'`Application`): la transizione era ciò che rendeva visibile
+  l'artefatto, e una barra di pulsanti piccoli sotto un puntatore che si muove legge meglio se lo
+  stato scatta;
+- `MenuFlyoutItemBackground` / `…Disabled` = `panel`, che è esattamente ciò con cui è dipinto il
+  presenter del flyout: identico a riposo, senza bianco da attraversare.
+
+### 3. L'hover della toolbar era più scuro della toolbar
+`hover = App.PanelAlt`, `pressed = App.Panel`: **entrambi più scuri** di `App.Toolbar`, quindi "sotto
+il puntatore" si leggeva come un buco. Ora `App.Hover` / `App.Pressed` — la barra tirata al 10% e al
+20% verso l'inchiostro, la stessa regola che `ModernStyles` usa per ogni altro controllo, e infatti in
+Modern dark il valore coincide alla cifra con `surfaceHover` (`#41424A`).
+
+### Verifica (Xvfb `:219`, campionamento dei pixel ogni 15–20 ms durante l'hover)
+| combinazione | riga sotto il puntatore | pulsante di toolbar |
+|---|---|---|
+| Modern dark | `#26272D` → `#20333F` | `#2F3038` → `#41424A`, **un solo passo** |
+| Modern light | `#EBEBEF` → `#D2EFFC` | `#E2E2E8` → `#CECED4`, un solo passo |
+| Classic dark | `#252526` → `#27343B` | `#333337` → `#444448` |
+| Classic light | `#FFFFFF` → `#D3F0FD` | `#E4E4E4` → `#D0D0D0` |
+
+Voce di menu a tendina, Modern dark: `#1C1D21` → `#2A2B2F` **monotona**, nessun picco chiaro (prima
+il picco era a `#78787D`).
+
+### Da NON riscoprire
+`Brushes.Transparent` è bianco trasparente: come **valore di partenza di un'animazione** introduce un
+flash chiaro su qualunque fondo scuro. Se una proprietà animata parte da "invisibile", il valore
+giusto è *il colore di arrivo ad alpha 0*, non `Transparent`. Restano con `Brushes.Transparent` a
+riposo il `TabItem` (`ModernStyles`, fondo dietro non garantito) e le righe della griglia (il cui
+presenter non è animato): il primo è l'unico punto ancora esposto allo stesso artefatto.
+
+## M92 (2026-08-03) — i pannelli di Diff e Stash seguono la larghezza a cui li trascini
 
 > Segnalazione dell'utente con due screenshot: *«sia in diff che in stash, se ridimensiono le sezioni
 > di sotto, queste non si stickano alla larghezza del contenitore»*.
@@ -3286,7 +3491,7 @@ Zero pixel fra il bordo del contenuto e lo splitter in tutti i casi — la stris
 screenshot non c'è più. Cercati altri `GridSplitter` con lo stesso schema: solo questi due (gli altri
 undici usano colonne in pixel o in star).
 
-## M81 (2026-08-03) — i submodule dei submodule, e il doppio clic che li apre
+## M91 (2026-08-03) — i submodule dei submodule, e il doppio clic che li apre
 
 > Richiesta dell'utente con screenshot dell'originale a confronto: *«nella versione originale si
 > possono vedere anche i submodules dei submodules, a noi no, inoltre vorrei che quando faccio

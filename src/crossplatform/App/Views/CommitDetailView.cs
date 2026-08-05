@@ -987,9 +987,13 @@ public sealed class CommitDetailView : UserControl
                 inlines.Add(new Run(text[cursor..link.Start]));
             }
 
+            // App.Link, not App.Accent: this run is clickable text, and the accent is
+            // tuned as a fill (borders, bars, selection) — it only reaches 3.40:1 on
+            // App.Panel in classic dark. App.Link is the text-grade blue, ≥ 4.5:1
+            // against every surface in all four families.
             inlines.Add(new Run(text.Substring(link.Start, link.Length))
             {
-                Foreground = B("App.Accent"),
+                Foreground = B("App.Link"),
                 TextDecorations = TextDecorations.Underline,
             });
 
@@ -1186,7 +1190,8 @@ public sealed class CommitDetailView : UserControl
         TextBlock link = new()
         {
             Text = display,
-            Foreground = B("App.Accent"),
+            // Clickable mailto ink, so App.Link rather than the fill-grade accent.
+            Foreground = B("App.Link"),
             TextDecorations = TextDecorations.Underline,
             Margin = new Thickness(0, 3, 0, 3),
             TextWrapping = TextWrapping.Wrap,
@@ -1232,7 +1237,9 @@ public sealed class CommitDetailView : UserControl
         {
             Text = shortHash,
             FontFamily = Monospace,
-            Foreground = B("App.Accent"),
+            // An openable sha is a link, and a short monospace hash is the hardest
+            // thing on the pane to read — it gets the text-grade blue.
+            Foreground = B("App.Link"),
             TextDecorations = TextDecorations.Underline,
             Margin = new Thickness(0, 0, 12, 0),
             Cursor = new Cursor(StandardCursorType.Hand),
@@ -1302,7 +1309,10 @@ public sealed class CommitDetailView : UserControl
             // dressed as a link would be a button that does nothing.
             if (_rendered?.Refs.TryGetValue(name, out string? hash) is true && hash.Length > 0)
             {
-                caption.Foreground = B("App.Accent");
+                // Only the caption turns into link ink; the pill's border keeps the
+                // accent, which is what an accent is for. App.Control equals App.Panel
+                // in all four families, so the measured surface is the panel.
+                caption.Foreground = B("App.Link");
                 pill.Cursor = HandCursor;
                 pill.PointerPressed += (_, e) =>
                 {
@@ -1341,7 +1351,9 @@ public sealed class CommitDetailView : UserControl
         TextBlock link = new()
         {
             Text = name,
-            Foreground = isTag ? B("App.Accent") : B("App.GraphGreen"),
+            // The tag half is a link, so it moves to App.Link; the branch half stays on
+            // App.GraphGreen, which encodes "branch" and is not ours to retune here.
+            Foreground = isTag ? B("App.Link") : B("App.GraphGreen"),
             FontWeight = FontWeight.SemiBold,
             TextDecorations = TextDecorations.Underline,
             Cursor = HandCursor,

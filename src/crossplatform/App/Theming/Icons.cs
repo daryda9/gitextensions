@@ -192,6 +192,116 @@ internal static class Icons
     private const string Search = "M6 11a5 5 0 1 0 10 0a5 5 0 1 0-10 0 M15.5 15.5l4.5 4.5";
     private const string Filter = "M3 5h18l-7 8v7l-4-2v-5z";
 
+    // A bisect is a halving of a range, so the glyph is a range: a history line
+    // with both ends capped and an arrow singling out the commit in the middle.
+    // Deliberately not the plain Commit dot, which stands for one commit.
+    private const string Bisect =
+        "M12 4v16 M9 4h6 M9 20h6 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 "
+        + "M2.5 12h7 M5.5 9l-3 3 3 3";
+
+    // The four bisect verdicts sit side by side in FormBisect's button row, so
+    // they share one ring — they are outcomes of a single command — and carry
+    // four inner marks that stay apart at 16px: tick, cross, jump, halt. The
+    // ring also keeps them clear of the bare Check, which already means
+    // checkout in the same context menu.
+    private const string Ring = "M3.5 12a8.5 8.5 0 1 0 17 0a8.5 8.5 0 1 0-17 0";
+    private const string RingCheck = Ring + " M8 12.5l3 3 5.5-6";
+    private const string RingCross = Ring + " M9 9l6 6 M15 9l-6 6";
+    private const string RingSkip = Ring + " M9 8.5l3.5 3.5-3.5 3.5 M15.5 8.5v7";
+    private const string RingStop = Ring + " M9.5 9.5h5v5h-5z";
+
+    // Handing the working directory to another program: the folder plus the
+    // arrow that every "leaves this window" affordance uses.
+    private const string FolderExternal =
+        "M2.5 19.5V8h5l1.75 2.25H13v9.25Z M16 4h5.5v5.5 M16 9.5l5.5-5.5";
+
+    // git clean sweeps untracked files out of the working tree, which is a
+    // broom and not the bin: nothing tracked is being deleted.
+    private const string Broom = "M12 2v8 M7.5 10h9l1.5 5.5H6z M9 15.5v4 M12 15.5v4 M15 15.5v4";
+
+    // A clone is a copy pulled down from a remote, so it is the same cloud the
+    // remote names use with the download arrow through its floor.
+    private const string CloudDownload =
+        "M7 13h9a3.25 3.25 0 0 0 0-6.5 6 6 0 0 0-9.6-1.2A4.5 4.5 0 0 0 7 13 "
+        + "M12 13v8 M8.5 17.5l3.5 3.5 3.5-3.5";
+
+    // Two chevrons folding towards the middle: the rows come together. The
+    // mirror image would read as expand, so the direction carries the meaning.
+    private const string CollapseVertical = "M7 5l5 5 5-5 M7 19l5-5 5 5";
+
+    // Packing the object database is a squeeze, not a sweep: the store is the
+    // box and the two arrows press it from both sides. Kept distinct from
+    // Broom so gc and clean cannot be confused in the same menu.
+    private const string Compress =
+        "M4.5 10h15v4h-15z M12 2.5v5 M9.5 5l2.5 2.5 2.5-2.5 M12 21.5v-5 M9.5 19l2.5-2.5 2.5 2.5";
+
+    // Removing a stale index.lock releases the repository rather than destroying
+    // anything, so the shackle springs open instead of a bin closing over it.
+    private const string LockOpen = "M5.5 11h13v9.5h-13z M8.5 11V7.5a3.5 3.5 0 0 1 6.8-1.2";
+
+    // The backspace key: clearing what was typed, which is what the text-box
+    // "delete" affordance does. Not the bin, which stands for deleting on disk.
+    private const string Backspace = "M9 4h11v16H9L2.5 12z M13 9l5 6 M18 9l-5 6";
+
+    // The two files the repository menu offers to open are told apart by what
+    // they hold, not by the pencil they share: config carries the same sliders
+    // Settings uses, .gitignore carries the stroke that crosses lines out.
+    private const string FileSliders =
+        "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M9 12h6 M9 16.5h6 M11 10.5v3 M13 15v3";
+    private const string FileIgnore = "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M8 17.5l8-8";
+
+    // git maintenance is the servicing task behind the plumbing commands, so it
+    // is the tool rather than any one of their shapes.
+    private const string Wrench =
+        "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77"
+        + "a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91"
+        + "a6 6 0 0 1 7.94-7.94l-3.76 3.76z";
+
+    // Looking without opening.
+    private const string Eye = "M2.5 12q9.5-8 19 0 q-9.5 8-19 0 M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0";
+
+    // fsck pulls unreachable objects back out of the store: the crate is the
+    // object database and the arrow lifts something out of it, which is the one
+    // direction that distinguishes recovering from archiving.
+    private const string ArchiveRestore =
+        "M4.5 9h15v11h-15z M4.5 9l2-4h11l2 4 M12 17V11 M9.5 13.5l2.5-2.5 2.5 2.5";
+
+    // The marker laid over a line of text: the setting colours code, it does not
+    // change it, so the pen is over the line rather than on it.
+    private const string Highlighter =
+        "M6 14.5l6-6 4.5 4.5-6 6H6z M12.5 8l3.5-3.5 4 4-3.5 3.5 M4 21h16";
+
+    // The working directory with edits pending in it: the folder every path in
+    // this set uses, wearing the pencil that FilePen uses for a modified file.
+    private const string FolderPen =
+        "M3 18V6h6l2 3h5v2 M3 18h8 M18.5 11.5l2 2-6.5 6.5H11.5v-2.5z";
+
+    // Unstaging drops an entry from the staged list; the minus says which way it
+    // goes without borrowing Pull's arrow, which already means something else.
+    private const string ListMinus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5";
+
+    // The bare pencil for renaming. It is FilePen without the page on purpose:
+    // the only call site renames a branch, so there is no file to draw, and
+    // keeping the same pencil ties it to the edited-thing family.
+    private const string Pencil = "M16.5 3.5l4 4-13 13H3.5v-4z M14 6l4 4";
+
+    // Removing a remote unhooks it, it does not destroy anything on the server,
+    // so it is the cloud every remote uses struck through — the same negation
+    // StarOff applies — rather than the bin.
+    private const string CloudOff = Cloud + " M4 4l16 16";
+
+    // Reordering: the same arrows as NavigateBackward and NavigateForward turned
+    // through a quarter turn, because moving a row is the same gesture.
+    private const string ArrowUp = "M12 20V4 M6 10l6-6 6 6";
+    private const string ArrowDown = "M12 4v16 M6 14l6 6 6-6";
+
+    // Expand is CollapseVertical mirrored: the rows part instead of closing up.
+    private const string ExpandVertical = "M7 10l5-5 5 5 M7 14l5 5 5-5";
+
+    // A plug for a plugin: prongs up, cord down. The puzzle piece Lucide uses
+    // loses its notches at 16px, this does not.
+    private const string Plug = "M9 3v5 M15 3v5 M7 8h10v3a5 5 0 0 1-10 0z M12 16v5";
+
     private static readonly Dictionary<string, string> Data = new(StringComparer.Ordinal)
     {
         // Repository and folders
@@ -202,7 +312,20 @@ internal static class Icons
         ["DashboardFolderGit"] = FolderGit,
         ["DashboardFolderError"] = FolderError,
         ["RepoCreate"] = FolderGit,
+        ["CloneRepoGit"] = CloudDownload,
+        ["BrowseFileExplorer"] = FolderExternal,
         ["RecentRepositories"] = History,
+
+        // Repository maintenance. Each plumbing command gets its own shape:
+        // sweeping the working tree, packing the object store and unlocking the
+        // index are three different things and share nothing but the menu.
+        ["CleanupRepo"] = Broom,
+        ["CompressGitDatabase"] = Compress,
+        ["DeleteIndexLock"] = LockOpen,
+        ["Maintenance"] = Wrench,
+        ["RecoverLostObjects"] = ArchiveRestore,
+        ["EditGitConfig"] = FileSliders,
+        ["EditGitIgnore"] = FileIgnore,
 
         // Branches
         ["Branch"] = Branch,
@@ -240,6 +363,11 @@ internal static class Icons
         ["CommitSummary"] = Commit,
         ["CommitId"] = Commit,
         ["GotoCommit"] = Commit,
+        ["Bisect"] = Bisect,
+        ["BisectGood"] = RingCheck,
+        ["BisectBad"] = RingCross,
+        ["BisectSkip"] = RingSkip,
+        ["BisectStop"] = RingStop,
         ["RevertCommit"] = Undo,
         ["ResetCurrentBranchToHere"] = Rewind,
         ["ResetAnotherBranchToHere"] = Rewind,
@@ -290,10 +418,34 @@ internal static class Icons
         ["EditFile"] = FilePen,
         ["DeleteFile"] = Bin,
         ["CopyToClipboard"] = Copy,
+        ["Preview"] = Eye,
+
+        // Working tree state. A modified file is an edited file, so it reuses the
+        // pencil; unstaging is a list operation, not a transfer.
+        ["FileStatusModified"] = FilePen,
+        ["WorkingDirChanges"] = FolderPen,
+        ["Unstage"] = ListMinus,
+
+        // A rename is an edit of the name, so it carries the same pencil as the
+        // other two, without the page: the call site renames a ref, not a file.
+        ["Renamed"] = Pencil,
+
+        // Removing a remote unhooks it rather than destroying anything, so it is
+        // the remotes' own cloud struck through and not the bin.
+        ["RemoteDelete"] = CloudOff,
 
         // Navigation
         ["NavigateBackward"] = ArrowLeft,
         ["NavigateForward"] = ArrowRight,
+        ["CollapseAll"] = CollapseVertical,
+        ["ExpandAll"] = ExpandVertical,
+        ["ArrowUp"] = ArrowUp,
+        ["ArrowDown"] = ArrowDown,
+        ["DeleteText"] = Backspace,
+
+        // Lower-case on purpose: Data is Ordinal and the call site asks for
+        // "plugin", so "Plugin" would silently miss and fall back to the PNG.
+        ["plugin"] = Plug,
 
         // Chrome
         ["Settings"] = Sliders,
@@ -307,6 +459,12 @@ internal static class Icons
         ["star"] = Star,
         ["StarRemove"] = StarOff,
         ["EditFilter"] = Filter,
+        ["SyntaxHighlighting"] = Highlighter,
+
+        // The magnifier had a const but no key: the one call site that wanted it asked
+        // for upstream's "Preview" name, whose PNG happened to be a magnifier. It now
+        // asks for "Search" and this is what it gets.
+        ["Search"] = Search,
     };
 
     /// <summary>

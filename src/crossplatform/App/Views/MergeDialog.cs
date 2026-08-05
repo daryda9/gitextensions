@@ -238,7 +238,9 @@ public sealed class MergeDialog : Theming.ZoomWindow
                 AcceptsReturn = true,
                 Height = 60,
                 IsEnabled = false,
-                BorderBrush = Brush("App.Border", Brushes.Gray),
+                // App.BorderStrong: the box becomes editable with "Add merge message",
+                // and then its outline is the only thing that delimits it.
+                BorderBrush = Brush("App.BorderStrong", new SolidColorBrush(Color.Parse("#88898F"))),
                 BorderThickness = new Thickness(1),
             },
             Brush("App.Panel", Brushes.DimGray),

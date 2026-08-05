@@ -108,7 +108,10 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
         IBrush text = Brush("App.Text", Brushes.Gainsboro);
         IBrush dim = Brush("App.TextDim", Brushes.Gray);
-        IBrush border = Brush("App.Border", Brushes.DimGray);
+        // App.BorderStrong: this brush only outlines the conflict list — a selectable
+        // ListBox on App.Panel plus the header strip that caps the same box — so the
+        // 1px line is the control's only chrome and WCAG 1.4.11 asks 3:1 for it.
+        IBrush border = Brush("App.BorderStrong", new SolidColorBrush(Color.Parse("#88898F")));
 
         Title = T("FormResolveConflicts/$this.Text", "Resolve merge conflicts");
         Width = 720;
@@ -287,7 +290,10 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         helpContent.Children.Add(new TextBlock
         {
             Text = T("Help"),
-            Foreground = Brush("App.Accent", Brushes.DodgerBlue),
+            // App.Link is the text-grade blue; App.Accent is tuned as a fill and only
+            // reaches 3.40:1 on App.Panel in classic dark. Fallback is modern-dark
+            // App.Link so a missing key cannot silently restore the fill-grade colour.
+            Foreground = Brush("App.Link", new SolidColorBrush(Color.Parse("#5B9CFF"))),
             TextDecorations = TextDecorations.Underline,
             VerticalAlignment = VerticalAlignment.Center,
         });

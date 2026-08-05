@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Presenters;
 using Avalonia.Input;
@@ -374,8 +375,12 @@ public sealed class MainToolbar : UserControl
     {
         IBrush toolbar = Brush("App.Toolbar", "#333337");
         IBrush border = Brush("App.Border", "#3F3F46");
-        IBrush hover = Brush("App.PanelAlt", "#2D2D30");
-        IBrush pressed = Brush("App.Panel", "#252526");
+        // App.Hover / App.Pressed, not App.PanelAlt / App.Panel: those two are DARKER
+        // than the toolbar, so a button under the pointer read as a hole punched in the
+        // strip instead of a lift, and in the modern dark palette the hover was within
+        // a hair of the strip itself.
+        IBrush hover = Brush("App.Hover", "#444448");
+        IBrush pressed = Brush("App.Pressed", "#555558");
 
         Background = toolbar;
 
@@ -388,12 +393,32 @@ public sealed class MainToolbar : UserControl
         // style that part directly for both the resting and pointer-over states).
         // Added once, in the constructor: the styles live on the control itself and
         // survive the strip being rebuilt for a language change.
+        // The resting fill is the strip's own colour AT ALPHA 0 — invisible, exactly
+        // like Brushes.Transparent, so a checked button's own Background still shows
+        // through — and that is not a detail. Brushes.Transparent is #00FFFFFF,
+        // transparent WHITE, and the modern style cross-fades this very property
+        // (ModernStyles.PresenterTransitions): interpolating from transparent white to
+        // the hover fill walks through half-opaque WHITE, which is the flash the strip
+        // blinked on every hover — measured on screen, it peaked at #78787D over a
+        // #2F3038 toolbar before settling. Fading in from the HOVER colour at alpha 0
+        // makes the cross-fade a pure opacity ramp: no third colour is ever on screen,
+        // in either theme (the light theme dipped to #BEBEC3 when the ramp started from
+        // the toolbar's own hue instead).
         Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn")
             .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
         {
             Setters =
             {
-                new Setter(ContentPresenter.BackgroundProperty, Brushes.Transparent),
+                new Setter(ContentPresenter.BackgroundProperty, Fade(hover)),
+
+                // No cross-fade on a toolbar button: it is what made the flash visible
+                // in the first place, and a strip of small buttons under a moving pointer
+                // reads better switching cleanly than smearing between two fills. The
+                // modern style puts a Background/BorderBrush transition on every
+                // ContentPresenter (ModernStyles.PresenterTransitions); an empty
+                // Transitions here wins, because a style declared on this control is
+                // nearer than one declared on the Application.
+                new Setter(Animatable.TransitionsProperty, new Transitions()),
                 new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent),
                 new Setter(ContentPresenter.CornerRadiusProperty, new CornerRadius(3)),
             },
@@ -1199,7 +1224,7 @@ public sealed class MainToolbar : UserControl
             return;
         }
 
-        button.Background = on ? Brush("App.AccentFill", "#264F78") : Brushes.Transparent;
+        button.Background = on ? Brush("App.AccentFill", "#264F78") : Fade(Brush("App.Toolbar", "#333337"));
         button.BorderBrush = on ? Brush("App.Accent", "#007ACC") : Brushes.Transparent;
         if (icon is not null)
         {
@@ -2797,7 +2822,7 @@ public sealed class MainToolbar : UserControl
             Margin = new Thickness(0, 2),
             Background = Brush("App.Panel", "#252526"),
             Foreground = Brush("App.Text", "#DCDCDC"),
-            BorderBrush = Brush("App.Border", "#3F3F46"),
+            BorderBrush = Brush("App.BorderStrong", "#88898F"),
             FontSize = 12,
         };
         filterBox.TextChanged += (_, _) =>
@@ -3340,7 +3365,7 @@ public sealed class MainToolbar : UserControl
                     Watermark = source?.Watermark,
                     Background = Brush("App.Panel", "#252526"),
                     Foreground = Brush("App.Text", "#DCDCDC"),
-                    BorderBrush = Brush("App.Border", "#3F3F46"),
+                    BorderBrush = Brush("App.BorderStrong", "#88898F"),
                     BorderThickness = new Thickness(1),
                     FontSize = 12,
                     Padding = new Thickness(6, 2, 4, 2),
@@ -3638,4 +3663,12 @@ public sealed class MainToolbar : UserControl
         => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b
             ? b
             : new SolidColorBrush(Color.Parse(fallback));
+
+    // A brush's own colour at alpha 0: invisible, but the right STARTING POINT for a
+    // cross-fade. Brushes.Transparent is transparent white, so fading from it to any
+    // dark fill passes through half-opaque white — see the toolbtn styles.
+    private static IBrush Fade(IBrush brush)
+        => brush is ISolidColorBrush s
+            ? new SolidColorBrush(Color.FromArgb(0, s.Color.R, s.Color.G, s.Color.B))
+            : Brushes.Transparent;
 }
