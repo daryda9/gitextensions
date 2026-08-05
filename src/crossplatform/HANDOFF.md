@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M96** · `35a98fd3d` (**M95: chrome moderna piatta**) · `7fe3726a8` (**M94: icone complete, App.Link, contorni a 3:1, focus non tagliato**) · `5c5a03a64` (**M93: hover della riga + fine del flash bianco**) · `044ce45dc` (**M92: larghezze dei pannelli**) · `363961635` (**M91: submodule nidificati**). |
+| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M97** · `d582225f4` (**M96: densità della chrome, solo Modern**) · `35a98fd3d` (**M95: chrome moderna piatta**) · `7fe3726a8` (**M94: icone complete, App.Link, contorni a 3:1, focus non tagliato**) · `5c5a03a64` (**M93: hover della riga + fine del flash bianco**) · `044ce45dc` (**M92: larghezze dei pannelli**) · `363961635` (**M91: submodule nidificati**). |
 | Build | `Errori: 0` (31 warning preesistenti VSTHRD/CS). Harness M87: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -279,6 +279,29 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > una riga di status bar. L'infrastruttura giusta esiste già
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
+
+> ### ► **M96** (2026-08-05) — **densità della chrome, solo in Modern**
+> Richiesta: applicare le raccomandazioni del punto 2 della coda, **solo nello stile Modern**.
+> **Il vincolo cambia la forma del lavoro**: sostituire i letterali con token di `Metrics` NON
+> rende nulla dipendente dallo stile (un valore sul call-site è un local value e batte ogni
+> `Style`); la proprietà va TOLTA dal call-site e assegnata dal blocco che `ModernStyles`
+> installa e rimuove in blocco. Il "classico" è ciò che danno i `ControlTheme` di Fluent.
+> **Entrato**: padding 12,4 (pulsanti) e 8,4 (input), `MinHeight` 28 (Fluent: 32, che è un
+> bersaglio da dito), raggio **4 su tutta la chrome** (i pulsanti erano l'unico 6: a 28px legge
+> come pastiglia e in barra apre un cuneo fra vicini), tab header 12,4, riga della griglia **22**,
+> pulsanti di barra 4,4 / 8,4, icone 16 con **una** costante (i 42 `, 16)` erano il default del
+> parametro stesso).
+> **Due cose che nessuno `Style` raggiunge**: l'altezza di riga (la griglia disegna le proprie
+> righe → `RebindRows(preserveViewport: true)` su `StyleChanged`, `Post`-ato perché l'evento è
+> alzato *dentro* l'installazione del blocco) e i pulsanti di barra (helper che assegnano local
+> value → nuovo `Theming/StyleDensity.cs`; `MainToolbar` ricostruisce la striscia, gli altri 5
+> call-site prendono il valore alla costruzione successiva — limite dichiarato).
+> **Verificato live in entrambe le direzioni** con clic sintetici sulla pagina Appearance: passo
+> righe 22 → 20 → 22, nessun rebind fallito. Classic invariato alla cifra.
+> **Falso allarme corretto**: i «126 `FontSize` letterali» sono 83 × 12 (= baseline), 21 × 11 e
+> 6 × 13 (sulla scala), e i 10 × 10 **non sono testo** — sono i chevron `▾` e il marker `▶`.
+> Rinominarli con i token è un refactor a zero pixel. Le ~100 `Thickness` fuori griglia rimaste
+> sono margini di pannelli: cambiarle muoverebbe anche Classic. Dettaglio in `PORTING.md` → M96.
 
 > ### ► **M95** (2026-08-05) — **chrome moderna piatta**: la toolbar non è più un'altra tinta
 > Segnalazione utente: nel dark la toolbar è di un colore diverso dal resto. Misurato sullo

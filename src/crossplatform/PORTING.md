@@ -3236,6 +3236,78 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M96 (2026-08-05) — densità della chrome, e SOLO nello stile Modern
+
+> Richiesta dell'utente: applicare le raccomandazioni date sulle sei scelte del punto 2
+> della coda di modernizzazione, con un vincolo esplicito: «queste modifiche di stile devono
+> applicarsi solo quando viene selezionato lo stile "Modern" … quindi NON nello stile classic».
+> Base `bf1a86903`. Le scelte applicate: densità invariata ma allineata alla griglia base-4,
+> riga della griglia 22, icone 16 con una costante unica, valore fisso (non una preferenza
+> utente), raggio 4 su pulsanti e input, ambito finestra principale + dialoghi frequenti.
+
+### Il vincolo cambia la forma del lavoro, non solo i numeri
+Il piano ovvio — «sostituire i 126 `FontSize` e le 671 `Thickness` letterali con i token di
+`Metrics`» — **non produce nulla di dipendente dallo stile**: un valore scritto sul call-site è
+un *local value* e batte qualunque `Style`, quindi una view che scrive
+`Padding = Metrics.Density.ButtonPadding` ha solo spostato il letterale. La forma corretta è
+l'opposto: la proprietà va **togliata dal call-site** e assegnata dal blocco Modern, che
+`ModernStyles` installa e rimuove in blocco — ed è quel meccanismo, non una seconda tabella di
+numeri classici, a rendere la densità Modern-only. Il "classico" è ciò che danno i `ControlTheme`
+di Fluent, cioè esattamente l'aspetto che l'app aveva prima che il blocco esistesse.
+
+### Cosa è entrato
+| dove | Modern | Classic |
+|---|---|---|
+| `Button`/`ToggleButton` padding | 12,4 | Fluent (11,5,11,6) |
+| `TextBox`/`ComboBox` padding | 8,4 | Fluent |
+| altezza minima dei controlli | 28 | Fluent (32) |
+| raggio pulsanti e input | 4 | Fluent (0 / 4) |
+| padding header dei tab | 12,4 | 12,6 (baseline, entrambi) |
+| riga della griglia revisioni | 22 | 20 |
+| pulsanti di barra dell'app | 4,4 / 8,4 | 4,2 / 8,3 |
+| dimensione icone | 16, **stessa in entrambi** — costante unica | 16 |
+
+`ControlMinHeight` a 28 e non a 32: 32 è un bersaglio da dito, questa è un'app da mouse, e 28 è
+il multiplo di 4 più grande che tiene una riga di pulsanti sotto quella di upstream. Raggio 4 e non
+6 sui pulsanti: a 28px di altezza un angolo da 6 legge come pastiglia, e i pulsanti dell'app stanno
+spalla a spalla in barra, dove 6px aprono un cuneo visibile di fondo fra vicini. Ora tutta la
+chrome ha **un solo angolo**.
+
+### Due cose che nessuno `Style` può raggiungere
+1. **La riga della griglia**: la griglia disegna le proprie righe, l'altezza sta su `MinHeight` del
+   `Grid` di riga. `RowMinHeight` la prende dallo stile corrente, e il cambio di stile passa da
+   `RebindRows(preserveViewport: true)` — l'utente ha cambiato aspetto, non ha chiesto un altro
+   *insieme* di righe, e perdere lo scroll per quello è il caso che `RebindRows` documenta come
+   inaccettabile. Il rebind è `Post`-ato: `StyleChanged` viene alzato **dentro** l'installazione del
+   blocco di stile.
+2. **I pulsanti di barra**: costruiti da helper che assegnano `Padding` come local value. Nuovo
+   `Theming/StyleDensity.cs`, due valori per stile. `MainToolbar` ricostruisce la striscia su
+   `StyleChanged` (come già fa per la lingua), gli altri 5 call-site prendono il valore alla
+   costruzione successiva — limite dichiarato, non un difetto da pagare con un hook per view.
+
+### Verifica
+Modern/Classic misurati a schermo, e il **cambio live in entrambe le direzioni** guidato con
+clic sintetici attraverso la pagina Appearance: passo delle righe **22 → 20 → 22**, nessun
+rebind fallito, nessuna eccezione nel log. Classic invariato alla cifra (`#333337` sulla fascia,
+`#252526`/`#2D2D30` sotto, righe da 20).
+
+### Quello che NON è stato fatto, e perché
+- **I 42 `, 16)` passati a `IconLoader.Image`** erano il valore di default del parametro stesso:
+  la definizione di "quanto è grande un'icona" era scritta 43 volte. Ora il default legge
+  `Metrics.Density.IconSize` e l'argomento è sparito dai call-site (resta esplicito l'unico caso
+  diverso, il logo da 48 dell'About).
+- **La "coda" dei letterali di testo era in gran parte un falso allarme.** Ricontati: 83 `FontSize = 12`
+  (= il baseline dell'app, ridondanti ma corretti), 21 × 11 (caption, sulla scala), 6 × 13
+  (subtitle, sulla scala), e i **10 `FontSize = 10` non sono testo**: sono i chevron `▾` e il
+  marker `▶`, cioè icone disegnate come carattere. Non esiste testo a 10px nell'app, e la frase
+  «quattro dimensioni in una banda di 3px, che è rumore» in testa a `Metrics` va letta con questa
+  correzione. Rinominare i letterali con i token resta un refactor a **zero pixel** e a zero
+  dipendenza dallo stile: non è ciò che rende la UI più moderna.
+- **Le ~100 `Thickness` fuori griglia rimaste** (`0,0,6,0`, `0,10,0,0`, `6`, `10`) sono margini di
+  pannelli specifici, non token di densità: cambiarle muoverebbe **anche Classic**, che è ciò che
+  questa milestone ha il divieto di fare, e nessuno `Style` può possedere il margine di un
+  `StackPanel` arbitrario. Restano fuori per costruzione, non per stanchezza.
+
 ## M95 (2026-08-05) — la chrome moderna è piatta: la toolbar non è più una fascia di un altro colore
 
 > Richiesta dell'utente (screenshot della fascia superiore): «Di default la toolbar è di colore
