@@ -460,6 +460,11 @@ internal static class Icons
         ["StarRemove"] = StarOff,
         ["EditFilter"] = Filter,
         ["SyntaxHighlighting"] = Highlighter,
+
+        // The magnifier had a const but no key: the one call site that wanted it asked
+        // for upstream's "Preview" name, whose PNG happened to be a magnifier. It now
+        // asks for "Search" and this is what it gets.
+        ["Search"] = Search,
     };
 
     /// <summary>
