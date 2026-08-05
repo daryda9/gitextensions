@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
+using GitExtensions.Avalonia.Theming;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -180,7 +181,7 @@ public sealed class FileHistoryView : UserControl
         {
             Background = B("App.Control"),
             Foreground = B("App.Text"),
-            Padding = new Thickness(8, 3, 8, 3),
+            Padding = StyleDensity.BarButtonWide,
         };
         _fullHistoryButton.Click += (_, _) => ShowFullHistoryMenu();
 
@@ -191,7 +192,7 @@ public sealed class FileHistoryView : UserControl
         {
             Background = B("App.Control"),
             Foreground = B("App.Text"),
-            Padding = new Thickness(8, 3, 8, 3),
+            Padding = StyleDensity.BarButtonWide,
             Margin = new Thickness(0, 0, 6, 0),
         };
         _followButton.Click += (_, _) => ShowFollowMenu();
@@ -201,7 +202,7 @@ public sealed class FileHistoryView : UserControl
         {
             Background = B("App.Control"),
             Foreground = B("App.Text"),
-            Padding = new Thickness(8, 3, 8, 3),
+            Padding = StyleDensity.BarButtonWide,
             Margin = new Thickness(0, 0, 6, 0),
         };
         _reloadButton.Click += (_, _) => Reload();

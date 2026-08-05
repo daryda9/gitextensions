@@ -447,9 +447,18 @@ public sealed class MainToolbar : UserControl
         // A language switch rebuilds the strip in place — no restart. Posting the
         // rebuild keeps it out of the loader's continuation (same pattern as MainMenu).
         TranslationService.LanguageChanged += OnLanguageChanged;
+
+        // A style switch changes the button padding (StyleDensity.BarButton), and the
+        // helpers below assign it as a local value, so no Style can update it in place:
+        // the strip has to be rebuilt, exactly as it is for a language change. Posted
+        // for the same reason — ThemeManager raises this in the middle of installing the
+        // style block.
+        ThemeManager.StyleChanged += OnStyleChanged;
     }
 
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(Rebuild);
+
+    private void OnStyleChanged() => Dispatcher.UIThread.Post(Rebuild);
 
     /// <summary>
     ///  Re-creates the strip and replays every piece of state the host has pushed in,
@@ -1279,7 +1288,7 @@ public sealed class MainToolbar : UserControl
             // A 1px (resting-transparent) border keeps layout stable while the
             // hover/pressed styles paint a visible edge in the same space.
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1347,7 +1356,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1579,7 +1588,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1752,7 +1761,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -1933,7 +1942,7 @@ public sealed class MainToolbar : UserControl
             Content = bodyContent,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2240,7 +2249,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
             Flyout = flyout,
@@ -2335,7 +2344,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2656,7 +2665,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };
@@ -2742,7 +2751,7 @@ public sealed class MainToolbar : UserControl
             Content = content,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand),
         };

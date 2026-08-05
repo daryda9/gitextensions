@@ -2758,7 +2758,7 @@ public sealed class RevisionGridView : UserControl
             // affordance and has to reach the 3:1 of WCAG 1.4.11.
             BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 3, 8, 3),
+            Padding = StyleDensity.BarButtonWide,
             FontSize = 12,
             Margin = new Thickness(6, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -4087,7 +4087,7 @@ public sealed class RevisionGridView : UserControl
             // the affordance, so App.BorderStrong.
             BorderBrush = B("App.BorderStrong"),
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(8, 3, 8, 3),
+            Padding = StyleDensity.BarButtonWide,
             FontSize = 12,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,

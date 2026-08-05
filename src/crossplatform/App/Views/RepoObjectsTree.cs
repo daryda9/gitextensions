@@ -329,7 +329,7 @@ public sealed class RepoObjectsTree : UserControl
         {
             Watermark = T("RepoObjectsTree/btnSearch.toolTip", "Search"),
             MinWidth = 40,
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             VerticalContentAlignment = VerticalAlignment.Center,
             Background = Brush("App.Control", Brushes.Transparent),
             Foreground = Brush("App.Text", Brushes.Gainsboro),

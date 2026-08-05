@@ -11,6 +11,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GitCommands;
 using GitExtensions.Avalonia.Services;
+using GitExtensions.Avalonia.Theming;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -3204,7 +3205,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
             Background = Brush("App.Panel", Brushes.Black),
             BorderBrush = Brush("App.Border", Brushes.Gray),
             BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(8, 3),
+            Padding = StyleDensity.BarButtonWide,
             ClipToBounds = true,
             Child = grid,
         };
@@ -3976,7 +3977,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     {
         Button b = new()
         {
-            Padding = new Thickness(4, 2),
+            Padding = StyleDensity.BarButton,
             Margin = new Thickness(0, 0, 2, 0),
             Background = Brush("App.Toolbar", Brushes.DimGray),
             Content = (Control?)Theming.IconLoader.Image(icon)
