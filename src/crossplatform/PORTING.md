@@ -3236,6 +3236,42 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M95 (2026-08-05) — la chrome moderna è piatta: la toolbar non è più una fascia di un altro colore
+
+> Richiesta dell'utente (screenshot della fascia superiore): «Di default la toolbar è di colore
+> diverso rispetto al resto nella modalità dark, fixa». Base `1b9a53aa0`.
+
+**Misura prima del fix**, campionando lo screenshot dell'utente: la barra dei menu era **a due
+tonalità** — `#1C1D21` (App.Panel) fino a x≈748, `#2F3038` (App.Toolbar) da lì a destra — e la
+striscia della toolbar sotto era `#2F3038` per tutta la larghezza, contro `#1C1D21` di ogni
+pannello del contenuto. Due difetti, una causa: **App.Toolbar era un gradino a sé** nella rampa.
+Il taglio verticale nella barra dei menu è il controllo `Menu` che dipinge il proprio fondo
+(`MenuFlyoutItemBackground` = panel dal M93) sopra il contenitore `MainMenu`, che dipingeva
+App.Toolbar: dove il `Menu` finisce, riappare il colore del contenitore.
+
+**Fix**: nelle sole famiglie **Modern**, `App.Toolbar` = `App.Panel` (`#1C1D21` dark, `#FDFDFD`
+light). Un solo valore, e ogni barra dell'app si appiattisce insieme — non solo menu e toolbar
+principale, ma anche i 15 call-site che leggono `App.Toolbar` (RevisionGridView, DiffView,
+BlameView, FileTreeView, RepoObjectsTree, CommitDetailView, FileHistoryView, ConsoleView,
+CommitDialog). Correggere solo `MainMenu`/`MainToolbar` avrebbe reso *quelle* barre le nuove
+diverse. Precedente esatto già nel file: `App.Control` (le superfici di input) **è** `App.Panel`
+dal M77, e gli input si vedono per il contorno, non per il fondo — dal M94 quel contorno misura
+3:1 (`App.BorderStrong`), quindi la condizione era già soddisfatta prima di appiattire.
+La separazione fra chrome e contenuto resta la **regola da 1px** già presente in fondo a
+`MainToolbar` (`BorderThickness = 0,0,0,1`).
+
+Nessun numero di contrasto del M67/M70/M77/M94 decade: `App.Toolbar` era la superficie **più
+chiara** del tema dark e la peggiore per ogni inchiostro, quindi togliendola i minimi **salgono**
+— `App.TextDim` 4.70 → 5.75:1, `App.Border` 1.23 → 1.58:1. In light idem (`App.TextDim`
+4.67 → 5.29:1). L'unica conseguenza da registrare è che `App.PanelAlt` (`#26272D`) ora è la
+superficie più chiara della rampa: le strisce alternate della griglia sono più chiare delle barre,
+non più il contrario.
+
+**Classic resta intatta di proposito**: `#333337` sotto la barra dei menu è la firma del 2015, e
+lo stile classico esiste per riprodurla. Verificato a schermo su tre configurazioni con Xvfb —
+Modern Dark `#1C1D21` uniforme su menu + toolbar + barra filtri + tab strip, Modern Light
+`#FDFDFD` uniforme, Classic Dark ancora `#333337` sulla fascia e `#252526`/`#2D2D30` sotto.
+
 ## M94 (2026-08-05) — icone complete, link con il loro inchiostro, contorni che misurano, focus che non si taglia
 
 > Richiesta dell'utente: chiudere gli step 4, 3, 5, 7 e 6 della coda di modernizzazione. Quattro

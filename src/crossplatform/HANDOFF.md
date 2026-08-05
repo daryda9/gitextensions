@@ -280,6 +280,22 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
 
+> ### ► **M95** (2026-08-05) — **chrome moderna piatta**: la toolbar non è più un'altra tinta
+> Segnalazione utente: nel dark la toolbar è di un colore diverso dal resto. Misurato sullo
+> screenshot: barra dei menu **a due tonalità** (`#1C1D21` fino a x≈748, `#2F3038` a destra — il
+> controllo `Menu` dipinge il proprio fondo sopra il contenitore, dove finisce riappare il colore
+> del contenitore) e striscia toolbar `#2F3038` contro `#1C1D21` di ogni pannello.
+> **Fix**: nelle sole famiglie Modern `App.Toolbar` = `App.Panel`. Un valore, e si appiattiscono
+> tutte le 15 barre che leggono quella chiave: cambiare solo `MainMenu`/`MainToolbar` avrebbe reso
+> *quelle* le nuove diverse. Precedente già nel file: `App.Control` **è** `App.Panel` dal M77 — una
+> superficie si può fondere col fondo se il contorno la delimita, e dal M94 quel contorno misura 3:1.
+> Separazione chrome/contenuto = la regola da 1px già in fondo a `MainToolbar`.
+> Nessun contrasto decade: App.Toolbar era la superficie **più chiara**, togliendola i minimi
+> salgono (`App.TextDim` 4.70 → 5.75:1 dark, 4.67 → 5.29:1 light). Conseguenza da sapere:
+> `App.PanelAlt` è ora la più chiara della rampa, quindi le strisce della griglia sono più chiare
+> delle barre. **Classic intatta di proposito** (`#333337` è la firma del 2015), verificato a schermo
+> su Modern Dark / Modern Light / Classic Dark. Dettaglio in `PORTING.md` → M95.
+
 > ### ► **M94** (2026-08-05) — **coda di modernizzazione: icone, link, contorni, tab, focus**
 > Chiusi gli step 4/3/5/7/6 con quattro subagent in worktree + il loop.
 > **Icone**: 23 glifi nuovi, i nomi senza glifo passano da **18 a 1** (`GitForWindows`, marchio,

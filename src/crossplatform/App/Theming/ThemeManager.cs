@@ -324,6 +324,7 @@ public static class ThemeManager
         // chasing a "softer" look:
         //   adjacent surface separation  Window->Panel 1.089 -> 1.084,
         //     Panel->PanelAlt 1.115 -> 1.131, PanelAlt->Toolbar 1.091 -> 1.135
+        //     (the last pair is gone since M95, see App.Toolbar below)
         //   Border against each surface  1.60/1.47/1.31/1.20 -> 1.71/1.58/1.40/1.23
         // The first draft of this ramp (window #17181B, border #2E3037, per the brief)
         // measured 1.066/1.075/1.084 and a border at 1.26 on the panel: the surfaces
@@ -335,7 +336,19 @@ public static class ThemeManager
         ["App.Window"] = Color.Parse("#141518"),
         ["App.Panel"] = Color.Parse("#1C1D21"),
         ["App.PanelAlt"] = Color.Parse("#26272D"),
-        ["App.Toolbar"] = Color.Parse("#2F3038"),
+
+        // M95: the same value as App.Panel. The ramp above gave the bars their own
+        // step (#2F3038), and it showed: the menu strip and the toolbar were a pale
+        // band across the top of a dark window, and the menu row was split in two
+        // tones because the Menu control paints its own App.Panel background while
+        // the strip behind it painted App.Toolbar. Modern chrome is flat — the bar is
+        // the same surface as the content and the 1px bottom rule on the strip is
+        // what says where it ends, exactly as App.Control (input surfaces) has been
+        // the same value as App.Panel since M77. The lightest surface disappearing
+        // only RAISES every contrast figure measured against it (App.TextDim
+        // 4.70 -> 5.75:1, App.Border 1.23 -> 1.58:1), so nothing below is invalidated
+        // downward. Classic keeps its own #333337 bar: that band IS the 2015 look.
+        ["App.Toolbar"] = Color.Parse("#1C1D21"),
         ["App.Border"] = Color.Parse("#3C3E47"),
 
         // Text 8.90 -> 10.34:1, TextDim 4.39 -> 4.70:1, each against the worst of the
@@ -532,7 +545,8 @@ public static class ThemeManager
         // deliberately instead of hanging off the top of the range.
         //
         // Same two structural checks as the dark ramp. Adjacent separation
-        // 1.110/1.181/1.076 -> 1.089/1.169/1.085, and the border holds its old
+        // 1.110/1.181/1.076 -> 1.089/1.169/1.085 (the last pair gone since M95), and
+        // the border holds its old
         // visibility exactly: 1.57/1.74/1.48/1.37 -> 1.60/1.74/1.49/1.37 against
         // Window/Panel/PanelAlt/Toolbar. The brief's suggested #DFDFE3 border measured
         // 1.31 on the panel — a 25% loss that made panel edges vanish — so the border
@@ -540,7 +554,13 @@ public static class ThemeManager
         ["App.Window"] = Color.Parse("#F3F3F6"),
         ["App.Panel"] = Color.Parse("#FDFDFD"),
         ["App.PanelAlt"] = Color.Parse("#EBEBEF"),
-        ["App.Toolbar"] = Color.Parse("#E2E2E8"),
+
+        // M95, light half of the same move: flat chrome, App.Toolbar = App.Panel. The
+        // grey band was less loud here than in the dark theme, but the two-tone menu
+        // row was identical, and a theme pair whose chrome is flat on one side only is
+        // two designs. Contrasts against this surface can only rise (App.TextDim
+        // 4.67 -> 5.29:1).
+        ["App.Toolbar"] = Color.Parse("#FDFDFD"),
         ["App.Border"] = Color.Parse("#C2C2CB"),
 
         // Text 12.87 -> 13.27:1, TextDim 4.17 -> 4.67:1 on the worst of the six
