@@ -794,22 +794,54 @@ public static class ModernStyles
         // (a hairline pipe drawn across the label) and a bug fix must not depend on
         // which style the user picked.
 
-        // ---- corners ------------------------------------------------------------------
+        // ---- corners and density ------------------------------------------------------
+        // Both live on the same four styles, because they answer the same question —
+        // what shape and size a control has when nothing local overrides it — and
+        // because this block is installed and removed as a unit, which is what makes
+        // the density modern-only (M96) without a second table of classic numbers: the
+        // classic look is what Fluent's own ControlThemes give, i.e. exactly what the
+        // app drew before this block existed.
+        //
+        // A Style beats a ControlTheme setter, so these reach every Button/TextBox in
+        // the app; they do NOT beat a local value, so a view that writes its own
+        // Padding keeps it. That is deliberate for genuine layout, and it is why the
+        // view sweep is a separate pass and not a search-and-replace of these values
+        // into the call sites — a token written at a call site stops following the
+        // style, which is the one thing this milestone must not do.
+        //
+        // Radius Sm (4), not Md (6), on the buttons: at Md a 28px-tall button reads as
+        // a lozenge, and the app's buttons sit shoulder to shoulder in toolbars where a
+        // 6px corner opens a visible wedge of background between neighbours. 4 is also
+        // what the inputs already used, so the whole chrome now has ONE corner.
         Style button = new(x => x.OfType<Button>());
-        button.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.MdCorner));
+        button.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.SmCorner));
+        button.Setters.Add(new Setter(TemplatedControl.PaddingProperty, Metrics.Density.ButtonPadding));
+        button.Setters.Add(new Setter(Layoutable.MinHeightProperty, Metrics.Density.ControlMinHeight));
         styles.Add(button);
 
         Style toggle = new(x => x.OfType<ToggleButton>());
-        toggle.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.MdCorner));
+        toggle.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.SmCorner));
+        toggle.Setters.Add(new Setter(TemplatedControl.PaddingProperty, Metrics.Density.ButtonPadding));
+        toggle.Setters.Add(new Setter(Layoutable.MinHeightProperty, Metrics.Density.ControlMinHeight));
         styles.Add(toggle);
 
         Style textBox = new(x => x.OfType<TextBox>());
         textBox.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.SmCorner));
+        textBox.Setters.Add(new Setter(TemplatedControl.PaddingProperty, Metrics.Density.InputPadding));
+        textBox.Setters.Add(new Setter(Layoutable.MinHeightProperty, Metrics.Density.ControlMinHeight));
         styles.Add(textBox);
 
         Style comboBox = new(x => x.OfType<ComboBox>());
         comboBox.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.SmCorner));
+        comboBox.Setters.Add(new Setter(TemplatedControl.PaddingProperty, Metrics.Density.InputPadding));
+        comboBox.Setters.Add(new Setter(Layoutable.MinHeightProperty, Metrics.Density.ControlMinHeight));
         styles.Add(comboBox);
+
+        // The tab strip: the baseline keeps upstream's 12,6 for both styles, so the
+        // modern override is here and nowhere else.
+        Style tabItem = new(x => x.OfType<TabItem>());
+        tabItem.Setters.Add(new Setter(TemplatedControl.PaddingProperty, Metrics.Density.TabPadding));
+        styles.Add(tabItem);
 
         // ---- focus ring ------------------------------------------------------------
         // FocusAdorner is a property of Control, so a style setter reaches it without

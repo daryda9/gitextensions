@@ -172,6 +172,67 @@ public static class Metrics
     }
 
     /// <summary>
+    ///  Density: the sizes of the chrome itself — how tall a control is, how much air
+    ///  sits inside it, how tall a grid row is, how big an icon is drawn.
+    ///
+    ///  <para><b>These numbers are MODERN-ONLY, and that is a constraint on where they
+    ///  may be used, not just on their values.</b> The user asked for the density work
+    ///  to apply to the modern style and to leave the classic one exactly as it is
+    ///  (M96). A token used at a call site is a <em>local value</em> and beats every
+    ///  <see cref="Style"/>, so a view that writes <c>Padding = Metrics.Density.Button</c>
+    ///  is <em>not</em> style-aware — it has merely moved the literal. Anything below
+    ///  belongs in <see cref="ModernStyles"/>'s installable block, or in a view that
+    ///  reads it through <c>ThemeManager.CurrentStyle</c> and repaints on
+    ///  <c>ThemeManager.StyleChanged</c>. The classic values are Fluent's own defaults
+    ///  and the literals already in the views; nothing here replaces them.</para>
+    ///
+    ///  <para><b>The rule that produced the values.</b> The port's chrome is dense
+    ///  because upstream's WinForms chrome is dense, and the user reads 500+ commits at
+    ///  a time: density is a feature here, so the pass ALIGNS the numbers to the base-4
+    ///  grid instead of loosening them. Off-grid values round <em>up</em> horizontally
+    ///  (text needs its side air) and <em>down</em> vertically (that is what keeps row
+    ///  heights and bar heights from growing). One rule, applied to 6 and 10 alike.</para>
+    /// </summary>
+    public static class Density
+    {
+        /// <summary>28 — the height of a control in a row of controls: button, text
+        /// box, combo box. Fluent's own default is 32, which is a touch target for a
+        /// finger; this app is a desktop tool driven by a mouse, and 28 is the largest
+        /// multiple of 4 that keeps a toolbar row of buttons under upstream's.</summary>
+        public const double ControlMinHeight = 28;
+
+        /// <summary>12,4 — a button's inside air. Fluent's default is 11,5,11,6:
+        /// off-grid on both axes and asymmetric top-to-bottom for no reason the app
+        /// can see.</summary>
+        public static readonly Thickness ButtonPadding = new(Space.Md, Space.Xs);
+
+        /// <summary>8,4 — a text box or combo box. Tighter horizontally than a button
+        /// because the text starts at the left edge and the box is already delimited by
+        /// its outline (<c>App.BorderStrong</c>, M94), not by whitespace.</summary>
+        public static readonly Thickness InputPadding = new(Space.Sm, Space.Xs);
+
+        /// <summary>12,4 — a tab header. The baseline (both styles) keeps upstream's
+        /// 12,6; this is the modern override, and it is the vertical round-DOWN of the
+        /// rule above: the strip loses 4px of height and the label does not move
+        /// relative to the accent bar, which owns its own layout row.</summary>
+        public static readonly Thickness TabPadding = new(Space.Md, Space.Xs);
+
+        /// <summary>22 — a revision-grid row. The grid draws its own rows, so this is
+        /// read by the view and not by a style; see the remarks about
+        /// <c>StyleChanged</c>. 20 (the classic value) leaves 12px of text with 4px
+        /// above and below; 22 gives it 5, which is the difference between rows that
+        /// scan and rows that touch. It costs ~4 rows on a 900px window.</summary>
+        public const double RowHeight = 22;
+
+        /// <summary>16 — every glyph and every raster icon in the chrome, in BOTH
+        /// styles. Not a modern-only number: it is the size the icons were already
+        /// drawn at, written down once so the ~40 call sites that repeat it stop being
+        /// the definition. Growing it without growing
+        /// <see cref="ControlMinHeight"/> makes the glyphs touch the button edge.</summary>
+        public const double IconSize = 16;
+    }
+
+    /// <summary>
     ///  Motion. Short enough to feel like a response, long enough to be seen:
     ///  120–160 ms, nothing else.
     ///
