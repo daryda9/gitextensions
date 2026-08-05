@@ -11,7 +11,7 @@ checklist di parità, metodo del loop). Questo file è il riassunto operativo.
 | | |
 |---|---|
 | Branch | `linux-avalonia-port` |
-| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M94** · `5c5a03a64` (**M93: hover della riga + fine del flash bianco**) · `044ce45dc` (**M92: larghezze dei pannelli**) · `363961635` (**M91: submodule nidificati**). |
+| HEAD al momento dell'handoff | `1a8abcd7c` — **M90: doppio clic Submodules usa il target reale e mostra feedback immediato**. Commit M90: `1e9a0bf5b`, `1a8abcd7c`. M89: `32e981301`…`3b995372d`. Prossima libera: **M95** · `7fe3726a8` (**M94: icone complete, App.Link, contorni a 3:1, focus non tagliato**) · `5c5a03a64` (**M93: hover della riga + fine del flash bianco**) · `044ce45dc` (**M92: larghezze dei pannelli**) · `363961635` (**M91: submodule nidificati**). |
 | Build | `Errori: 0` (31 warning preesistenti VSTHRD/CS). Harness M87: PASS, 7 nodi, inclusi ciclo e linked worktree. |
 | Parità voci UI/funzionali | la **"Coda round 9"** in `PORTING.md` (la misura buona, area per area) è **ESAURITA**: zero voci `[ ]`, zero `[~]`. Restano solo gli SKIP dichiarati — repository-host GitHub, colonna build status, script utente, le ~35 impostazioni senza consumatore |
 | Fedeltà UX/visiva | **round 12 commit dialog + merge (M71–M72)** + **round 11 parziali (M67–M70)** + round 1 (T1–T5) + round 2 (M31–M35) + round 3 (M36–M37) + **round 4 rifiniture (M39–M42)** + **round 5 follow-up 1 (M45)** + **round 6 follow-up residui (M46)** + **round 7 feature/GUI (M47–M48)** + M49 fix scroll/selezione grid + **round 8 priorità utente P1–P3 (M50)** + **round 8 pulsanti del pannello inferiore (M51)** |
@@ -279,6 +279,28 @@ xvfb-run -a --server-args="-screen 0 1400x900x24 +extension XINPUTEXTENSION" bas
 > una riga di status bar. L'infrastruttura giusta esiste già
 > (`GitProcessDialog.RunStreamingAsync:334`, usata per push/merge/commit): manca l'instradamento, su
 > **tutti** i call-site — 5 per create branch, 5 per il checkout, tabellati in `PORTING.md`.
+
+> ### ► **M94** (2026-08-05) — **coda di modernizzazione: icone, link, contorni, tab, focus**
+> Chiusi gli step 4/3/5/7/6 con quattro subagent in worktree + il loop.
+> **Icone**: 23 glifi nuovi, i nomi senza glifo passano da **18 a 1** (`GitForWindows`, marchio,
+> lasciato di proposito); ogni path ricamminato aritmeticamente dentro il box 0..24.
+> **Link**: `App.Link` da **0 a 10** call site; `App.Accent` mancava il 4,5:1 in 9 delle 16
+> combinazioni superficie x famiglia, `App.Link` le passa tutte. La colonna Commit ID è stata
+> verificata **non cliccabile** e lasciata.
+> **Contorni**: `App.Border` misura 1,08:1 e non può delimitare un controllo (1.4.11 chiede 3:1).
+> Alzati su **tre** livelli — chiavi Fluent, nuova chiave di palette `App.BorderStrong`, default di
+> `TextBoxSurface` — perché ognuno batte il precedente. Nelle famiglie Classic `App.BorderStrong` **è**
+> `App.Border`, così il classico non si muove (verificato a schermo).
+> **Tab**: stessa causa di M93; una terza proprietà l'aveva senza che nessuno lo sapesse
+> (`PART_SelectedBar`: la barra d'accento lampeggiava bianca a ogni cambio di tab). Rampa vecchia con
+> picco 4,6x l'estremo più chiaro, nuova monotona.
+> **pressed/focus** fotografati per la prima volta: pressed `#53545B`, anello di focus 2px accento +
+> alone 1px. **Difetto trovato qui**: l'anello stava *fuori* dal controllo con un margine negativo ed
+> era **tagliato** dal contenitore — un pulsante di toolbar mostrava solo i lati. Ora è dentro i limiti.
+> **Da NON riscoprire**: chiave Fluent < valore locale < risorsa pinnata sull'istanza — alzare solo la
+> prima non si vede; un nome di icona di upstream può essere semanticamente sbagliato per il suo call
+> site e accorgersene solo quando il PNG "giusto per caso" diventa un glifo (`Preview` → occhio dove
+> serviva una lente). Dettaglio in `PORTING.md` → M94.
 
 > ### ► **M93** (2026-08-04) — **la riga sotto il puntatore si vede**, e il flash bianco sparisce
 > Due segnalazioni con screenshot. (1) L'hover della griglia dipingeva `App.PanelAlt`, che **è** il

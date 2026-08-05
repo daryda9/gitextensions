@@ -3236,6 +3236,106 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M94 (2026-08-05) — icone complete, link con il loro inchiostro, contorni che misurano, focus che non si taglia
+
+> Richiesta dell'utente: chiudere gli step 4, 3, 5, 7 e 6 della coda di modernizzazione. Quattro
+> subagent in worktree isolati su file disgiunti + il loop. Base `64e2522f9`.
+
+### Step 4 — copertura icone: da 18 nomi sul PNG a **uno**
+`Icons.cs` guadagna 23 glifi nuovi. Le forme non sono riempitivi: `CleanupRepo` è una **scopa**
+(`git clean` spazza gli untracked, non distrugge i tracked, quindi non il cestino), `DeleteIndexLock` è
+un **lucchetto aperto** (rilascia il repo), `CompressGitDatabase` è la scatola dell'object store
+schiacciata (volutamente diversa dalla scopa), `RemoteDelete` è la **nuvola dei remote sbarrata** e non
+un cestino (scollega, non cancella sul server), i quattro `Bisect*` si distinguono **fra loro** perché
+l'utente li vede in fila. `plugin` è minuscolo: il dizionario è `Ordinal` e la chiave maiuscola
+sarebbe caduta sul PNG in silenzio.
+Verificato sull'app: il log `[IconLoader] icon '…' has no vector glyph` passa da **18 nomi a 1**, e
+l'unico rimasto è **`GitForWindows`**, lasciato di proposito — è un marchio di prodotto, e nessuna
+line art 24x24 dice quello che dice il logo.
+Ogni path nuovo è stato **ricamminato aritmeticamente** (M/L/h/v/H/V/a/q/z, archi e quadratiche
+campionate): tutti dentro il box 0..24 su entrambi gli assi, i più estesi `Wrench` (x 3..22, y 2..21) e
+`Compress` (y 2,5..21,5), quindi con tratto 2 nessuno tocca il clip.
+
+**Difetto trovato dalla verifica a schermo, non dal codice**: il pulsante di ricerca dell'albero
+chiedeva l'icona di upstream chiamata **`Preview`**, il cui PNG del 2015 era *per caso* una lente.
+Appena quel nome ha avuto un glifo vero, il pulsante è diventato un **occhio**. Il call site ora chiede
+`Search`, e la lente — che aveva il `const` ma **nessuna chiave** nel dizionario — è registrata.
+
+### Step 3 — `App.Link` ha finalmente dei call site
+Erano **zero**: tutti i link leggevano `App.Accent`, che è tarato come riempimento. Ora 10 call site
+(`CommitDetailView` x5, `HelpImagePanel`, `ResolveConflictsDialog`, `DashboardView` x3). Il criterio è
+*cliccabile*, non *blu*: restano su `App.Accent` i bordi delle pill, gli `@@` degli hunk (enfasi, non
+link), i badge ahead/behind, il caret del terminale, i riempimenti dei banner.
+**La colonna Commit ID è stata verificata e lasciata**: `AddCell` imposta solo il foreground, non c'è
+handler di click né hit-test — è codice colorato, non un link.
+
+| superficie | Classic dark | Classic light | Modern dark | Modern light |
+|---|---|---|---|---|
+| App.Window | 3,70 → **6,30** | 4,06 → **5,32** | 4,96 → **6,65** | 6,05 → **6,41** |
+| App.Panel | 3,40 → **5,79** | 4,51 → **5,90** | 4,58 → **6,13** | 6,59 → **6,98** |
+| App.PanelAlt | 3,04 → **5,19** | 3,82 → **4,99** | 4,05 → **5,42** | 5,64 → **5,97** |
+| App.Toolbar | 2,79 → **4,75** | 3,55 → **4,64** | 3,57 → **4,78** | 5,19 → **5,50** |
+
+`App.Accent` mancava il 4,5:1 in **9 delle 16** combinazioni; `App.Link` le passa tutte.
+
+### Step 5 — un contorno che può delimitare un controllo da solo
+`App.Border` misura **1,08:1** (Modern dark) e 1,32 (light) contro le superfici su cui un controllo
+sta: va bene come separatore, non come contorno (WCAG 1.4.11 chiede 3:1).
+Fatto su tre livelli, perché ognuno può out-shoutare il precedente:
+1. **chiavi Fluent** in `ModernStyles`: bordo a riposo su `borderStrong` (0,45 → 3,30:1 / 3,32:1) e
+   hover su un nuovo `borderHover` (0,65 → 4,96:1 / 5,52:1). 0,45 è il **pavimento**: a 0,40 sono
+   2,92 / 2,97;
+2. **chiave di palette `App.BorderStrong`** (nuova, tutte e quattro le famiglie) perché ~39 call site
+   disegnano la propria chrome e non possono raggiungere un brush interno a quel file;
+3. **`TextBoxSurface`**, che pinna il bordo nelle `Resources` dell'**istanza** — cioè esattamente ciò
+   che batte le chiavi Fluent — e il cui default passa a `App.BorderStrong`.
+
+Nelle famiglie **Classic** `App.BorderStrong` **è** `App.Border`: il classico è definito come
+l'aspetto di prima, e un contorno nitido attorno a ogni input sarebbe un aspetto nuovo. Verificato a
+schermo: Classic dark mostra ancora `#3F3F46` su `#252526`.
+Convertiti i contorni di controllo in 11 file (filtri e caselle di ricerca di albero, dashboard,
+toolbar e sua copia in overflow; griglia delle patch; input di encoding/find; picker di blame; il box
+del messaggio di merge, che la checkbox rende editabile; la lista dei conflitti; il pulsante di aiuto).
+**Restano su `App.Border`**, con ragione: filetti da 1px, `GridSplitter`, separatori dentro gli split
+button, cornici di raggruppamento (`HeaderedContentControl`, i `Border` dei radio group), pannelli
+informativi non interattivi, superfici console opache e **tutti** gli stati `*Disabled` — 1.4.11
+esclude i componenti inattivi, e un controllo spento con un contorno nitido si legge come un controllo
+attivo disegnato male.
+
+### Step 7 — il `TabItem` non può più lampeggiare
+Stessa causa di M93: `Brushes.Transparent` è `#00FFFFFF`. Tre proprietà ce l'avevano, e una è stata
+scoperta leggendo — il selettore `OfType<TabItem>().Template().OfType<Border>()` prende **anche**
+`PART_SelectedBar`, quindi la barra d'accento lampeggiava bianca a ogni cambio di tab. Ogni riposo è
+ora il colore d'arrivo ad alpha 0 (helper `Faded()`, che segue la palette).
+Misurato sulla luminanza relativa, Modern dark (`#141518` → `#252629`): la vecchia rampa arrivava a
+**0,0885** contro un estremo massimo di 0,0194 — **4,6x** — la nuova sale monotona da 0,0086 a 0,0177 e
+non esce mai dall'intervallo. A schermo: `#141518` → `#252629` senza picchi.
+
+### Step 6 — pressed e focus, fotografati per la prima volta
+- **pressed**: pulsante di toolbar `#2F3038` → hover `#41424A` → **`#53545B`**; un `Button` normale
+  fa hover `#41424A` e pressed `#53545B`. Coincidono alla cifra con `surfaceHover`/`surfacePressed` di
+  `ModernStyles`, che è la conferma che le chiavi nuove di M93 hanno la stessa derivazione del resto.
+- **focus**: l'anello si vede — 2px `#3B82F6` (3,57:1 sulla toolbar) con l'alone `#E4E4E7` da 1px.
+- **Difetto trovato qui, e corretto**: l'anello aveva un **margine negativo** per stare *fuori* dal
+  bordo del controllo, e la parte esterna era **tagliata** da chi impacchetta il controllo. Misurato:
+  un pulsante di toolbar focalizzato mostrava l'anello a sinistra e a destra e **niente sopra e sotto**,
+  perché la barra è alta esattamente quanto il pulsante. *Un indicatore di focus che dipende dallo
+  spazio libero del contenitore non è un indicatore.* Disegnato dentro i limiti è intero su tutti i
+  controlli provati (pulsante icona di toolbar, tab del pannello inferiore, riga della griglia).
+
+### Da NON riscoprire
+- **Tre livelli possono sovrascriversi**: chiave Fluent < valore locale sul call site < risorsa pinnata
+  sull'istanza. Alzare solo il primo non basta e **non si vede** — è quello che è successo con i
+  `TextBox` di `TextBoxSurface` e con i 39 call site.
+- Un nome di icona di upstream può essere **semanticamente sbagliato** per il suo call site e non
+  accorgersene finché il PNG casualmente giusto viene sostituito da un glifo (`Preview` → lente →
+  occhio).
+- Il watchdog dei 600 s ha ucciso **cinque volte** i quattro subagent, sempre per analisi lunga prima
+  del primo commit. Ciò che ha funzionato: dire *un file finito = un commit immediato*, dare un tetto
+  di due minuti per file con l'obbligo di dichiarare "non deciso", e vietare di avviare Xvfb (la
+  verifica GUI resta nel loop). Due volte il lavoro utile era **non committato** nel worktree: si
+  recupera con `git -C <worktree> diff` e `git apply`, senza rilanciare nulla.
+
 ## M93 (2026-08-04) — la riga sotto il puntatore si vede, e il flash bianco della toolbar sparisce
 
 > Due segnalazioni dell'utente con screenshot: *«il colore della riga su cui sono con il cursore è
