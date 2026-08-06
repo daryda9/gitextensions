@@ -131,6 +131,21 @@ public sealed class UiState
     public string Style { get; set; } = "Modern";
 
     /// <summary>
+    ///  Whether the modern style's vector icons are painted in their accent role
+    ///  (green for create, red for destroy, blue for transfer…) rather than all in the
+    ///  text colour.
+    ///
+    ///  <para>On by default: the monochrome set was a consequence of how the glyphs are
+    ///  drawn, not a choice, and a toolbar of twenty identical grey marks is harder to
+    ///  read than a coloured one. Off is lossless — no icon carries meaning by colour
+    ///  alone (see the role table in <c>Theming/Icons.cs</c>).</para>
+    ///
+    ///  <para>Read only by the modern style; the classic one draws the 2015 PNGs, whose
+    ///  colours are baked in.</para>
+    /// </summary>
+    public bool ColoredIcons { get; set; } = true;
+
+    /// <summary>
     ///  How large the whole interface is drawn: the name of a
     ///  <see cref="GitExtensions.Avalonia.Theming.UiSize"/> member — since M86 either
     ///  <b>"Standard"</b> (zoom 1.0) or <b>"Large"</b> (zoom 1.25).

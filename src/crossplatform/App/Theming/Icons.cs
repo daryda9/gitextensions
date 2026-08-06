@@ -495,6 +495,152 @@ internal static class Icons
         ["Search"] = Search,
     };
 
+    // ---- the accent roles -------------------------------------------------
+    //
+    // The glyphs above are monochrome BY CONSTRUCTION — stroke-only line art, one
+    // pen, one colour — which is what made the whole modern set read as a single
+    // family. It also made it read as a wall of identical grey marks: at 16px the
+    // shape is all the information there is, and in a toolbar of twenty icons the
+    // eye has nothing to sort them by.
+    //
+    // So the colour is a ROLE, not a picture. Six of them, assigned by what the
+    // command DOES, never by what the glyph looks like — which is why Push, Pull,
+    // Fetch and Clone share one hue although they are four shapes, and Bin is red
+    // under "delete branch" and "delete tag" alike. An icon with no role stays
+    // App.Text: the chrome (settings, navigation, panels, search, copy) must not
+    // compete with the icons that mean something.
+    //
+    // Colour is never the only carrier. Every pair that shares a hue differs in
+    // shape, and the two roles a colour-blind reader collapses — green and red —
+    // are the plus against the minus, the check against the bin. Turning the whole
+    // thing off (Appearance ▸ "Colour the icons") loses no information at all.
+
+    /// <summary>Palette key for create / add / affirmative glyphs.</summary>
+    internal const string Green = "App.IconGreen";
+
+    /// <summary>Palette key for destructive glyphs.</summary>
+    internal const string Red = "App.IconRed";
+
+    /// <summary>Palette key for transfer and remote glyphs.</summary>
+    internal const string Blue = "App.IconBlue";
+
+    /// <summary>Palette key for containers, markers and attention glyphs.</summary>
+    internal const string Amber = "App.IconAmber";
+
+    /// <summary>Palette key for index and history-rewriting glyphs.</summary>
+    internal const string Purple = "App.IconPurple";
+
+    /// <summary>Palette key for the structural refs (branches, submodules, worktrees).</summary>
+    internal const string Cyan = "App.IconCyan";
+
+    private static readonly Dictionary<string, string> Accents = new(StringComparer.Ordinal)
+    {
+        // Create, add, affirm.
+        ["RepoCreate"] = Green,
+        ["BranchCreate"] = Green,
+        ["BranchCheckout"] = Green,
+        ["checkout"] = Green,
+        ["Commit"] = Green,
+        ["CommitSummary"] = Green,
+        ["BisectGood"] = Green,
+        ["FileStatusAdded"] = Green,
+
+        // Destroy. The bin is red at every call site that draws it, and so is every
+        // reset: they are the commands that lose work.
+        ["BranchDelete"] = Red,
+        ["TagDelete"] = Red,
+        ["DeleteFile"] = Red,
+        ["RemoteDelete"] = Red,
+        ["BisectBad"] = Red,
+        ["FileStatusRemoved"] = Red,
+        ["DashboardFolderError"] = Red,
+        ["ResetCurrentBranchToHere"] = Red,
+        ["ResetAnotherBranchToHere"] = Red,
+        ["ResetWorkingDirChanges"] = Red,
+        ["ResetFileTo"] = Red,
+
+        // Talk to a remote.
+        ["Push"] = Blue,
+        ["Pull"] = Blue,
+        ["PullFetch"] = Blue,
+        ["PullFetchAll"] = Blue,
+        ["PullFetchPrune"] = Blue,
+        ["PullFetchPruneAll"] = Blue,
+        ["CloneRepoGit"] = Blue,
+        ["Remote"] = Blue,
+        ["Remotes"] = Blue,
+        ["BranchRemote"] = Blue,
+        ["RemoteBranchRoot"] = Blue,
+        ["Globe"] = Blue,
+        ["ReloadRevisions"] = Blue,
+        ["information"] = Blue,
+
+        // Changed files: the three statuses that are neither an addition nor a
+        // deletion, plus the two "this file was edited" glyphs that share their pencil.
+        ["FileStatusModified"] = Blue,
+        ["FileStatusRenamed"] = Blue,
+        ["FileStatusCopied"] = Blue,
+        ["EditFile"] = Blue,
+        ["WorkingDirChanges"] = Blue,
+        ["Renamed"] = Blue,
+
+        // Containers and markers — the folder and the tag are yellow in every icon set
+        // Git Extensions has ever shipped — and the two "look at me" states.
+        ["RepoOpen"] = Amber,
+        ["FolderOpen"] = Amber,
+        ["FolderClosed"] = Amber,
+        ["BranchFolder"] = Amber,
+        ["DashboardFolderGit"] = Amber,
+        ["BrowseFileExplorer"] = Amber,
+        ["stash"] = Amber,
+        ["ArchiveRevision"] = Amber,
+        ["Tag"] = Amber,
+        ["TagHorizontal"] = Amber,
+        ["TagMany"] = Amber,
+        ["TagCreate"] = Amber,
+        ["star"] = Amber,
+        ["Warning"] = Amber,
+        ["ReloadRevisionsDirty"] = Amber,
+        ["RevertCommit"] = Amber,
+        ["FileStatusUnknown"] = Amber,
+
+        // The index and the commands that rewrite history. Upstream draws the four
+        // staging arrows purple, which is where the hue comes from; merge, rebase and
+        // bisect join it because they are the same kind of operation — the graph, not
+        // the working tree.
+        ["Stage"] = Purple,
+        ["StageAll"] = Purple,
+        ["StageAllFiltered"] = Purple,
+        ["Unstage"] = Purple,
+        ["UnstageAll"] = Purple,
+        ["UnstageAllFiltered"] = Purple,
+        ["Merge"] = Purple,
+        ["SolveMerge"] = Purple,
+        ["PullMerge"] = Purple,
+        ["Rebase"] = Purple,
+        ["PullRebase"] = Purple,
+        ["Bisect"] = Purple,
+
+        // The refs the tree is built out of. Deliberately NOT the same hue as a remote
+        // branch, which is blue: the left tree's whole job is telling the two apart.
+        ["Branch"] = Cyan,
+        ["BranchLocal"] = Cyan,
+        ["LocalBranchRoot"] = Cyan,
+        ["SelectBranch"] = Cyan,
+        ["WorkTree"] = Cyan,
+        ["SubmodulesManage"] = Cyan,
+        ["SubmodulesUpdate"] = Cyan,
+        ["SubmodulesSync"] = Cyan,
+        ["FolderSubmodule"] = Cyan,
+    };
+
+    /// <summary>
+    ///  The accent palette key for an icon name, or <see langword="null"/> when the
+    ///  name has no role and the glyph is drawn in the tint the call site asked for.
+    /// </summary>
+    internal static string? AccentOf(string name)
+        => Accents.TryGetValue(name, out string? key) ? key : null;
+
     /// <summary>
     ///  The palette brush for a tint key. The live instance is returned, never a
     ///  copy: ThemeManager recolours by mutating the Color of the brushes it

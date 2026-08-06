@@ -974,7 +974,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _amendBox.Content = T("FormCommit/_amendCommitCaption.Text", "Amend commit");
 
         _commitBtn.Content = ButtonFace("RepoStateClean", T("FormCommit/Commit.Text", "Commit"));
-        _commitPushBtn.Content = ButtonFace("ArrowUp", T("FormCommit/_commitAndPush.Text", "Commit & push"));
+        // "Push", not the bare "ArrowUp" it used to carry: this button pushes, and the
+        // arrow-over-a-baseline is the shape the toolbar's Push already uses — which is
+        // also what earns it the transfer colour, where ArrowUp is chrome (it is the
+        // "move this row up" glyph elsewhere) and stays grey.
+        _commitPushBtn.Content = ButtonFace("Push", T("FormCommit/_commitAndPush.Text", "Commit & push"));
         _stashBtn.Content = ButtonFace("stash", T("FormCommit/StashStaged.Text", "Stash staged changes"));
         _resetAllBtn.Content = ButtonFace(
             "ResetWorkingDirChanges", T("FormCommit/btnResetAllChanges.Text", "Reset all changes"));

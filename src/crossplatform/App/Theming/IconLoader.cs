@@ -381,6 +381,31 @@ internal sealed class GlyphSource : IImage
         _resolved = true;
     }
 
+    /// <summary>
+    ///  The accent brush this glyph's NAME earns, or <see langword="null"/> when the
+    ///  icon has no role, colouring is off, or the call site asked for a tint of its
+    ///  own.
+    ///
+    ///  <para>That last condition is the important one. Three tints are meaning
+    ///  already — <see cref="Icons.TextDim"/> for a de-emphasised glyph,
+    ///  <see cref="Icons.Accent"/> for one on an accented surface, and the
+    ///  <c>App.RepoState*</c> family the Commit button uses to SAY the repository
+    ///  state — and a role colour laid over any of them would overwrite information
+    ///  with decoration. Only the default <see cref="Icons.Text"/> is up for grabs.</para>
+    ///
+    ///  <para>Resolved per draw rather than cached: <see cref="ThemeManager"/> hands
+    ///  out live brush instances and mutates their colour in place, so a cached
+    ///  instance would be correct — but a cached NULL, from an icon built before the
+    ///  palette was registered, would be permanent. The lookup is two dictionary
+    ///  probes.</para>
+    /// </summary>
+    private IBrush? Accent()
+        => ThemeManager.ColoredIcons
+            && string.Equals(_tintKey, Icons.Text, StringComparison.Ordinal)
+            && Icons.AccentOf(_name) is { } key
+                ? Icons.Tint(key)
+                : null;
+
     public void Draw(DrawingContext context, Rect sourceRect, Rect destRect)
     {
         if (destRect.Width <= 0 || destRect.Height <= 0)
@@ -410,7 +435,7 @@ internal sealed class GlyphSource : IImage
 
         // Falls back to the inherited text foreground rather than a fixed
         // colour, so a missing palette key still tracks the theme.
-        IBrush brush = Tint ?? _inherited ?? Brushes.Gray;
+        IBrush brush = Accent() ?? Tint ?? _inherited ?? Brushes.Gray;
 
         double scale = Math.Min(destRect.Width / sourceRect.Width, destRect.Height / sourceRect.Height);
         double drawn = Grid * scale;

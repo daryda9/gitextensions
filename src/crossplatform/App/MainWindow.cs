@@ -3736,7 +3736,13 @@ public sealed class MainWindow : Theming.ZoomWindow
     // Applies both dimensions from the live UiState. Always both, never one: Apply
     // takes the pair, so passing a default for the untouched one would silently reset it.
     private void ApplyAppearance()
-        => Theming.ThemeManager.Apply(VariantOf(_uiState.Theme), StyleOf(_uiState.Style));
+    {
+        // Before the palette, not after: SetColoredIcons only invalidates the glyphs
+        // already on screen, and at startup there are none — Apply is what the first
+        // window is built under.
+        Theming.ThemeManager.SetColoredIcons(_uiState.ColoredIcons);
+        Theming.ThemeManager.Apply(VariantOf(_uiState.Theme), StyleOf(_uiState.Style));
+    }
 
     // Changes one dimension (or both), applies the resulting pair, and persists it.
     private void SetAppearance(string? theme = null, string? style = null)
@@ -3790,6 +3796,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         // Same reason as the two above: PersistLayout() writes this instance in full on
         // close, so a size chosen in the dialog would be undone by the exit save.
         _uiState.UiSize = saved.UiSize;
+        _uiState.ColoredIcons = saved.ColoredIcons;
     }
 
     // ---- plugins --------------------------------------------------------------------

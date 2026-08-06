@@ -89,6 +89,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly ComboBox _theme;
     private readonly ComboBox _style;
     private readonly ComboBox _uiSize;
+    private readonly CheckBox _coloredIcons;
 
     // One three-state checkbox per GitConfigChoices entry, same order.
     private readonly CheckBox[] _gitConfigChecks;
@@ -158,6 +159,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // pair to keep together here (see Theming/UiScaling for why the size is not a
     // third argument to ThemeManager.Apply).
     private UiSize _revertUiSize;
+
+    // Same contract again, for icon colouring: its own field because ThemeManager
+    // takes it through its own call, not as part of the theme/style pair.
+    private bool _revertColoredIcons;
 
     private bool _applied;
 
@@ -510,6 +515,26 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         _uiSize.SelectionChanged += (_, _) => PreviewUiSize();
 
+        // No upstream trans-unit: upstream ships coloured bitmaps and has nothing to
+        // toggle, so the caption is a literal like "Style" and "UI size".
+        _coloredIcons = new CheckBox { Content = "Colour the icons" };
+        _coloredIcons.IsCheckedChanged += (_, _) => PreviewIconColors();
+
+        StackPanel coloredIconsField = new() { Spacing = 4 };
+        coloredIconsField.Children.Add(_coloredIcons);
+        coloredIconsField.Children.Add(new TextBlock
+        {
+            Text = "Paints the modern style's icons by what the command does — green to "
+                + "create, red to delete, blue to talk to a remote, purple for the index, "
+                + "cyan for branches and submodules, amber for stashes and tags. Icons "
+                + "with no such role, and the whole classic icon set, are unaffected. "
+                + "Turning it off loses nothing: no icon means anything by its colour "
+                + "alone.",
+            Foreground = dim,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
         Panel appearancePanel = CategoryPanel(
             AppearanceKey, AppearanceText,
             null, "The application colour theme, its visual style — \"Modern\" for the "
@@ -537,7 +562,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "grid, the diff and the file lists together. Applied immediately, no "
                     + "restart needed. Because menus and drop-downs are drawn inside the "
                     + "window so that they scale with it, they cannot extend past its "
-                    + "edges: in a small dialog they open into less room than before."));
+                    + "edges: in a small dialog they open into less room than before."),
+            coloredIconsField);
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
@@ -675,6 +701,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     _revertTheme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark,
                     _revertStyle == "Classic" ? AppStyle.Classic : AppStyle.Modern);
                 UiScaling.Apply(_revertUiSize);
+                ThemeManager.SetColoredIcons(_revertColoredIcons);
             }
         };
     }
@@ -823,6 +850,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // it is the engine that says what is on screen right now.
         _revertUiSize = UiScaling.CurrentSize;
         _uiSize.SelectedIndex = Array.IndexOf(UiSizes.All, _revertUiSize);
+
+        // Read from the live engine for the same reason as the size: the host applied
+        // it at startup and it is what the icons on screen are drawn with right now.
+        _revertColoredIcons = ThemeManager.ColoredIcons;
+        _coloredIcons.IsChecked = _revertColoredIcons;
         return (ui.Theme, ui.Style);
     }
 
@@ -931,6 +963,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // dynamic reference, so every open window re-reads it — this dialog included, which
     // means the preview is also the thing being previewed.
     private void PreviewUiSize() => UiScaling.Apply(SelectedUiSize);
+
+    // Live as well, and cheaper than either: every glyph on screen listens to
+    // ThemeManager.StyleChanged and repaints itself, so nothing is rebuilt.
+    private void PreviewIconColors() => ThemeManager.SetColoredIcons(_coloredIcons.IsChecked == true);
 
     private UiSize SelectedUiSize
         => UiSizes.All[Math.Max(0, _uiSize.SelectedIndex)];
@@ -1044,11 +1080,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         ui.Theme = _theme.SelectedIndex == 1 ? "Light" : "Dark";
         ui.Style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
         ui.UiSize = UiSizes.Name(SelectedUiSize);
+        ui.ColoredIcons = _coloredIcons.IsChecked == true;
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
         ThemeManager.Apply(SelectedVariant, SelectedStyle);
         UiScaling.Apply(SelectedUiSize);
+        ThemeManager.SetColoredIcons(ui.ColoredIcons);
 
         // The host owns the live UiState instance and re-serialises it on close, which
         // would otherwise overwrite the value just written to the file. Telling it
@@ -1065,6 +1103,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _revertTheme = ui.Theme;
         _revertStyle = ui.Style;
         _revertUiSize = SelectedUiSize;
+        _revertColoredIcons = ui.ColoredIcons;
     }
 
     // ---- hotkeys ------------------------------------------------------------

@@ -39,6 +39,8 @@ public static class ThemeManager
         "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag",
         "App.Link",
         "App.HoverRow", "App.Hover", "App.Pressed", "App.BorderStrong",
+        "App.IconGreen", "App.IconRed", "App.IconBlue",
+        "App.IconAmber", "App.IconPurple", "App.IconCyan",
     ];
 
     // ------------------------------------------------------------------
@@ -208,6 +210,17 @@ public static class ThemeManager
         // input would be a new look, not the old one. The strong value lives in the
         // modern families only, exactly like ModernStyles' own borderStrong.
         ["App.BorderStrong"] = Color.Parse("#3F3F46"),
+
+        // The icon accents (M103). The classic style draws the 2015 PNGs and never
+        // reads them, but an unregistered key keeps whatever the modern palette last
+        // left in the brush, so the family is registered here too, at the modern
+        // values — a switch to Classic and back therefore changes nothing.
+        ["App.IconGreen"] = Color.Parse("#5BC46B"),
+        ["App.IconRed"] = Color.Parse("#E06C6C"),
+        ["App.IconBlue"] = Color.Parse("#5B9CFF"),
+        ["App.IconAmber"] = Color.Parse("#E0A73C"),
+        ["App.IconPurple"] = Color.Parse("#B197E1"),
+        ["App.IconCyan"] = Color.Parse("#37B6C9"),
     };
 
     private static readonly Dictionary<string, Color> ClassicLight = new()
@@ -304,6 +317,15 @@ public static class ThemeManager
 
         // Classic keeps its own separator value here, see the dark block.
         ["App.BorderStrong"] = Color.Parse("#C4C4C4"),
+
+        // The icon accents (M103, see the classic dark block): unused by this style,
+        // registered so the brushes never keep the other palette's values.
+        ["App.IconGreen"] = Color.Parse("#217A32"),
+        ["App.IconRed"] = Color.Parse("#B03A3A"),
+        ["App.IconBlue"] = Color.Parse("#1D4ED8"),
+        ["App.IconAmber"] = Color.Parse("#8A5900"),
+        ["App.IconPurple"] = Color.Parse("#7541D6"),
+        ["App.IconCyan"] = Color.Parse("#0F6C7A"),
     };
 
     // ------------------------------------------------------------------
@@ -534,6 +556,26 @@ public static class ThemeManager
         // Panel, PanelAlt, Toolbar, Selection), where 40% gives 2.92:1. App.Border
         // itself measures 1.08:1 there and stays what it is — a separator.
         ["App.BorderStrong"] = Color.Parse("#88898F"),
+
+        // NEW in M103: the icon accent family, i.e. the colours the modern vector
+        // glyphs are painted with when "Colour the icons" is on. Six roles, not one per
+        // icon: create/add, destroy/remove, transfer, stash-and-tag, staging, and the
+        // structural refs. The rest of the set stays App.Text, so colour marks the
+        // icons that carry a MEANING and the chrome stays quiet.
+        //
+        // Non-text markers owe 3:1; each of these clears 4.5:1 against the worst of
+        // App.Window / App.Panel / App.PanelAlt, so they hold on the toolbar, in a menu
+        // and on a hovered row alike. Red and green — the pair red-green colour
+        // blindness collapses — are separated by luminance as well (4.63:1 against
+        // 6.77:1), and the glyphs they paint already differ in SHAPE (a plus against a
+        // minus, a bin against a check): the colour reinforces the meaning, it never
+        // carries it alone.
+        ["App.IconGreen"] = Color.Parse("#5BC46B"),   // 6.77:1
+        ["App.IconRed"] = Color.Parse("#E06C6C"),     // 4.63:1
+        ["App.IconBlue"] = Color.Parse("#5B9CFF"),    // 5.42:1
+        ["App.IconAmber"] = Color.Parse("#E0A73C"),   // 6.92:1
+        ["App.IconPurple"] = Color.Parse("#B197E1"),  // 5.94:1
+        ["App.IconCyan"] = Color.Parse("#37B6C9"),    // 6.17:1
     };
 
     private static readonly Dictionary<string, Color> ModernLight = new()
@@ -661,6 +703,16 @@ public static class ThemeManager
         // NEW in M94 (see the dark block). 3.32:1 on the worst of the five surfaces,
         // against 1.32:1 for App.Border.
         ["App.BorderStrong"] = Color.Parse("#77777E"),
+
+        // NEW in M103 (see the dark block). Same six roles taken to values that clear
+        // 4.5:1 against the light surfaces, which on white means darkened hues rather
+        // than the dark theme's lightened ones.
+        ["App.IconGreen"] = Color.Parse("#217A32"),   // 4.54:1
+        ["App.IconRed"] = Color.Parse("#B03A3A"),     // 5.03:1
+        ["App.IconBlue"] = Color.Parse("#1D4ED8"),    // 5.64:1
+        ["App.IconAmber"] = Color.Parse("#8A5900"),   // 5.03:1
+        ["App.IconPurple"] = Color.Parse("#7541D6"),  // 5.07:1
+        ["App.IconCyan"] = Color.Parse("#0F6C7A"),    // 5.12:1
     };
 
     private static readonly Dictionary<string, SolidColorBrush> Brushes = new();
@@ -672,8 +724,36 @@ public static class ThemeManager
     public static ThemeVariant CurrentVariant { get; private set; } = ThemeVariant.Dark;
 
     /// <summary>
+    ///  Whether the modern vector glyphs are painted in their accent role
+    ///  (<see cref="Icons.AccentOf"/>) rather than all in <c>App.Text</c>.
+    ///
+    ///  <para>Only the modern style is affected: the classic style draws the 2015
+    ///  PNGs, whose colours are baked into the bitmaps and were never ours to
+    ///  choose. Turning it off is lossless — no icon means anything by its colour
+    ///  alone (see the role table in <see cref="Icons"/>).</para>
+    /// </summary>
+    public static bool ColoredIcons { get; private set; } = true;
+
+    /// <summary>
+    ///  Switches icon colouring live. Raises <see cref="StyleChanged"/>, which is
+    ///  what every glyph on screen listens to — the icons repaint in place, nothing
+    ///  is rebuilt, exactly as for a style switch.
+    /// </summary>
+    public static void SetColoredIcons(bool colored)
+    {
+        if (colored == ColoredIcons)
+        {
+            return;
+        }
+
+        ColoredIcons = colored;
+        StyleChanged?.Invoke();
+    }
+
+    /// <summary>
     ///  Raised after a style change has been fully applied — palette mutated,
-    ///  control styles swapped. Listeners only have to invalidate themselves.
+    ///  control styles swapped — or after <see cref="SetColoredIcons"/> changed how
+    ///  the glyphs are tinted. Listeners only have to invalidate themselves.
     ///
     ///  <para>This is a STATIC event: anything that subscribes from a control
     ///  must unsubscribe when it detaches, or a recycling list will grow the
