@@ -3260,6 +3260,42 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M101 (2026-08-06) — le ultime differenze del dialogo di commit: raggruppamento, overflow, submodule
+
+> «implementa tutte le parti rimanenti della finestra del commit che hai trovato»: le quattro voci
+> lasciate dichiarate in M98–M100. Base `6f7f23f22`.
+
+### Raggruppamento delle liste (la voce grossa)
+La toolbar del pannello aveva 3 pulsanti dove upstream ne ha 6, e i tre mancanti sono il
+**raggruppamento** attorno a cui `FileStatusList` è costruita (`btnByPath` / `btnByExtension` /
+`btnByStatus`, sopra `btnAsTree` e `btnCollapseGroups`). Il port usava le stesse tre chiavi come
+**ordinamento**: la stessa informazione senza le intestazioni che rendono leggibile una lista lunga.
+
+Ora le liste costruiscono nodi di gruppo: **albero vero di cartelle** per il raggruppamento per path
+(le righe file portano solo il nome, la cartella sta nell'intestazione sopra), un'intestazione per
+chiave per estensione e stato, ognuna col conteggio e il chevron, che si chiude al clic e sopravvive a
+un refresh perché la chiave è il path della cartella. Cliccare il toggle attivo **spegne** il
+raggruppamento, come fa il pulsante checkable di upstream. I nodi di gruppo non entrano mai nella
+selezione da cui lavorano stage/unstage/diff (`SelectedRows` filtra per tipo).
+
+Dettaglio non ovvio: l'indentazione e il "solo nome" **non stanno in `WorkingDirFileRow`** — è il tipo
+del servizio, non sa nulla di liste — ma in una `ConditionalWeakTable` riempita da `BuildItems`, così
+niente resta vivo dopo un reload.
+
+### Le altre tre
+- **Overflow**: `OverflowPanel` era una classe annidata privata di `MainToolbar`; estratta in
+  `Views/OverflowPanel.cs`, la toolbar del messaggio adesso parcheggia dietro «»» ciò che non entra
+  invece di andare a capo.
+- **Icona del branch** nella status bar, davanti al nome (upstream `toolStripStatusBranchIcon`).
+- **"Generate list of changes in submodules"** nel menu del messaggio: compone
+  `Submodules … updated` dai bump staged, leggendo il log di ciascun submodule fra i due
+  `Subproject commit`; con nessun submodule staged lo dice nella status line invece di non fare nulla
+  (upstream esce in silenzio). Trappola nota riapplicata: `--pretty=format:` con **`%x20`**, mai spazi
+  letterali, perché `GitArgumentBuilder` concatena tutto in una sola command line.
+
+Misura estetica: il glifo di `CollapseAll` erano due chevron che si piegano, che a 16 px **si legge
+come una ✕** (= chiudi); ora è il meno in un riquadro dei tree control.
+
 ## M100 (2026-08-06) — confronto 1:1 col dialogo originale: la struttura dentro i pannelli
 
 > Terza passata: «controlla bene questa immagine e fai il confronto preciso 1:1 di ciò che cambia
