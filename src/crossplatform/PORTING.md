@@ -3260,6 +3260,45 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M98 (2026-08-06) — il dialogo di commit allineato a `FormCommit`
+
+> Segnalazione dell'utente con screenshot dell'originale Windows: «nel commit dialog ci sono ancora
+> delle differenze rispetto all'originale, allinealo». Base `8c37814a9`.
+
+### La struttura era la differenza vera
+Upstream annida tre `SplitContainer` (`FormCommit.Designer.cs:31-52`): `splitMain` mette **le due
+liste di file a sinistra** e tutto il resto a destra; `splitRight` impila il **diff** sopra un
+`tableLayoutPanel1` la cui prima colonna è un flow **dall'alto in basso** dei pulsanti di commit, con
+la `toolbarCommit` sopra il box del messaggio nella seconda. Il port aveva invece una **fascia a
+tutta larghezza** sotto entrambe le colonne, messaggio sopra e pulsanti a capo sotto: le liste
+perdevano altezza e niente si allineava.
+
+Ora: colonna sinistra a tutta altezza col suo splitter, strip stage/unstage in testa al pannello
+staged (upstream `toolbarStaged`), banner dei conflitti e regione di commit **dentro** la colonna
+destra, pulsanti in colonna verticale (`MinWidth` 171 come `flowCommitButtons`). Tolti i due titoli
+in grassetto sopra le liste e il pulsante **Cancel**: upstream non ha né gli uni né l'altro (il suo
+`Cancel` è un pulsante coperto dalla lista, e Escape chiude già il dialogo).
+
+### Le righe dei file
+Stampavano lo stato **a parole** davanti al path (`new  docs/x.md`) dentro il padding di default di
+Fluent: alte il doppio di una riga upstream, otto file riempivano un pannello dove upstream ne mostra
+venti. Ora portano la **lettera colorata** che `FileStatusListView` già usa (A/M/D/R/C/U) e le sue
+metriche di riga. In più il **primo file è selezionato** alla prima riempitura, così il pannello del
+diff non resta bianco finché non si clicca.
+
+### "Commit message ▾"
+La `toolbarCommit` upstream ha quattro voci, il port ne aveva tre. Aggiunta la prima:
+`commitMessageToolStripMenuItem`, l'elenco dei messaggi degli ultimi commit (etichetta = prima riga
+tagliata a 72 caratteri, clic = sostituisce il messaggio) più il filtro **"Show only my messages"**
+sull'identità del committer. Legge `GitModule.GetPreviousCommitMessages`, già linkato.
+
+Da NON riscoprire: un `DockPanel` serve i figli **nell'ordine in cui sono aggiunti** — con il gruppo
+di sinistra aggiunto per primo si prendeva tutta la larghezza e `Options` restava una scheggia sul
+bordo; va aggiunto **prima** il figlio ancorato a destra.
+
+Non portato (dichiarato, non taciuto): la voce **"Generate list of changes in submodules"** del
+menu del messaggio, che compone un messaggio dai bump di submodule presenti nell'indice.
+
 ## M97 (2026-08-06) — una sola riga selezionata nell'albero, e lo stash torna una finestra
 
 > Due segnalazioni dell'utente con screenshot: (a) «switcho submodules e clicco sulle cartelle,
