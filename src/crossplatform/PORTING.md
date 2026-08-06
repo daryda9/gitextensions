@@ -3260,6 +3260,34 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M100 (2026-08-06) — confronto 1:1 col dialogo originale: la struttura dentro i pannelli
+
+> Terza passata: «controlla bene questa immagine e fai il confronto preciso 1:1 di ciò che cambia
+> rispetto a quello che abbiamo in avalonia, quindi implementa le differenze di struttura».
+> Base `63ca3261e`, screenshot `~/Pictures/Schermate/Schermata del 2026-08-06 14-59-02.png`.
+
+Dopo M98 la divisione generale era giusta: le differenze rimaste erano **dentro** i pannelli.
+
+| Originale | Port prima | Ora |
+|---|---|---|
+| toolbar di icone e **sotto** il filtro a tutta larghezza | tutto su una riga, filtro ridotto a un moncone | due righe |
+| filtro con **▾** (è una `ToolStripComboBox`) | nessuna cronologia | ▾ con i pattern già usati nel pannello |
+| pannello vuoto = solo la riga in corsivo, **filtro nascosto** | filtro sempre visibile, testo centrato | `SetFileStatusListVisibility`: filtro nascosto, testo in alto a sinistra |
+| strip unica: coppia unstage a sinistra, coppia stage a destra, "all" **solo icona** | quattro pulsanti incorniciati che andavano a capo | una riga, piatta, "all" con la didascalia nel tooltip |
+| path con **cartella in grigio** e nome file pieno | path monocromo | due toni |
+| pulsanti con icona **ancorata a sinistra** (`ImageAlign = MiddleLeft`) e testo centrato | icona e testo centrati insieme | come upstream; Amend a sinistra |
+| `toolbarCommit` piatta | pulsanti incorniciati | piatti |
+
+I quattro glifi stage/unstage erano **due forme per quattro pulsanti** (`ListPlus`/`ListMinus`
+ripetuti): ora sono freccia singola e doppia, verso una linea e via da una linea — la direzione che
+upstream disegna con le sue frecce viola. Regola: **a 16 px due varianti della stessa forma non si
+distinguono**, serve un asse diverso (qui il verso, e il raddoppio per "all").
+
+Restano dichiarate, non fatte: la toolbar del pannello ha 3 pulsanti invece dei 6 di upstream (gli
+altri tre sono i **raggruppamenti** per path/estensione/stato, che il dialogo di commit del port non
+ha perché le sue liste sono piatte); la riga della toolbar del messaggio **va a capo** su finestra
+stretta invece di finire in un overflow; la riga "Committer" del port sta a sinistra nella status bar.
+
 ## M99 (2026-08-06) — le icone del dialogo di commit
 
 > Seconda passata sulla stessa segnalazione: «ci sono ancora differenze nel commit dialog (ad esempio
