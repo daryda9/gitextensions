@@ -3260,6 +3260,64 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M103 (2026-08-06) — le icone moderne hanno un colore, e si può spegnere
+
+> «per quanto riguarda lo stile modern, le icone mi piacciono ma sono tutte bianche, preferirei che si
+> aggiungano dei colori (sempre con la possibilità di scegliere dalle impostazioni in appearance se
+> mantenere o meno il colore delle icone)».
+
+Il set moderno era monocromatico **per costruzione**: linea disegnata con una sola penna, tinta
+`App.Text`. È ciò che lo faceva leggere come una famiglia — ed è anche ciò che, in una toolbar da venti
+icone, lo faceva leggere come un muro di segni grigi identici: a 16 px la forma è l'unica informazione
+disponibile.
+
+### Il colore è un ruolo, non un disegno
+Sei ruoli, assegnati per **quello che il comando fa**, mai per l'aspetto del glifo — perciò Push, Pull,
+Fetch e Clone condividono una tinta pur essendo quattro forme, e il cestino è rosso sia sotto «elimina
+branch» sia sotto «elimina tag»:
+
+| Ruolo | Chiave | Cosa copre |
+|---|---|---|
+| verde | `App.IconGreen` | creare, aggiungere, affermare (create repo/branch, checkout, commit, bisect good, file aggiunto) |
+| rosso | `App.IconRed` | distruggere (cestino ovunque, ogni reset, file rimosso, bisect bad) |
+| blu | `App.IconBlue` | parlare con un remote (push/pull/fetch/clone/remote) e i file modificati o rinominati |
+| ambra | `App.IconAmber` | contenitori e marcatori (cartelle, tag, stash, preferiti) e gli stati «guardami» |
+| viola | `App.IconPurple` | l'indice e le riscritture (stage/unstage — upstream le disegna viola — merge, rebase, bisect) |
+| ciano | `App.IconCyan` | i ref strutturali: branch locali, submodule, worktree |
+
+Un'icona **senza ruolo resta `App.Text`**: la chrome (impostazioni, navigazione, pannelli, ricerca,
+copia) non deve competere con le icone che significano qualcosa.
+
+### Cosa il colore non fa mai
+La tinta chiesta dal call site **vince** quando è essa stessa informazione: `App.TextDim` per un glifo
+attenuato, `App.Accent` su una superficie accentata e la famiglia `App.RepoState*` con cui il pulsante
+Commit *dice* lo stato del repository non vengono mai ridipinte. Solo la tinta di default `App.Text` è
+disponibile.
+
+E il colore non porta mai da solo un significato: ogni coppia che condivide una tinta differisce di
+forma, e i due ruoli che un daltonico collassa — verde e rosso — sono il più contro il meno, il check
+contro il cestino. Spegnere tutto non perde nulla.
+
+### Contrasto
+Le sei tinte sono registrate in **tutte e quattro** le palette (trappola M62: una chiave non registrata
+si tiene il colore che l'altra palette ha lasciato nel brush). Un marcatore non testuale deve 3:1;
+ognuna di queste supera **4.5:1** sul peggiore fra `App.Window` / `App.Panel` / `App.PanelAlt`, e verde
+e rosso sono separati anche in luminanza (6.77:1 contro 4.63:1).
+
+### L'interruttore
+`Appearance ▸ "Colour the icons"` (`UiState.ColoredIcons`, default acceso). Anteprima **dal vivo** come
+tema e stile, con revert su Cancel: `ThemeManager.SetColoredIcons` alza `StyleChanged`, che ogni glifo a
+schermo già ascolta — le icone si ridipingono sul posto, nessuna vista viene ricostruita. Lo stile
+classico non è toccato: disegna i PNG del 2015, coi colori dentro il bitmap.
+
+Fuori scopo ma nato qui: **Commit & push** portava `ArrowUp`, il glifo di chrome che i pulsanti di
+riordino usano; ora porta `Push`, la forma con cui la toolbar spinge davvero — ed è anche ciò che gli
+fa guadagnare la tinta di trasferimento.
+
+Verificato in GUI su `/tmp/m97/super`: albero e toolbar coi ruoli attesi (campionati a pixel:
+push `#5B9CFF`, stage/unstage `#B197E1`, stash `#E0A73C`, reset `#E06C6C`), spegnimento dal vivo che
+riporta tutto a `App.Text`, Cancel che ripristina, e il tema chiaro con le tinte scurite.
+
 ## M102 (2026-08-06) — il chevron dell'albero ha una fascia sua
 
 > Segnalazione dell'utente con immagine annotata: «a volte non si capisce se facciamo doppio clic
