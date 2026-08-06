@@ -3260,6 +3260,56 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M97 (2026-08-06) — una sola riga selezionata nell'albero, e lo stash torna una finestra
+
+> Due segnalazioni dell'utente con screenshot: (a) «switcho submodules e clicco sulle cartelle,
+> queste rimangono buggate selezionate»; (b) «la funzione di stash è nel menu in basso mentre nel
+> programma originale è in una schermata a parte, controlla». Base `74a347d6c`.
+
+### (a) Le righe restavano selezionate perché il modello di selezione non le vedeva mai
+
+`TreeViewItem.IsSelected` arriva al selection model del `TreeView` **solo dopo che il container è
+stato realizzato sotto il suo parent**. Il port assegnava `IsSelected = true` a mano in tre punti —
+il click (tunneling in `OnTreePointerPressed`), il ciclo dei match della ricerca e il ripristino
+della selezione dopo un rebuild — e nel sottoalbero appena aperto di un submodule quel flag veniva
+scritto **dietro le spalle del modello**. La selezione successiva deselezionava solo il nodo che il
+modello conosceva: tutti gli altri restavano col fondo blu. Da qui la catena
+`pluma_orchestrator › ai-server › core › graphs` tutta accesa dello screenshot.
+
+Ora ogni selezione passa da `SelectOnly(node)`, che azzera il flag su tutti gli altri nodi indicizzati
+prima di accenderlo sul suo (l'iterazione lavora su uno snapshot delle chiavi: assegnare `IsSelected`
+alza `SelectionChanged`, e un handler che ricostruisse l'albero invaliderebbe il dizionario).
+
+**Misura** su un repo `super › lib1 › lib2` costruito apposta (`/tmp/m97`), quattro click sulle righe
+di un submodule espanso, banda blu letta a x=125: **prima** una banda continua 413–540 px (quattro
+righe accese insieme), **dopo** una banda di 32 px alla volta, cioè una riga sola.
+
+### (b) Lo stash non è un tab: upstream è una finestra
+
+`FormBrowse` upstream ha quattro tab in designer (Commit · Diff · File tree · GPG) più quelli che
+aggiunge a runtime (Console · Output · Blame · File history): **lo stash non è fra questi**. Tutte le
+sue superfici — lo split button `toolStripSplitStash`, il menu Commands, e nell'albero
+`mnubtnOpenStash` / `mnubtnManageStashFromRootNode` — chiamano `UICommands.StartStashDialog`, cioè un
+`FormStash` **modale**. Il port aveva messo lo stesso pannello in un nono tab, che schiacciava lista +
+liste file + diff nella striscia in basso.
+
+Fatto: nuovo `App/Views/StashWindow.cs` (una `ZoomWindow` attorno a `StashPanel`, Esc chiude via
+`DialogKeys`), tab Stash rimosso dalla striscia, e un unico ingresso `MainWindow.ShowStashDialogAsync`
+per tutte le superfici. I due argomenti di `StartStashDialog` esistono davvero adesso:
+`StashPanel.ManageStashes` (prima riempitura sullo stash più recente invece che sulla riga della
+working directory, poi il flag si spegne come upstream) e `StashPanel.SelectStashOnLoad("stash@{2}")`,
+così `Open stash` e il doppio clic su un nodo stash aprono **su quello stash**. `RepoObjectsTree`
+espone `StashDialogRequested(string?)` al posto di `BottomTabRequested`, che non aveva altri utenti.
+
+Verificato in GUI su un repo con quattro stash: la striscia in basso non ha più Stash; il corpo dello
+split button apre la finestra su `stash@{0}`; il doppio clic su `stash@{2}` la apre su `stash@{2}` col
+diff giusto; «Create a stash…» apre la finestra sulla riga della working directory con il prompt sopra;
+alla chiusura dopo uno stash creato la finestra principale si aggiorna (Stash (3) → Stash (4), riga
+Working directory sparita).
+
+Da NON riscoprire: un `BottomTab` "Stash" salvato da una versione precedente non corrisponde più a
+nulla e ricade sul tab Commit — `RestoreBottomTab` lo gestisce già col suo `_ =>` di default.
+
 ## M96 (2026-08-05) — densità della chrome, e SOLO nello stile Modern
 
 > Richiesta dell'utente: applicare le raccomandazioni date sulle sei scelte del punto 2

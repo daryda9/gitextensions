@@ -82,6 +82,7 @@ public sealed class StashPanel : UserControl
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
     private bool _busy;
+    private string? _initialStash;
     private CancellationTokenSource? _diffCts;
     private CancellationTokenSource? _filesCts;
 
@@ -99,6 +100,20 @@ public sealed class StashPanel : UserControl
     ///  (list already refreshed).
     /// </summary>
     public event Action? OperationCompleted;
+
+    /// <summary>
+    ///  Whether the first fill should land on the newest stash rather than on the
+    ///  working-directory row — upstream's <c>FormStash.ManageStashes</c>, set by
+    ///  <c>StartStashDialog(manageStashes: true)</c>. Cleared after that first fill.
+    /// </summary>
+    public bool ManageStashes { get; set; }
+
+    /// <summary>
+    ///  Selects a specific stash ("stash@{2}") on the next fill — upstream's
+    ///  <c>initialStash</c> argument, used when a stash node of the left tree is opened.
+    ///  Ignored when that stash is gone by the time the list arrives.
+    /// </summary>
+    public void SelectStashOnLoad(string? reflogSelector) => _initialStash = reflogSelector;
 
     public StashPanel()
     {
@@ -476,12 +491,43 @@ public sealed class StashPanel : UserControl
                 List<object> items = [new WorkingDirRow(WorkingDirText())];
                 items.AddRange(stashes);
                 _stashList.ItemsSource = items;
-                _stashList.SelectedIndex = 0;
+                _stashList.SelectedIndex = InitialIndex(stashes);
 
                 _status.Text = stashes.Count == 0
                     ? T("FormStash/_noStashes.Text", "There are no stashes.")
                     : F(T("{0} stash(es)."), stashes.Count);
             });
+    }
+
+    // Which row a freshly loaded list starts on, upstream's FormStash.Initialize:
+    // the stash the caller asked for when it is still there, otherwise the first real
+    // stash while "manage stashes" is still pending (the dialog opened to look at the
+    // stashes, so landing on the working-directory row would waste the trip), and the
+    // working-directory row when there is nothing else.
+    private int InitialIndex(IReadOnlyList<StashRow> stashes)
+    {
+        if (_initialStash is { Length: > 0 } wanted)
+        {
+            _initialStash = null;
+            for (int i = 0; i < stashes.Count; i++)
+            {
+                if (string.Equals(stashes[i].Name, wanted, StringComparison.Ordinal))
+                {
+                    return i + 1;   // the synthetic working-directory row is at 0
+                }
+            }
+        }
+
+        if (ManageStashes && stashes.Count > 0)
+        {
+            // Upstream clears the flag after the first fill, so a later refresh —
+            // typically right after the user dropped or popped one — comes back to
+            // the working directory instead of jumping to a stash again.
+            ManageStashes = false;
+            return 1;
+        }
+
+        return 0;
     }
 
     private bool IsCurrentRepository(string repo, long generation)

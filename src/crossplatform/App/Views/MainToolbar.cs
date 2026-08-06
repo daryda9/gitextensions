@@ -126,15 +126,16 @@ public sealed class MainToolbar : UserControl
     /// <summary>
     ///  Show the stash management surface. Raised by the split button's BODY and by
     ///  its "Manage stashes…" entry — upstream both call
-    ///  <c>UICommands.StartStashDialog</c>. In the port the surface is the bottom
-    ///  panel's Stash tab, so the host answers this by selecting that tab.
+    ///  <c>UICommands.StartStashDialog</c>, and so does the host, which opens the modal
+    ///  <c>StashWindow</c>.
     /// </summary>
     public event Action? ManageStashesRequested;
 
     /// <summary>
     ///  Open the "create a stash" prompt (upstream <c>createAStashToolStripMenuItem</c>,
-    ///  i.e. <c>StartStashDialog(this, false)</c>). In the port this is the Stash
-    ///  panel's "Stash…" flow, which asks for a message and an untracked-files flag.
+    ///  i.e. <c>StartStashDialog(this, false)</c>). The host opens the stash window on
+    ///  the working-directory row and runs its "Stash…" flow, which asks for a message
+    ///  and an untracked-files flag.
     /// </summary>
     public event Action? CreateStashRequested;
 

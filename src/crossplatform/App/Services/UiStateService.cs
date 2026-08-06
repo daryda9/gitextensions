@@ -43,9 +43,11 @@ public sealed class UiState
 
     /// <summary>
     ///  The selected tab of the bottom panel, as a stable key ("Commit", "Diff",
-    ///  "FileTree", "Gpg", "Console", "Output", "Stash", "Blame", "History") rather
-    ///  than an index: the Diff tab is removed from the strip while split view is
-    ///  on, so positions are not stable across sessions.
+    ///  "FileTree", "Gpg", "Console", "Output", "Blame", "History") rather than an
+    ///  index: the Diff tab is removed from the strip while split view is on, so
+    ///  positions are not stable across sessions. A "Stash" left behind by an older
+    ///  version — the stash panel is a window now — matches nothing and falls back to
+    ///  the Commit tab.
     /// </summary>
     public string BottomTab { get; set; } = "Commit";
 

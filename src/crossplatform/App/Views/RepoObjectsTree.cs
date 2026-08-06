@@ -195,15 +195,14 @@ public sealed class RepoObjectsTree : UserControl
     public event Action<string>? FeedbackRequested;
 
     /// <summary>
-    ///  Raised on the UI thread when a tree node wants a tab of the bottom panel
-    ///  brought to the front, carrying the tab key used by <c>UiState.BottomTab</c>
-    ///  ("Stash", "Diff", …). Used by the Stashes root's "Manage stashes…" and by a
-    ///  stash node's "Open stash" / double-click, which upstream routes to
-    ///  <c>StartStashDialog(manageStashes: true)</c> — the port's equivalent surface is
-    ///  the bottom panel's Stash tab. Menu items behind it are shown disabled while
+    ///  Raised on the UI thread when the Stashes root's "Manage stashes…" or a stash
+    ///  node's "Open stash" / double-click wants the stash dialog — upstream's
+    ///  <c>StartStashDialog(manageStashes: true, initialStash)</c>. Carries the stash to
+    ///  select ("stash@{2}"), or <see langword="null"/> for none. Only the host can open
+    ///  a window, so the tree asks; the menu items behind it are shown disabled while
     ///  nothing is subscribed, so they are never dead.
     /// </summary>
-    public event Action<string>? BottomTabRequested;
+    public event Action<string?>? StashDialogRequested;
 
     /// <summary>
     ///  Raised on the UI thread by the Remotes root's "Fetch all" — upstream's
@@ -1920,7 +1919,7 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu StashMenu(StashRow row)
     {
         ContextMenu menu = new();
-        menu.Items.Add(OpenStashItem());
+        menu.Items.Add(OpenStashItem(row));
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnApplyStash.Text", "Apply stash"), null, () => RunStash(() => _stashService.StashApply(_repoPath!, row.Name))));
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnPopStash.Text", "Pop stash"), null, () => RunStash(() => _stashService.StashPop(_repoPath!, row.Name))));
@@ -1929,22 +1928,22 @@ public sealed class RepoObjectsTree : UserControl
         return menu;
     }
 
-    // Upstream's mnubtnOpenStash and "Manage stashes…" both open FormStash; the port's
-    // equivalent surface is the bottom panel's Stash tab, which only the host can bring
-    // forward — hence BottomTabRequested. Disabled while nothing is listening, so the
-    // item is never dead.
-    private MenuItem OpenStashItem()
+    // Upstream's mnubtnOpenStash and "Manage stashes…" both open FormStash, the one
+    // opening on the stash that was clicked (StashNode.OpenStash passes its
+    // ReflogSelector). Only the host owns windows, hence StashDialogRequested; disabled
+    // while nothing is listening, so the item is never dead.
+    private MenuItem OpenStashItem(StashRow? row)
     {
-        MenuItem item = MenuItem(T("RepoObjectsTree/mnubtnOpenStash.Text", "Open stash"), "stash", () => BottomTabRequested?.Invoke("Stash"));
-        item.IsEnabled = BottomTabRequested is not null;
+        MenuItem item = MenuItem(T("RepoObjectsTree/mnubtnOpenStash.Text", "Open stash"), "stash", () => StashDialogRequested?.Invoke(row?.Name));
+        item.IsEnabled = StashDialogRequested is not null;
         ToolTip.SetTip(item, T("RepoObjectsTree/mnubtnOpenStash.ToolTipText", "Open this stash"));
         return item;
     }
 
     private MenuItem ManageStashesItem()
     {
-        MenuItem item = MenuItem(T("RepoObjectsTree/mnubtnManageStashFromRootNode.Text", "Manage stashes…"), "stash", () => BottomTabRequested?.Invoke("Stash"));
-        item.IsEnabled = BottomTabRequested is not null;
+        MenuItem item = MenuItem(T("RepoObjectsTree/mnubtnManageStashFromRootNode.Text", "Manage stashes…"), "stash", () => StashDialogRequested?.Invoke(null));
+        item.IsEnabled = StashDialogRequested is not null;
         return item;
     }
 
@@ -2298,8 +2297,8 @@ public sealed class RepoObjectsTree : UserControl
                 DoCheckout(row);
                 break;
 
-            case TreeViewItem { Tag: StashRow }:
-                BottomTabRequested?.Invoke("Stash");
+            case TreeViewItem { Tag: StashRow stash }:
+                StashDialogRequested?.Invoke(stash.Name);
                 break;
 
             case TreeViewItem { Tag: WorktreeRow worktree }:

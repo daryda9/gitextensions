@@ -55,12 +55,10 @@ public sealed class MainWindow : Theming.ZoomWindow
     private readonly TabItem _gpgTab;
     private readonly TabItem _consoleTab;
     private readonly TabItem _outputTab;
-    private readonly TabItem _stashTab;
     private readonly TabItem _blameTab;
     private readonly TabItem _historyTab;
     private readonly BlameView _blame = new();
     private readonly FileHistoryView _fileHistory = new();
-    private readonly StashPanel _stash = new();
 
     private readonly StashOpsService _stashOps = new();
     private readonly ExternalToolService _externalTools = new();
@@ -212,7 +210,9 @@ public sealed class MainWindow : Theming.ZoomWindow
         // ---- bottom panel: the original FormBrowse tab strip
         //   Commit · Diff · File tree · GPG · Console · Output
         // followed by the extra Avalonia panels
-        //   Stash · Blame · File history.
+        //   Blame · File history.
+        // Stash is NOT here: upstream opens FormStash as a window and so does the port
+        // (StashWindow), reached from the toolbar's stash split button and the left tree.
         // The Commit tab shows the commit DETAIL; the diff moved out to its own
         // Diff tab so both are visible at once.
         _commitInfoTab = new TabItem();
@@ -221,7 +221,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         _gpgTab = new TabItem { Content = _gpg };
         _consoleTab = new TabItem { Content = _console };
         _outputTab = new TabItem { Content = _output };
-        _stashTab = new TabItem { Content = _stash };
         _blameTab = new TabItem { Content = _blame };
         _historyTab = new TabItem { Content = _fileHistory };
         ApplyTabTranslations();
@@ -237,7 +236,7 @@ public sealed class MainWindow : Theming.ZoomWindow
             Items =
             {
                 _commitInfoTab, _diffTab, _fileTreeTab, _gpgTab, _consoleTab, _outputTab,
-                _stashTab, _blameTab, _historyTab,
+                _blameTab, _historyTab,
             },
         };
 
@@ -454,7 +453,6 @@ public sealed class MainWindow : Theming.ZoomWindow
                 "Gpg" => _gpgTab,
                 "Console" => _consoleTab,
                 "Output" => _outputTab,
-                "Stash" => _stashTab,
                 "Blame" => _blameTab,
                 "History" => _historyTab,
                 _ => _commitInfoTab,
@@ -479,7 +477,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         if (ReferenceEquals(selected, _gpgTab)) { return "Gpg"; }
         if (ReferenceEquals(selected, _consoleTab)) { return "Console"; }
         if (ReferenceEquals(selected, _outputTab)) { return "Output"; }
-        if (ReferenceEquals(selected, _stashTab)) { return "Stash"; }
         if (ReferenceEquals(selected, _blameTab)) { return "Blame"; }
         if (ReferenceEquals(selected, _historyTab)) { return "History"; }
         return "Commit";
@@ -1100,7 +1097,6 @@ public sealed class MainWindow : Theming.ZoomWindow
             }
         };
 
-        _stash.OperationCompleted += RefreshAll;
         _tree.OperationCompleted += RefreshAll;
         _revisions.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
@@ -1111,13 +1107,10 @@ public sealed class MainWindow : Theming.ZoomWindow
             _toolbar.OpenRepositoryInNewInstance(path);
         };
         _tree.FeedbackRequested += message => _statusBar.SetText(message);
-        // The tree cannot reach the bottom panel or the streaming remote ops itself;
+        // The tree cannot open a window or run the streaming remote ops itself;
         // without these its stash and fetch-all entries stay disabled rather than dead.
-        _tree.BottomTabRequested += key =>
-        {
-            _uiState.BottomTab = key;
-            RestoreBottomTab();
-        };
+        _tree.StashDialogRequested +=
+            initialStash => _ = ShowStashDialogAsync(initialStash: initialStash);
         _tree.FetchAllRequested += () => RunRemoteOp(
             "Fetch all", (s, _, emit, creds) => s.FetchAllStreaming(_repoPath!, emit, creds));
         _tree.FetchAndPruneAllRequested += () => RunRemoteOp(
@@ -1214,13 +1207,9 @@ public sealed class MainWindow : Theming.ZoomWindow
             UpdateMenuRepositoryState();
             RefreshToolbarState();
         });
-        _toolbar.ManageStashesRequested +=
-            () => ShowInBottom(_stashTab, () => _stash.LoadRepository(_repoPath!));
-        _toolbar.CreateStashRequested += () =>
-        {
-            ShowInBottom(_stashTab, () => _stash.LoadRepository(_repoPath!));
-            _stash.BeginCreateStash();
-        };
+        _toolbar.ManageStashesRequested += () => _ = ShowStashDialogAsync();
+        _toolbar.CreateStashRequested +=
+            () => _ = ShowStashDialogAsync(manageStashes: false, create: true);
         _toolbar.StashStagedRequested +=
             () => RunOp("Stash staged", () => _stashOps.StashStaged(_repoPath!, "WIP").Success);
         _toolbar.StashPopRequested +=
@@ -1582,6 +1571,35 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
 
         if (dialog.RepositoryChanged)
+        {
+            RefreshAll();
+        }
+    }
+
+    // Opens the stash dialog, upstream's UICommands.StartStashDialog: a modal FormStash,
+    // not a tab. Every stash surface of the port — the toolbar's split button, the
+    // Commands menu, the left tree's "Open stash" and "Manage stashes…" — comes through
+    // here, so they all land on the same window with the same two arguments.
+    private async Task ShowStashDialogAsync(
+        bool manageStashes = true, string? initialStash = null, bool create = false)
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        StashWindow window = new(repo, manageStashes, initialStash);
+        if (create)
+        {
+            // The prompt is a modal of the stash window, so it can only be opened once
+            // that window is up — Opened, not the constructor.
+            window.Opened += (_, _) => window.BeginCreateStash();
+        }
+
+        await window.ShowDialog(this);
+
+        if (window.Changed)
         {
             RefreshAll();
         }
@@ -2336,14 +2354,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         if (_diff.IsKeyboardFocusWithin)
         {
             return (ctrl && gesture.Key is Key.F or Key.G or Key.C) || gesture.Key == Key.F3;
-        }
-
-        // StashPanel: upstream's NextStash / PreviousStash. Ctrl+N / Ctrl+P are global
-        // here (GoToChild / GoToParent) only because FormStash upstream is a separate
-        // dialog, so the window has to yield them while the stash tab has the focus.
-        if (_stash.IsKeyboardFocusWithin)
-        {
-            return ctrl && gesture.Key is Key.N or Key.P;
         }
 
         // RevisionGridView.OnListKeyDown: Ctrl+C (copy hash), Ctrl+G (go to commit),
@@ -4107,7 +4117,6 @@ public sealed class MainWindow : Theming.ZoomWindow
             _activeNavigationLoadPending = false;
         }
         _revisions.LoadRepository(repoPath);
-        _stash.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath, navigation);
         _statusBar.LoadRepository(repoPath);
         _ = RefreshSubmoduleNavigationAsync(repoPath, navigation, epoch);
@@ -4536,7 +4545,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         _gpgTab.Header = IconText.Header("Key", T("FormBrowse/GpgInfoTabPage.Text", "GPG"));
         _consoleTab.Header = IconText.Header("Console", T("FormBrowse/_consoleTabCaption.Text", "Console"));
         _outputTab.Header = IconText.Header("GitCommandLog", T("FormBrowse/_outputHistoryTabCaption.Text", "Output"));
-        _stashTab.Header = IconText.Header("stash", T("FormStash/$this.Text", "Stash"));
         _blameTab.Header = IconText.Header("Blame", T("FormFileHistory/BlameTab.Text", "Blame"));
 
         // No FormBrowse item for this one (the port has a tab where upstream has a
