@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Text;
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
+using GitExtensions.Extensibility.Configurations;
 using GitExtensions.Extensibility.Git;
 using GitExtUtils;
 
@@ -302,6 +304,88 @@ public sealed class WorkingDirectoryService
         ArgumentString args = Commands.Reset(ResetMode.Soft, "HEAD~1");
         ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
         return new WorkingDirCommitResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  The "Submodules … updated" message upstream's
+    ///  <c>generateListOfChangesInSubmodulesChangesToolStripMenuItem</c> composes: for every
+    ///  STAGED submodule, the commits the pointer moved over, taken from the submodule's own
+    ///  log. Empty when nothing staged is a submodule.
+    /// </summary>
+    /// <param name="repoPath">The super-project.</param>
+    /// <param name="stagedPaths">Paths of the staged entries, as the index reports them.</param>
+    public string SubmoduleChangesMessage(string repoPath, IReadOnlyList<string> stagedPaths)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ISubmodulesConfigFile config = module.GetSubmodulesConfigFile();
+
+        // Keyed by the .gitmodules SUBSECTION (the submodule's name, which is what the
+        // message reads) and valued by its path in the work tree, which is what git wants.
+        Dictionary<string, string> modules = [];
+        foreach (string path in stagedPaths)
+        {
+            IConfigSection? section = config.ConfigSections
+                .FirstOrDefault(s => string.Equals(s.GetValue("path").Trim(), path, StringComparison.Ordinal));
+            if (section?.SubSection is { } name
+                && Directory.Exists(Path.Combine(module.WorkingDir, path))
+                && !modules.ContainsKey(name.Trim()))
+            {
+                modules[name.Trim()] = path;
+            }
+        }
+
+        if (modules.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder text = new();
+        text.AppendLine("Submodule" + (modules.Count == 1 ? " " : "s ") + string.Join(", ", modules.Keys) + " updated");
+        text.AppendLine();
+
+        foreach ((string name, string path) in modules)
+        {
+            GitArgumentBuilder diffArgs = new("diff") { "--no-ext-diff", "--cached", "--", path.Quote() };
+            string diff = module.GitExecutable.GetOutput(diffArgs);
+
+            const string Marker = "Subproject commit ";
+            string from = LineAfter(diff, "-" + Marker);
+            string to = LineAfter(diff, "+" + Marker);
+            if (from.Length == 0 || to.Length == 0)
+            {
+                continue;
+            }
+
+            text.AppendLine("Submodule " + name + ":");
+
+            // %x20, never a literal space: GitArgumentBuilder concatenates everything into
+            // ONE command line, so a space inside --pretty=format: splits the argument.
+            GitArgumentBuilder logArgs = new("log")
+            {
+                "--pretty=format:%x20%x20%x20%x20%m%x20%h%x20-%x20%s",
+                "--no-merges",
+                $"{from}...{to}".Quote()
+            };
+            GitModule submodule = GitContext.CreateModule(Path.Combine(module.WorkingDir, path));
+            string log = submodule.GitExecutable.GetOutput(logArgs);
+            text.AppendLine(log.Length > 0 ? log : "    * Revision changed to " + to[..Math.Min(7, to.Length)]);
+            text.AppendLine();
+        }
+
+        return text.ToString().TrimEnd() + Environment.NewLine;
+
+        static string LineAfter(string diff, string prefix)
+        {
+            foreach (string line in diff.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (line.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return line[prefix.Length..].Trim();
+                }
+            }
+
+            return string.Empty;
+        }
     }
 
     /// <summary>

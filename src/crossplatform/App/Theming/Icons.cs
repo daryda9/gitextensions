@@ -225,9 +225,10 @@ internal static class Icons
         "M7 13h9a3.25 3.25 0 0 0 0-6.5 6 6 0 0 0-9.6-1.2A4.5 4.5 0 0 0 7 13 "
         + "M12 13v8 M8.5 17.5l3.5 3.5 3.5-3.5";
 
-    // Two chevrons folding towards the middle: the rows come together. The
-    // mirror image would read as expand, so the direction carries the meaning.
-    private const string CollapseVertical = "M7 5l5 5 5-5 M7 19l5-5 5 5";
+    // A box with a minus in it, the "fold this away" mark of every tree control. Two
+    // chevrons folding towards the middle read as an ✕ at 16 px, which says close, not
+    // collapse — measured on the commit dialog's list toolbar.
+    private const string CollapseVertical = "M4 4.5h16v15H4z M8 12h8";
 
     // Packing the object database is a squeeze, not a sweep: the store is the
     // box and the two arrows press it from both sides. Kept distinct from

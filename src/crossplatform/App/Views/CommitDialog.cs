@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
@@ -12,6 +14,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GitCommands;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
@@ -140,12 +143,29 @@ public sealed class CommitDialog : Theming.ZoomWindow
     ///  FileStatusList.Toolbar.cs:173-175); the tree/flat variants it pairs them with
     ///  need a node model these flat lists do not have.
     /// </summary>
+    // Upstream groups its file lists by one of three keys (FileStatusList's btnByPath /
+    // btnByExtension / btnByStatus), with the path grouping shown either as a tree of
+    // folders or as one header per folder. The port used the same three keys as a SORT
+    // order, which is the same information without the headers that make a long list
+    // readable — so they are grouping keys now, and "no grouping" is a flat sorted list.
     private enum FileSortMode
     {
         Path,
         Extension,
         Status,
     }
+
+    // A group node of a file list. Key identifies it for the collapsed set — for the
+    // path tree that is the folder path, so collapsing survives a refresh.
+    private sealed record GroupHeader(string Key, string Text, int Level, int Count, bool Collapsed);
+
+    // How a file row is drawn inside a group: how far it is indented, and whether the
+    // folder part of its path is already said by the header above it. Kept beside the
+    // row rather than in it, because WorkingDirFileRow is the service's type and knows
+    // nothing about lists. A weak table, so nothing is held alive after a reload.
+    private sealed record RowLayout(int Indent, bool NameOnly);
+
+    private static readonly ConditionalWeakTable<WorkingDirFileRow, RowLayout> RowLayouts = new();
 
     /// <summary>
     ///  One file list plus the toolbar above it. Upstream gives EACH list its own
@@ -175,9 +195,18 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // it compiles, so "filter active" and "pattern usable" are the same condition.
         public string Pattern = string.Empty;
 
-        public FileSortMode Sort = FileSortMode.Path;
-        public Button SortButton = new();
+        // Null = no grouping, a flat list sorted by path.
+        public FileSortMode? Group;
+        public bool AsTree = true;
+        public readonly HashSet<string> Collapsed = new(StringComparer.Ordinal);
+
         public Button RefreshButton = new();
+        public Button CollapseButton = new();
+        public Button AsTreeButton = new();
+        public Button GroupMenuButton = new();
+        public ToggleButton ByPathButton = new();
+        public ToggleButton ByExtensionButton = new();
+        public ToggleButton ByStatusButton = new();
         public Button? SettingsButton;
 
         // The filter row, hidden while the list is empty — upstream's
@@ -226,6 +255,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private readonly TextBlock _unstagedEmpty = MakeEmptyLabel();
     private readonly TextBlock _stagedEmpty = MakeEmptyLabel();
 
+    private readonly Dictionary<Button, Action<Button>> _toolbarActions = [];
+    private Button _toolbarOverflowBtn = null!;
+    private OverflowPanel _commitToolbar = null!;
     private readonly Button _messageMenuBtn;
     private readonly Button _templatesBtn;
     private readonly Button _createBranchBtn;
@@ -404,6 +436,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // ---- LEFT: unstaged / buttons / staged ----
         _unstagedList.SelectionChanged += (_, _) => OnSelected(_unstagedList, staged: false);
         _stagedList.SelectionChanged += (_, _) => OnSelected(_stagedList, staged: true);
+
+        // A group header is a node, not a file: clicking it folds its subtree, and it
+        // never joins the selection the stage / unstage / diff code works from.
+        _unstagedList.AddHandler(PointerPressedEvent, OnListPointerPressed, RoutingStrategies.Tunnel);
+        _stagedList.AddHandler(PointerPressedEvent, OnListPointerPressed, RoutingStrategies.Tunnel);
         _unstagedList.DoubleTapped += (_, _) => OnUnstagedDoubleTapped();
         _stagedList.DoubleTapped += (_, _) => UnstageSelected();
 
@@ -695,23 +732,30 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // far right there (Alignment = Right), the rest flow from the left.
         DockPanel commitToolbar = new() { Margin = new Thickness(0, 0, 0, 2) };
 
-        // A WrapPanel: upstream's ToolStrip moves what does not fit into an overflow
-        // button, and the port has no overflow here — with a StackPanel the last entry
-        // simply left the dialog on a narrow window.
-        WrapPanel commitToolbarLeft = new()
-        {
-            Orientation = Orientation.Horizontal,
-            Children = { _messageMenuBtn, _templatesBtn, _createBranchBtn },
-        };
-        foreach (Control c in commitToolbarLeft.Children)
-        {
-            c.Margin = new Thickness(0, 0, 4, 2);
-        }
+        // Upstream's ToolStrip parks what does not fit behind a "»" chevron; the port
+        // has the same panel already (OverflowPanel, from the main toolbar), so the row
+        // stays ONE row however narrow the dialog gets instead of wrapping.
+        _toolbarOverflowBtn = new Button { Content = "»" };
+        _toolbarOverflowBtn.Click += (_, _) => ShowToolbarOverflow();
+        ToolTip.SetTip(_toolbarOverflowBtn, T("More toolbar commands"));
+
+        OverflowPanel commitToolbarLeft = new(_toolbarOverflowBtn) { Spacing = 4 };
+        commitToolbarLeft.AddItem(_messageMenuBtn);
+        commitToolbarLeft.AddItem(_templatesBtn);
+        commitToolbarLeft.AddItem(_createBranchBtn);
+        _commitToolbar = commitToolbarLeft;
+
+        // What each toolbar entry does, so the overflow menu can run it anchored on the
+        // chevron: raising Click on the parked button would open its flyout off-screen.
+        _toolbarActions[_messageMenuBtn] = anchor => _ = ShowMessageMenuAsync(anchor);
+        _toolbarActions[_templatesBtn] = anchor => _ = ShowTemplatesMenuAsync(anchor);
+        _toolbarActions[_createBranchBtn] = _ => PromptCreateBranch();
 
         // Flat, like the ToolStrip upstream uses here: framed buttons made the row look
         // like a second set of commands competing with the column on the left, and cost
         // the width that pushed "Create branch" onto a line of its own.
-        foreach (Button b in new[] { _messageMenuBtn, _templatesBtn, _createBranchBtn, _optionsBtn })
+        foreach (Button b in new[]
+                 { _messageMenuBtn, _templatesBtn, _createBranchBtn, _optionsBtn, _toolbarOverflowBtn })
         {
             b.Background = Brushes.Transparent;
             b.BorderThickness = new Thickness(0);
@@ -936,12 +980,14 @@ public sealed class CommitDialog : Theming.ZoomWindow
             "ResetWorkingDirChanges", T("FormCommit/btnResetAllChanges.Text", "Reset all changes"));
         _resetUnstagedBtn.Content = ButtonFace(
             "ResetWorkingDirChanges", T("FormCommit/btnResetUnstagedChanges.Text", "Reset unstaged changes"));
-        _messageMenuBtn.Content = IconText.Header(
-            "WorkingDirChanges", T("FormCommit/commitMessageToolStripMenuItem.Text", "Commit message") + " ▾");
-        _templatesBtn.Content = IconText.Header(
-            "CommitTemplates", T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾");
-        _createBranchBtn.Content = IconText.Header(
-            "BranchCreate", T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch"));
+        // Tag = the plain caption, which is what the overflow menu shows for a button
+        // the strip could not fit (its Content is an icon-and-text panel by then).
+        _messageMenuBtn.Tag = T("FormCommit/commitMessageToolStripMenuItem.Text", "Commit message");
+        _templatesBtn.Tag = T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates");
+        _createBranchBtn.Tag = T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch");
+        _messageMenuBtn.Content = IconText.Header("WorkingDirChanges", (string)_messageMenuBtn.Tag + " ▾");
+        _templatesBtn.Content = IconText.Header("CommitTemplates", (string)_templatesBtn.Tag + " ▾");
+        _createBranchBtn.Content = IconText.Header("BranchCreate", (string)_createBranchBtn.Tag);
         _optionsBtn.Content = T("FormCommit/tsmiOptions.Text", "Options") + " ▾";
 
         UpdateTitle();
@@ -956,7 +1002,17 @@ public sealed class CommitDialog : Theming.ZoomWindow
             "FileStatusList/cboFilterComboBox.Watermark",
             "Filter files using a regular expression...");
         ToolTip.SetTip(pane.FilterBox, SelectionFilterTip);
-        ToolTip.SetTip(pane.SortButton, T("Sort by"));
+        ToolTip.SetTip(
+            pane.CollapseButton,
+            T("FileStatusList/btnCollapseGroups.ToolTipText",
+                "Collapse all groups, otherwise expand the selected group"));
+        ToolTip.SetTip(pane.AsTreeButton, T("FileStatusList/btnAsTree.ToolTipText", "Toggle flat list / tree"));
+        ToolTip.SetTip(pane.GroupMenuButton, T("Grouping"));
+        ToolTip.SetTip(pane.ByPathButton, T("FileStatusList/btnByPath.ToolTipText", "Group by file path"));
+        ToolTip.SetTip(
+            pane.ByExtensionButton,
+            T("FileStatusList/btnByExtension.ToolTipText", "Group by file extension"));
+        ToolTip.SetTip(pane.ByStatusButton, T("FileStatusList/btnByStatus.ToolTipText", "Group by diff status"));
         ToolTip.SetTip(pane.RefreshButton, T("FormBrowse/refreshToolStripMenuItem.Text", "Refresh"));
         if (pane.SettingsButton is not null)
         {
@@ -1614,6 +1670,37 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }), TaskScheduler.Default);
 
     // ---------- list plumbing ----------
+
+    private void OnListPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not ListBox list)
+        {
+            return;
+        }
+
+        FileListPane pane = ReferenceEquals(list, _stagedList) ? _stagedPane : _unstagedPane;
+        for (Visual? visual = e.Source as Visual; visual is not null; visual = visual.GetVisualParent())
+        {
+            if (visual is not ListBoxItem container)
+            {
+                continue;
+            }
+
+            if (container.DataContext is not GroupHeader header)
+            {
+                return;
+            }
+
+            if (!pane.Collapsed.Remove(header.Key))
+            {
+                pane.Collapsed.Add(header.Key);
+            }
+
+            e.Handled = true;
+            RegroupPane(pane);
+            return;
+        }
+    }
 
     // The rows currently selected in <paramref name="list"/>, in selection order.
     private static List<WorkingDirFileRow> SelectedRows(ListBox list)
@@ -2419,7 +2506,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         pane.CountText.Text = string.Format(
             "{0}/{1}",
             Filtered(pane).Count(),
-            pane.List.Items.Count);
+            pane.List.Items.OfType<WorkingDirFileRow>().Count());
     }
 
     private static string SelectionFilterTip => T(
@@ -3064,6 +3151,58 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // Templates are discovered off the UI thread (git config + repository scan),
     // and the MenuFlyout is fully populated BEFORE ShowAt — mutating Items while
     // the popup is open leaves it unmeasured (see HANDOFF §3).
+    // Replaces the message with the list of staged submodule bumps, or says so in the
+    // status line when there are none — upstream simply does nothing in that case, which
+    // reads as a dead menu entry.
+    private async Task GenerateSubmoduleMessageAsync()
+    {
+        string repo = _repoPath;
+        List<string> staged = [.. _stagedList.Items.OfType<WorkingDirFileRow>().Select(r => r.Path)];
+        string message = await Task.Run(() =>
+        {
+            try
+            {
+                return _service.SubmoduleChangesMessage(repo, staged);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        });
+
+        if (message.Length == 0)
+        {
+            SetStatus(T("No staged submodule changes to describe."));
+            return;
+        }
+
+        _messageBox.Text = message;
+        _messageBox.Focus();
+    }
+
+    // One entry per toolbar button the strip could not fit, in toolbar order. Captions
+    // come from the button's Tag, which ApplyTranslations keeps in step with its face.
+    private void ShowToolbarOverflow()
+    {
+        MenuFlyout flyout = new();
+        foreach (Control item in _commitToolbar.HiddenItems)
+        {
+            if (item is not Button button || !_toolbarActions.TryGetValue(button, out Action<Button>? run))
+            {
+                continue;
+            }
+
+            MenuItem entry = new() { Header = Escape(button.Tag as string ?? string.Empty) };
+            entry.Click += (_, _) => run(_toolbarOverflowBtn);
+            flyout.Items.Add(entry);
+        }
+
+        if (flyout.Items.Count > 0)
+        {
+            flyout.ShowAt(_toolbarOverflowBtn);
+        }
+    }
+
     // Upstream's "Commit message" drop-down (commitMessageToolStripMenuItem): the
     // messages of the last commits, one entry each, labelled with the first line cut to
     // 72 characters, and clicking one REPLACES the message box. Its "Show only my
@@ -3120,6 +3259,19 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         flyout.Items.Add(new Separator());
+
+        // Upstream's generateListOfChangesInSubmodulesChangesToolStripMenuItem: builds a
+        // message out of the staged submodule bumps. Disabled when nothing staged is a
+        // submodule, which is also when upstream's handler returns without doing anything.
+        MenuItem submodules = new()
+        {
+            Header = T(
+                "FormCommit/generateListOfChangesInSubmodulesChangesToolStripMenuItem.Text",
+                "Generate list of changes in submodules"),
+        };
+        submodules.Click += (_, _) => _ = GenerateSubmoduleMessageAsync();
+        flyout.Items.Add(submodules);
+
         MenuItem onlyMine = new()
         {
             Header = T("FormCommit/ShowOnlyMyMessagesToolStripMenuItem.Text", "Show only my messages"),
@@ -3398,12 +3550,21 @@ public sealed class CommitDialog : Theming.ZoomWindow
     /// </summary>
     private Border BuildStatusBar()
     {
+        // Upstream puts its toolStripStatusBranchIcon in front of the branch name.
         StackPanel branchPanel = new()
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _branchStatusText, _remoteStatusText },
         };
+        if (Theming.IconLoader.Image("Branch") is { } branchIcon)
+        {
+            branchIcon.VerticalAlignment = VerticalAlignment.Center;
+            branchIcon.Margin = new Thickness(0, 0, 4, 0);
+            branchPanel.Children.Add(branchIcon);
+        }
+
+        branchPanel.Children.Add(_branchStatusText);
+        branchPanel.Children.Add(_remoteStatusText);
         _branchStatusText.Margin = new Thickness(0, 0, 6, 0);
 
         StackPanel counters = new()
@@ -3919,11 +4080,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
             // Each list is ordered by its own sort key, and a NEW list instance is
             // handed to ItemsSource (M50).
-            _unstagedList.ItemsSource = SortRows(_unstagedPane, unstaged);
+            _unstagedList.ItemsSource = BuildItems(_unstagedPane, unstaged);
 
             // An unmerged path is reported by the index listing too; showing it in
             // both lists would be misleading, so it stays only in the unstaged one.
-            _stagedList.ItemsSource = SortRows(
+            _stagedList.ItemsSource = BuildItems(
                 _stagedPane,
                 _conflictPaths.Count == 0
                     ? status.Staged
@@ -4001,10 +4162,10 @@ public sealed class CommitDialog : Theming.ZoomWindow
             return;
         }
 
-        ListBox list = _unstagedList.Items.Count > 0 ? _unstagedList : _stagedList;
-        if (list.Items.Count > 0)
+        ListBox list = _unstagedList.Items.OfType<WorkingDirFileRow>().Any() ? _unstagedList : _stagedList;
+        if (list.Items.OfType<WorkingDirFileRow>().FirstOrDefault() is { } first)
         {
-            list.SelectedIndex = 0;
+            list.SelectedItem = first;
         }
     }
 
@@ -4181,6 +4342,36 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // used to print in front of every path is not what upstream shows.
     private static Control? BuildFileRow(object? item)
     {
+        if (item is GroupHeader header)
+        {
+            StackPanel group = new()
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                Margin = new Thickness(header.Level * 12, 0, 0, 0),
+            };
+            group.Children.Add(new TextBlock
+            {
+                Text = header.Collapsed ? "▸" : "▾",
+                Foreground = Brush("App.TextDim", Brushes.Gray),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            group.Children.Add(new TextBlock
+            {
+                Text = header.Text,
+                FontWeight = FontWeight.Bold,
+                Foreground = Brush("App.Text", Brushes.Gainsboro),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            group.Children.Add(new TextBlock
+            {
+                Text = "(" + header.Count.ToString(CultureInfo.InvariantCulture) + ")",
+                Foreground = Brush("App.TextDim", Brushes.Gray),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            return group;
+        }
+
         if (item is not WorkingDirFileRow row)
         {
             return null;
@@ -4197,7 +4388,13 @@ public sealed class CommitDialog : Theming.ZoomWindow
             _ => ("FileStatusModified", "M", ModifiedGlyph),
         };
 
-        StackPanel panel = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+        RowLayouts.TryGetValue(row, out RowLayout? layout);
+        StackPanel panel = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Margin = new Thickness((layout?.Indent ?? 0) * 12, 0, 0, 0),
+        };
 
         // Upstream's FileStatusList draws the status ICON of the file (the green plus,
         // the pencil, the red minus); the coloured letter is what the port falls back to
@@ -4220,9 +4417,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         // Upstream prints the directory dim and the file name in full colour, which is
-        // what makes a list of long paths scannable at all.
-        int cut = row.Path.LastIndexOf('/') + 1;
-        TextBlock text = new()
+        // what makes a list of long paths scannable at all. Under a group header the
+        // folder is already on the header, so only the name is left.
+        int cut = layout?.NameOnly == true ? row.Path.LastIndexOf('/') + 1 : 0;
+        string text = row.Path[cut..];
+        cut = layout?.NameOnly == true ? 0 : row.Path.LastIndexOf('/') + 1;
+        TextBlock block = new()
         {
             FontFamily = Monospace,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -4231,11 +4431,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
         };
         if (cut > 0)
         {
-            text.Inlines?.Add(new Run(row.Path[..cut]) { Foreground = Brush("App.TextDim", Brushes.Gray) });
+            block.Inlines?.Add(new Run(text[..cut]) { Foreground = Brush("App.TextDim", Brushes.Gray) });
         }
 
-        text.Inlines?.Add(new Run(row.Path[cut..]));
-        panel.Children.Add(text);
+        block.Inlines?.Add(new Run(text[cut..]));
+        panel.Children.Add(block);
         return panel;
     }
 
@@ -4282,8 +4482,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
     /// </summary>
     private Control BuildPaneToolbar(FileListPane pane)
     {
-        pane.SortButton = IconButton("SortBy", "⇅", () => ShowSortMenu(pane));
+        // Upstream's FileStatusList toolbar, in its order: collapse groups, refresh, the
+        // flat/tree split button, the three grouping toggles, then the settings menu.
+        pane.CollapseButton = IconButton("CollapseAll", "⊟", () => ToggleAllGroups(pane));
         pane.RefreshButton = IconButton("ReloadRevisions", "⟳", Reload);
+        pane.AsTreeButton = IconButton("FileTree", "☰", () => SetAsTree(pane, !pane.AsTree));
+        pane.GroupMenuButton = IconButton(null, "▾", () => ShowGroupMenu(pane));
+        pane.ByPathButton = GroupToggle(pane, FileSortMode.Path, "FolderClosed", "/");
+        pane.ByExtensionButton = GroupToggle(pane, FileSortMode.Extension, "File", ".*");
+        pane.ByStatusButton = GroupToggle(pane, FileSortMode.Status, "FileStatusModified", "M");
         if (!pane.Staged)
         {
             pane.SettingsButton = IconButton("Settings", "⚙", () => ShowPaneSettingsMenu(pane));
@@ -4318,13 +4525,19 @@ public sealed class CommitDialog : Theming.ZoomWindow
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        buttons.Children.Add(pane.SortButton);
+        buttons.Children.Add(pane.CollapseButton);
+        buttons.Children.Add(pane.RefreshButton);
+        buttons.Children.Add(pane.AsTreeButton);
+        buttons.Children.Add(pane.GroupMenuButton);
+        buttons.Children.Add(pane.ByPathButton);
+        buttons.Children.Add(pane.ByExtensionButton);
+        buttons.Children.Add(pane.ByStatusButton);
         if (pane.SettingsButton is not null)
         {
             buttons.Children.Add(pane.SettingsButton);
         }
 
-        buttons.Children.Add(pane.RefreshButton);
+        UpdateGroupButtons(pane);
 
         DockPanel toolbarRow = new() { Margin = new Thickness(0, 0, 0, 2) };
         DockPanel.SetDock(buttons, Dock.Left);
@@ -4439,29 +4652,113 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
     // The sort menu. Items are added BEFORE ShowAt (HANDOFF §3) and each entry really
     // re-orders the rows on screen.
-    private void ShowSortMenu(FileListPane pane)
+    // One grouping toggle. Clicking the active one turns grouping OFF, which is how
+    // upstream's checkable btnByPath / btnByExtension / btnByStatus behave.
+    private ToggleButton GroupToggle(FileListPane pane, FileSortMode mode, string icon, string glyph)
+    {
+        ToggleButton button = new()
+        {
+            Padding = StyleDensity.BarButton,
+            Margin = new Thickness(0, 0, 2, 0),
+            Background = Brush("App.Toolbar", Brushes.DimGray),
+            Content = (Control?)Theming.IconLoader.Image(icon)
+                ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
+        };
+        button.Click += (_, _) =>
+        {
+            pane.Group = pane.Group == mode ? null : mode;
+            UpdateGroupButtons(pane);
+            RegroupPane(pane);
+        };
+        return button;
+    }
+
+    private static void SetAsTree(FileListPane pane, bool asTree)
+    {
+        pane.AsTree = asTree;
+    }
+
+    // Upstream's btnAsTree drop-down: the three groupings, each as tree or flat.
+    private void ShowGroupMenu(FileListPane pane)
     {
         MenuFlyout flyout = new();
-        // Upstream's own trans-units say "GROUP by file path/extension/diff status"
-        // (FileStatusList/btnByPath.ToolTipText …) because its list is a tree with group
-        // nodes. These lists are flat, so they get their own wording rather than a
-        // translated caption promising grouping that does not happen.
-        Add(FileSortMode.Path, T("Sort by path"));
-        Add(FileSortMode.Extension, T("Sort by extension"));
-        Add(FileSortMode.Status, T("Sort by status"));
-        flyout.ShowAt(pane.SortButton);
+        Add(FileSortMode.Path, asTree: true, T("FileStatusList/tsmiGroupByFilePathTree.Text", "Group by file path - tree"));
+        Add(FileSortMode.Path, asTree: false, T("FileStatusList/tsmiGroupByFilePathFlat.Text", "Group by file path - flat"));
+        Add(FileSortMode.Extension, asTree: true, T("FileStatusList/tsmiGroupByFileExtensionTree.Text", "Group by file extension - tree"));
+        Add(FileSortMode.Status, asTree: true, T("FileStatusList/tsmiGroupByFileStatusTree.Text", "Group by diff status - tree"));
 
-        void Add(FileSortMode mode, string caption)
+        flyout.Items.Add(new Separator());
+        MenuItem none = new() { Header = (pane.Group is null ? "●  " : "○  ") + T("No grouping") };
+        none.Click += (_, _) =>
         {
-            MenuItem item = new() { Header = (pane.Sort == mode ? "●  " : "○  ") + caption };
+            pane.Group = null;
+            UpdateGroupButtons(pane);
+            RegroupPane(pane);
+        };
+        flyout.Items.Add(none);
+        flyout.ShowAt(pane.GroupMenuButton);
+
+        void Add(FileSortMode mode, bool asTree, string caption)
+        {
+            bool active = pane.Group == mode && (mode != FileSortMode.Path || pane.AsTree == asTree);
+            MenuItem item = new() { Header = (active ? "●  " : "○  ") + caption };
             item.Click += (_, _) =>
             {
-                pane.Sort = mode;
-                ResortPane(pane);
+                pane.Group = mode;
+                pane.AsTree = asTree;
+                UpdateGroupButtons(pane);
+                RegroupPane(pane);
             };
             flyout.Items.Add(item);
         }
     }
+
+    private static void UpdateGroupButtons(FileListPane pane)
+    {
+        pane.ByPathButton.IsChecked = pane.Group == FileSortMode.Path;
+        pane.ByExtensionButton.IsChecked = pane.Group == FileSortMode.Extension;
+        pane.ByStatusButton.IsChecked = pane.Group == FileSortMode.Status;
+
+        // Nothing to collapse without groups, which is why upstream keeps the button
+        // hidden until its list has some.
+        pane.CollapseButton.IsVisible = pane.Group is not null;
+        pane.AsTreeButton.IsVisible = pane.Group == FileSortMode.Path;
+    }
+
+    // Collapse-all, or expand-all when everything is already collapsed — upstream's
+    // btnCollapseGroups, whose tooltip says exactly that.
+    private void ToggleAllGroups(FileListPane pane)
+    {
+        List<GroupHeader> headers = [.. pane.List.Items.OfType<GroupHeader>()];
+        if (headers.Count == 0)
+        {
+            // Everything is collapsed: only the top-level headers are in the list, so
+            // clearing the set is the only way back.
+            pane.Collapsed.Clear();
+            RegroupPane(pane);
+            return;
+        }
+
+        bool anyOpen = headers.Any(h => !pane.Collapsed.Contains(h.Key));
+        if (anyOpen)
+        {
+            foreach (GroupHeader header in AllHeaders(pane))
+            {
+                pane.Collapsed.Add(header.Key);
+            }
+        }
+        else
+        {
+            pane.Collapsed.Clear();
+        }
+
+        RegroupPane(pane);
+    }
+
+    // Every header the pane WOULD show if nothing were collapsed.
+    private static IEnumerable<GroupHeader> AllHeaders(FileListPane pane)
+        => BuildItems(pane, [.. pane.List.Items.OfType<WorkingDirFileRow>()], ignoreCollapsed: true)
+            .OfType<GroupHeader>();
 
     // Upstream's per-list settings dropdown, reduced to the one toggle the port can
     // honour on the work-tree list.
@@ -4487,24 +4784,106 @@ public sealed class CommitDialog : Theming.ZoomWindow
     ///  the same instance back to <c>ItemsSource</c> leaves the realised containers
     ///  untouched and the visible rows keep their old visuals (HANDOFF §3 / M50).
     /// </summary>
-    private void ResortPane(FileListPane pane)
+    // Rebuilds one pane's items from the rows it already holds, keeping the selection.
+    private void RegroupPane(FileListPane pane)
     {
         List<WorkingDirFileRow> rows = [.. pane.List.Items.OfType<WorkingDirFileRow>()];
-        pane.List.ItemsSource = SortRows(pane, rows);
+        List<WorkingDirFileRow> selected = SelectedRows(pane.List);
+        pane.List.ItemsSource = BuildItems(pane, rows);
+        foreach (WorkingDirFileRow row in selected)
+        {
+            if (pane.List.Items.OfType<WorkingDirFileRow>()
+                .FirstOrDefault(r => string.Equals(r.Path, row.Path, StringComparison.Ordinal)) is { } again)
+            {
+                pane.List.SelectedItems?.Add(again);
+            }
+        }
+
         RefreshPaneCount(pane);
     }
 
-    private static List<WorkingDirFileRow> SortRows(FileListPane pane, IEnumerable<WorkingDirFileRow> rows)
-        => pane.Sort switch
+    // The items of one list: the rows alone when nothing is grouped, otherwise group
+    // headers with their rows under them — a real folder tree for the path grouping,
+    // one header per key for the other two. A collapsed header keeps its subtree out.
+    private static List<object> BuildItems(
+        FileListPane pane, IEnumerable<WorkingDirFileRow> rows, bool ignoreCollapsed = false)
+    {
+        List<WorkingDirFileRow> sorted = [.. rows.OrderBy(r => r.Path, StringComparer.OrdinalIgnoreCase)];
+        if (pane.Group is not { } group)
         {
-            FileSortMode.Extension => [.. rows
-                .OrderBy(r => System.IO.Path.GetExtension(r.Path), StringComparer.OrdinalIgnoreCase)
-                .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase)],
-            FileSortMode.Status => [.. rows
-                .OrderBy(r => r.Status, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(r => r.Path, StringComparer.OrdinalIgnoreCase)],
-            _ => [.. rows.OrderBy(r => r.Path, StringComparer.OrdinalIgnoreCase)],
+            foreach (WorkingDirFileRow row in sorted)
+            {
+                RowLayouts.AddOrUpdate(row, new RowLayout(0, NameOnly: false));
+            }
+
+            return [.. sorted.Cast<object>()];
+        }
+
+        if (group == FileSortMode.Path && pane.AsTree)
+        {
+            List<object> tree = [];
+            AddFolder(tree, sorted, prefix: string.Empty, level: 0);
+            return tree;
+        }
+
+        List<object> flat = [];
+        foreach (IGrouping<string, WorkingDirFileRow> bucket in sorted
+            .GroupBy(r => GroupKey(group, r), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            GroupHeader header = new(
+                bucket.Key, bucket.Key, 0, bucket.Count(), pane.Collapsed.Contains(bucket.Key));
+            flat.Add(header);
+            foreach (WorkingDirFileRow row in bucket)
+            {
+                RowLayouts.AddOrUpdate(row, new RowLayout(1, group == FileSortMode.Path));
+            }
+
+            if (ignoreCollapsed || !pane.Collapsed.Contains(header.Key))
+            {
+                flat.AddRange(bucket.Cast<object>());
+            }
+        }
+
+        return flat;
+
+        static string GroupKey(FileSortMode group, WorkingDirFileRow row) => group switch
+        {
+            FileSortMode.Extension => System.IO.Path.GetExtension(row.Path) is { Length: > 0 } ext
+                ? ext
+                : "(none)",
+            FileSortMode.Status => row.Status,
+            _ => row.Path.LastIndexOf('/') > 0 ? row.Path[..row.Path.LastIndexOf('/')] : "(root)",
         };
+
+        void AddFolder(List<object> into, IReadOnlyList<WorkingDirFileRow> scope, string prefix, int level)
+        {
+            // Files of this folder first? No: upstream puts the sub-folders first, then
+            // the files, which is what a tree control does.
+            foreach (IGrouping<string, WorkingDirFileRow> folder in scope
+                .Where(r => r.Path.Length > prefix.Length && r.Path.IndexOf('/', prefix.Length) >= 0)
+                .GroupBy(r => r.Path[prefix.Length..r.Path.IndexOf('/', prefix.Length)], StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                string key = prefix + folder.Key + "/";
+                GroupHeader header = new(
+                    key, folder.Key, level, folder.Count(), pane.Collapsed.Contains(key));
+                into.Add(header);
+                if (ignoreCollapsed || !pane.Collapsed.Contains(key))
+                {
+                    AddFolder(into, [.. folder], key, level + 1);
+                }
+            }
+
+            foreach (WorkingDirFileRow file in scope
+                .Where(r => r.Path.IndexOf('/', prefix.Length) < 0)
+                .OrderBy(r => r.Path, StringComparer.OrdinalIgnoreCase))
+            {
+                RowLayouts.AddOrUpdate(file, new RowLayout(level, NameOnly: true));
+                into.Add(file);
+            }
+        }
+    }
 
     private Button MakeButton(string text, Action onClick)
     {
