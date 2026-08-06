@@ -210,6 +210,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private readonly Button _stashBtn;
     private readonly Button _resetAllBtn;
     private readonly Button _resetUnstagedBtn;
+    // Upstream's FileStatusList.NoFiles: an italic line in the middle of an empty list
+    // ("There are no staged changes"), which is what tells the user the pane is empty on
+    // purpose rather than still loading.
+    private readonly TextBlock _unstagedEmpty = MakeEmptyLabel();
+    private readonly TextBlock _stagedEmpty = MakeEmptyLabel();
+
     private readonly Button _messageMenuBtn;
     private readonly Button _templatesBtn;
     private readonly Button _createBranchBtn;
@@ -566,7 +572,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             RowDefinitions = new RowDefinitions("*,4,*"),
         };
-        leftPanel.Children.Add(WrapWithToolbars(_unstagedList, 0, unstagedToolbar));
+        leftPanel.Children.Add(WrapWithToolbars(Overlay(_unstagedList, _unstagedEmpty), 0, unstagedToolbar));
         GridSplitter leftSplitter = new()
         {
             Height = 4,
@@ -575,7 +581,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
         };
         Grid.SetRow(leftSplitter, 1);
         leftPanel.Children.Add(leftSplitter);
-        leftPanel.Children.Add(WrapWithToolbars(_stagedList, 2, stageButtons, stagedToolbar));
+        leftPanel.Children.Add(
+            WrapWithToolbars(Overlay(_stagedList, _stagedEmpty), 2, stageButtons, stagedToolbar));
 
         _gutterBorder = new Border
         {
@@ -864,24 +871,34 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _conflictHint.Text = T("Right-click a file marked \"U\" in the unstaged list to open the mergetool, "
             + "take ours/theirs or mark it resolved.");
 
-        _stageBtn.Content = StageCaption + " ▼";
-        _unstageBtn.Content = UnstageCaption + " ▲";
+        // The captions carry upstream's icons: every one of these buttons has an Image
+        // in FormCommit.Designer.cs, and the port was drawing text alone.
+        _stageBtn.Content = IconText.Header("Stage", StageCaption);
+        _unstageBtn.Content = IconText.Header("Unstage", UnstageCaption);
         ApplyFilterCaptions();
 
         CaptionPane(_unstagedPane);
         CaptionPane(_stagedPane);
 
+        _unstagedEmpty.Text = T("FormCommit/_noUnstagedChanges.Text", "There are no unstaged changes");
+        _stagedEmpty.Text = T("FormCommit/_noStagedChanges.Text", "There are no staged changes");
+
         _messageBox.Watermark = T("FormCommit/_enterCommitMessageHint.Text", "Enter commit message");
         _amendBox.Content = T("FormCommit/_amendCommitCaption.Text", "Amend commit");
 
-        _commitBtn.Content = T("FormCommit/Commit.Text", "Commit");
-        _commitPushBtn.Content = T("FormCommit/_commitAndPush.Text", "Commit & push");
-        _stashBtn.Content = T("FormCommit/StashStaged.Text", "Stash staged changes");
-        _resetAllBtn.Content = T("FormCommit/btnResetAllChanges.Text", "Reset all changes");
-        _resetUnstagedBtn.Content = T("FormCommit/btnResetUnstagedChanges.Text", "Reset unstaged changes");
-        _messageMenuBtn.Content = T("FormCommit/commitMessageToolStripMenuItem.Text", "Commit message") + " ▾";
-        _templatesBtn.Content = T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾";
-        _createBranchBtn.Content = T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch");
+        _commitBtn.Content = IconText.Header("RepoStateClean", T("FormCommit/Commit.Text", "Commit"));
+        _commitPushBtn.Content = IconText.Header("ArrowUp", T("FormCommit/_commitAndPush.Text", "Commit & push"));
+        _stashBtn.Content = IconText.Header("stash", T("FormCommit/StashStaged.Text", "Stash staged changes"));
+        _resetAllBtn.Content = IconText.Header(
+            "ResetWorkingDirChanges", T("FormCommit/btnResetAllChanges.Text", "Reset all changes"));
+        _resetUnstagedBtn.Content = IconText.Header(
+            "ResetWorkingDirChanges", T("FormCommit/btnResetUnstagedChanges.Text", "Reset unstaged changes"));
+        _messageMenuBtn.Content = IconText.Header(
+            "WorkingDirChanges", T("FormCommit/commitMessageToolStripMenuItem.Text", "Commit message") + " ▾");
+        _templatesBtn.Content = IconText.Header(
+            "CommitTemplates", T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾");
+        _createBranchBtn.Content = IconText.Header(
+            "BranchCreate", T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch"));
         _optionsBtn.Content = T("FormCommit/tsmiOptions.Text", "Options") + " ▾";
 
         UpdateTitle();
@@ -2331,12 +2348,14 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // filter box now, the way upstream re-captions them from the per-list filters.
     private void ApplyFilterCaptions()
     {
+        // Upstream swaps the icon too when a filter is on (StageAllFiltered /
+        // UnstageAllFiltered), which is the only cue that "all" now means "the matches".
         _stageAllBtn.Content = _unstagedPane.FilterActive
-            ? T("FormCommit/_stageFiltered.Text", "Stage filtered")
-            : T("FormCommit/_stageAll.Text", "Stage all");
+            ? IconText.Header("StageAllFiltered", T("FormCommit/_stageFiltered.Text", "Stage filtered"))
+            : IconText.Header("StageAll", T("FormCommit/_stageAll.Text", "Stage all"));
         _unstageAllBtn.Content = _stagedPane.FilterActive
-            ? T("FormCommit/_unstageFiltered.Text", "Unstage filtered")
-            : T("FormCommit/_unstageAll.Text", "Unstage all");
+            ? IconText.Header("UnstageAllFiltered", T("FormCommit/_unstageFiltered.Text", "Unstage filtered"))
+            : IconText.Header("UnstageAll", T("FormCommit/_unstageAll.Text", "Unstage all"));
     }
 
     private void RefreshPaneCount(FileListPane pane)
@@ -3859,6 +3878,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
                     ? status.Staged
                     : status.Staged.Where(r => !_conflictPaths.Contains(r.Path)));
             _conflictBanner.IsVisible = _conflictPaths.Count > 0;
+            _unstagedEmpty.IsVisible = _unstagedList.Items.Count == 0;
+            _stagedEmpty.IsVisible = _stagedList.Items.Count == 0;
             RestoreDiffSelection();
             RenderStatus();
 
@@ -4060,6 +4081,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
     private static readonly IBrush ConflictGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
 
+    private static TextBlock MakeEmptyLabel() => new()
+    {
+        FontStyle = FontStyle.Italic,
+        Foreground = Brush("App.TextDim", Brushes.Gray),
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        IsHitTestVisible = false,
+    };
+
     private static ListBox MakeList()
     {
         ListBox list = new()
@@ -4099,26 +4129,39 @@ public sealed class CommitDialog : Theming.ZoomWindow
             return null;
         }
 
-        (string glyph, IBrush brush) = row.Status switch
+        (string icon, string glyph, IBrush brush) = row.Status switch
         {
-            "new" => ("A", AddedGlyph),
-            "deleted" => ("D", DeletedGlyph),
-            "renamed" => ("R", ModifiedGlyph),
-            "copied" => ("C", ModifiedGlyph),
-            "unmerged" => ("U", ConflictGlyph),
-            _ when row.Status.StartsWith('U') => ("U", ConflictGlyph),
-            _ => ("M", ModifiedGlyph),
+            "new" => ("FileStatusAdded", "A", AddedGlyph),
+            "deleted" => ("FileStatusRemoved", "D", DeletedGlyph),
+            "renamed" => ("FileStatusRenamed", "R", ModifiedGlyph),
+            "copied" => ("FileStatusCopied", "C", ModifiedGlyph),
+            "unmerged" => ("FileStatusUnknown", "U", ConflictGlyph),
+            _ when row.Status.StartsWith('U') => ("FileStatusUnknown", "U", ConflictGlyph),
+            _ => ("FileStatusModified", "M", ModifiedGlyph),
         };
 
-        StackPanel panel = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
-        panel.Children.Add(new TextBlock
+        StackPanel panel = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+
+        // Upstream's FileStatusList draws the status ICON of the file (the green plus,
+        // the pencil, the red minus); the coloured letter is what the port falls back to
+        // when the asset does not resolve, and is also what its own diff list uses.
+        if (Theming.IconLoader.Image(icon, 16) is { } image)
         {
-            Text = glyph,
-            Foreground = brush,
-            FontFamily = Monospace,
-            FontWeight = FontWeight.Bold,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
+            image.VerticalAlignment = VerticalAlignment.Center;
+            panel.Children.Add(image);
+        }
+        else
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = glyph,
+                Foreground = brush,
+                FontFamily = Monospace,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+
         panel.Children.Add(new TextBlock
         {
             Text = row.Path,
@@ -4134,6 +4177,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // window title says what is being committed and the toolbars say the rest
     // (FormCommit.Designer.cs: Unstaged and Staged are docked straight under their
     // ToolStrips) — so the port's two bold labels are gone with the rest of M98.
+    // A list with its "nothing here" line on top of it.
+    private static Control Overlay(Control list, Control label)
+    {
+        Grid grid = new();
+        grid.Children.Add(list);
+        grid.Children.Add(label);
+        return grid;
+    }
+
     private Control WrapWithToolbars(Control content, int row, params Control[] toolbars)
     {
         DockPanel panel = new();

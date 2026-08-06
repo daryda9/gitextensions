@@ -280,6 +280,23 @@ internal static class Icons
     // goes without borrowing Pull's arrow, which already means something else.
     private const string ListMinus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5";
 
+    // Staging is the same list operation the other way round, so it is ListMinus with
+    // the second stroke of a plus. The pair has to be drawn from one shape: with one of
+    // the two left as a 2015 bitmap the two buttons sat side by side in different eras.
+    private const string ListPlus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5 M17.5 9.5v5";
+
+    // The changed-file statuses of the two commit lists. Upstream tells them apart by
+    // COLOUR (a green plus, a red minus); the modern set is monochrome, so the mark on
+    // the page carries the meaning instead — a plus for an added file, a minus for a
+    // deleted one, an arrow for a rename and a question mark for a file git could not
+    // classify (an unmerged path).
+    private const string FilePlus = "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M9.5 14.5h5 M12 12v5";
+    private const string FileMinus = "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M9.5 14.5h5";
+    private const string FileArrow = "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M9 14.5h6 M12.5 12l2.5 2.5-2.5 2.5";
+    private const string FileQuestion =
+        "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M10.5 12.5a1.5 1.5 0 1 1 1.5 2v1.5"
+        + " M11.4 18.5a.6 .6 0 1 0 1.2 0a.6 .6 0 1 0-1.2 0";
+
     // The bare pencil for renaming. It is FilePen without the page on purpose:
     // the only call site renames a branch, so there is no file to draw, and
     // keeping the same pencil ties it to the edited-thing family.
@@ -425,6 +442,14 @@ internal static class Icons
         ["FileStatusModified"] = FilePen,
         ["WorkingDirChanges"] = FolderPen,
         ["Unstage"] = ListMinus,
+        ["UnstageAll"] = ListMinus,
+        ["Stage"] = ListPlus,
+        ["StageAll"] = ListPlus,
+        ["FileStatusAdded"] = FilePlus,
+        ["FileStatusRemoved"] = FileMinus,
+        ["FileStatusRenamed"] = FileArrow,
+        ["FileStatusCopied"] = Copy,
+        ["FileStatusUnknown"] = FileQuestion,
 
         // A rename is an edit of the name, so it carries the same pencil as the
         // other two, without the page: the call site renames a ref, not a file.
