@@ -305,6 +305,22 @@ public sealed class WorkingDirectoryService
     }
 
     /// <summary>
+    ///  The messages of the last <paramref name="count"/> commits of HEAD, newest first,
+    ///  for the commit dialog's "Commit message" drop-down (upstream's
+    ///  <c>commitMessageToolStripMenuItem</c>, which reads the same
+    ///  <c>GetPreviousCommitMessages</c>). <paramref name="authorPattern"/> is the regular
+    ///  expression git matches the author against, empty for every author. Blank messages
+    ///  are dropped, and a repository with no commits yet simply yields nothing.
+    /// </summary>
+    public IReadOnlyList<string> PreviousCommitMessages(string repoPath, int count, string authorPattern)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        return [.. module.GetPreviousCommitMessages(count, "HEAD", authorPattern)
+            .Where(message => !string.IsNullOrWhiteSpace(message))
+            .Select(message => message!.TrimEnd('\n'))];
+    }
+
+    /// <summary>
     ///  Previews which untracked files/dirs would be removed by a clean, without
     ///  deleting anything (<c>git clean -n -d</c>, plus <c>-x</c> when
     ///  <paramref name="includeIgnored"/> is set). Used to drive the required

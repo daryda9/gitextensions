@@ -190,6 +190,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // with `git status -uno`. Here the rows are already loaded, so the toggle hides them
     // from the unstaged list — and, because "Stage all" acts on the rows the list shows,
     // an untracked file that is hidden is also not staged by it.
+    // Upstream's AppSettings.CommitDialogNumberOfPreviousMessages (default 6) and the
+    // 72-character cut its menu labels use.
+    private const int PreviousMessageCount = 6;
+    private const int MaxMessageLabel = 72;
+
+    // "Show only my messages" of the message drop-down. Upstream keeps it in the menu
+    // item alone, so it lasts as long as the dialog does; same here.
+    private bool _onlyMyMessages;
+
     private bool _showUntracked = true;
 
     private readonly Button _stageBtn;
@@ -201,6 +210,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private readonly Button _stashBtn;
     private readonly Button _resetAllBtn;
     private readonly Button _resetUnstagedBtn;
+    private readonly Button _messageMenuBtn;
     private readonly Button _templatesBtn;
     private readonly Button _createBranchBtn;
     private readonly Button _optionsBtn;
@@ -610,6 +620,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _resetAllBtn = MakeButton(() => DoReset(includeStaged: true));
         _resetUnstagedBtn = MakeButton(() => DoReset(includeStaged: false));
 
+        _messageMenuBtn = new Button();
+        _messageMenuBtn.Click += async (_, _) => await ShowMessageMenuAsync(_messageMenuBtn);
+
         _templatesBtn = new Button();
         _templatesBtn.Click += async (_, _) => await ShowTemplatesMenuAsync(_templatesBtn);
 
@@ -642,20 +655,27 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // The commit toolbar, upstream's toolbarCommit (:626-630). Options sits at the
         // far right there (Alignment = Right), the rest flow from the left.
         DockPanel commitToolbar = new() { Margin = new Thickness(0, 0, 0, 2) };
-        StackPanel commitToolbarLeft = new()
+
+        // A WrapPanel: upstream's ToolStrip moves what does not fit into an overflow
+        // button, and the port has no overflow here — with a StackPanel the last entry
+        // simply left the dialog on a narrow window.
+        WrapPanel commitToolbarLeft = new()
         {
             Orientation = Orientation.Horizontal,
-            Children = { _templatesBtn, _createBranchBtn },
+            Children = { _messageMenuBtn, _templatesBtn, _createBranchBtn },
         };
         foreach (Control c in commitToolbarLeft.Children)
         {
-            c.Margin = new Thickness(0, 0, 4, 0);
+            c.Margin = new Thickness(0, 0, 4, 2);
         }
 
-        DockPanel.SetDock(commitToolbarLeft, Dock.Left);
+        // Options goes in FIRST: a DockPanel serves its children in order, so with the
+        // left group added first that group takes the width it wants and Options is left
+        // with the sliver that remains.
         DockPanel.SetDock(_optionsBtn, Dock.Right);
-        commitToolbar.Children.Add(commitToolbarLeft);
+        DockPanel.SetDock(commitToolbarLeft, Dock.Left);
         commitToolbar.Children.Add(_optionsBtn);
+        commitToolbar.Children.Add(commitToolbarLeft);
 
         Grid messageArea = new()
         {
@@ -859,6 +879,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _stashBtn.Content = T("FormCommit/StashStaged.Text", "Stash staged changes");
         _resetAllBtn.Content = T("FormCommit/btnResetAllChanges.Text", "Reset all changes");
         _resetUnstagedBtn.Content = T("FormCommit/btnResetUnstagedChanges.Text", "Reset unstaged changes");
+        _messageMenuBtn.Content = T("FormCommit/commitMessageToolStripMenuItem.Text", "Commit message") + " ▾";
         _templatesBtn.Content = T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾";
         _createBranchBtn.Content = T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch");
         _optionsBtn.Content = T("FormCommit/tsmiOptions.Text", "Options") + " ▾";
@@ -2973,6 +2994,74 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // Templates are discovered off the UI thread (git config + repository scan),
     // and the MenuFlyout is fully populated BEFORE ShowAt — mutating Items while
     // the popup is open leaves it unmeasured (see HANDOFF §3).
+    // Upstream's "Commit message" drop-down (commitMessageToolStripMenuItem): the
+    // messages of the last commits, one entry each, labelled with the first line cut to
+    // 72 characters, and clicking one REPLACES the message box. Its "Show only my
+    // messages" toggle filters by the committer identity the status bar already shows.
+    // The one entry not ported is "Generate list of changes in submodules", which builds
+    // a message from the submodule bumps of the index — noted in PORTING, not silently
+    // dropped.
+    private async Task ShowMessageMenuAsync(Button anchor)
+    {
+        string repo = _repoPath;
+        string authorPattern = _onlyMyMessages && _committerName.Length > 0
+            ? $"^{Regex.Escape(_committerName)} <{Regex.Escape(_committerEmail)}>$"
+            : string.Empty;
+
+        IReadOnlyList<string> messages = await Task.Run(() =>
+        {
+            try
+            {
+                return _service.PreviousCommitMessages(repo, PreviousMessageCount, authorPattern);
+            }
+            catch
+            {
+                return (IReadOnlyList<string>)Array.Empty<string>();
+            }
+        });
+
+        MenuFlyout flyout = new();
+        if (messages.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem
+            {
+                Header = T("No previous commit messages found"),
+                IsEnabled = false,
+            });
+        }
+
+        foreach (string message in messages)
+        {
+            string captured = message;
+            string label = captured.Split('\n')[0].Trim();
+            if (label.Length > MaxMessageLabel)
+            {
+                label = label[..MaxMessageLabel] + "…";
+            }
+
+            MenuItem item = new() { Header = Escape(label) };
+            ToolTip.SetTip(item, captured);
+            item.Click += (_, _) =>
+            {
+                _messageBox.Text = captured.Trim();
+                _messageBox.Focus();
+            };
+            flyout.Items.Add(item);
+        }
+
+        flyout.Items.Add(new Separator());
+        MenuItem onlyMine = new()
+        {
+            Header = T("FormCommit/ShowOnlyMyMessagesToolStripMenuItem.Text", "Show only my messages"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = _onlyMyMessages,
+        };
+        onlyMine.Click += (_, _) => _onlyMyMessages = !_onlyMyMessages;
+        flyout.Items.Add(onlyMine);
+
+        flyout.ShowAt(anchor);
+    }
+
     private async Task ShowTemplatesMenuAsync(Button anchor)
     {
         string repo = _repoPath;
