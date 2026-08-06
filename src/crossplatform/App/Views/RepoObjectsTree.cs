@@ -2218,15 +2218,26 @@ public sealed class RepoObjectsTree : UserControl
     private void OnTreePointerPressed(object? sender, PointerPressedEventArgs e)
     {
         PointerPointProperties properties = e.GetCurrentPoint(_tree).Properties;
-        if (properties.IsLeftButtonPressed
-            && !IsExpandToggle(e.Source)
-            && TryFindTreeItem(e.Source, out TreeViewItem item))
+        if (properties.IsLeftButtonPressed && TryFindTreeItem(e.Source, out TreeViewItem item))
         {
-            // TreeViewItem's class handler toggles IsExpanded for a press anywhere in
-            // the header. Handle ordinary row presses in the tunnel instead: selection
-            // remains immediate, but only the real chevron reaches the native toggle.
-            // Activating on the second press also keeps the exact pointer row and avoids
-            // a DoubleTapped event whose visual source may disappear during navigation.
+            // The chevron owns a BAND, not just its own glyph: the column it sits in,
+            // over the full height of the row. Hitting the arrow of a 12 px glyph — and
+            // knowing whether one hit it — was a coin toss, and a miss ran the row's
+            // activation instead (a checkout, a repository switch). Inside the band the
+            // press only folds the node and never touches the selection, the way a tree
+            // control's +/- box behaves.
+            if (IsInExpanderBand(item, e))
+            {
+                item.IsExpanded = !item.IsExpanded;
+                e.Handled = true;
+                return;
+            }
+
+            // Outside the band the row belongs to the label. TreeViewItem's class handler
+            // would toggle IsExpanded for a press anywhere in the header, so the press is
+            // handled here in the tunnel instead: selection stays immediate and nothing
+            // folds. Activating on the second press also keeps the exact pointer row and
+            // avoids a DoubleTapped event whose visual source may disappear mid-navigation.
             SelectOnly(item);
             item.Focus();
             e.Handled = true;
@@ -2262,22 +2273,56 @@ public sealed class RepoObjectsTree : UserControl
         return false;
     }
 
-    private static bool IsExpandToggle(object? source)
+    // Whether the press landed in <paramref name="item"/>'s chevron band: the horizontal
+    // slice of the row the chevron occupies, plus a little slack on each side, at any
+    // height. A node with nothing to expand has no chevron and therefore no band, so its
+    // whole row belongs to the label.
+    private static bool IsInExpanderBand(TreeViewItem item, PointerPressedEventArgs e)
     {
-        for (Visual? visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+        // Slack on each side of the glyph, so the band is a comfortable target without
+        // reaching the icon that follows it.
+        const double Slack = 3;
+
+        if (OwnChevron(item) is not { IsVisible: true } chevron || chevron.Bounds.Width <= 0)
         {
-            if (visual is ToggleButton)
+            return false;
+        }
+
+        double x = e.GetPosition(chevron).X;
+        return x >= -Slack && x <= chevron.Bounds.Width + Slack;
+    }
+
+    // The item's OWN expand/collapse toggle. The search does not descend into nested
+    // TreeViewItems: their chevrons live in this item's visual tree too, and the first
+    // one found by a plain descendant walk can belong to a child row.
+    private static ToggleButton? OwnChevron(TreeViewItem item)
+    {
+        Queue<Visual> queue = new();
+        foreach (Visual child in item.GetVisualChildren())
+        {
+            queue.Enqueue(child);
+        }
+
+        while (queue.Count > 0)
+        {
+            Visual visual = queue.Dequeue();
+            if (visual is ToggleButton toggle)
             {
-                return true;
+                return toggle;
             }
 
             if (visual is TreeViewItem)
             {
-                return false;
+                continue;
+            }
+
+            foreach (Visual child in visual.GetVisualChildren())
+            {
+                queue.Enqueue(child);
             }
         }
 
-        return false;
+        return null;
     }
 
     // Double-click / Enter. Upstream gives each node type its own OnDoubleClick:
