@@ -180,6 +180,16 @@ public sealed class CommitDialog : Theming.ZoomWindow
         public Button RefreshButton = new();
         public Button? SettingsButton;
 
+        // The filter row, hidden while the list is empty — upstream's
+        // FileStatusList.SetFileStatusListVisibility(showNoFiles) does exactly that, so
+        // an empty pane is the "no changes" line alone.
+        public Control FilterRow = new Border();
+
+        // Upstream's selectionFilter is a ToolStripComboBox, so the patterns already
+        // used are one click away. The port keeps them for the life of the dialog.
+        public readonly List<string> History = [];
+        public Button HistoryButton = new();
+
         public bool FilterActive => Pattern.Length > 0;
     }
 
@@ -551,15 +561,30 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // "Stage all" / "Unstage all" become "Inserisci tutto nello stage" / "Rimuovi
         // tutto dallo stage" in Italian (longer still in German) and a StackPanel simply
         // overflowed the left column, pushing the last button past the dialog border.
-        WrapPanel stageButtons = new()
+        // The strip reads exactly like upstream's: the unstage pair on the LEFT (the
+        // "all" button image-only, then the icon-and-text one) and the stage pair pushed
+        // to the RIGHT, all of them flat like ToolStrip buttons rather than framed.
+        StackPanel unstageGroup = new()
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 0, 0, 2),
-            Children = { _stageBtn, _unstageBtn, _stageAllBtn, _unstageAllBtn },
+            Children = { _unstageAllBtn, _unstageBtn },
         };
-        foreach (Control c in stageButtons.Children)
+        StackPanel stageGroup = new()
         {
-            c.Margin = new Thickness(0, 0, 4, 2);
+            Orientation = Orientation.Horizontal,
+            Children = { _stageBtn, _stageAllBtn },
+        };
+        DockPanel stageButtons = new() { Margin = new Thickness(0, 0, 0, 2) };
+        DockPanel.SetDock(stageGroup, Dock.Right);
+        DockPanel.SetDock(unstageGroup, Dock.Left);
+        stageButtons.Children.Add(stageGroup);
+        stageButtons.Children.Add(unstageGroup);
+        foreach (Button b in new[] { _stageBtn, _unstageBtn, _stageAllBtn, _unstageAllBtn })
+        {
+            b.Margin = new Thickness(0, 0, 2, 0);
+            b.Background = Brushes.Transparent;
+            b.BorderThickness = new Thickness(0);
+            b.Padding = new Thickness(6, 2);
         }
 
         _unstagedPane = new FileListPane(_unstagedList, staged: false);
@@ -619,7 +644,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
             TextWrapping = TextWrapping.Wrap,
             FontFamily = Monospace,
         };
-        _amendBox = new CheckBox { Margin = new Thickness(0, 3, 0, 3) };
+        _amendBox = new CheckBox
+        {
+            Margin = new Thickness(0, 3, 0, 3),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
 
         _commitBtn = MakeButton(() => DoCommit(push: false));
         _commitPushBtn = MakeButton(() => DoCommit(push: true));
@@ -655,7 +684,10 @@ public sealed class CommitDialog : Theming.ZoomWindow
             {
                 button.Margin = new Thickness(0, 0, 0, 3);
                 button.HorizontalAlignment = HorizontalAlignment.Stretch;
-                button.HorizontalContentAlignment = HorizontalAlignment.Center;
+
+                // Stretch, not Center: ButtonFace docks the icon to the left edge, and a
+                // centred content box would carry the icon into the middle with the text.
+                button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             }
         }
 
@@ -676,9 +708,20 @@ public sealed class CommitDialog : Theming.ZoomWindow
             c.Margin = new Thickness(0, 0, 4, 2);
         }
 
+        // Flat, like the ToolStrip upstream uses here: framed buttons made the row look
+        // like a second set of commands competing with the column on the left, and cost
+        // the width that pushed "Create branch" onto a line of its own.
+        foreach (Button b in new[] { _messageMenuBtn, _templatesBtn, _createBranchBtn, _optionsBtn })
+        {
+            b.Background = Brushes.Transparent;
+            b.BorderThickness = new Thickness(0);
+            b.Padding = new Thickness(6, 2);
+        }
+
         // Options goes in FIRST: a DockPanel serves its children in order, so with the
         // left group added first that group takes the width it wants and Options is left
         // with the sliver that remains.
+        _optionsBtn.VerticalAlignment = VerticalAlignment.Top;
         DockPanel.SetDock(_optionsBtn, Dock.Right);
         DockPanel.SetDock(commitToolbarLeft, Dock.Left);
         commitToolbar.Children.Add(_optionsBtn);
@@ -886,12 +929,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _messageBox.Watermark = T("FormCommit/_enterCommitMessageHint.Text", "Enter commit message");
         _amendBox.Content = T("FormCommit/_amendCommitCaption.Text", "Amend commit");
 
-        _commitBtn.Content = IconText.Header("RepoStateClean", T("FormCommit/Commit.Text", "Commit"));
-        _commitPushBtn.Content = IconText.Header("ArrowUp", T("FormCommit/_commitAndPush.Text", "Commit & push"));
-        _stashBtn.Content = IconText.Header("stash", T("FormCommit/StashStaged.Text", "Stash staged changes"));
-        _resetAllBtn.Content = IconText.Header(
+        _commitBtn.Content = ButtonFace("RepoStateClean", T("FormCommit/Commit.Text", "Commit"));
+        _commitPushBtn.Content = ButtonFace("ArrowUp", T("FormCommit/_commitAndPush.Text", "Commit & push"));
+        _stashBtn.Content = ButtonFace("stash", T("FormCommit/StashStaged.Text", "Stash staged changes"));
+        _resetAllBtn.Content = ButtonFace(
             "ResetWorkingDirChanges", T("FormCommit/btnResetAllChanges.Text", "Reset all changes"));
-        _resetUnstagedBtn.Content = IconText.Header(
+        _resetUnstagedBtn.Content = ButtonFace(
             "ResetWorkingDirChanges", T("FormCommit/btnResetUnstagedChanges.Text", "Reset unstaged changes"));
         _messageMenuBtn.Content = IconText.Header(
             "WorkingDirChanges", T("FormCommit/commitMessageToolStripMenuItem.Text", "Commit message") + " ▾");
@@ -2330,6 +2373,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         pane.Pattern = pattern;
+        RememberFilter(pane);
         pane.CountBox.BorderBrush = Brushes.Transparent;
         ToolTip.SetTip(pane.FilterBox, SelectionFilterTip);
 
@@ -2350,12 +2394,19 @@ public sealed class CommitDialog : Theming.ZoomWindow
     {
         // Upstream swaps the icon too when a filter is on (StageAllFiltered /
         // UnstageAllFiltered), which is the only cue that "all" now means "the matches".
-        _stageAllBtn.Content = _unstagedPane.FilterActive
-            ? IconText.Header("StageAllFiltered", T("FormCommit/_stageFiltered.Text", "Stage filtered"))
-            : IconText.Header("StageAll", T("FormCommit/_stageAll.Text", "Stage all"));
-        _unstageAllBtn.Content = _stagedPane.FilterActive
-            ? IconText.Header("UnstageAllFiltered", T("FormCommit/_unstageFiltered.Text", "Unstage filtered"))
-            : IconText.Header("UnstageAll", T("FormCommit/_unstageAll.Text", "Unstage all"));
+        // Image-only with the caption as the tooltip, which is upstream's
+        // DisplayStyle = Image on toolStageAllItem / toolUnstageAllItem.
+        string stageAll = _unstagedPane.FilterActive
+            ? T("FormCommit/_stageFiltered.Text", "Stage filtered")
+            : T("FormCommit/_stageAll.Text", "Stage all");
+        string unstageAll = _stagedPane.FilterActive
+            ? T("FormCommit/_unstageFiltered.Text", "Unstage filtered")
+            : T("FormCommit/_unstageAll.Text", "Unstage all");
+
+        _stageAllBtn.Content = IconOnly(_unstagedPane.FilterActive ? "StageAllFiltered" : "StageAll", stageAll);
+        _unstageAllBtn.Content = IconOnly(_stagedPane.FilterActive ? "UnstageAllFiltered" : "UnstageAll", unstageAll);
+        ToolTip.SetTip(_stageAllBtn, stageAll);
+        ToolTip.SetTip(_unstageAllBtn, unstageAll);
     }
 
     private void RefreshPaneCount(FileListPane pane)
@@ -3878,8 +3929,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
                     ? status.Staged
                     : status.Staged.Where(r => !_conflictPaths.Contains(r.Path)));
             _conflictBanner.IsVisible = _conflictPaths.Count > 0;
+            // An empty pane is the "no changes" line alone: upstream hides the filter
+            // row with the list (FileStatusList.SetFileStatusListVisibility).
             _unstagedEmpty.IsVisible = _unstagedList.Items.Count == 0;
             _stagedEmpty.IsVisible = _stagedList.Items.Count == 0;
+            _unstagedPane.FilterRow.IsVisible = !_unstagedEmpty.IsVisible || _unstagedPane.FilterActive;
+            _stagedPane.FilterRow.IsVisible = !_stagedEmpty.IsVisible || _stagedPane.FilterActive;
             RestoreDiffSelection();
             RenderStatus();
 
@@ -4081,12 +4136,14 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
     private static readonly IBrush ConflictGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
 
+    // Upstream's NoFiles label sits at the TOP LEFT of the empty list, not in its middle.
     private static TextBlock MakeEmptyLabel() => new()
     {
         FontStyle = FontStyle.Italic,
         Foreground = Brush("App.TextDim", Brushes.Gray),
-        HorizontalAlignment = HorizontalAlignment.Center,
-        VerticalAlignment = VerticalAlignment.Center,
+        HorizontalAlignment = HorizontalAlignment.Left,
+        VerticalAlignment = VerticalAlignment.Top,
+        Margin = new Thickness(8, 4, 0, 0),
         IsHitTestVisible = false,
     };
 
@@ -4162,14 +4219,23 @@ public sealed class CommitDialog : Theming.ZoomWindow
             });
         }
 
-        panel.Children.Add(new TextBlock
+        // Upstream prints the directory dim and the file name in full colour, which is
+        // what makes a list of long paths scannable at all.
+        int cut = row.Path.LastIndexOf('/') + 1;
+        TextBlock text = new()
         {
-            Text = row.Path,
-            Foreground = Brush("App.Text", Brushes.Gainsboro),
             FontFamily = Monospace,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
-        });
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        };
+        if (cut > 0)
+        {
+            text.Inlines?.Add(new Run(row.Path[..cut]) { Foreground = Brush("App.TextDim", Brushes.Gray) });
+        }
+
+        text.Inlines?.Add(new Run(row.Path[cut..]));
+        panel.Children.Add(text);
         return panel;
     }
 
@@ -4244,7 +4310,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
             Child = pane.CountText,
         };
 
-        DockPanel row = new() { Margin = new Thickness(0, 0, 0, 2) };
+        // Two rows, the way upstream stacks them: the ToolStrip of icon buttons, and
+        // under it the selection filter across the FULL width of the pane. The port used
+        // to put both on one line, which left the filter box a stub next to the buttons.
         StackPanel buttons = new()
         {
             Orientation = Orientation.Horizontal,
@@ -4258,25 +4326,111 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
         buttons.Children.Add(pane.RefreshButton);
 
+        DockPanel toolbarRow = new() { Margin = new Thickness(0, 0, 0, 2) };
         DockPanel.SetDock(buttons, Dock.Left);
         DockPanel.SetDock(pane.CountBox, Dock.Right);
-        row.Children.Add(buttons);
-        row.Children.Add(pane.CountBox);
-        row.Children.Add(pane.FilterBox);
-        return row;
+        toolbarRow.Children.Add(buttons);
+        toolbarRow.Children.Add(pane.CountBox);
+        toolbarRow.Children.Add(new Panel());
+
+        pane.HistoryButton = IconButton(null, "▾", () => ShowFilterHistory(pane));
+        pane.HistoryButton.Margin = new Thickness(2, 0, 0, 0);
+        ToolTip.SetTip(pane.HistoryButton, T("Previously used filters"));
+
+        DockPanel filterRow = new() { Margin = new Thickness(0, 0, 0, 2) };
+        DockPanel.SetDock(pane.HistoryButton, Dock.Right);
+        filterRow.Children.Add(pane.HistoryButton);
+        filterRow.Children.Add(pane.FilterBox);
+        pane.FilterRow = filterRow;
+
+        StackPanel stack = new() { Orientation = Orientation.Vertical };
+        stack.Children.Add(toolbarRow);
+        stack.Children.Add(filterRow);
+        return stack;
     }
+
+    // The drop-down of the filter box: the patterns already used in this pane, newest
+    // first, plus a way to clear the box. Upstream gets this for free from its
+    // ToolStripComboBox; here the list is kept by hand in the pane.
+    private void ShowFilterHistory(FileListPane pane)
+    {
+        MenuFlyout flyout = new();
+        if (pane.History.Count == 0)
+        {
+            flyout.Items.Add(new MenuItem { Header = T("No filters used yet"), IsEnabled = false });
+        }
+
+        foreach (string pattern in pane.History)
+        {
+            string captured = pattern;
+            MenuItem item = new() { Header = Escape(captured) };
+            item.Click += (_, _) => pane.FilterBox.Text = captured;
+            flyout.Items.Add(item);
+        }
+
+        flyout.Items.Add(new Separator());
+        MenuItem clear = new() { Header = T("FileStatusList/tsmiClearFilter.Text", "Clear filter") };
+        clear.Click += (_, _) => pane.FilterBox.Text = string.Empty;
+        flyout.Items.Add(clear);
+        flyout.ShowAt(pane.HistoryButton);
+    }
+
+    // Records a pattern that really filtered something, so the drop-down offers it again.
+    private static void RememberFilter(FileListPane pane)
+    {
+        if (pane.Pattern.Length == 0)
+        {
+            return;
+        }
+
+        pane.History.Remove(pane.Pattern);
+        pane.History.Insert(0, pane.Pattern);
+        if (pane.History.Count > 10)
+        {
+            pane.History.RemoveAt(pane.History.Count - 1);
+        }
+    }
+
+    // A commit-column button's face: upstream anchors the image to the LEFT edge
+    // (ImageAlign = MiddleLeft) and centres the caption in what is left, so the five
+    // buttons read as a column with a gutter of icons.
+    private static object ButtonFace(string icon, string caption)
+    {
+        if (Theming.IconLoader.Image(icon) is not { } image)
+        {
+            return caption;
+        }
+
+        image.VerticalAlignment = VerticalAlignment.Center;
+        image.Margin = new Thickness(0, 0, 6, 0);
+        DockPanel face = new();
+        DockPanel.SetDock(image, Dock.Left);
+        face.Children.Add(image);
+        face.Children.Add(new TextBlock
+        {
+            Text = caption,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return face;
+    }
+
+    // The icon on its own, falling back to the caption when the asset does not resolve —
+    // a button with an empty content would be an invisible click target.
+    private static object IconOnly(string icon, string caption)
+        => Theming.IconLoader.Image(icon) is { } image ? image : caption;
 
     // A small icon-only toolbar button. The glyph is the fallback: IconLoader returns
     // null for a name that does not resolve (the asset names are case-sensitive), and a
     // button with no content at all would be an invisible click target.
-    private Button IconButton(string icon, string glyph, Action onClick)
+    private Button IconButton(string? icon, string glyph, Action onClick)
     {
         Button b = new()
         {
             Padding = StyleDensity.BarButton,
             Margin = new Thickness(0, 0, 2, 0),
             Background = Brush("App.Toolbar", Brushes.DimGray),
-            Content = (Control?)Theming.IconLoader.Image(icon)
+            Content = (icon is null ? null : (Control?)Theming.IconLoader.Image(icon))
                 ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
         };
         b.Click += (_, _) => onClick();

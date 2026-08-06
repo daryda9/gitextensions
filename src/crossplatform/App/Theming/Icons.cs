@@ -276,14 +276,14 @@ internal static class Icons
     private const string FolderPen =
         "M3 18V6h6l2 3h5v2 M3 18h8 M18.5 11.5l2 2-6.5 6.5H11.5v-2.5z";
 
-    // Unstaging drops an entry from the staged list; the minus says which way it
-    // goes without borrowing Pull's arrow, which already means something else.
-    private const string ListMinus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5";
-
-    // Staging is the same list operation the other way round, so it is ListMinus with
-    // the second stroke of a plus. The pair has to be drawn from one shape: with one of
-    // the two left as a 2015 bitmap the two buttons sat side by side in different eras.
-    private const string ListPlus = "M4 6.5h12 M4 12h8 M4 17.5h12 M15 12h5 M17.5 9.5v5";
+    // Staging moves a file DOWN into the index and unstaging pulls it back UP: upstream
+    // draws exactly that, a purple arrow each way, and doubles it for the "all" variant.
+    // Arrows and not a list-with-a-plus, because the four buttons sit side by side and
+    // have to be told apart at 16 px — two variants of the same list glyph could not be.
+    private const string ArrowToLine = "M12 3v10 M8 9l4 4 4-4 M4 20h16";
+    private const string DoubleArrowToLine = "M12 2.5v4 M8 8l4 4 4-4 M8 13l4 4 4-4 M4 20h16";
+    private const string ArrowFromLine = "M12 21V11 M8 15l4-4 4 4 M4 4h16";
+    private const string DoubleArrowFromLine = "M12 21.5v-4 M8 16l4-4 4 4 M8 11l4-4 4 4 M4 4h16";
 
     // The changed-file statuses of the two commit lists. Upstream tells them apart by
     // COLOUR (a green plus, a red minus); the modern set is monochrome, so the mark on
@@ -441,10 +441,12 @@ internal static class Icons
         // pencil; unstaging is a list operation, not a transfer.
         ["FileStatusModified"] = FilePen,
         ["WorkingDirChanges"] = FolderPen,
-        ["Unstage"] = ListMinus,
-        ["UnstageAll"] = ListMinus,
-        ["Stage"] = ListPlus,
-        ["StageAll"] = ListPlus,
+        ["Unstage"] = ArrowFromLine,
+        ["UnstageAll"] = DoubleArrowFromLine,
+        ["Stage"] = ArrowToLine,
+        ["StageAll"] = DoubleArrowToLine,
+        ["StageAllFiltered"] = DoubleArrowToLine,
+        ["UnstageAllFiltered"] = DoubleArrowFromLine,
         ["FileStatusAdded"] = FilePlus,
         ["FileStatusRemoved"] = FileMinus,
         ["FileStatusRenamed"] = FileArrow,
