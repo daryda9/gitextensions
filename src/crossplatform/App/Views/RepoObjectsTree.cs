@@ -553,7 +553,7 @@ public sealed class RepoObjectsTree : UserControl
             parent.IsExpanded = true;
         }
 
-        node.IsSelected = true;
+        SelectOnly(node);
         node.BringIntoView();
         ScrollTreeToHorizontalHome();
         Dispatcher.UIThread.Post(ScrollTreeToHorizontalHome, DispatcherPriority.Background);
@@ -594,6 +594,29 @@ public sealed class RepoObjectsTree : UserControl
         // Ancestors of a match are expanded, otherwise the match stays out of sight.
         node.IsExpanded = true;
         return true;
+    }
+
+    // Selects one node and makes sure it is the only selected one. A container's
+    // IsSelected only reaches the TreeView's selection model once the tree has realised
+    // that container under its parent; assigning it on a node inside a subtree that was
+    // not laid out yet sets the flag behind the model's back, and the next real selection
+    // then deselects only the node the model knows about — the stale ones keep their blue
+    // fill. That is what leaves a whole chain of submodule and folder rows highlighted
+    // after opening a submodule and clicking through the rows it just revealed. Every
+    // selection goes through here, so the flag is cleared everywhere else first.
+    private void SelectOnly(TreeViewItem node)
+    {
+        // Snapshot: assigning IsSelected raises SelectionChanged, and a handler that
+        // rebuilds the tree would otherwise invalidate the dictionary mid-iteration.
+        foreach (TreeViewItem other in _nodeParent.Keys.ToArray())
+        {
+            if (!ReferenceEquals(other, node) && other.IsSelected)
+            {
+                other.IsSelected = false;
+            }
+        }
+
+        node.IsSelected = true;
     }
 
     // Records the parent links and the breadth-first match list for the visible tree.
@@ -1375,7 +1398,7 @@ public sealed class RepoObjectsTree : UserControl
         }
 
         _suppressSelectionNotify = true;
-        selection.IsSelected = true;
+        SelectOnly(selection);
         TreeViewItem target = selection;
 
         // The item has no realised layout yet on the pass that assigned ItemsSource, so
@@ -2205,7 +2228,7 @@ public sealed class RepoObjectsTree : UserControl
             // remains immediate, but only the real chevron reaches the native toggle.
             // Activating on the second press also keeps the exact pointer row and avoids
             // a DoubleTapped event whose visual source may disappear during navigation.
-            item.IsSelected = true;
+            SelectOnly(item);
             item.Focus();
             e.Handled = true;
             if (e.ClickCount == 2)
