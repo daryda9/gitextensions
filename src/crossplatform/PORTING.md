@@ -3260,6 +3260,24 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M102 (2026-08-06) — il chevron dell'albero ha una fascia sua
+
+> Segnalazione dell'utente con immagine annotata: «a volte non si capisce se facciamo doppio clic
+> sulla freccia o sulla scritta, vorrei separare le zone»; le due linee rosse delimitano una **colonna**
+> attorno al chevron, alta quanto la riga.
+
+Prima il discrimine era `IsExpandToggle(e.Source)`, cioè *aver colpito il `ToggleButton`*: un bersaglio
+di 12 px. Mancarlo non era neutro — al secondo clic partiva l'**attivazione della riga**, che per un
+submodule o un worktree cambia repository e per un branch fa checkout.
+
+Ora il chevron possiede la fetta orizzontale di riga in cui sta (la sua larghezza + 3 px di gioco), a
+qualunque altezza: dentro la fascia il press **piega solo il nodo** e non tocca la selezione, come il
+riquadro +/- di un tree control; fuori è etichetta, quindi seleziona e al secondo press attiva. Un nodo
+senza figli non ha chevron e quindi non ha fascia: tutta la riga è etichetta.
+
+Da NON riscoprire: il chevron dell'item si cerca **senza scendere nei `TreeViewItem` annidati** — i loro
+chevron stanno nello stesso albero visuale e una discesa ingenua restituisce quello di una riga figlia.
+
 ## M101 (2026-08-06) — le ultime differenze del dialogo di commit: raggruppamento, overflow, submodule
 
 > «implementa tutte le parti rimanenti della finestra del commit che hai trovato»: le quattro voci
