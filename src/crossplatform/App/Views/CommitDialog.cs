@@ -189,8 +189,6 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // an untracked file that is hidden is also not staged by it.
     private bool _showUntracked = true;
 
-    private readonly TextBlock _unstagedHeader = MakeHeaderLabel();
-    private readonly TextBlock _stagedHeader = MakeHeaderLabel();
     private readonly Button _stageBtn;
     private readonly Button _unstageBtn;
     private readonly Button _stageAllBtn;
@@ -207,7 +205,6 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // Upstream's Cancel button (FormCommit.Designer.cs:142-151), which is also the
     // form's CancelButton — so it doubles as the Escape handler. It only closes:
     // upstream asks nothing back, not even with a message typed.
-    private readonly Button _cancelBtn;
 
     // The branch shown in the title bar, remembered so the title can be rebuilt
     // (translated format string) without asking git again.
@@ -528,19 +525,22 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _stageAllBtn = MakeButton(StageAll);
         _unstageAllBtn = MakeButton(UnstageAll);
 
-        // A WrapPanel, not a horizontal StackPanel: "Stage all" / "Unstage all"
-        // become "Inserisci tutto nello stage" / "Rimuovi tutto dallo stage" in
-        // Italian (longer still in German) and a StackPanel simply overflowed the
-        // left column, pushing the last button past the dialog border.
+        // Upstream's toolbarStaged: the stage / unstage commands live in a strip of
+        // their own at the TOP of the staged pane (FormCommit.Designer.cs:313-319 —
+        // toolStageAllItem, toolStageItem, toolUnstageAllItem, toolUnstageItem), not in
+        // a band between the two lists. A WrapPanel and not a horizontal StackPanel:
+        // "Stage all" / "Unstage all" become "Inserisci tutto nello stage" / "Rimuovi
+        // tutto dallo stage" in Italian (longer still in German) and a StackPanel simply
+        // overflowed the left column, pushing the last button past the dialog border.
         WrapPanel stageButtons = new()
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 4),
+            Margin = new Thickness(0, 0, 0, 2),
             Children = { _stageBtn, _unstageBtn, _stageAllBtn, _unstageAllBtn },
         };
         foreach (Control c in stageButtons.Children)
         {
-            c.Margin = new Thickness(0, 0, 4, 4);
+            c.Margin = new Thickness(0, 0, 4, 2);
         }
 
         _unstagedPane = new FileListPane(_unstagedList, staged: false);
@@ -548,25 +548,22 @@ public sealed class CommitDialog : Theming.ZoomWindow
         Control unstagedToolbar = BuildPaneToolbar(_unstagedPane);
         Control stagedToolbar = BuildPaneToolbar(_stagedPane);
 
+        // ---- LEFT column: unstaged over staged (upstream's splitLeft) ----
         Grid leftPanel = new()
         {
-            RowDefinitions = new RowDefinitions("*,Auto,*"),
+            RowDefinitions = new RowDefinitions("*,4,*"),
         };
-        leftPanel.Children.Add(WrapWithHeader(_unstagedHeader, unstagedToolbar, _unstagedList, 0));
-        Grid.SetRow(stageButtons, 1);
-        leftPanel.Children.Add(stageButtons);
-        leftPanel.Children.Add(WrapWithHeader(_stagedHeader, stagedToolbar, _stagedList, 2));
-
-        // ---- top region: left | right split ----
-        Grid split = new()
+        leftPanel.Children.Add(WrapWithToolbars(_unstagedList, 0, unstagedToolbar));
+        GridSplitter leftSplitter = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("2*,3*"),
-            Margin = new Thickness(6),
+            Height = 4,
+            ResizeDirection = GridResizeDirection.Rows,
+            Background = Brush("App.Border", Brushes.Gray),
         };
-        Grid.SetColumn(leftPanel, 0);
-        GridSplitter splitter = new() { Width = 4, Background = Brush("App.Border", Brushes.Gray) };
-        Grid.SetColumn(splitter, 1);
-        splitter.HorizontalAlignment = HorizontalAlignment.Left;
+        Grid.SetRow(leftSplitter, 1);
+        leftPanel.Children.Add(leftSplitter);
+        leftPanel.Children.Add(WrapWithToolbars(_stagedList, 2, stageButtons, stagedToolbar));
+
         _gutterBorder = new Border
         {
             Child = _gutterScroll,
@@ -586,24 +583,23 @@ public sealed class CommitDialog : Theming.ZoomWindow
             Child = diffWithGutter,
             BorderBrush = Brush("App.Border", Brushes.Gray),
             BorderThickness = new Thickness(1),
-            Margin = new Thickness(6, 0, 0, 0),
             ClipToBounds = true,
         };
-        Grid.SetColumn(diffBorder, 1);
-        split.Children.Add(leftPanel);
-        split.Children.Add(diffBorder);
-        split.Children.Add(splitter);
 
-        // ---- BOTTOM: message + buttons + status ----
+        // ---- BOTTOM RIGHT: the commit buttons, the commit toolbar and the message ----
+        // Upstream's tableLayoutPanel1 (FormCommit.Designer.cs:458-460): the buttons are
+        // a TOP-DOWN flow in column 0 spanning both rows, the commit toolbar is row 0 of
+        // column 1 and the message box fills row 1 under it. The port used to lay the
+        // message across the whole dialog width with the buttons wrapped underneath,
+        // which is why the two looked nothing alike.
         _messageBox = new TextBox
         {
             AcceptsReturn = true,
             MinHeight = 70,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 4),
             FontFamily = Monospace,
         };
-        _amendBox = new CheckBox { Margin = new Thickness(0, 0, 12, 0) };
+        _amendBox = new CheckBox { Margin = new Thickness(0, 3, 0, 3) };
 
         _commitBtn = MakeButton(() => DoCommit(push: false));
         _commitPushBtn = MakeButton(() => DoCommit(push: true));
@@ -619,44 +615,115 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _optionsBtn = new Button();
         _optionsBtn.Click += (_, _) => ShowOptionsMenu(_optionsBtn);
 
-        _cancelBtn = MakeButton(Close);
-
-        WrapPanel buttonRow = new()
+        StackPanel commitButtons = new()
         {
-            Orientation = Orientation.Horizontal,
+            Orientation = Orientation.Vertical,
+            MinWidth = 171,   // upstream's flowCommitButtons.Size.Width
+            Margin = new Thickness(0, 0, 6, 0),
             Children =
             {
                 _commitBtn, _commitPushBtn, _amendBox, _stashBtn,
-                _resetAllBtn, _resetUnstagedBtn, _templatesBtn, _createBranchBtn, _optionsBtn,
-                _cancelBtn,
+                _resetAllBtn, _resetUnstagedBtn,
             },
         };
-        foreach (Control c in buttonRow.Children)
+        foreach (Control c in commitButtons.Children)
         {
-            c.Margin = new Thickness(0, 0, 6, 4);
+            if (c is Button button)
+            {
+                button.Margin = new Thickness(0, 0, 0, 3);
+                button.HorizontalAlignment = HorizontalAlignment.Stretch;
+                button.HorizontalContentAlignment = HorizontalAlignment.Center;
+            }
         }
+
+        // The commit toolbar, upstream's toolbarCommit (:626-630). Options sits at the
+        // far right there (Alignment = Right), the rest flow from the left.
+        DockPanel commitToolbar = new() { Margin = new Thickness(0, 0, 0, 2) };
+        StackPanel commitToolbarLeft = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Children = { _templatesBtn, _createBranchBtn },
+        };
+        foreach (Control c in commitToolbarLeft.Children)
+        {
+            c.Margin = new Thickness(0, 0, 4, 0);
+        }
+
+        DockPanel.SetDock(commitToolbarLeft, Dock.Left);
+        DockPanel.SetDock(_optionsBtn, Dock.Right);
+        commitToolbar.Children.Add(commitToolbarLeft);
+        commitToolbar.Children.Add(_optionsBtn);
+
+        Grid messageArea = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            RowDefinitions = new RowDefinitions("Auto,*"),
+        };
+        Grid.SetRowSpan(commitButtons, 2);
+        Grid.SetColumn(commitToolbar, 1);
+        Grid.SetColumn(_messageBox, 1);
+        Grid.SetRow(_messageBox, 1);
+        messageArea.Children.Add(commitButtons);
+        messageArea.Children.Add(commitToolbar);
+        messageArea.Children.Add(_messageBox);
 
         _statusText = new TextBlock
         {
             Foreground = Brush("App.Foreground", Brushes.Gainsboro),
             Margin = new Thickness(0, 2, 0, 0),
         };
+        DockPanel bottom = new() { Margin = new Thickness(0, 6, 0, 0) };
+        DockPanel.SetDock(_statusText, Dock.Bottom);
+        bottom.Children.Add(_statusText);
+        bottom.Children.Add(messageArea);
 
-        StackPanel bottom = new()
+        // ---- RIGHT column: conflict banner, diff, then the commit region ----
+        // Upstream's splitRight: Panel1 = SolveMergeconflicts + SelectedDiff,
+        // Panel2 = the commit region. So the banner and the buttons are BOTH inside the
+        // right column, and the file lists on the left keep the full height.
+        Grid rightPanel = new()
         {
-            Margin = new Thickness(6),
-            Children = { _messageBox, buttonRow, _statusText },
+            RowDefinitions = new RowDefinitions("Auto,3*,4,2*"),
+            Margin = new Thickness(6, 0, 0, 0),
         };
+        Grid.SetRow(diffBorder, 1);
+        GridSplitter rightSplitter = new()
+        {
+            Height = 4,
+            ResizeDirection = GridResizeDirection.Rows,
+            Background = Brush("App.Border", Brushes.Gray),
+        };
+        Grid.SetRow(rightSplitter, 2);
+        Grid.SetRow(bottom, 3);
+        rightPanel.Children.Add(_conflictBanner);
+        rightPanel.Children.Add(diffBorder);
+        rightPanel.Children.Add(rightSplitter);
+        rightPanel.Children.Add(bottom);
+
+        // ---- top region: left | right split (upstream's splitMain) ----
+        Grid split = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("2*,4,3*"),
+            Margin = new Thickness(6),
+        };
+        Grid.SetColumn(leftPanel, 0);
+        GridSplitter splitter = new()
+        {
+            Width = 4,
+            ResizeDirection = GridResizeDirection.Columns,
+            Background = Brush("App.Border", Brushes.Gray),
+        };
+        Grid.SetColumn(splitter, 1);
+        Grid.SetColumn(rightPanel, 2);
+        split.Children.Add(leftPanel);
+        split.Children.Add(splitter);
+        split.Children.Add(rightPanel);
 
         _statusBar = BuildStatusBar();
 
         DockPanel root = new();
         DockPanel.SetDock(_statusBar, Dock.Bottom);
-        DockPanel.SetDock(bottom, Dock.Bottom);
         root.Children.Add(_statusBar);
-        DockPanel.SetDock(_conflictBanner, Dock.Top);
-        root.Children.Add(bottom);
-        root.Children.Add(_conflictBanner);
         root.Children.Add(split);
         Content = root;
         DialogKeys.EnsureFocusRoute(this);
@@ -729,8 +796,6 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // handler and only get their singular form here.
     private void ApplyTranslations()
     {
-        _unstagedHeader.Text = T("Unstaged changes");
-        _stagedHeader.Text = T("Staged changes");
 
         _stageItem.Header = StageCaption;
         _unstagedCopyItem.Header = CopyPathCaption;
@@ -794,7 +859,6 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _templatesBtn.Content = T("FormCommit/commitTemplatesToolStripMenuItem.ToolTipText", "Commit templates") + " ▾";
         _createBranchBtn.Content = T("FormCommit/createBranchToolStripButton.ToolTipText", "Create branch");
         _optionsBtn.Content = T("FormCommit/tsmiOptions.Text", "Options") + " ▾";
-        _cancelBtn.Content = T("FormCommit/Cancel.Text", "Cancel");
 
         UpdateTitle();
         RenderStatus();
@@ -3884,28 +3948,26 @@ public sealed class CommitDialog : Theming.ZoomWindow
         ClipToBounds = true,
     };
 
-    private static TextBlock MakeHeaderLabel() => new()
+    // One file list under its toolbars. Upstream has no caption above either list — the
+    // window title says what is being committed and the toolbars say the rest
+    // (FormCommit.Designer.cs: Unstaged and Staged are docked straight under their
+    // ToolStrips) — so the port's two bold labels are gone with the rest of M98.
+    private Control WrapWithToolbars(Control content, int row, params Control[] toolbars)
     {
-        FontWeight = FontWeight.Bold,
-        Foreground = Brush("App.Foreground", Brushes.Gainsboro),
-        Margin = new Thickness(2, 0, 0, 2),
-    };
+        DockPanel panel = new();
+        foreach (Control toolbar in toolbars)
+        {
+            DockPanel.SetDock(toolbar, Dock.Top);
+            panel.Children.Add(toolbar);
+        }
 
-    private Control WrapWithHeader(TextBlock label, Control toolbar, Control content, int row)
-    {
-        DockPanel panel = new() { Margin = new Thickness(0, 2) };
-        DockPanel.SetDock(label, Dock.Top);
-        DockPanel.SetDock(toolbar, Dock.Top);
-        Border box = new()
+        panel.Children.Add(new Border
         {
             Child = content,
             BorderBrush = Brush("App.Border", Brushes.Gray),
             BorderThickness = new Thickness(1),
             ClipToBounds = true,
-        };
-        panel.Children.Add(label);
-        panel.Children.Add(toolbar);
-        panel.Children.Add(box);
+        });
         Grid.SetRow(panel, row);
         return panel;
     }
