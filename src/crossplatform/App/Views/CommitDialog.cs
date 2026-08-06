@@ -2,12 +2,15 @@ using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using GitCommands;
 using GitExtensions.Avalonia.Services;
@@ -3799,6 +3802,10 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _reselectPath = null;
         if (path is null)
         {
+            // Nothing to go back to — the first fill. Upstream lands on a file
+            // (FormCommit's lists select an item as soon as they have one), so the diff
+            // panel shows something instead of staying empty until the user clicks.
+            SelectFirstFile();
             return;
         }
 
@@ -3817,6 +3824,23 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         ClearDiff();
+    }
+
+    // Puts the selection on the first file of the unstaged list, or of the staged one
+    // when everything is already staged. A no-op once something is selected, so a
+    // refresh cannot steal the user's place.
+    private void SelectFirstFile()
+    {
+        if (_unstagedList.SelectedItem is not null || _stagedList.SelectedItem is not null)
+        {
+            return;
+        }
+
+        ListBox list = _unstagedList.Items.Count > 0 ? _unstagedList : _stagedList;
+        if (list.Items.Count > 0)
+        {
+            list.SelectedIndex = 0;
+        }
     }
 
     // Records the merge state and, while a merge is pending, seeds the message box
@@ -3939,14 +3963,83 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // the two controls compute different default line heights for the same font.
     private const double DiffLineHeight = 19;
 
-    private static ListBox MakeList() => new()
+    // The status colours of FileStatusListView, so the two changed-file lists of the
+    // app read the same. Upstream draws a per-status ICON here; the port has no such
+    // icon set, so it uses the letter the same way its own diff list already does.
+    private static readonly IBrush ModifiedGlyph = new SolidColorBrush(Color.FromRgb(0x4A, 0x9E, 0xD6));
+    private static readonly IBrush AddedGlyph = new SolidColorBrush(Color.FromRgb(0x6A, 0xC7, 0x76));
+    private static readonly IBrush DeletedGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+    private static readonly IBrush ConflictGlyph = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
+
+    private static ListBox MakeList()
     {
-        // Multiple, so stage / unstage / discard / copy path can act on a set of
-        // files (the former working-directory panel offered "Discard changes (N files)").
-        SelectionMode = SelectionMode.Multiple,
-        FontFamily = Monospace,
-        ClipToBounds = true,
-    };
+        ListBox list = new()
+        {
+            // Multiple, so stage / unstage / discard / copy path can act on a set of
+            // files (the former working-directory panel offered "Discard changes (N files)").
+            SelectionMode = SelectionMode.Multiple,
+            FontFamily = Monospace,
+            ClipToBounds = true,
+
+            // No recycling: the rows are built by hand rather than bound, which is what
+            // FileStatusListView does for the same reason.
+            ItemTemplate = new FuncDataTemplate<object>((item, _) => BuildFileRow(item), supportsRecycling: false),
+        };
+
+        // Upstream's rows are one line of a list view, ~18 px tall. Fluent's default
+        // ListBoxItem padding made them twice that, so eight changed files filled the
+        // whole pane where upstream shows twenty.
+        list.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
+        {
+            Setters =
+            {
+                new Setter(ListBoxItem.PaddingProperty, new Thickness(8, 1, 8, 1)),
+                new Setter(ListBoxItem.MinHeightProperty, 0d),
+            },
+        });
+        return list;
+    }
+
+    // A changed-file row: the coloured status letter, then the path — the shape
+    // FileStatusListView already uses. The word ("new", "modified", …) that the port
+    // used to print in front of every path is not what upstream shows.
+    private static Control? BuildFileRow(object? item)
+    {
+        if (item is not WorkingDirFileRow row)
+        {
+            return null;
+        }
+
+        (string glyph, IBrush brush) = row.Status switch
+        {
+            "new" => ("A", AddedGlyph),
+            "deleted" => ("D", DeletedGlyph),
+            "renamed" => ("R", ModifiedGlyph),
+            "copied" => ("C", ModifiedGlyph),
+            "unmerged" => ("U", ConflictGlyph),
+            _ when row.Status.StartsWith('U') => ("U", ConflictGlyph),
+            _ => ("M", ModifiedGlyph),
+        };
+
+        StackPanel panel = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = glyph,
+            Foreground = brush,
+            FontFamily = Monospace,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = row.Path,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            FontFamily = Monospace,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return panel;
+    }
 
     // One file list under its toolbars. Upstream has no caption above either list — the
     // window title says what is being committed and the toolbars say the rest
