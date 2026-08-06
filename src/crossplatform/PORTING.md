@@ -3260,6 +3260,28 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M99 (2026-08-06) — le icone del dialogo di commit
+
+> Seconda passata sulla stessa segnalazione: «ci sono ancora differenze nel commit dialog (ad esempio
+> le icone che mancano)». Base `8ff9c4fe5`.
+
+Ogni pulsante di `FormCommit` ha una `Image` nel designer (`:331-799`: `Stage`, `Unstage`, `StageAll`,
+`UnstageAll`, `RepoStateClean`, `ArrowUp`, `stash`, `ResetWorkingDirChanges`, `WorkingDirChanges`,
+`CommitTemplates`, `BranchCreate`) e le righe dei file mostrano l'icona di stato; il port disegnava
+tutto a testo. Ora passano da `IconText.Header` con i **nomi asset di upstream**, i due pulsanti "all"
+scambiano l'icona con la variante `…Filtered` quando un filtro è attivo (upstream fa lo stesso: è
+l'unico segnale che "all" significa "i match"), e le righe disegnano l'icona di stato con la lettera
+colorata come fallback.
+
+Le liste vuote dicono **"There are no unstaged/staged changes"** in corsivo — `FileStatusList.NoFiles`.
+
+### Il set moderno era spaiato
+`Unstage` e `FileStatusModified` avevano un glifo vettoriale, i loro compagni no: nella stessa striscia
+un vettore stava accanto a una bitmap del 2015. Aggiunti `ListPlus` (`Stage`/`StageAll`) e i quattro
+stati mancanti (`FileStatusAdded`/`Removed`/`Renamed`/`Copied`/`Unknown`), disegnati dalle forme già
+presenti. Regola generale: **upstream distingue gli stati per COLORE** (più verde, meno rosso), il set
+moderno è monocromatico, quindi il segno sulla pagina deve portare il significato.
+
 ## M98 (2026-08-06) — il dialogo di commit allineato a `FormCommit`
 
 > Segnalazione dell'utente con screenshot dell'originale Windows: «nel commit dialog ci sono ancora
