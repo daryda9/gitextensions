@@ -49,6 +49,9 @@ public sealed class RevisionGridView : UserControl
     // handle stealing clicks from the header label next to it.
     private const double ResizeHandleWidth = 6;
 
+    /// <summary>Gap between a column's divider and the text in that column.</summary>
+    private const double ColumnTextInset = 6;
+
     // Size of the identicon square drawn inside the avatar cell (centred).
     private const double AvatarSize = 18;
 
@@ -6662,6 +6665,16 @@ public sealed class RevisionGridView : UserControl
         if (monospace)
         {
             block.FontFamily = new FontFamily("monospace,Consolas,Menlo");
+        }
+
+        // Air between a column divider and the text that starts right after it. Only the
+        // three columns that HAVE a divider on their left (author, date, commit id): the
+        // graph and the subject begin at the edge of the grid, where there is nothing to
+        // stand clear of. Applied here rather than at the call sites so a header cell and
+        // the row cells under it can never drift apart — they all come through here.
+        if (column >= 3)
+        {
+            block.Margin = new Thickness(ColumnTextInset, 0, 0, 0);
         }
 
         Grid.SetColumn(block, column);
