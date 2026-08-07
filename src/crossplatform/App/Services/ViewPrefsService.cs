@@ -24,6 +24,9 @@ public sealed class ViewPrefs
     /// <summary>Left repository-objects panel filters (see <see cref="LeftPanelPrefs"/>).</summary>
     public LeftPanelPrefs LeftPanel { get; set; } = new();
 
+    /// <summary>Revision-grid column widths (see <see cref="GridColumnPrefs"/>).</summary>
+    public GridColumnPrefs GridColumns { get; set; } = new();
+
     /// <summary>
     ///  Recently used advanced revision filters, most recent first, without
     ///  duplicates and capped at <see cref="ViewPrefsService.MaxRevisionFilterMru"/>.
@@ -153,6 +156,32 @@ public sealed class FileHistoryPrefs
 ///  are — <see cref="UiState"/>, written by <c>MainWindow.PersistLayout</c> — because
 ///  those are layout owned by the host window.</para>
 /// </summary>
+/// <summary>
+///  The widths the user dragged the revision grid's columns to.
+/// </summary>
+/// <remarks>
+///  <para>Only the fixed-width columns are here. The SUBJECT column has no width of its
+///  own — it takes whatever the others leave, which is upstream's arrangement too (its
+///  message column is the <c>Fill</c> one), so dragging any divider is what resizes the
+///  subject.</para>
+///
+///  <para>Here rather than in <c>UiState</c> for the reason on
+///  <see cref="ViewPrefsService"/>, and because a second grid exists: the file-history
+///  window builds one of its own, and it should open with the columns the user sized in
+///  the main window rather than with the defaults.</para>
+/// </remarks>
+public sealed class GridColumnPrefs
+{
+    /// <summary>Author column, 0 = never dragged (use the built-in default).</summary>
+    public double Author { get; set; }
+
+    /// <summary>Date column, 0 = never dragged.</summary>
+    public double Date { get; set; }
+
+    /// <summary>Commit-id column, 0 = never dragged.</summary>
+    public double Hash { get; set; }
+}
+
 public sealed class LeftPanelPrefs
 {
     /// <summary>Show the Branches category.</summary>

@@ -31,11 +31,22 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class RevisionGridView : UserControl
 {
-    // Shared column widths so the header and every row line up.
+    // Shared column widths so the header and every row line up. The three the user can
+    // drag start at these values and are remembered from then on (see ColumnWidths).
     private const double HashWidth = 90;
     private const double AvatarWidth = 28;
     private const double AuthorWidth = 170;
     private const double DateWidth = 130;
+
+    // A dragged column may not disappear, and the subject may not be squeezed out of
+    // existence by the columns to its right: the subject is the one that absorbs every
+    // drag, so without a floor a determined pull would leave the messages unreadable.
+    private const double MinColumnWidth = 40;
+    private const double MinSubjectWidth = 120;
+
+    // The grab strip on a column's left edge. 6px is what the eye can hit without the
+    // handle stealing clicks from the header label next to it.
+    private const double ResizeHandleWidth = 6;
 
     // Size of the identicon square drawn inside the avatar cell (centred).
     private const double AvatarSize = 18;
@@ -315,6 +326,17 @@ public sealed class RevisionGridView : UserControl
 
     // Column visibility toggles (the Subject column always stays — upstream has no
     // toggle for it either, it is the Fill column of the grid).
+    // Widths of the three columns the user can drag. Loaded from ViewPrefs on
+    // construction, written back when a drag ends (see BeginColumnResize).
+    private double _authorWidth = AuthorWidth;
+    private double _dateWidth = DateWidth;
+    private double _hashWidth = HashWidth;
+
+    // The header's own Grid, kept so a drag can move its column definitions live: the
+    // ROWS are re-templated only when the drag ends, which is what keeps a drag over a
+    // grid of thousands of rows smooth.
+    private Grid? _headerGrid;
+
     private bool _showGraph = true;    // "Show revision graph column"
     private bool _showHash = true;
     private bool _showAvatar = true;   // offline identicon avatar; default ON
@@ -598,6 +620,8 @@ public sealed class RevisionGridView : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
+        // Before the header is built: it is the header that carries the widths.
+        LoadColumnWidths();
         _headerHost = new ContentControl { Content = BuildHeader() };
 
         _search = new TextBox
@@ -4719,10 +4743,10 @@ public sealed class RevisionGridView : UserControl
     {
         // Hidden columns collapse to zero width; their content is simply not added
         // (see BuildHeader/BuildRow) so nothing overflows into the neighbouring cell.
-        double hash = _showHash ? HashWidth : 0;
+        double hash = _showHash ? _hashWidth : 0;
         double avatar = _showAvatar ? AvatarWidth : 0;
-        double author = _showAuthor ? AuthorWidth : 0;
-        double date = _showDate ? DateWidth : 0;
+        double author = _showAuthor ? _authorWidth : 0;
+        double date = _showDate ? _dateWidth : 0;
 
         // Columns: 0 graph, 1 subject (fills), 2 avatar, 3 author, 4 date, 5 hash.
         //
@@ -4768,6 +4792,29 @@ public sealed class RevisionGridView : UserControl
             AddCell(grid, 5, T("Commit ID"), B("App.TextDim"), bold: true);
         }
 
+        // A grab strip on the LEFT edge of each fixed column. Upstream's grid is a
+        // DataGridView, where resizable columns come for free and the message column is
+        // the Fill one; this port draws its own header, so the dividers are drawn too —
+        // over the same set of columns upstream lets the user drag (author, date and
+        // commit id; the graph and the avatar are fixed there as well, and the subject
+        // has no width of its own because it absorbs the others' — see MakeColumns).
+        if (_showAuthor)
+        {
+            grid.Children.Add(ResizeHandle(3, () => _authorWidth, width => _authorWidth = width));
+        }
+
+        if (_showDate)
+        {
+            grid.Children.Add(ResizeHandle(4, () => _dateWidth, width => _dateWidth = width));
+        }
+
+        if (_showHash)
+        {
+            grid.Children.Add(ResizeHandle(5, () => _hashWidth, width => _hashWidth = width));
+        }
+
+        _headerGrid = grid;
+
         return new Border
         {
             Background = B("App.Toolbar"),
@@ -4776,6 +4823,171 @@ public sealed class RevisionGridView : UserControl
             Padding = new Thickness(0, 3, 0, 3),
             Child = grid,
         };
+    }
+
+    /// <summary>
+    ///  The divider on a column's left edge: dragging it left widens that column and
+    ///  narrows the subject, dragging it right does the opposite.
+    ///
+    ///  <para><b>Why the left edge and not the right.</b> The subject is the column that
+    ///  gives and takes the space (it is the only <c>*</c> one), and it sits to the LEFT
+    ///  of the three fixed columns. A divider always resizes the column it belongs to
+    ///  against the one that absorbs, so it has to be on the side facing the subject.</para>
+    ///
+    ///  <para><b>Why the rows are not re-templated while dragging.</b> Every row is a
+    ///  Grid built from the same definitions, and rebuilding thousands of them per
+    ///  pointer move is not a drag, it is a slideshow. Only the header follows the
+    ///  pointer; the rows catch up in one rebind when the button is released, which is
+    ///  also when the width is written to the preferences.</para>
+    /// </summary>
+    private Control ResizeHandle(int column, Func<double> get, Action<double> set)
+    {
+        Border handle = new()
+        {
+            Width = ResizeHandleWidth,
+            HorizontalAlignment = HorizontalAlignment.Left,
+
+            // Straddling the boundary rather than sitting inside the column: half of the
+            // strip hangs over the neighbour, so the pointer finds it from either side.
+            Margin = new Thickness(-ResizeHandleWidth / 2, 0, 0, 0),
+
+            // Transparent, not null: a null background is not hit-testable, and the
+            // divider would be invisible to the pointer as well as to the eye.
+            Background = Brushes.Transparent,
+            Cursor = new Cursor(StandardCursorType.SizeWestEast),
+        };
+
+        double startWidth = 0;
+        double startX = 0;
+        bool dragging = false;
+
+        handle.PointerPressed += (_, e) =>
+        {
+            dragging = true;
+            startWidth = get();
+            startX = e.GetPosition(this).X;
+            e.Pointer.Capture(handle);
+            e.Handled = true;
+        };
+
+        handle.PointerMoved += (_, e) =>
+        {
+            if (!dragging)
+            {
+                return;
+            }
+
+            // Leftwards is wider, hence the reversed subtraction.
+            double wanted = startWidth + (startX - e.GetPosition(this).X);
+            set(ClampColumnWidth(column, get(), wanted));
+            ApplyHeaderWidths();
+        };
+
+        handle.PointerReleased += (_, e) =>
+        {
+            if (!dragging)
+            {
+                return;
+            }
+
+            dragging = false;
+            e.Pointer.Capture(null);
+
+            // One rebind for the whole drag, then the widths are the user's for good.
+            RebindRows(preserveViewport: true);
+            PersistColumnWidths();
+        };
+
+        Grid.SetColumn(handle, column);
+        return handle;
+    }
+
+    /// <summary>
+    ///  Keeps a dragged width between "still visible" and "the subject is still
+    ///  readable": the subject absorbs every pixel the other columns take, so the ceiling
+    ///  is whatever it can give up before hitting its own floor.
+    /// </summary>
+    private double ClampColumnWidth(int column, double current, double wanted)
+    {
+        double subject = _headerGrid is { } grid && grid.ColumnDefinitions.Count > 1
+            ? grid.ColumnDefinitions[1].ActualWidth
+            : 0;
+
+        double ceiling = subject > 0
+            ? current + Math.Max(0, subject - MinSubjectWidth)
+            : double.MaxValue;
+
+        return Math.Clamp(wanted, MinColumnWidth, Math.Max(MinColumnWidth, ceiling));
+    }
+
+    /// <summary>Moves the header's own definitions, mid-drag, without touching the rows.</summary>
+    private void ApplyHeaderWidths()
+    {
+        if (_headerGrid is not { } grid || grid.ColumnDefinitions.Count < 6)
+        {
+            return;
+        }
+
+        if (_showAuthor)
+        {
+            grid.ColumnDefinitions[3].Width = new GridLength(_authorWidth);
+        }
+
+        if (_showDate)
+        {
+            grid.ColumnDefinitions[4].Width = new GridLength(_dateWidth);
+        }
+
+        if (_showHash)
+        {
+            grid.ColumnDefinitions[5].Width = new GridLength(_hashWidth);
+        }
+    }
+
+    /// <summary>
+    ///  Remembers the widths. Upstream does NOT — its columns are re-created at their
+    ///  hard-coded defaults on every start — and that is a difference on purpose: a width
+    ///  the user dragged is a decision, and losing it at every launch is the kind of
+    ///  small betrayal the port has been removing everywhere else.
+    /// </summary>
+    private void PersistColumnWidths()
+    {
+        try
+        {
+            new Services.ViewPrefsService().Update(prefs => prefs.GridColumns = new Services.GridColumnPrefs
+            {
+                Author = _authorWidth,
+                Date = _dateWidth,
+                Hash = _hashWidth,
+            });
+        }
+        catch (Exception)
+        {
+            // A width is not worth a crash; the session keeps the dragged value anyway.
+        }
+    }
+
+    /// <summary>
+    ///  Reads back what the last drag stored. A zero (or absurd) value means "never
+    ///  dragged", so the built-in default stands — which is also what a hand-edited or
+    ///  truncated preferences file lands on.
+    /// </summary>
+    private void LoadColumnWidths()
+    {
+        try
+        {
+            Services.GridColumnPrefs prefs = new Services.ViewPrefsService().Load().GridColumns;
+            _authorWidth = Sane(prefs.Author, AuthorWidth);
+            _dateWidth = Sane(prefs.Date, DateWidth);
+            _hashWidth = Sane(prefs.Hash, HashWidth);
+        }
+        catch (Exception)
+        {
+            // Defaults are already in the fields.
+        }
+
+        static double Sane(double stored, double fallback)
+            => stored >= MinColumnWidth && stored <= 2000 ? stored : fallback;
     }
 
     private Control BuildRow(RevisionRow? row)
