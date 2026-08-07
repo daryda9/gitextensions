@@ -3311,6 +3311,13 @@ guardando proprio quella griglia. Ogni presa ora porta un **filo da 1px** in `Ap
 confine è disegnato dove si può afferrare, e il filo diventa `App.Accent` **al passaggio del
 puntatore**: il segno dice «qui c'è un divisore», l'accensione dice «questo è vivo».
 
+Poi, sempre su segnalazione: col filo disegnato, etichetta e valori partivano **attaccati** ad esso
+(`|Author`, `|daryda9`), che si legge come un bordo attorno al testo invece che come un confine fra
+colonne. Ora **6px di margine** su ogni cella delle tre colonne che hanno un divisore a sinistra,
+messi dentro `AddCell` e non ai punti di chiamata, così intestazione e righe non possono
+disallinearsi: passano tutte di lì. Grafo e subject restano attaccati al bordo della griglia, dove non
+c'è niente da cui scostarsi.
+
 ### Verifica
 Su Xvfb: trascinando il divisore dell'autore di 90px a sinistra la colonna si allarga e il subject si
 stringe **sia nell'intestazione sia nelle righe**; trascinando quello del commit id molto a sinistra
