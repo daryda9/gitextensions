@@ -3260,6 +3260,46 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M109 (2026-08-07, `7fcf2204e`) — pulsanti pieni e menu con la forma di VS Code
+
+> Dall'utente: «1) ci sono ancora dei pulsanti con i bordi bianchi all'interno della finestra di
+> commit; 2) allinea lo stile della toolbar e relativi menu a tendina (nello stile modern) con quello
+> di questa immagine … gli spaziatori arrivano fino ai lati del menu, le selezioni sono arrotondate
+> con del padding, il bordo della finestra sembra più spesso e quasi sfumato». Con screenshot di VS Code.
+
+Entrambe le cose sono **solo Modern**: lo stile Classic tiene la cornice, che è ciò che deve essere.
+
+### 1. I pulsanti azione del dialogo di commit
+Portavano ancora il contorno a 3:1 che la tavolozza moderna assegna a un bottone **sopra una
+toolbar**, dove riempimento e fondo sono lo stesso colore e il bordo è l'unica cosa che dice dov'è il
+bottone. Su un dialogo non è così: il riempimento **già** differisce dal fondo, quindi il bordo era
+cinque rettangoli pallidi in colonna e nient'altro. `BarButtonStyles` guadagna il ramo `actionbtn` —
+niente bordo, riempimento alzato di un gradino a `App.PanelAlt`, `App.Hover`/`App.Pressed` sugli
+stati — e il dialogo lo mette sulle **proprie** azioni (non sui bottoni piatti della striscia
+stage/unstage, che sono un'altra cosa). Misurato: **1970** pixel di grigio-bordo in quella colonna
+prima, **0** dopo.
+
+### 2. I menu
+Tre regole che dipendono l'una dall'altra:
+- l'evidenziazione è una **pillola arrotondata rientrata** dal bordo del popup, non una fascia a
+  tutta larghezza;
+- i **separatori annullano** quel rientro e sono l'unica cosa che arriva ai due lati;
+- il popup è una **carta arrotondata** con un'ombra morbida sotto.
+
+La carta del menu a tendina di un `Menu` sta dentro `PART_Popup` del template di `MenuItem` e **non ha
+nome**: si seleziona come «il Border di un MenuItem che *non* è `PART_LayoutRoot`», l'unico altro
+bordo di quel template. L'ombra ha bisogno di spazio in cui disegnarsi — la superficie di un popup è
+dimensionata sul contenuto e la taglierebbe — e il margine che glielo dà sposta la carta di 4px dal
+suo ancoraggio, che è poi quello che fa anche il riferimento.
+
+### Verifica
+Su Xvfb in **modern scuro**, **modern chiaro** e **classic**: pillola e separatori a tutta larghezza
+ci sono sia nelle tendine della barra dei menu sia nei flyout della toolbar, in entrambe le
+tavolozze; il classic è **invariato** (voci quadrate a tutta larghezza, separatori rientrati, bottoni
+incorniciati). **Non verificabile headless**: ombra e angoli arrotondati richiedono un compositor, che
+Xvfb non ha — senza, semplicemente non compaiono (degradazione documentata su `PopupShadowRoom`).
+Harness PASS, build `Avvisi: 0`.
+
 ## M108 (2026-08-07, `736a6ed6d` + `5c5d76c7c`) — allineamento con `upstream/master` e fix portati
 
 > Dall'utente: «vedi cosa hanno fatto nei commit del master e sincronizzalo a quello nostro,
