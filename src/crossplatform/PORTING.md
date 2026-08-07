@@ -3260,6 +3260,56 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M114 (2026-08-07, `571b87864`) — colonne della griglia ridimensionabili
+
+> Dall'utente: «rendi le colonne della home screen di subject, author e date ridimensionabili (vedi
+> se lo sono anche le altre nel programma originale)».
+
+### Com'è in originale (verificato)
+La griglia è una `DataGridView`, quindi il ridimensionamento arriva gratis: `AllowUserToResizeColumns`
+**non è impostato da nessuna parte** e resta al default `true`; sono i singoli provider a tirarsi
+fuori.
+
+| Colonna | Ridimensionabile | Larghezza di default |
+|---|---|---|
+| Grafo | **no** (`TriState.False`) | calcolata dalle corsie |
+| Subject/messaggio | sì — ed è la colonna **Fill** | 500 |
+| Note | sì | 50 |
+| Avatar | **no** | forzata all'altezza della riga a ogni paint |
+| Autore | sì | 130 |
+| Data | sì | 130 (o la misura di una data completa) |
+| Commit ID | sì (`TriState.True` esplicito) | 60, con tetto = larghezza di uno SHA intero |
+| Build status | solo in modalità testo | 150 / 16 |
+
+Minimi 25px (32 per l'id). **Le larghezze NON sono persistite**: a ogni avvio le colonne sono
+ricreate ai default. L'ultima colonna visibile ridimensionabile viene inoltre resa *non*
+ridimensionabile perché si allunghi con la griglia.
+
+### Cosa abbiamo fatto
+Il port disegna la propria intestazione, quindi i divisori vanno disegnati anche loro: una **striscia
+di presa da 6px** a cavallo del bordo **sinistro** delle colonne autore, data e commit id — lo stesso
+insieme che l'originale lascia trascinare, grafo e avatar esclusi. Il **subject non ha una larghezza
+propria** né qui né là: è la colonna che dà e prende lo spazio (l'unica `*`), ed è per questo che i
+divisori stanno dal lato che le dà le spalle e che trascinarne uno **è** ridimensionare il subject.
+
+Due pavimenti: **40px** per una colonna trascinata e **120px** per il subject, il cui margine di
+manovra è il tetto di ogni trascinamento. Senza il secondo, una tirata decisa rendeva i messaggi
+illeggibili.
+
+Durante il trascinamento segue il puntatore **solo l'intestazione**; le righe vengono ri-templatizzate
+una volta sola, al rilascio: ogni riga è una Grid costruita dalle stesse definizioni, e ricostruirne
+migliaia a ogni movimento del puntatore non è un drag, è una presentazione a diapositive.
+
+**Le larghezze si ricordano** (`ViewPrefs.GridColumns`). L'originale no — ricrea le colonne ai default
+a ogni avvio — ed è una differenza voluta: una larghezza trascinata è una decisione. La griglia della
+finestra File history legge le stesse preferenze, quindi si apre come l'hai lasciata.
+
+### Verifica
+Su Xvfb: trascinando il divisore dell'autore di 90px a sinistra la colonna si allarga e il subject si
+stringe **sia nell'intestazione sia nelle righe**; trascinando quello del commit id molto a sinistra
+ci si ferma col subject al suo pavimento invece di schiacciarlo; le larghezze **sopravvivono al
+riavvio** (stanno in `view-prefs.json`). Build `Avvisi: 0`, harness PASS.
+
 ## M113 (2026-08-07, `10614aa03`) — la storia di un file in una finestra sua, come in originale
 
 > Dall'utente: «la scheda "file history" in basso, nel programma originale è una schermata a parte,
