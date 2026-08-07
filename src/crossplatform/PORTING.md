@@ -3260,6 +3260,70 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M113 (2026-08-07, `10614aa03`) — la storia di un file in una finestra sua, come in originale
+
+> Dall'utente: «la scheda "file history" in basso, nel programma originale è una schermata a parte,
+> controlla quando e come viene avviata e che struttura ha nel progetto originale, quindi sviluppa
+> anche nella nostra dopo aver analizzato accuratamente».
+
+### Cosa fa l'originale (analisi)
+`StartFileHistoryDialog` (`IGitUICommands.cs:75`) **non costruisce la form**: lancia un **processo
+separato** di Git Extensions con una riga di comando `filehistory`/`blamehistory`
+(`GitUICommands.cs:1278-1308`). I chiamanti sono il menu contestuale di `FileStatusList`
+("File &history", "Blame"), il doppio clic sulla lista file, `RevisionDiffControl`,
+`FormResolveConflicts` e l'estensione shell di Windows; le scorciatoie **H** e **B** appartengono a
+`RevisionDiffControl`, non alla form.
+
+`FormFileHistory` (748×444, `Designer.cs`) è: barra dei filtri in alto, poi uno split orizzontale con
+**la griglia delle revisioni del file** sopra e sotto un tab control di **quattro** schede —
+**Commit** (`CommitDiff`), **Diff** (`FileViewer` limitato al file), **View** (il blob a quella
+revisione), **Blame** (`BlameControl`). Nessuna barra di stato. `UpdateSelectedFileViewers` carica
+**solo la scheda visibile** e ricarica al cambio di selezione *o* di scheda. Il titolo è
+`File History - <path> [(<nome storico>)] - <working dir>`.
+
+Nota trovata nell'analisi: dal default `UseBrowseForFileHistory = true`, l'app moderna apre in realtà
+`FormBrowse` in modalità file-history; `FormFileHistory` è il percorso legacy — ed è quello che
+descrive la *schermata a parte* chiesta.
+
+### Cosa abbiamo fatto
+Nuova `Views/FileHistoryWindow`: sopra la `FileHistoryView` esistente (griglia, "Detect and follow
+renames", "Show Full History" — invariata), sotto le **quattro schede** di upstream su
+`CommitDetailView`, `DiffView`, la nuova `FileContentView` e `BlameView`. Caricamento **pigro per
+scheda e per revisione** come `UpdateSelectedFileViewers`. Non modale, Escape chiude, titolo composto
+come `SetTitle`.
+
+**I rename sono il motivo per cui il nome storico gira ovunque**: chiedere a git il path di oggi in un
+commit vecchio non restituisce niente. Ogni viewer riceve `GetFileNameForRevision`, e il titolo mette
+il vecchio nome tra parentesi quando se ne attraversa uno.
+
+Due pezzi di supporto (scritti da due subagent in parallelo, su file distinti):
+- `DiffView.ShowCommit(repo, hash, preselectPath)` — la scheda Diff si apre **sul file** della
+  finestra e non sulla prima modifica del commit (quella di upstream è file-scoped);
+- `Views/FileContentView` — il blob alla revisione, letto con `DiffTextService.GetFileBytesAsync` e
+  la stessa codifica del pannello diff, con gutter dei numeri di riga, guardia sul binario e guardia
+  di generazione contro un caricamento vecchio che atterra sopra uno nuovo.
+
+**La scheda "File history" in basso non c'è più**: la aprono la finestra tutti i punti d'ingresso —
+menu del pannello diff, menu e **doppio clic** dell'albero dei file, Ctrl+Shift+F, e le voci
+File history / Blame del dialogo di commit. Un `ui-state.json` vecchio che contiene `"History"`
+ripiega su Commit. Le due finestrelle ad hoc del dialogo di commit collassano in questa — che è poi
+quello che fa upstream: `filehistory` e `blamehistory` sono **la stessa form** aperta su una scheda
+diversa. La griglia della finestra riceve i comandi di commit e il gate del bisect della griglia
+principale attraverso una lista che l'host ora registra, perché una griglia può nascere **dopo** che
+il menu è stato costruito.
+
+### Verifica
+Su Xvfb, repo di prova con un rename (`a.txt` → `b.txt`): la finestra si apre dal menu del diff e dal
+doppio clic nell'albero; il titolo è `File History - b.txt - /tmp/m113/repo` e diventa
+`b.txt (a.txt)` su un commit **precedente** al rename; su quel commit **Diff** si apre con `a.txt`
+selezionato e la sua patch, **View** mostra le quattro righe di `a.txt` a quella revisione, **Blame**
+fa blame di `a.txt`, **Commit** descrive il commit. Nessuna eccezione, nessuna riga `[Async]`.
+Harness PASS, build `Avvisi: 0`.
+
+**Non verificato**, da guardare quando capita: il caso "il file non esiste in questa revisione"
+(schede Diff/View/Blame disabilitate e suffisso di upstream sulla scheda Commit) — la storia di prova
+non ha un commit in cui il file manchi.
+
 ## M112 (2026-08-07, `0cba58207`) — il menu che scorre risponde alla rotella e al puntatore
 
 > Dall'utente: «non funziona bene lo scroll, ad esempio con il touchpad funziona male se vado su o
