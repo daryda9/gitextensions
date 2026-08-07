@@ -118,8 +118,21 @@ public sealed class UiState
     /// side (split view on) instead of the diff in its own tab.</summary>
     public bool SplitView { get; set; }
 
-    /// <summary>"Light" or "Dark".</summary>
-    public string Theme { get; set; } = "Dark";
+    /// <summary>
+    ///  "System", "Light" or "Dark". "System" — the default — follows the desktop's own
+    ///  light/dark preference for as long as the app runs (see
+    ///  <see cref="GitExtensions.Avalonia.Theming.SystemTheme"/>); the other two are
+    ///  explicit answers that never move.
+    /// </summary>
+    public string Theme { get; set; } = GitExtensions.Avalonia.Theming.SystemTheme.Name;
+
+    /// <summary>
+    ///  What the desktop preferred ("Light" or "Dark") when this app last exited — an
+    ///  observation, not a setting, and never shown in the UI. It seeds the first window
+    ///  of the next run while the platform's real answer is still on its way, which is
+    ///  what stops a dark desktop from flashing white at startup.
+    /// </summary>
+    public string SystemThemeSeen { get; set; } = "Dark";
 
     /// <summary>
     ///  Which visual style the surface uses: "Modern" (the M77 vector icons and
@@ -319,7 +332,11 @@ public sealed class UiStateService
         // values older builds wrote.
         (s.RevisionsStar, s.BottomStar) = NormalizeSplit(s.RevisionsStar, s.BottomStar, 0.6);
         (s.DetailStar, s.DiffStar) = NormalizeSplit(s.DetailStar, s.DiffStar, 0.4);
-        s.Theme = s.Theme == "Light" ? "Light" : "Dark";
+        // Three values now; anything else lands on "System", which is what a fresh
+        // install gets and what a hand-edited file should fall back to — following the
+        // desktop is never wrong, where a hard "Dark" can contradict it.
+        s.Theme = s.Theme is "Light" or "Dark" ? s.Theme : GitExtensions.Avalonia.Theming.SystemTheme.Name;
+        s.SystemThemeSeen = s.SystemThemeSeen == "Light" ? "Light" : "Dark";
         s.Style = s.Style == "Classic" ? "Classic" : "Modern";
         // Round-tripped through the enum, so an unknown or hand-edited name lands on
         // "Standard" rather than reaching the zoom (see UiSizes.Parse). This round trip is

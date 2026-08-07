@@ -117,6 +117,11 @@ public sealed class MainMenu : UserControl
     public event Action? LightThemeRequested;
     public event Action? DarkThemeRequested;
 
+    // The third theme value: follow the desktop's own light/dark preference, and keep
+    // following it (see Theming/SystemTheme). A choice like the other two, so it sits
+    // in the same block rather than in Settings only.
+    public event Action? SystemThemeRequested;
+
     // The visual style is a second, orthogonal appearance dimension: it picks the
     // icon set and neutral ramp, and does not touch the light/dark choice above.
     public event Action? ClassicStyleRequested;
@@ -466,6 +471,7 @@ public sealed class MainMenu : UserControl
         // Upstream's label is "Language (restart required)"; here it is not, so the
         // group-box caption ("&Language") is the honest key to reuse.
         view.Items.Add(GroupHeader(T("AppearanceSettingsPage/$this.Text", "Appearance")));
+        view.Items.Add(Item(null, "System theme", null, () => SystemThemeRequested?.Invoke()));
         view.Items.Add(Item(null, "Light theme", null, () => LightThemeRequested?.Invoke()));
         view.Items.Add(Item(null, "Dark theme", null, () => DarkThemeRequested?.Invoke()));
         view.Items.Add(Item(null, "Classic style", null, () => ClassicStyleRequested?.Invoke()));

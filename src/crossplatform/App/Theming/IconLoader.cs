@@ -400,11 +400,22 @@ internal sealed class GlyphSource : IImage
     ///  probes.</para>
     /// </summary>
     private IBrush? Accent()
-        => ThemeManager.ColoredIcons
-            && string.Equals(_tintKey, Icons.Text, StringComparison.Ordinal)
-            && Icons.AccentOf(_name) is { } key
-                ? Icons.Tint(key)
-                : null;
+        => Accented && Icons.AccentOf(_name) is { } key
+            ? Icons.Tint(key)
+            : null;
+
+    // The two conditions Accent() and Parts() share: colouring is on and the call site
+    // did not ask for a tint that is itself meaning (see Accent's remarks).
+    private bool Accented
+        => ThemeManager.ColoredIcons && string.Equals(_tintKey, Icons.Text, StringComparison.Ordinal);
+
+    /// <summary>
+    ///  The bicoloured parts of this glyph, under the same conditions that earn it an
+    ///  accent: a glyph forced to a meaning-carrying tint stays in that one colour, and
+    ///  with colouring off the whole set is monochrome by definition.
+    /// </summary>
+    private IReadOnlyList<(Geometry Geometry, string Key)>? Parts()
+        => Accented ? Icons.PartsOf(_name) : null;
 
     public void Draw(DrawingContext context, Rect sourceRect, Rect destRect)
     {
@@ -450,8 +461,30 @@ internal sealed class GlyphSource : IImage
         using (context.PushClip(destRect))
         using (context.PushTransform(transform))
         {
+            // A bicoloured glyph is the same strokes in the same place, drawn a part at
+            // a time so each can take its own hue; a part whose key is missing from the
+            // palette falls back to the pen the whole glyph would have used, so a
+            // half-registered palette still draws a complete icon.
+            if (Parts() is { } parts)
+            {
+                foreach ((Geometry geometry, string key) in parts)
+                {
+                    context.DrawGeometry(null, PartPen(key, pen), geometry);
+                }
+
+                return;
+            }
+
             context.DrawGeometry(null, pen, _geometry);
         }
     }
+
+    // The pen for one part of a bicoloured glyph: the palette brush for its key, at the
+    // same width and joins as the monochrome pen, so the parts assemble into exactly
+    // the glyph the single geometry would have drawn.
+    private static Pen PartPen(string key, Pen fallback)
+        => Icons.Tint(key) is { } brush
+            ? new Pen(brush, Stroke, lineCap: PenLineCap.Round, lineJoin: PenLineJoin.Round)
+            : fallback;
 }
 

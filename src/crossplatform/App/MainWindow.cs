@@ -749,6 +749,12 @@ public sealed class MainWindow : Theming.ZoomWindow
             _uiState.LeftPanelCollapsed = !_tree.IsVisible;
             _uiState.TreeWidth = _tree.IsVisible ? _treeCol.Width.Value : _treeWidthBeforeCollapse;
             _uiState.CommitInfoPosition = _commitInfoPosition.ToString();
+
+            // What the desktop preferred this run, so the next one can paint its first
+            // window in that variant instead of waiting for the portal (see
+            // Theming/SystemTheme). Saved whatever the theme setting is: it is an
+            // observation, not a choice.
+            _uiState.SystemThemeSeen = Theming.SystemTheme.LastSeenName;
             _uiState.LastRepoPath = _repoPath;
             // The two splits go out as the raw star weights the grid holds, which after a
             // GridSplitter drag are pixel magnitudes (Avalonia rewrites a dragged star
@@ -1367,6 +1373,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         // Theme and style are orthogonal, so each handler changes only its own
         // dimension in _uiState and then re-applies BOTH from it: whichever of the
         // two the user did not touch keeps the value it had.
+        _menu.SystemThemeRequested += () => SetAppearance(theme: Theming.SystemTheme.Name);
         _menu.LightThemeRequested += () => SetAppearance(theme: "Light");
         _menu.DarkThemeRequested += () => SetAppearance(theme: "Dark");
         _menu.ClassicStyleRequested += () => SetAppearance(style: "Classic");
@@ -3726,8 +3733,12 @@ public sealed class MainWindow : Theming.ZoomWindow
     // The two appearance dimensions live side by side in UiState as strings; these
     // turn them into what ThemeManager takes. Anything unrecognised falls back to the
     // same defaults UiStateService normalises to.
+    //
+    // The theme has THREE stored values, not two: "System" resolves to whatever the
+    // desktop prefers right now (see Theming/SystemTheme), so the mapping is that
+    // class's job and not a second copy of the strings here.
     private static ThemeVariant VariantOf(string theme)
-        => theme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark;
+        => Theming.SystemTheme.VariantOf(theme);
 
     private static Theming.AppStyle StyleOf(string style)
         => style == "Classic" ? Theming.AppStyle.Classic : Theming.AppStyle.Modern;
@@ -3740,6 +3751,13 @@ public sealed class MainWindow : Theming.ZoomWindow
         // already on screen, and at startup there are none — Apply is what the first
         // window is built under.
         Theming.ThemeManager.SetColoredIcons(_uiState.ColoredIcons);
+
+        // Before the Apply too: Follow only arms the subscription, and the variant the
+        // first window is built under is the one Apply below puts in place. The seed is
+        // what makes that first variant right on a desktop whose preference reaches us
+        // asynchronously (see Theming/SystemTheme).
+        Theming.SystemTheme.Seed(_uiState.SystemThemeSeen);
+        Theming.SystemTheme.Follow(_uiState.Theme == Theming.SystemTheme.Name);
         Theming.ThemeManager.Apply(VariantOf(_uiState.Theme), StyleOf(_uiState.Style));
     }
 

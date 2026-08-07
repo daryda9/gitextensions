@@ -491,7 +491,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _theme = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
 
         // "Dark" and "Light" have no upstream trans-unit and read the same in most
-        // languages, so they are plain items.
+        // languages, so they are plain items. "System" is first because it is the
+        // default: it follows the desktop's light/dark preference and keeps following
+        // it, where the other two are explicit and final (see Theming/SystemTheme).
+        _theme.Items.Add(new ComboBoxItem { Content = "System" });
         _theme.Items.Add(new ComboBoxItem { Content = "Dark" });
         _theme.Items.Add(new ComboBoxItem { Content = "Light" });
         _theme.SelectionChanged += (_, _) => PreviewAppearance();
@@ -697,8 +700,9 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             TranslationService.LanguageChanged -= OnLanguageChanged;
             if (!_applied)
             {
+                SystemTheme.Follow(_revertTheme == SystemTheme.Name);
                 ThemeManager.Apply(
-                    _revertTheme == "Light" ? ThemeVariant.Light : ThemeVariant.Dark,
+                    SystemTheme.VariantOf(_revertTheme),
                     _revertStyle == "Classic" ? AppStyle.Classic : AppStyle.Modern);
                 UiScaling.Apply(_revertUiSize);
                 ThemeManager.SetColoredIcons(_revertColoredIcons);
@@ -842,7 +846,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         // Theme and style: the pair the dialog previews from, and the pair Cancel
         // restores to.
-        _theme.SelectedIndex = ui.Theme == "Light" ? 1 : 0;
+        _theme.SelectedIndex = Math.Max(0, Array.IndexOf(ThemeTokens, ui.Theme));
         _style.SelectedIndex = ui.Style == "Classic" ? 1 : 0;
 
         // The size the dialog previews from, and the one Cancel returns to. Read from
@@ -957,7 +961,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // are read from the combos and passed together, so changing one never resets the
     // other — the two are orthogonal and all four combinations are reachable.
     private void PreviewAppearance()
-        => ThemeManager.Apply(SelectedVariant, SelectedStyle);
+    {
+        // The preview arms the following too, so picking "System" and then changing the
+        // desktop's preference behaves exactly as it will once applied — and picking
+        // Dark or Light disarms it, which is what makes the preview honest.
+        SystemTheme.Follow(SelectedTheme == SystemTheme.Name);
+        ThemeManager.Apply(SelectedVariant, SelectedStyle);
+    }
 
     // Live, like the theme and the style: the size is a theme resource read through a
     // dynamic reference, so every open window re-reads it — this dialog included, which
@@ -971,8 +981,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private UiSize SelectedUiSize
         => UiSizes.All[Math.Max(0, _uiSize.SelectedIndex)];
 
-    private ThemeVariant SelectedVariant
-        => _theme.SelectedIndex == 1 ? ThemeVariant.Light : ThemeVariant.Dark;
+    // The stored UiState.Theme values, in the order the combo lists them. One table for
+    // both directions: the load reads an index out of it, the apply reads the token
+    // back, so the two can never drift.
+    private static readonly string[] ThemeTokens = [SystemTheme.Name, "Dark", "Light"];
+
+    private string SelectedTheme => ThemeTokens[Math.Max(0, _theme.SelectedIndex)];
+
+    private ThemeVariant SelectedVariant => SystemTheme.VariantOf(SelectedTheme);
 
     private AppStyle SelectedStyle
         => _style.SelectedIndex == 1 ? AppStyle.Classic : AppStyle.Modern;
@@ -1077,13 +1093,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         bool autoRefresh = _autoRefresh.IsChecked == true;
 
         UiState ui = _uiStateService.Load();
-        ui.Theme = _theme.SelectedIndex == 1 ? "Light" : "Dark";
+        ui.Theme = SelectedTheme;
         ui.Style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
         ui.UiSize = UiSizes.Name(SelectedUiSize);
         ui.ColoredIcons = _coloredIcons.IsChecked == true;
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
+        SystemTheme.Follow(ui.Theme == SystemTheme.Name);
         ThemeManager.Apply(SelectedVariant, SelectedStyle);
         UiScaling.Apply(SelectedUiSize);
         ThemeManager.SetColoredIcons(ui.ColoredIcons);

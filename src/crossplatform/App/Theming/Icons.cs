@@ -687,13 +687,119 @@ internal static class Icons
         ["BranchLocal"] = Cyan,
         ["LocalBranchRoot"] = Cyan,
         ["SelectBranch"] = Cyan,
-        ["WorkTree"] = Cyan,
-        ["SubmodulesManage"] = Cyan,
         ["NavigateUp"] = Cyan,
-        ["SubmodulesUpdate"] = Cyan,
-        ["SubmodulesSync"] = Cyan,
-        ["FolderSubmodule"] = Cyan,
+
+        // The worktree is green, not cyan: it is the one structural ref that is a
+        // checked-out directory of its own, and green is what tells it apart from the
+        // branch it points at (which is cyan) at a glance in the toolbar.
+        ["WorkTree"] = Green,
+
+        // The submodule glyph is bicoloured — see Parts — so its entry here is only the
+        // fallback for the paths that cannot draw parts: the classic PNGs ignore
+        // accents, and a single key is what an unsplit copy of the glyph would use.
+        ["SubmodulesManage"] = Amber,
+        ["SubmodulesUpdate"] = Amber,
+        ["SubmodulesSync"] = Amber,
+        ["FolderSubmodule"] = Amber,
+
+        // ---- the bottom tab strip -------------------------------------------------
+        // Commit is already green above (it shares CommitSummary's role). The rest get
+        // the role their content has, with no two ADJACENT tabs sharing a hue, so the
+        // strip reads as a row of distinct things rather than a gradient:
+        // Commit(green) Diff(blue) File tree(amber) GPG(purple) Console(cyan)
+        // Output(blue) Blame(amber) File history(purple).
+        ["Diff"] = Blue,
+        ["FileTree"] = Amber,
+        ["DocumentTree"] = Amber,
+        ["Key"] = Purple,
+        ["Console"] = Cyan,
+        ["cmd"] = Cyan,
+        ["GitCommandLog"] = Blue,
+        ["Blame"] = Amber,
+        ["Author"] = Amber,
+        ["User80"] = Amber,
+        ["FileHistory"] = Purple,
     };
+
+    // ---- bicoloured glyphs ----------------------------------------------------
+    //
+    // A handful of glyphs say more with two hues than the shape alone does, and the
+    // submodule boxes are the case: three squares, one of which is the SUPER-project
+    // and two of which are the modules hanging off it. One colour makes them three
+    // equal boxes; amber for the parent and green for the children is the containment
+    // the name means.
+    //
+    // Split as path data rather than as a second geometry so the parts stay the same
+    // transcription as the whole (the concatenation of the parts IS the glyph), and
+    // drawn with the same pen, so a bicoloured icon is indistinguishable from a
+    // monochrome one in weight and alignment.
+    private const string BoxesParent = "M9 3.5h6v6H9z";
+    private const string BoxesChildren = "M3.5 14h6v6h-6z M14.5 14h6v6h-6z";
+    private const string BoxesLinks = "M12 9.5V12 M6.5 14v-2h11v2";
+
+    private static readonly (string Data, string Key)[] SubmoduleParts =
+    [
+        // The connectors first, so the boxes' round joins draw over them rather than
+        // under: they are the plumbing, and they take the neutral ink because they
+        // belong to neither end.
+        (BoxesLinks, Text),
+        (BoxesParent, Amber),
+        (BoxesChildren, Green),
+    ];
+
+    private static readonly Dictionary<string, (string Data, string Key)[]> Parts =
+        new(StringComparer.Ordinal)
+        {
+            ["SubmodulesManage"] = SubmoduleParts,
+            ["SubmodulesUpdate"] = SubmoduleParts,
+            ["SubmodulesSync"] = SubmoduleParts,
+            ["FolderSubmodule"] = SubmoduleParts,
+        };
+
+    /// <summary>
+    ///  The bicoloured parts of an icon, each with its own accent key, or
+    ///  <see langword="null"/> when the glyph is monochrome and the single
+    ///  <see cref="AccentOf"/> key applies to all of it.
+    ///
+    ///  <para>Geometries are parsed once and cached like <see cref="Get"/>'s: a part
+    ///  that fails to parse drops the whole name back to the monochrome path rather
+    ///  than drawing a glyph with a piece missing.</para>
+    /// </summary>
+    internal static IReadOnlyList<(Geometry Geometry, string Key)>? PartsOf(string name)
+    {
+        if (!Parts.TryGetValue(name, out (string Data, string Key)[]? parts))
+        {
+            return null;
+        }
+
+        return ParsedParts.GetOrAdd(name, _ =>
+        {
+            List<(Geometry, string)> parsed = new(parts.Length);
+            foreach ((string data, string key) in parts)
+            {
+                try
+                {
+                    parsed.Add((StreamGeometry.Parse(data), key));
+                }
+                catch (Exception ex)
+                {
+                    if (Reported.TryAdd($"{name}#parts", 0))
+                    {
+                        string line = $"[Icons] bicoloured glyph '{name}' failed to parse: {ex.Message}";
+                        Console.WriteLine(line);
+                        Debug.WriteLine(line);
+                    }
+
+                    return null;
+                }
+            }
+
+            return parsed;
+        });
+    }
+
+    private static readonly ConcurrentDictionary<string, List<(Geometry Geometry, string Key)>?> ParsedParts =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     ///  The accent palette key for an icon name, or <see langword="null"/> when the
