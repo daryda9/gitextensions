@@ -384,6 +384,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // Installed on the window itself, before the buttons are built.
         Theming.BarButtonStyles.Apply(Styles);
 
+        // The dialog's own action buttons (Commit, Commit & push, the two resets, the
+        // stash) are not on a bar: they get a raised fill instead of an outline.
+        // Modern only — the framed button IS the classic look, and the dialog is built
+        // fresh on every opening, so the check is made at the right moment.
+        if (Theming.ThemeManager.CurrentStyle == Theming.AppStyle.Modern)
+        {
+            Theming.BarButtonStyles.ApplyActions(Styles);
+        }
+
         // ---- RIGHT: diff view ----
         _diffView = new SelectableTextBlock
         {
@@ -709,6 +718,16 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _templatesBtn.Click += (_, _) => Async.Run(() => ShowTemplatesMenuAsync(_templatesBtn), "opening the commit-template menu");
 
         _createBranchBtn = MakeButton(() => Async.Run(PromptCreateBranchAsync, "creating a branch"));
+
+        // The dialog's actions, as opposed to the flat strip buttons above them: a
+        // raised fill and no outline (Theming/BarButtonStyles.ApplyActions).
+        foreach (Button action in new[]
+                 {
+                     _commitBtn, _commitPushBtn, _stashBtn, _resetAllBtn, _resetUnstagedBtn, _createBranchBtn,
+                 })
+        {
+            action.Classes.Add(Theming.BarButtonStyles.ActionClass);
+        }
 
         _optionsBtn = new Button();
         _optionsBtn.Click += (_, _) => ShowOptionsMenu(_optionsBtn);
@@ -4947,6 +4966,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private Button MakeButton(string text, Action onClick)
     {
         Button b = MakeButton(onClick);
+        b.Classes.Add(Theming.BarButtonStyles.ActionClass);
         b.Content = text;
         return b;
     }

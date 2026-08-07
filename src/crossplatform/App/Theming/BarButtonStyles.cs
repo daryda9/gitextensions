@@ -58,6 +58,62 @@ internal static class BarButtonStyles
         Add<ToggleButton>(styles, hover, pressed, border);
     }
 
+    /// <summary>The class an action button must carry to get the look below.</summary>
+    internal const string ActionClass = "actionbtn";
+
+    /// <summary>
+    ///  Installs the look for the buttons that are NOT on a bar — a dialog's own
+    ///  actions, which stand alone on a panel.
+    ///
+    ///  <para>Fluent gives them the 3:1 outline the modern palette maps for a button
+    ///  sitting ON a toolbar, where fill and ground are the same colour and the border
+    ///  is the only thing that says where the button is. On a dialog they are not: the
+    ///  fill already differs from the ground, so the outline adds a pale rectangle per
+    ///  button and nothing else — five of them down the side of the commit dialog. This
+    ///  drops the border and raises the fill by one step instead, which is what says
+    ///  "button" on every modern surface.</para>
+    /// </summary>
+    internal static void ApplyActions(Styles styles)
+    {
+        IBrush rest = Brush("App.PanelAlt", "#2D2D30");
+        IBrush hover = Brush("App.Hover", "#444448");
+        IBrush pressed = Brush("App.Pressed", "#555558");
+
+        styles.Add(ActionPresenter(null,
+            new Setter(ContentPresenter.BackgroundProperty, rest),
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent),
+            new Setter(ContentPresenter.CornerRadiusProperty, Metrics.Radius.SmCorner)));
+
+        styles.Add(ActionPresenter(":pointerover",
+            new Setter(ContentPresenter.BackgroundProperty, hover),
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
+
+        styles.Add(ActionPresenter(":pressed",
+            new Setter(ContentPresenter.BackgroundProperty, pressed),
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
+    }
+
+    private static Style ActionPresenter(string? state, params Setter[] setters)
+    {
+        Style style = new(x =>
+        {
+            Selector selector = x.OfType<Button>().Class(ActionClass);
+            if (state is not null)
+            {
+                selector = selector.Class(state);
+            }
+
+            return selector.Template().OfType<ContentPresenter>().Name("PART_ContentPresenter");
+        });
+
+        foreach (Setter setter in setters)
+        {
+            style.Setters.Add(setter);
+        }
+
+        return style;
+    }
+
     private static void Add<T>(Styles styles, IBrush hover, IBrush pressed, IBrush border)
         where T : TemplatedControl
     {

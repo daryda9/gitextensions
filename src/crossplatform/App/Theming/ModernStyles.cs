@@ -870,12 +870,121 @@ public static class ModernStyles
         // one state change late, and the revert order on de-activation is not
         // specified. EaseOut is the one that is felt (it governs the state the user
         // is moving into); Opacity, which is only ever a fade-out here, gets EaseIn.
+        // ---- menus (M109) ------------------------------------------------------------
+        // The reference is the shape every modern desktop menu now has (VS Code's, in
+        // the screenshot the user sent): the popup is a rounded card with a visible
+        // edge, the highlight under the pointer is a rounded pill INSET from that edge,
+        // and the group separators are the only thing that touches both sides.
+        //
+        // Three rules, and they depend on each other: the inset is what turns the
+        // highlight into a pill instead of a full-width band, the popup's own padding
+        // is what leaves room for the inset, and the separators cancel that padding
+        // with a negative margin so they alone run edge to edge.
+        foreach (Style style in MenuStyles())
+        {
+            styles.Add(style);
+        }
+
         styles.Add(PresenterTransitions<Button>());
         styles.Add(PresenterTransitions<ToggleButton>());
         styles.Add(BorderTransitions<TabItem>());
         styles.Add(BorderTransitions<ComboBox>());
         styles.Add(BorderTransitions<TextBox>());
         styles.Add(BorderTransitions<MenuItem>());
+
+        return styles;
+    }
+
+    /// <summary>
+    ///  The menu shape described at the call site: rounded inset highlights, full-width
+    ///  separators, and a popup with a rounded, thicker edge.
+    /// </summary>
+    /// <remarks>
+    ///  <para>Written against the two hosts the app really uses — a
+    ///  <see cref="ContextMenu"/> (the grid and the tree) and a
+    ///  <see cref="MenuFlyoutPresenter"/> (every split button's drop-down) — plus
+    ///  <see cref="MenuItem"/> itself, which covers the menu bar's own entries and the
+    ///  items inside a <see cref="Menu"/>'s pop-ups, whose border is not reachable by a
+    ///  selector (it lives inside <c>PART_Popup</c> and carries no name) and is
+    ///  therefore shaped through the theme resources instead.</para>
+    /// </remarks>
+    /// <summary>
+    ///  The drop shadow under a menu popup: soft, straight down, and black at a third
+    ///  of its strength — enough to lift the card off the window on both palettes
+    ///  without turning into a visible grey halo on the light one.
+    /// </summary>
+    private static readonly BoxShadows PopupShadow =
+        new(new BoxShadow { OffsetX = 0, OffsetY = 2, Blur = 12, Spread = 0, Color = Color.FromArgb(90, 0, 0, 0) });
+
+    /// <summary>
+    ///  The room the shadow needs. A popup's surface is sized to its content, so a shadow
+    ///  drawn outside the card would be clipped by the surface's own edge; the margin
+    ///  grows the surface instead. Bottom-heavy, because the shadow is.
+    ///
+    ///  <para><b>Without a compositor</b> — a bare X server, which is what the headless
+    ///  test rig is — a popup surface has no per-pixel alpha, so the shadow and the
+    ///  rounded corners simply do not appear and the card sits 4px right of its anchor.
+    ///  That is the degradation, and it is benign; every desktop the port targets
+    ///  (GNOME/Mutter, KDE, Wayland through XWayland) composites.</para>
+    /// </summary>
+    private static readonly Thickness PopupShadowRoom = new(4, 2, 4, 6);
+
+    private static Styles MenuStyles()
+    {
+        Styles styles = [];
+
+        // The popup card. Padding is what the items are inset FROM; without it the
+        // rounded highlight would touch the border and the corner would show a sliver
+        // of card between the two radii.
+        foreach (Style card in new[]
+                 {
+                     new Style(x => x.OfType<ContextMenu>()),
+                     new Style(x => x.OfType<MenuFlyoutPresenter>()),
+                 })
+        {
+            card.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.MdCorner));
+            card.Setters.Add(new Setter(TemplatedControl.PaddingProperty, new Thickness(0, Metrics.Space.Xs)));
+            styles.Add(card);
+        }
+
+        // The item: a pill. The horizontal margin is the inset; the vertical one is the
+        // gap that keeps two adjacent highlights from reading as one band.
+        Style item = new(x => x.OfType<MenuItem>());
+        item.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.SmCorner));
+        item.Setters.Add(new Setter(Layoutable.MarginProperty, new Thickness(Metrics.Space.Xs, 1)));
+        styles.Add(item);
+
+        // The popup card of a Menu's drop-down. Its border lives inside the MenuItem
+        // template's PART_Popup and carries no name, so it is selected as "the border of
+        // a MenuItem that is NOT the item's own layout root" — the only other border in
+        // that template. Rounded, one clean edge, and a soft shadow under it: that last
+        // one is what makes the popup read as floating ABOVE the window rather than cut
+        // into it, which is the "thicker, almost blurred" edge in the reference.
+        Style menuPopup = new(x => x.OfType<MenuItem>().Template().OfType<Border>()
+            .Not(y => y.Name("PART_LayoutRoot")));
+        menuPopup.Setters.Add(new Setter(Border.CornerRadiusProperty, Metrics.Radius.MdCorner));
+        menuPopup.Setters.Add(new Setter(Border.BoxShadowProperty, PopupShadow));
+        menuPopup.Setters.Add(new Setter(Layoutable.MarginProperty, PopupShadowRoom));
+        styles.Add(menuPopup);
+
+        // The same shadow for the two popups that ARE their own control.
+        foreach (Style cardBorder in new[]
+                 {
+                     new Style(x => x.OfType<ContextMenu>().Template().OfType<Border>()),
+                     new Style(x => x.OfType<MenuFlyoutPresenter>().Template().OfType<Border>()),
+                 })
+        {
+            cardBorder.Setters.Add(new Setter(Border.CornerRadiusProperty, Metrics.Radius.MdCorner));
+            cardBorder.Setters.Add(new Setter(Border.BoxShadowProperty, PopupShadow));
+            cardBorder.Setters.Add(new Setter(Layoutable.MarginProperty, PopupShadowRoom));
+            styles.Add(cardBorder);
+        }
+
+        // The separator, which is the exception: it cancels both the item inset and the
+        // card padding so it spans the full width, the way the reference draws it.
+        Style separator = new(x => x.OfType<Separator>());
+        separator.Setters.Add(new Setter(Layoutable.MarginProperty, new Thickness(0, Metrics.Space.Xs / 2)));
+        styles.Add(separator);
 
         return styles;
     }
