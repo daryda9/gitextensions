@@ -627,6 +627,10 @@ public sealed class RevisionGridView : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
+        // The bar buttons of this view are bars, so they wear the app's bar look.
+        // Installed before any of them is built.
+        Theming.BarButtonStyles.Apply(Styles);
+
         // Before the header is built: it is the header that carries the widths.
         LoadColumnWidths();
         _headerHost = new ContentControl { Content = BuildHeader() };
@@ -2778,22 +2782,38 @@ public sealed class RevisionGridView : UserControl
 
     // A small compact toolbar button (styled from App.* brushes) used for the
     // Date and Columns dropdown menus next to the filter box.
+    /// <summary>
+    ///  A button of the grid's own bar (Go to, Branches, View, Date, Columns, Filter…).
+    ///
+    ///  <para>Flat, like every other bar in the app: the main toolbar above it and the
+    ///  commit dialog's pane toolbars both draw their buttons this way
+    ///  (<see cref="Theming.BarButtonStyles"/>), and this strip was the last one still
+    ///  framing each button in a 1px outline — a row of boxes under a row of flat
+    ///  buttons.</para>
+    ///
+    ///  <para>The outline used to be argued as the affordance, because the resting fill
+    ///  had no contrast against the strip. What replaces it is the same thing that
+    ///  replaces it on the toolbar: the label carries the button, and the fill appears
+    ///  under the pointer. That is a deliberate trade — one look for every bar, rather
+    ///  than one bar that measures 3:1 on its own and looks foreign next to the others.</para>
+    /// </summary>
     private static Button MakeBarButton(string text)
-        => new()
+    {
+        Button button = new()
         {
             Content = text,
-            Background = B("App.Panel"),
+            Background = Brushes.Transparent,
             Foreground = B("App.Text"),
-            // A flat bar button has no fill contrast against the strip it sits on
-            // (App.Panel over App.Toolbar is 1.13:1), so the outline is the whole
-            // affordance and has to reach the 3:1 of WCAG 1.4.11.
-            BorderBrush = B("App.BorderStrong"),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(0),
             Padding = StyleDensity.BarButtonWide,
             FontSize = 12,
             Margin = new Thickness(6, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+
+        button.Classes.Add(Theming.BarButtonStyles.Class);
+        return button;
+    }
 
     // Date menu: choose the timestamp source (commit/author) and the display mode
     // (absolute/relative). Selections apply live.
