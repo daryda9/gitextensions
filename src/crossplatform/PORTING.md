@@ -3260,6 +3260,76 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M116 (2026-08-07, `2924ccc7e`) — una sola linea nella storia di un file, e il diff di una selezione multipla
+
+> Dall'utente, sulla finestra File History: «la linea relativa ai commit è duplicata per ogni commit,
+> dovrebbe seguire il normale flusso/collegamento tra un commit e l'altro» e «il diff … non funziona
+> nel caso di selezione di due commit (ctrl) o di un gruppo di commit (shift)».
+
+### Il grafo: `--follow` non riscrive i parent
+Ogni walk ristretto ottiene da git la **riscrittura dei link ai parent** (`--parents` + la
+semplificazione della storia: `%P` nomina allora l'antenato più vicino **sopravvissuto**), ed è quella
+che tiene il DAG connesso attraverso i commit che il filtro ha tolto. `--follow` è l'eccezione —
+misurato, git 2.51:
+
+```
+git log --parents --follow --format=%h^%p -- src/crossplatform/HANDOFF.md
+  94525c1d0^4384fbc1c   <- NON è nel risultato
+git log --parents        --format=%h^%p -- src/crossplatform/HANDOFF.md
+  94525c1d0^b292aa32d   <- riscritto, come ovunque
+```
+
+Quindi seguendo i rename ogni riga puntava a un parent che non è a schermo: il passo delle corsie non
+trovava nessuna corsia in attesa, ne apriva una nuova per ogni riga e la chiudeva una riga dopo. Da
+qui la scaletta di monconi al posto di una linea sola. `RevisionService.ChainFollowedHistory`
+ri-collega ogni riga a quella **sotto**, che è esattamente ciò che la riscrittura avrebbe nominato
+(`--follow` produce una storia lineare per costruzione: git lo rifiuta con più path e il walk è
+forzato su un solo commit di partenza e sull'ordine di default). Tocca **solo**
+`RevisionRow.GraphParents`: navigazione del DAG, menu dei parent e diff continuano a usare la
+parentela vera del commit. L'ultima riga caricata resta senza arco verso il basso — il walk continua
+lì sotto, e puntare a un commit che non c'è è proprio il difetto che questo risolve.
+
+### Selezione di due o più commit
+Due righe selezionate diffavano già il range; **da tre in su** si cadeva nel ramo del commit singolo e
+il pannello mostrava il diff di qualunque riga fosse `SelectedItem`: la selezione diceva «confronta
+questi» e la risposta era un commit solo. Ora `RangeEnds` prende i due **estremi** della selezione
+(salta le righe artificiali: una riga "working directory" presa dentro uno Shift non è un commit e
+non può essere un capo del range), così Ctrl su due commit e Shift su un intervallo rispondono allo
+stesso modo — `git diff piùVecchio piùNuovo`.
+
+Un Ctrl+clic alza `SelectionChanged` **due volte** (rimozione e aggiunta sono riportate separatamente)
+e ogni annuncio costa un `git diff` all'host: il range viene annunciato solo quando cambia davvero.
+
+### La finestra File History ignorava del tutto i range
+Era iscritta al solo `RevisionSelected`, quindi una selezione multipla lasciava le schede sull'ultimo
+commit singolo. Ora `FileHistoryView` inoltra `RangeSelected` e la finestra confronta i due estremi,
+con la scheda **Diff** che atterra sul file di cui la finestra parla (`DiffView.ShowRange` ha un
+overload con `preselectPath`); le altre tre restano sull'estremo più nuovo, perché un blob e una
+blame appartengono a **una** revisione. La chiave della cache delle schede è il **confronto**
+(`base..hash`), non la revisione: passare da due commit selezionati al solo più nuovo lascia `_hash`
+invariato e deve comunque ricaricare il Diff.
+
+### Il bug della preselezione, trovato per strada
+La preselezione viaggiava in un campo della view. Con **due** load in volo per un solo gesto (vedi il
+doppio `SelectionChanged`), il secondo consumava quello che il primo aveva già usato e la lista
+ripiegava sulla prima riga: si vedeva il diff di `MainWindow.cs` con `HANDOFF.md` decimo in elenco.
+Ora la preselezione viaggia **con** il load. Diagnosticato con un log temporaneo che stampava
+chiamante, preselezione e righe della lista.
+
+### Verifica (Xvfb, repo di lavoro)
+Finestra File History su `src/crossplatform/HANDOFF.md`, 86 commit: **una** linea verticale con i
+nodi, non più la scaletta. Ctrl su due commit (M111 + M114) → `diff 653229ce…b292aa32`, 11 file, con
+`HANDOFF.md` selezionato e il suo diff a schermo; Shift su cinque commit → `diff 653229ce…94525c1d`,
+12 file. Nella finestra principale, Shift su cinque commit → `diff b04038cb…4384fbc1`, 4 file (prima:
+il diff di un commit solo). Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
+### Resta aperto
+L'utente segnala anche che «l'interfaccia è parecchio differente» dall'originale: non ancora
+affrontato, serve sapere **quali** differenze contano (vedi la domanda posta a fine sessione). Nota
+nota: nell'originale una selezione multipla produce **più gruppi** nella lista dei file — «(N) Diff
+with A `<sha>`», un gruppo per ogni revisione selezionata confrontata con la prima — mentre il port
+mostra un gruppo solo, il diff fra i due estremi.
+
 ## M115 (2026-08-07, `932d478ee`, `4384fbc1c`) — la barra della griglia e le sue tendine parlano la lingua dell'app
 
 > Dall'utente: «allinea la grafica di questi tasti a quella della schermata di commit» (la seconda
