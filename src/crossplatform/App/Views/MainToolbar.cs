@@ -376,12 +376,6 @@ public sealed class MainToolbar : UserControl
     {
         IBrush toolbar = Brush("App.Toolbar", "#333337");
         IBrush border = Brush("App.Border", "#3F3F46");
-        // App.Hover / App.Pressed, not App.PanelAlt / App.Panel: those two are DARKER
-        // than the toolbar, so a button under the pointer read as a hole punched in the
-        // strip instead of a lift, and in the modern dark palette the hover was within
-        // a hair of the strip itself.
-        IBrush hover = Brush("App.Hover", "#444448");
-        IBrush pressed = Brush("App.Pressed", "#555558");
 
         Background = toolbar;
 
@@ -389,59 +383,12 @@ public sealed class MainToolbar : UserControl
         BorderBrush = border;
         BorderThickness = new Thickness(0, 0, 0, 1);
 
-        // Flat/borderless buttons with a subtle hover fill (the Fluent template
-        // paints the button's chrome through its inner ContentPresenter, so we
-        // style that part directly for both the resting and pointer-over states).
-        // Added once, in the constructor: the styles live on the control itself and
-        // survive the strip being rebuilt for a language change.
-        // The resting fill is the strip's own colour AT ALPHA 0 — invisible, exactly
-        // like Brushes.Transparent, so a checked button's own Background still shows
-        // through — and that is not a detail. Brushes.Transparent is #00FFFFFF,
-        // transparent WHITE, and the modern style cross-fades this very property
-        // (ModernStyles.PresenterTransitions): interpolating from transparent white to
-        // the hover fill walks through half-opaque WHITE, which is the flash the strip
-        // blinked on every hover — measured on screen, it peaked at #78787D over a
-        // #2F3038 toolbar before settling. Fading in from the HOVER colour at alpha 0
-        // makes the cross-fade a pure opacity ramp: no third colour is ever on screen,
-        // in either theme (the light theme dipped to #BEBEC3 when the ramp started from
-        // the toolbar's own hue instead).
-        Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn")
-            .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
-        {
-            Setters =
-            {
-                new Setter(ContentPresenter.BackgroundProperty, Fade(hover)),
-
-                // No cross-fade on a toolbar button: it is what made the flash visible
-                // in the first place, and a strip of small buttons under a moving pointer
-                // reads better switching cleanly than smearing between two fills. The
-                // modern style puts a Background/BorderBrush transition on every
-                // ContentPresenter (ModernStyles.PresenterTransitions); an empty
-                // Transitions here wins, because a style declared on this control is
-                // nearer than one declared on the Application.
-                new Setter(Animatable.TransitionsProperty, new Transitions()),
-                new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent),
-                new Setter(ContentPresenter.CornerRadiusProperty, new CornerRadius(3)),
-            },
-        });
-        Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn").Class(":pointerover")
-            .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
-        {
-            Setters =
-            {
-                new Setter(ContentPresenter.BackgroundProperty, hover),
-                new Setter(ContentPresenter.BorderBrushProperty, border),
-            },
-        });
-        Styles.Add(new Style(x => x.OfType<Button>().Class("toolbtn").Class(":pressed")
-            .Template().OfType<ContentPresenter>().Name("PART_ContentPresenter"))
-        {
-            Setters =
-            {
-                new Setter(ContentPresenter.BackgroundProperty, pressed),
-                new Setter(ContentPresenter.BorderBrushProperty, border),
-            },
-        });
+        // Flat/borderless buttons with a subtle hover fill, shared with every other
+        // bar in the port (see Theming/BarButtonStyles for why the resting fill is the
+        // hover colour at alpha 0 and why the transitions are emptied). Added once, in
+        // the constructor: the styles live on the control itself and survive the strip
+        // being rebuilt for a language change.
+        Theming.BarButtonStyles.Apply(Styles);
 
         Build();
 

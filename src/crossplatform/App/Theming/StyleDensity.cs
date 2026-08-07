@@ -48,4 +48,21 @@ public static class StyleDensity
     public static Thickness BarButtonWide => Modern
         ? new Thickness(Metrics.Space.Sm, Metrics.Space.Xs)
         : new Thickness(Metrics.Space.Sm, 3);
+
+    /// <summary>
+    ///  The outline around a content pane — a file list, a diff, anything that is a
+    ///  surface inside a window: <b>none</b> modern, 1px classic.
+    ///
+    ///  <para>Modern chrome separates surfaces by their COLOUR, not by a rule around
+    ///  each one: <c>MainWindow</c> draws no <c>App.Border</c> at all, and
+    ///  its panes read as panes because a panel sits on a darker window. A dialog that
+    ///  boxes every pane instead ends up with a grid of pale lines over a dark ground —
+    ///  which is exactly what the commit dialog looked like before M107. Classic keeps
+    ///  the 1px box: framed panes ARE the 2015 look.</para>
+    ///
+    ///  <para>A pane that takes this outline must therefore also take a surface
+    ///  background (<c>App.Panel</c>), or in modern it has nothing left to separate
+    ///  it from the window.</para>
+    /// </summary>
+    public static Thickness PaneOutline => Modern ? default : new Thickness(1);
 }

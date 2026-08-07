@@ -380,6 +380,10 @@ public sealed class CommitDialog : Theming.ZoomWindow
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
+        // The pane toolbars are bars, so their buttons look like the main toolbar's.
+        // Installed on the window itself, before the buttons are built.
+        Theming.BarButtonStyles.Apply(Styles);
+
         // ---- RIGHT: diff view ----
         _diffView = new SelectableTextBlock
         {
@@ -639,7 +643,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             Height = 4,
             ResizeDirection = GridResizeDirection.Rows,
-            Background = Brush("App.Border", Brushes.Gray),
+
+            // Transparent, not App.Border: a 4px painted band is a pale stripe across
+            // the dialog, and MainWindow's splitters have never drawn one. Transparent
+            // rather than null so the grip still takes the pointer.
+            Background = Brushes.Transparent,
         };
         Grid.SetRow(leftSplitter, 1);
         leftPanel.Children.Add(leftSplitter);
@@ -663,8 +671,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
         Border diffBorder = new()
         {
             Child = diffWithGutter,
+            Background = Brush("App.Panel", Brushes.Black),
             BorderBrush = Brush("App.Border", Brushes.Gray),
-            BorderThickness = new Thickness(1),
+            BorderThickness = StyleDensity.PaneOutline,
             ClipToBounds = true,
         };
 
@@ -808,7 +817,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             Height = 4,
             ResizeDirection = GridResizeDirection.Rows,
-            Background = Brush("App.Border", Brushes.Gray),
+
+            // Transparent, not App.Border: a 4px painted band is a pale stripe across
+            // the dialog, and MainWindow's splitters have never drawn one. Transparent
+            // rather than null so the grip still takes the pointer.
+            Background = Brushes.Transparent,
         };
         Grid.SetRow(rightSplitter, 2);
         Grid.SetRow(bottom, 3);
@@ -828,7 +841,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             Width = 4,
             ResizeDirection = GridResizeDirection.Columns,
-            Background = Brush("App.Border", Brushes.Gray),
+            Background = Brushes.Transparent,
         };
         Grid.SetColumn(splitter, 1);
         Grid.SetColumn(rightPanel, 2);
@@ -4348,6 +4361,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
             FontFamily = Monospace,
             ClipToBounds = true,
 
+            // Fluent's own ListBox background is #2B2B2B, a grey that belongs to no
+            // palette of ours: the two file lists were the only surfaces in the dialog
+            // not on the ramp, which read as two pale boxes. Every other list in the
+            // port names its surface; these two now do too.
+            Background = Brush("App.Panel", Brushes.Black),
+
             // No recycling: the rows are built by hand rather than bound, which is what
             // FileStatusListView does for the same reason.
             ItemTemplate = new FuncDataTemplate<object>((item, _) => BuildFileRow(item), supportsRecycling: false),
@@ -4491,11 +4510,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
             panel.Children.Add(toolbar);
         }
 
+        // The pane is a SURFACE: App.Panel says where it starts and ends in the modern
+        // style, and the 1px box comes back only in the classic one (see
+        // StyleDensity.PaneOutline).
         panel.Children.Add(new Border
         {
             Child = content,
+            Background = Brush("App.Panel", Brushes.Black),
             BorderBrush = Brush("App.Border", Brushes.Gray),
-            BorderThickness = new Thickness(1),
+            BorderThickness = StyleDensity.PaneOutline,
             ClipToBounds = true,
         });
         Grid.SetRow(panel, row);
@@ -4672,10 +4695,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             Padding = StyleDensity.BarButton,
             Margin = new Thickness(0, 0, 2, 0),
-            Background = Brush("App.Toolbar", Brushes.DimGray),
+
+            // Flat like the main toolbar's buttons, not framed like Fluent's default:
+            // a pane toolbar of six outlined boxes is six borders the eye has to sort
+            // through before it reaches the file list (see Theming/BarButtonStyles).
+            Background = Brushes.Transparent,
             Content = (icon is null ? null : (Control?)Theming.IconLoader.Image(icon))
                 ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
         };
+        b.Classes.Add(Theming.BarButtonStyles.Class);
         b.Click += (_, _) => onClick();
         return b;
     }
@@ -4690,10 +4718,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             Padding = StyleDensity.BarButton,
             Margin = new Thickness(0, 0, 2, 0),
-            Background = Brush("App.Toolbar", Brushes.DimGray),
+            Background = Brushes.Transparent,
             Content = (Control?)Theming.IconLoader.Image(icon)
                 ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
         };
+        button.Classes.Add(Theming.BarButtonStyles.Class);
         button.Click += (_, _) =>
         {
             pane.Group = pane.Group == mode ? null : mode;
