@@ -3260,6 +3260,55 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M104 (2026-08-07, `56772bcc3`) — le ultime nove icone senza glifo
+
+> Dall'utente, il log di `./run.sh`: quattro righe `[IconLoader] icon '…' has no vector glyph, drawing
+> the 2015 PNG instead` (`GitForWindows`, `RepoStateClean`, `CommitTemplates`, `NavigateUp`).
+
+Il log è la misura che `IconLoader.NoteRasterFallback` esiste per dare, e va letto per **nome**: quattro
+nomi si erano dichiarati all'avvio, ma il conto vero è più alto — un nome si segnala solo quando la sua
+superficie viene raggiunta. Un audit statico (nomi di asset PNG citati come stringa nel codice ∖ chiavi
+di `Icons.Data`, scartando i falsi positivi che sono testo e non icone: `Date`, `Message`, `Save`,
+`Appearance`) ne ha trovati **cinque in più**: i sei verdetti di firma del tab GPG (`CommitSignatureOk`
+/`Warning`/`Error`, `TagOk`/`TagWarning`/`TagError`, di cui `TagMany` era già mappato) e `FunnelPencil`,
+la casella di filtro parcheggiata nel menu di overflow della toolbar.
+
+### Le scelte, tutte per significato
+- **`GitForWindows`** (menu Tools ▸ Git bash) = `Terminal`. Il logo di Git-for-Windows è sbagliato su
+  Linux e non si traduce in una penna sola; quel comando apre una **shell**.
+- **`RepoStateClean`** = `Commit`. Il dialogo di commit chiede il nome dello *stato*, dove la toolbar
+  chiede `"Commit"` e passa lo stato come nome **classico**; solo lo stato clean viene mai chiesto come
+  nome, quindi solo quello è mappato — e in stile Classic carica ancora `RepoStateClean.png`, perché il
+  nome viaggia col glifo.
+- **`CommitTemplates`** = `FileLines`, pagina con righe: il template *è* un file su disco, e la piega
+  d'angolo è ciò per cui la famiglia dei file si riconosce a 16 px (`Log`, che non ce l'ha, resta il
+  registro dei comandi).
+- **`NavigateUp`** = `ArrowUp`, la stessa freccia dei comandi di riordino: è lo stesso gesto, un passo
+  su. Accento **ciano** come `SubmodulesManage`, con cui la toolbar lo alterna.
+- **`FunnelPencil`** = `Filter`. È lo stesso comando di `EditFilter`, quindi lo stesso imbuto: la matita
+  a 16 px è un secondo segno per niente.
+- **I sei verdetti GPG** = uno **scudo** («è stato verificato») con dentro il segno del risultato:
+  spunta, punto esclamativo, croce. Le stesse tre forme servono la riga del commit e quella del tag —
+  il verdetto è ciò che l'icona porta, e *quale oggetto* sia lo dice già l'etichetta della riga. Una
+  forma per verdetto batte sei forme quasi identiche a 16 px. Ruoli: verde afferma, ambra avverte,
+  rosso è il verdetto negativo (lo stesso ruolo di `BisectBad`: non distrugge niente, ma la risposta è
+  no).
+
+### Un difetto trovato per strada
+`MainToolbar.SetSubmoduleNavigation` passava al controllo vivo la `Source` di un'icona **appena
+costruita** — la trappola di M77 al contrario: non un `Bitmap` sopra un glifo, ma un `GlyphSource` che
+nessuno ha risolto e che non segue più il cambio di stile. Ora passa da `IconLoader.Retarget`, che
+scambia la geometria in place e conserva tinta e sottoscrizioni.
+
+### Verifica
+Build `Errori: 0`. App avviata headless su `:151` con `XDG_CONFIG_HOME` isolato (stile Modern di
+default): il log **non ha più nessuna riga `[IconLoader]`**, né di fallback né di parse fallito, né
+all'avvio né dopo aver aperto il dialogo di commit (dove si vede il nuovo glifo di «Commit templates ▾»).
+I glifi nuovi sono stati **rasterizzati offline** con inkscape a 16 e 64 px e guardati: a 16 px scudo +
+spunta/`!`/croce restano distinguibili, e comunque le righe del GPG portano il testo del verdetto.
+Metodo riusabile: per giudicare un glifo non serve la GUI, basta comporre l'SVG dai path di `Icons.cs`
+con stroke 2 su griglia 24.
+
 ## M103 (2026-08-06) — le icone moderne hanno un colore, e si può spegnere
 
 > «per quanto riguarda lo stile modern, le icone mi piacciono ma sono tutte bianche, preferirei che si
