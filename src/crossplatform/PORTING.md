@@ -3260,6 +3260,62 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M106 (2026-08-07, `4099dce58`) — tema di sistema e altre due famiglie di icone colorate
+
+> Dall'utente, come «prossimi step»: «1) sincronizzare il tema a quello di sistema (sempre
+> selezionabile dalle impostazioni); 2) il colore delle icone dei worktree deve essere verde, il
+> colore dei submodules deve essere giallo per il quadratino in alto, verde per quei due in basso;
+> 3) colora anche tutte le icone della barra di sotto (dove c'è commit, diff, file tree, gpg ecc.)».
+
+### 1. Tema "System", e diventa il default
+`UiState.Theme` ha un **terzo** valore. `App/Theming/SystemTheme.cs` lo risolve in chiaro/scuro
+leggendo la preferenza del desktop e **continua a seguirla** mentre l'app è aperta: su Linux è la
+chiave del portal XDG `org.freedesktop.appearance color-scheme` (quella che GNOME scrive quando
+`org.gnome.desktop.interface color-scheme` è `prefer-dark`), su Windows e macOS l'API nativa — tutto
+attraverso `IPlatformSettings` di Avalonia, così il port ha **una** strada e non tre.
+
+Resta selezionabile come prima, e in due posti: Impostazioni ▸ Appearance ▸ Theme e Vista ▸
+Appearance elencano **System / Dark / Light**. Un Dark o Light esplicito **disarma** l'inseguimento:
+una risposta esplicita non deve muoversi da sola.
+
+Perché non un quarto `ThemeVariant`: "System" non è una tavolozza. `ThemeManager` applica sempre e
+solo una variante concreta; quello che la classe aggiunge è la **sottoscrizione**, che è stato che la
+tavolozza non deve possedere.
+
+**Il flash bianco all'avvio, e come è stato eliminato.** La risposta del portal arriva su DBus in modo
+asincrono e, finché non arriva, Avalonia risponde col proprio default (Light) — la prima finestra è
+già costruita da un pezzo. Quindi `UiState` registra anche **cosa preferiva il desktop all'uscita**
+(`SystemThemeSeen`: un'osservazione, non un'impostazione, e non compare in nessuna UI) e la prima
+finestra parte da lì. La risposta del portal è l'autorità; un **reconcile a un secondo** copre il caso
+in cui quella risposta coincide col default di Avalonia e quindi `ColorValuesChanged` **non scatta
+affatto** — che è l'unico modo in cui un seme stantio sopravviverebbe a una preferenza cambiata mentre
+l'app era chiusa.
+
+### 2. Il worktree è verde
+Era ciano come i branch. È l'unico ref strutturale che è anche **una directory con un checkout suo**,
+e il verde è ciò che lo distingue a colpo d'occhio dal branch su cui punta (che resta ciano).
+
+### 3. Il submodule è bicolore
+Tre quadrati di un solo colore erano tre scatole pari: nessuna contenenza. Ora **ambra il quadrato
+padre**, **verde i due figli**, neutri i connettori. `Icons` guadagna una tabella `Parts` accanto ad
+`Accents` — il path è spezzato come **dati**, cioè la concatenazione delle parti *è* il glifo — e
+`GlyphSource` disegna parte per parte con **la stessa penna**, sotto lo stesso predicato che concede
+un accento singolo. Quindi "Colora le icone" spento e le PNG classiche non cambiano di una virgola.
+
+### 4. Tutta la barra inferiore colorata per contenuto
+Nessuna coppia **adiacente** condivide la tinta, così la striscia si legge come una fila di cose
+distinte: Commit verde, Diff blu, File tree ambra, GPG viola, Console ciano, Output blu, Blame ambra,
+File history viola.
+
+### Verifica
+Su Xvfb: config vergine → parte scuro su desktop `prefer-dark` **senza flash**; `gsettings set
+… color-scheme default` → l'intera finestra si ridipinge chiara **in posto** (log `[Theme] the desktop
+switched to Light`) e torna scura al ripristino; il combo delle impostazioni previewa Light e
+**Cancel** riporta a System **riarmando** l'inseguimento; le voci del menu Vista scrivono `Theme`
+corretto in `ui-state.json`; icone verificate a crop (worktree verde, submodule ambra+verde+neutro,
+otto tab tutte colorate) in **entrambe** le varianti. Harness: PASS entrambi. Build: `Avvisi: 0`,
+`Errori: 0`.
+
 ## M105 (2026-08-07, `321e09a3f`) — build a zero warning
 
 > Dall'utente, guardando l'output di `./run.sh`: «noto tutti questi warning, come mai» — 34 righe a
