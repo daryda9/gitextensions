@@ -56,9 +56,11 @@ public sealed class MainWindow : Theming.ZoomWindow
     private readonly TabItem _consoleTab;
     private readonly TabItem _outputTab;
     private readonly TabItem _blameTab;
-    private readonly TabItem _historyTab;
     private readonly BlameView _blame = new();
-    private readonly FileHistoryView _fileHistory = new();
+    // The commit commands the row menu of EVERY revision grid carries. Recorded here
+    // because a grid can be born later: the file-history window builds one when it
+    // opens, and it must offer the same menu as the repository's own grid.
+    private readonly List<(string Header, Action<string> Handler)> _commitCommands = [];
 
     private readonly StashOpsService _stashOps = new();
     private readonly ExternalToolService _externalTools = new();
@@ -222,7 +224,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         _consoleTab = new TabItem { Content = _console };
         _outputTab = new TabItem { Content = _output };
         _blameTab = new TabItem { Content = _blame };
-        _historyTab = new TabItem { Content = _fileHistory };
         ApplyTabTranslations();
 
         // The Console tab's "Open terminal here" button reuses the external-tool
@@ -236,7 +237,7 @@ public sealed class MainWindow : Theming.ZoomWindow
             Items =
             {
                 _commitInfoTab, _diffTab, _fileTreeTab, _gpgTab, _consoleTab, _outputTab,
-                _blameTab, _historyTab,
+                _blameTab,
             },
         };
 
@@ -463,7 +464,8 @@ public sealed class MainWindow : Theming.ZoomWindow
                 "Console" => _consoleTab,
                 "Output" => _outputTab,
                 "Blame" => _blameTab,
-                "History" => _historyTab,
+                // "History" is what older files hold for the bottom tab this window
+                // replaced (M113). It resolves to the commit tab, like any unknown key.
                 _ => _commitInfoTab,
             };
 
@@ -487,7 +489,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         if (ReferenceEquals(selected, _consoleTab)) { return "Console"; }
         if (ReferenceEquals(selected, _outputTab)) { return "Output"; }
         if (ReferenceEquals(selected, _blameTab)) { return "Blame"; }
-        if (ReferenceEquals(selected, _historyTab)) { return "History"; }
         return "Commit";
     }
 
@@ -1064,22 +1065,6 @@ public sealed class MainWindow : Theming.ZoomWindow
             _gpgLoadedFor = null;
             LoadSelectedBottomTab();
         };
-        _fileHistory.RevisionSelected += OnRevisionSelected;
-        // Double click on a history row behaves like the grid's own activation: select
-        // that commit and bring the bottom panel onto it.
-        _fileHistory.RevisionActivated += h =>
-        {
-            if (_repoPath is not null)
-            {
-                _revisions.SelectCommit(h);
-                OnRevisionSelected(h);
-            }
-        };
-        // Revert / cherry-pick from the file-history menu take the same path as the
-        // grid's own commands, so they get the watcher suspension and the refresh.
-        _fileHistory.RevertCommitRequested += RevertThisCommit;
-        _fileHistory.CherryPickCommitRequested +=
-            hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success);
         // Parent/child hash links in the commit detail navigate the grid: select the
         // target row (best-effort) and refresh detail/diff/filetree/gpg for it.
         _detail.CommitNavigated += h =>
@@ -1160,14 +1145,14 @@ public sealed class MainWindow : Theming.ZoomWindow
         };
 
         _diff.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
-        _diff.FileHistoryRequested += path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
+        _diff.FileHistoryRequested += path => OpenFileHistoryWindow(path);
         // Safe to wire now that the grid guards against rebind re-entrancy (0.19).
         _diff.FilterFileInGridRequested +=
             path => _revisions.ApplyRevisionFilter(_revisions.CurrentFilter with { PathFilter = path });
         // Same two jumps from the file tree, now that it is a real tree.
         _fileTree.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _fileTree.FileHistoryRequested +=
-            path => ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(_repoPath!, path));
+            path => OpenFileHistoryWindow(path);
 
         // Toolbar actions.
         _toolbar.OpenRepoRequested += () => _ = PickRepositoryAsync();
@@ -1486,8 +1471,8 @@ public sealed class MainWindow : Theming.ZoomWindow
         // FIRST registration of a given header and drops later duplicates.
         void Register(string header, Action<string> handler)
         {
+            _commitCommands.Add((header, handler));
             _revisions.AddCommitCommand(header, handler);
-            _fileHistory.AddCommitCommand(header, handler);
         }
 
         Register("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
@@ -1540,7 +1525,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         // so it is safe to answer synchronously as the menu opens.
         _revisions.IsBisectInProgress = () => _repoPath is { Length: > 0 } repo
             && _bisect.InTheMiddleOfBisect(repo);
-        _fileHistory.IsBisectInProgress = _revisions.IsBisectInProgress;
     }
 
     /// <summary>
@@ -2662,6 +2646,55 @@ public sealed class MainWindow : Theming.ZoomWindow
         });
     }
 
+    /// <summary>
+    ///  Opens one file's history in its own window — the port of upstream's
+    ///  <c>StartFileHistoryDialog</c> (see <see cref="Views.FileHistoryWindow"/>).
+    ///
+    ///  <para><b>Not modal, and not owned by a tab.</b> Upstream starts a separate
+    ///  PROCESS for this so the browse window stays usable while the history is read;
+    ///  a non-modal child window is the same bargain without the second process. The
+    ///  bottom strip no longer carries a file-history tab: what it could show was only
+    ///  ever the grid, and the file's diff, blob and blame had nowhere to go there.</para>
+    ///
+    ///  <para>The window's grid is given the same commit commands as the repository's
+    ///  own — the list is recorded once (<see cref="_commitCommands"/>) precisely because
+    ///  a grid can be born after the menu was built — plus the bisect gate, and its
+    ///  revert / cherry-pick take the host path so they get the watcher suspension and
+    ///  the refresh.</para>
+    /// </summary>
+    private void OpenFileHistoryWindow(string path, bool showBlame = false)
+    {
+        if (_repoPath is not { Length: > 0 } repo || string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        Views.FileHistoryWindow window = new(repo, path, showBlame);
+
+        foreach ((string header, Action<string> handler) in _commitCommands)
+        {
+            window.History.AddCommitCommand(header, handler);
+        }
+
+        window.History.IsBisectInProgress = _revisions.IsBisectInProgress;
+        window.History.RevertCommitRequested += RevertThisCommit;
+        window.History.CherryPickCommitRequested +=
+            hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success);
+
+        // Double click on a row selects that commit in the repository grid behind, which
+        // is what the bottom tab used to do and the only link the two windows need.
+        window.History.RevisionActivated += hash =>
+        {
+            if (_repoPath is not null)
+            {
+                _revisions.SelectCommit(hash);
+                OnRevisionSelected(hash);
+            }
+        };
+
+        window.Show(this);
+    }
+
     // The worktree manager used to be reachable only from the left panel's tree;
     // the toolbar's split button needs it too.
     private async Task ShowWorktreesAsync()
@@ -2815,7 +2848,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         string? path = await PickFileAsync(files);
         if (path is { Length: > 0 })
         {
-            ShowInBottom(_historyTab, () => _fileHistory.ShowHistory(repo, path));
+            OpenFileHistoryWindow(path);
         }
     }
 
@@ -4201,7 +4234,6 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         if (refresh)
         {
-            _fileHistory.Reload();
             _progressBanner.Refresh();
             _watcher.NotifyRefreshed();
         }
@@ -4624,7 +4656,6 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         // No FormBrowse item for this one (the port has a tab where upstream has a
         // separate window); matched by source text instead.
-        _historyTab.Header = IconText.Header("FileHistory", T("File history"));
     }
 
     private static string T(string english) => TranslationService.T(english);

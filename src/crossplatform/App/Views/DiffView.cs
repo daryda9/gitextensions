@@ -209,6 +209,12 @@ public sealed class DiffView : UserControl
     // Re-runs the load that produced the current file list (the refresh button).
     private Action? _reload;
 
+    // File the caller asked to land on, carried across the asynchronous fill of
+    // the changed-files list. Every load sets it (to null unless a caller asked
+    // for one), so the refresh button — which re-enters the same load without a
+    // path — never drags an old preselection back onto the list.
+    private string? _pendingSelection;
+
     private string? _repoPath;
     private string? _commitHash;   // the (right/"new") commit; also the "other" side in Range mode
     private string? _baseHash;     // the ("old"/left) commit in Range mode
@@ -997,6 +1003,19 @@ public sealed class DiffView : UserControl
     ///  repository at <paramref name="repoPath"/>. Selecting a file loads its diff.
     /// </summary>
     public void ShowCommit(string repoPath, string commitHash)
+        => ShowCommit(repoPath, commitHash, preselectPath: null);
+
+    /// <summary>
+    ///  As <see cref="ShowCommit(string, string)"/>, but lands on
+    ///  <paramref name="preselectPath"/> instead of on the first changed file —
+    ///  what a file-scoped host (the file-history window) needs, since upstream's
+    ///  FormFileHistory Diff tab shows exactly one file of the selected commit.
+    ///
+    ///  <para>A path that the commit does not contain is not an error: a rename
+    ///  means the file is recorded under its historic name, so the list simply
+    ///  keeps its own first-row selection.</para>
+    /// </summary>
+    public void ShowCommit(string repoPath, string commitHash, string? preselectPath)
     {
         _repoPath = repoPath;
         _commitHash = commitHash;
@@ -1006,7 +1025,8 @@ public sealed class DiffView : UserControl
         LoadFileList(
             () => DiffService.GetChangedFiles(repoPath, commitHash),
             count => F(ChangedFilesFormat(), commitHash, count),
-            F(LoadingFilesFormat(), commitHash));
+            F(LoadingFilesFormat(), commitHash),
+            preselectPath);
     }
 
     /// <summary>
@@ -1105,10 +1125,13 @@ public sealed class DiffView : UserControl
     private void LoadFileList(
         Func<IReadOnlyList<DiffFileRow>> load,
         Func<int, string> statusFor,
-        string loadingText)
+        string loadingText,
+        string? preselectPath = null)
     {
         // Remembered so the toolbar's refresh button can re-run exactly this load.
         _reload = () => LoadFileList(load, statusFor, loadingText);
+
+        _pendingSelection = string.IsNullOrEmpty(preselectPath) ? null : preselectPath;
 
         _files.Clear();
         _diff.Inlines?.Clear();
@@ -1125,6 +1148,7 @@ public sealed class DiffView : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     _files.SetFiles(rows);
+                    ApplyPendingSelection();
                     _status.Text = statusFor(rows.Count);
                 });
             }
@@ -1133,6 +1157,44 @@ public sealed class DiffView : UserControl
                 Dispatcher.UIThread.Post(() => _status.Text = F("{0}: {1}", ErrorWord(), ex.Message));
             }
         });
+    }
+
+    // Moves the selection onto the file a caller asked for, once the rows are in.
+    // The list has no "select by name" of its own, so the row nodes it just built
+    // are searched and the pick is handed to the ListBox — which reports it back
+    // through SelectedFileChanged, exactly as a click would, so the diff loads.
+    private void ApplyPendingSelection()
+    {
+        string? wanted = _pendingSelection;
+        _pendingSelection = null;
+
+        if (wanted is null || _files.List.ItemsSource is not IEnumerable<object> items)
+        {
+            return;
+        }
+
+        foreach (object item in items)
+        {
+            if (item is FileListFileNode node && SamePath(node.Row.Name, wanted))
+            {
+                _files.List.SelectedItem = node;
+                return;
+            }
+        }
+    }
+
+    // Path equality for the preselection only. Git speaks forward slashes and
+    // repository-relative names, but the callers of ShowCommit hand on whatever
+    // the grid or a command line gave them, so a Windows-style or "./"-prefixed
+    // spelling of the same file must still find its row.
+    private static bool SamePath(string rowName, string wanted)
+        => string.Equals(rowName, wanted, StringComparison.Ordinal)
+           || string.Equals(NormalisePath(rowName), NormalisePath(wanted), StringComparison.Ordinal);
+
+    private static string NormalisePath(string path)
+    {
+        string slashed = path.Replace('\\', '/');
+        return slashed.StartsWith("./", StringComparison.Ordinal) ? slashed[2..] : slashed;
     }
 
     // The toolbar's refresh button: re-reads the changed-file list of whatever

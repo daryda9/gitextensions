@@ -1359,32 +1359,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         string full = FullPath(row);
-        Control view;
-        string caption;
-        if (blame)
-        {
-            BlameView blameView = new();
-            blameView.ShowBlame(_repoPath, row.Path);
-            view = blameView;
-            caption = string.Format(T("FormBlame/$this.Text", "Blame - {0}"), row.Path);
-        }
-        else
-        {
-            FileHistoryView history = new();
-            history.ShowHistory(_repoPath, row.Path);
-            view = history;
-            caption = string.Format(T("FormFileHistory/$this.Text", "File History - {0}"), row.Path);
-        }
 
-        Theming.ZoomWindow window = new()
-        {
-            Title = caption,
-            Width = 900,
-            Height = 600,
-            Background = Brush("App.Window", Brushes.DimGray),
-            Content = view,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-        };
+        // One window for both entries, as upstream has one form for its "filehistory"
+        // and "blamehistory" commands: the blame entry is the same window opened on its
+        // Blame tab (M113). It used to be a bare ZoomWindow holding a single view, which
+        // meant the history had no diff and the blame had no history next to it.
+        FileHistoryWindow window = new(_repoPath, row.Path, showBlame: blame);
 
         // Not a dialog: the user must be able to keep staging while it is open.
         window.Show(this);
