@@ -3296,9 +3296,13 @@ Due pavimenti: **40px** per una colonna trascinata e **120px** per il subject, i
 manovra è il tetto di ogni trascinamento. Senza il secondo, una tirata decisa rendeva i messaggi
 illeggibili.
 
-Durante il trascinamento segue il puntatore **solo l'intestazione**; le righe vengono ri-templatizzate
-una volta sola, al rilascio: ogni riga è una Grid costruita dalle stesse definizioni, e ricostruirne
-migliaia a ogni movimento del puntatore non è un drag, è una presentazione a diapositive.
+Durante il trascinamento **seguono anche le righe**, senza essere ricostruite: ri-templatizzarle a
+ogni movimento del puntatore sarebbe una presentazione a diapositive, ma le righe che *esistono* sono
+quelle **realizzate** — una schermata — e le loro definizioni di colonna si spostano come quelle
+dell'intestazione. Una riga realizzata durante il trascinamento è già giusta, perché `MakeColumns`
+legge gli stessi campi. (Il primo tentativo muoveva solo l'intestazione e rifaceva le righe al
+rilascio; l'utente ha chiesto di farle scorrere insieme, ed era giusto: costa una schermata di grid,
+non la storia intera, e sparisce anche il lampeggio al rilascio.)
 
 **Le larghezze si ricordano** (`ViewPrefs.GridColumns`). L'originale no — ricrea le colonne ai default
 a ogni avvio — ed è una differenza voluta: una larghezza trascinata è una decisione. La griglia della
