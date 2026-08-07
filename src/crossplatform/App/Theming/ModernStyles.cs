@@ -6,6 +6,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Primitives.PopupPositioning;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
+using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using Avalonia.Styling;
 
@@ -602,6 +603,19 @@ public static class ModernStyles
         //
         // In the baseline, not the modern block: a menu covering its own bar is a
         // defect in both styles.
+        // The card itself is capped to the room the window has under its menu bar. A
+        // pop-up is its own window and the positioner clamps it to the SCREEN only, so
+        // without this a long menu ran past the bottom edge of the app; the ceiling is
+        // measured by MainWindow (PublishMenuMaxHeight) and read here as a dynamic
+        // resource, because a style cannot know it. Under the cap the menu scrolls,
+        // which is the behaviour the entries below the fold need anyway.
+        Style menuHeight = new(x => x.OfType<MenuItem>().Template().OfType<Border>()
+            .Not(y => y.Name("PART_LayoutRoot")));
+        menuHeight.Setters.Add(new Setter(
+            Layoutable.MaxHeightProperty,
+            new DynamicResourceExtension("App.MenuMaxHeight")));
+        styles.Add(menuHeight);
+
         Style menuPlacement = new(x => x.OfType<MenuItem>().Template().OfType<Popup>());
         menuPlacement.Setters.Add(new Setter(
             Popup.PlacementConstraintAdjustmentProperty,

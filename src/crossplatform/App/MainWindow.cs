@@ -337,7 +337,16 @@ public sealed class MainWindow : Theming.ZoomWindow
         // its own Position/Width/Height describe the maximized frame, so the values
         // worth saving have to be captured while it is still normal.
         PositionChanged += (_, _) => CaptureNormalPlacement();
-        SizeChanged += (_, _) => CaptureNormalPlacement();
+        SizeChanged += (_, _) =>
+        {
+            CaptureNormalPlacement();
+            PublishMenuMaxHeight();
+        };
+
+        // The menu bar's own height is not known until it is laid out, and it changes
+        // with the UI size option, so the ceiling is republished from both.
+        _menu.SizeChanged += (_, _) => PublishMenuMaxHeight();
+        Opened += (_, _) => PublishMenuMaxHeight();
 
         // Persist window size/position + splitter positions when the window closes.
         Closing += (_, _) =>
@@ -3734,6 +3743,35 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         return path;
     }
+
+    /// <summary>
+    ///  Publishes how tall a menu drop-down may be, as <c>App.MenuMaxHeight</c>.
+    ///
+    ///  <para>A pop-up is its own window, so the positioner only ever clamps it to the
+    ///  SCREEN: on a window smaller than the screen — which is the normal case — a menu
+    ///  with thirty entries ran past the bottom edge of the app and floated over the
+    ///  desktop. Nothing in the styling can know that height, because it is a property
+    ///  of this window and of where its menu bar ended up; so the window measures it and
+    ///  the style consumes it through a dynamic resource
+    ///  (<c>Theming/ModernStyles</c>, menu placement).</para>
+    ///
+    ///  <para>The floor keeps a menu usable on a window squeezed to nothing: better a
+    ///  scrolling stub that overhangs than a card two entries tall.</para>
+    /// </summary>
+    private void PublishMenuMaxHeight()
+    {
+        if (Application.Current is not { } app)
+        {
+            return;
+        }
+
+        double barBottom = _menu.Bounds.Bottom;
+        double available = Bounds.Height - barBottom - Theming.Metrics.Space.Sm;
+        app.Resources["App.MenuMaxHeight"] = Math.Max(MinimumMenuHeight, available);
+    }
+
+    /// <summary>Never publish a ceiling lower than this: see <see cref="PublishMenuMaxHeight"/>.</summary>
+    private const double MinimumMenuHeight = 160;
 
     // ---- appearance (theme + style) -------------------------------------------------
 
