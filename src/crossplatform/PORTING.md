@@ -3304,6 +3304,13 @@ migliaia a ogni movimento del puntatore non è un drag, è una presentazione a d
 a ogni avvio — ed è una differenza voluta: una larghezza trascinata è una decisione. La griglia della
 finestra File history legge le stesse preferenze, quindi si apre come l'hai lasciata.
 
+### Seguito immediato (`fix`, stesso giorno)
+Le prese erano **invisibili** — 6px di Border trasparente e un cursore che parla solo quando ci sei
+già sopra — e la prima domanda dell'utente è stata «non ho capito cosa hai fatto resizable»,
+guardando proprio quella griglia. Ogni presa ora porta un **filo da 1px** in `App.Border`, così il
+confine è disegnato dove si può afferrare, e il filo diventa `App.Accent` **al passaggio del
+puntatore**: il segno dice «qui c'è un divisore», l'accensione dice «questo è vivo».
+
 ### Verifica
 Su Xvfb: trascinando il divisore dell'autore di 90px a sinistra la colonna si allarga e il subject si
 stringe **sia nell'intestazione sia nelle righe**; trascinando quello del commit id molto a sinistra
