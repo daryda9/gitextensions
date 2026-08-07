@@ -3260,6 +3260,81 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M108 (2026-08-07, `736a6ed6d` + `5c5d76c7c`) — allineamento con `upstream/master` e fix portati
+
+> Dall'utente: «vedi cosa hanno fatto nei commit del master e sincronizzalo a quello nostro,
+> assicurandoti poi di apportare i fix in maniera portabile al nostro codice».
+
+### Il merge (`736a6ed6d`)
+Undici commit di `upstream/master`, **zero conflitti**. Quello che arriva al port attraverso il core
+condiviso che compiliamo (`src/app/GitCommands`):
+
+- **`8cbe7c9f2`** cross-platform: `GetHomeDir()` ripiega su `UserProfile` invece che su `Personal`
+  (che su Linux è `~/Documents`), il path della cache degli avatar perde il backslash incorporato e
+  `meld` è cercato senza `.exe` fuori da Windows. **Il nostro `HomeDirectoryFix` resta**: semina
+  `AppSettings.CustomHomeDir` col vero `$HOME` in un `ModuleInitializer`, cioè in un punto **prima**
+  della catena rispetto al fallback (vedi M44).
+- **`6f71c08fc`** `LocalRepositoryManager` non butta più i repository *anchored* quando taglia la
+  cronologia recente — è la lista che legge la dashboard.
+- **`e3206275a`** elimina `Commands.PushLocal`, il cui unico chiamante era il dialogo di reset.
+
+Il resto è UI WinForms (`GitUI` non lo compiliamo), test o CI.
+
+### I fix riportati a mano (`5c5d76c7c`)
+1. **Nome del branch del worktree normalizzato** (da `6c302d839`). Il port non ha un campo "nuovo
+   branch": senza ref, git chiama il branch come l'**ultimo segmento del path così com'è**, quindi un
+   worktree in `~/lavoro/my feature` **falliva l'add**. Ora `WorktreeService` deriva il nome e lo
+   passa dal normalizzatore `check-ref-format` del core (`-b my_feature`), raggiunto via `GitContext`.
+2. **Dopo la creazione, offre di passarci** (stesso commit), da entrambi i punti d'ingresso: l'albero
+   alza `OpenRepositoryRequested`, il dialogo espone `RepositoryToOpen` e si chiude — sotto una
+   modale il repository non si può cambiare.
+3. **"Reset another branch" avvisa se si perdono commit** (da `e3206275a`), con
+   `git merge-base --is-ancestor <branch> <target>` fuori dal thread UI. Il port **non aveva alcun
+   avviso**; si riusa la stringa di upstream con la sua chiave, così una build tradotta la dice nella
+   lingua giusta.
+
+**Non portabili**, messi a verbale perché il prossimo giro non li riapra: `a2154c42f` (il port già
+rimette l'icona `Push` quando non è indietro), `5d6fd56e3` (nessun completamento del messaggio di
+commit nel port), `c20bb8464` (scelta git Windows/WSL), `f8b5d7d7a` (DI WinForms), più CI e test.
+
+### Un difetto trovato mentre si verificava
+Un underscore in un `Header` di `MenuItem` è il **marcatore del tasto di accesso** di Avalonia: ogni
+voce di menu che cita un ref mostrava `myfeature` per `my_feature`. Sbagliato da sempre, ma i nomi
+normalizzati del punto 1 rendono l'underscore comune. `Theming/MenuText` lo raddoppia in **un** posto,
+che è anche quello che ora usano le due `Replace("_", "__")` sparse in `MainToolbar`.
+
+### Verifica
+Su Xvfb, repo di prova in `/tmp/m108`: `my feature` crea il worktree sul branch `my_feature` (prima:
+`fatal: invalid reference`) e il prompt di switch lo apre davvero; spostare `main` all'indietro mostra
+l'avviso di perdita, spostare `side` in avanti (fast-forward) **no**; il menu contestuale scrive
+`my_feature` per intero. Build `Avvisi: 0`, harness entrambi PASS.
+
+## M107 (2026-08-07, `d5f4aca02`) — via le scatole dal dialogo di commit
+
+> Dall'utente: «migliora la grafica della finestra di commit (ci sono troppi bordi bianchi)».
+
+Il dialogo incorniciava tutto: un box `App.Border` da 1px attorno a ogni lista file e attorno al diff,
+una **fascia da 4px** dello stesso colore dipinta sui tre splitter, e dodici bottoni Fluent di default
+nelle due toolbar dei pannelli, ognuno col suo contorno. Contati sullo schermo: **14139 pixel** del
+colore del bordo nel corpo del dialogo. La finestra principale, che non disegna **nessun**
+`App.Border`, era lo standard che il dialogo non rispettava.
+
+- I contorni dei pannelli passano da `StyleDensity.PaneOutline`: **niente** in Modern, **1px** in
+  Classic — i pannelli incorniciati *sono* l'aspetto del 2015. Un pannello che perde il contorno
+  prende `App.Panel`: resta una superficie su una finestra più scura invece di diventarci un buco.
+- Le due liste file erano le uniche superfici del dialogo **fuori dalla tavolozza**: senza
+  `Background` prendevano il `#2B2B2B` di Fluent. Ora nominano `App.Panel` come ogni altra lista.
+- Gli splitter non dipingono più la fascia chiara (trasparente, così la presa riceve ancora il
+  puntatore) — quelli di `MainWindow` non l'hanno mai disegnata.
+- Le toolbar dei pannelli usano i bottoni piatti della toolbar principale, che escono da `MainToolbar`
+  e diventano `Theming/BarButtonStyles`: **una** definizione invece di due. Guadagna il ramo
+  `ToggleButton` con lo stato `:checked`, che serve ai toggle di raggruppamento — il bottone agganciato
+  dice quale raggruppamento è attivo, e un riempimento piatto a riposo lo nasconderebbe.
+
+Dopo: **1383** pixel di bordo (casella del filtro, riga della gutter del diff, contatore — tutti
+separano qualcosa) e **0** pixel fuori tavolozza. Verificato su Xvfb in **entrambi** gli stili; la
+toolbar principale è identica pixel per pixel dopo l'estrazione, a parte il contatore dei commit.
+
 ## M106 (2026-08-07, `4099dce58`) — tema di sistema e altre due famiglie di icone colorate
 
 > Dall'utente, come «prossimi step»: «1) sincronizzare il tema a quello di sistema (sempre
