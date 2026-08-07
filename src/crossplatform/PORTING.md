@@ -3260,6 +3260,30 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M111 (2026-08-07, `6926e58fb`) — il menu si ferma al bordo inferiore della finestra
+
+> Dall'utente, con screenshot: «ora va bene il margine superiore, ma esce dal bordo sotto della
+> finestra. deve fermarsi prima e mettere la freccia per scorrere come prima».
+
+M110 aveva impedito alla tendina di **salire** sopra la propria barra, ma poteva ancora **sforare in
+basso**: un popup è una finestra a sé, quindi il posizionatore lo limita allo **schermo**, e su una
+finestra più piccola dello schermo — il caso normale — il menu Vista finiva sul desktop sotto l'app.
+
+Nessuna style può conoscere quell'altezza: è una proprietà **della finestra** e di dove è finita la
+sua barra dei menu. Quindi la finestra la misura e la pubblica come **`App.MenuMaxHeight`**
+(`MainWindow.PublishMenuMaxHeight`, ripubblicata al ridimensionamento, al layout della barra e
+all'apertura) e la carta del menu la legge come **dynamic resource**. Sotto il tetto il menu
+**scorre**, che è ciò che serviva comunque alle voci sotto la piega.
+
+Un pavimento di 160px tiene il menu usabile su una finestra ridotta a niente: meglio un moncone che
+scorre e sborda, che una carta alta due voci.
+
+**Verifica** su Xvfb con finestra 1280×820 dentro uno schermo 1600×1000 (il caso segnalato): la
+tendina finisce **dentro** la finestra con il chevron di scorrimento sotto l'ultima voce visibile, e
+scorrendo si arriva al blocco Appearance e a Refresh in fondo. **Noto e lasciato così**: un menu
+aperto da un **dialogo** legge lo stesso tetto, quindi è limitato dalla finestra principale e non dal
+dialogo — può sbordare da un dialogo piccolo, mai dallo schermo.
+
 ## M110 (2026-08-07, `769b6fdcd`) — un menu non si apre più sopra la propria barra
 
 > Dall'utente: «la toolbar di "view" ha molte voci, quando la apro va a coprire la toolbar, fai in
