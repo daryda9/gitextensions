@@ -3,6 +3,7 @@ using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Primitives.PopupPositioning;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -585,6 +586,29 @@ public static class ModernStyles
         styles.Add(tabItem);
 
         styles.AddRange(BuildTabItem(app));
+
+        // ---- menu drop-downs never cover their own menu bar -------------------------
+        // A tall menu (View has ~30 entries) did not fit below the bar, and the popup
+        // positioner's default answer to that is to SLIDE the whole card up until it
+        // does — so the View menu opened over the menu bar and the toolbar, hiding the
+        // entry it belongs to and everything next to it.
+        //
+        // The fix is to take the vertical escape routes away and leave only the one
+        // that keeps the anchor honest: no FlipY, no SlideY, ResizeY instead — the card
+        // is shortened to the room below the bar and scrolls, exactly as an
+        // over-long menu does everywhere else. The horizontal adjustments stay: a
+        // SUBMENU opens sideways and must still be free to flip to the other side of
+        // its parent when it runs out of screen.
+        //
+        // In the baseline, not the modern block: a menu covering its own bar is a
+        // defect in both styles.
+        Style menuPlacement = new(x => x.OfType<MenuItem>().Template().OfType<Popup>());
+        menuPlacement.Setters.Add(new Setter(
+            Popup.PlacementConstraintAdjustmentProperty,
+            PopupPositionerConstraintAdjustment.SlideX
+            | PopupPositionerConstraintAdjustment.FlipX
+            | PopupPositionerConstraintAdjustment.ResizeY));
+        styles.Add(menuPlacement);
 
         return styles;
     }
