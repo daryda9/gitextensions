@@ -116,6 +116,13 @@ public sealed class FileHistoryView : UserControl
     public event Action<string>? RevisionSelected;
 
     /// <summary>
+    ///  Raised when the user selects TWO OR MORE commits: the arguments are the two
+    ///  ends of the selection, oldest first. The host answers by comparing them —
+    ///  for this view's file, since that is what the window is about.
+    /// </summary>
+    public event Action<string, string>? RangeSelected;
+
+    /// <summary>
     ///  Raised by the row menu's "Revert this commit…". When nothing is subscribed
     ///  the view performs the revert itself through <see cref="RevertArchiveService"/>
     ///  and reports the outcome in its own status line; a host that wants the
@@ -159,6 +166,7 @@ public sealed class FileHistoryView : UserControl
             CheckFilePresence(hash);
             RevisionSelected?.Invoke(hash);
         };
+        _grid.RangeSelected += (older, newer) => RangeSelected?.Invoke(older, newer);
         _grid.RevisionActivated += hash => RevisionActivated?.Invoke(hash);
 
         // File-specific commands in the grid's own row menu. The two headers below

@@ -852,22 +852,35 @@ public sealed class RevisionGridView : UserControl
                 return;
             }
 
-            // Two rows selected => diff the range. The grid is newest-first, so the
-            // row with the higher index in Items is the OLDER commit (= baseHash);
-            // the lower index is the NEWER commit (= otherHash).
-            if (_list.SelectedItems is { Count: 2 } sel
-                && sel[0] is RevisionRow a && sel[1] is RevisionRow b
-                && !IsArtificial(a) && !IsArtificial(b))
+            // Two rows or more selected => diff the range they span. The grid is
+            // newest-first, so the row with the HIGHEST index in Items is the older
+            // end (= baseHash) and the lowest is the newer end (= otherHash).
+            //
+            // Ctrl-picking two commits and Shift-picking a run of them therefore
+            // answer the same way, which is the point: a range of five commits used
+            // to fall through to the single-commit branch below and show the diff of
+            // whichever row happened to be SelectedItem — the selection said "compare
+            // these" and the pane showed one commit.
+            if (_list.SelectedItems is { Count: >= 2 } sel && RangeEnds(sel) is { } ends)
             {
-                int ia = _list.Items.IndexOf(a);
-                int ib = _list.Items.IndexOf(b);
-                RevisionRow older = ia >= ib ? a : b;
-                RevisionRow newer = ia >= ib ? b : a;
-                RangeSelected?.Invoke(older.Hash, newer.Hash);
+                // One Ctrl-click raises SelectionChanged TWICE (the removal and the
+                // addition are reported separately), and every announcement costs the
+                // host a git diff. Announcing a range only when it actually changed
+                // keeps one gesture to one comparison.
+                if (_announcedRange != ends)
+                {
+                    _announcedRange = ends;
+                    RangeSelected?.Invoke(ends.Older, ends.Newer);
+                }
             }
             else if (_list.SelectedItem is RevisionRow row && !IsArtificial(row))
             {
+                _announcedRange = null;
                 RevisionSelected?.Invoke(row.Hash);
+            }
+            else
+            {
+                _announcedRange = null;
             }
         };
 
@@ -1632,7 +1645,15 @@ public sealed class RevisionGridView : UserControl
                     hasMore = true;
                 }
 
-                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(merged);
+                // While following renames git does NOT rewrite the parent links, so
+                // the rows name parents that are not in the result set and the lane
+                // pass draws one dead-end stub per commit instead of one line through
+                // them (see RevisionService.ChainFollowedHistory).
+                IReadOnlyList<RevisionRow> forGraph = filter.FollowsSinglePath
+                    ? RevisionService.ChainFollowedHistory(merged)
+                    : merged;
+
+                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(forGraph);
 
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -5888,6 +5909,52 @@ public sealed class RevisionGridView : UserControl
         => _list.SelectedItems is { Count: > 0 } items
             ? items.OfType<RevisionRow>().Where(r => !IsArtificial(r)).ToList()
             : [];
+
+    /// <summary>The range last announced through <see cref="RangeSelected"/>, so the
+    /// second SelectionChanged of one Ctrl-click does not repeat it.</summary>
+    private (string Older, string Newer)? _announcedRange;
+
+    /// <summary>
+    ///  The two ends of a multi-row selection, oldest first, or <c>null</c> when the
+    ///  selection does not span two real commits.
+    ///
+    ///  <para>ONLY the ends: everything picked in between is what the user is asking
+    ///  to see the combined effect of, which is exactly <c>git diff oldest newest</c>.
+    ///  Artificial rows are skipped — a "working directory" row caught inside a
+    ///  Shift-run is not a commit and cannot be an end of a range.</para>
+    /// </summary>
+    private (string Older, string Newer)? RangeEnds(System.Collections.IList selection)
+    {
+        RevisionRow? older = null;
+        RevisionRow? newer = null;
+        int olderIndex = -1;
+        int newerIndex = int.MaxValue;
+
+        foreach (object? item in selection)
+        {
+            if (item is not RevisionRow row || IsArtificial(row))
+            {
+                continue;
+            }
+
+            int index = _list.Items.IndexOf(row);
+            if (index > olderIndex)
+            {
+                olderIndex = index;
+                older = row;
+            }
+
+            if (index < newerIndex)
+            {
+                newerIndex = index;
+                newer = row;
+            }
+        }
+
+        return older is not null && newer is not null && !ReferenceEquals(older, newer)
+            ? (older.Hash, newer.Hash)
+            : null;
+    }
 
     // --- Menu wiring helpers ---------------------------------------------------
 

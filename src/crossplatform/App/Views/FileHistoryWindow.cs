@@ -81,6 +81,14 @@ public sealed class FileHistoryWindow : ZoomWindow
     private string _nameInRevision = string.Empty;
 
     /// <summary>
+    ///  The older end of a multi-commit selection, empty when a single commit is
+    ///  selected. The Diff tab then compares the two ends instead of showing one
+    ///  commit; the other three tabs stay on <see cref="_hash"/>, the newer end,
+    ///  because a blob and a blame belong to ONE revision.
+    /// </summary>
+    private string _rangeBase = string.Empty;
+
+    /// <summary>
     ///  What each tab was last loaded with, so re-selecting a tab does not reload it and
     ///  walking the grid only pays for the tab on screen.
     /// </summary>
@@ -140,6 +148,7 @@ public sealed class FileHistoryWindow : ZoomWindow
         DialogKeys.InstallEscapeClose(this);
 
         _history.RevisionSelected += OnRevisionSelected;
+        _history.RangeSelected += OnRangeSelected;
 
         // Last, so the grid is only asked for the history once everything that reacts to
         // its first selection is wired.
@@ -166,7 +175,27 @@ public sealed class FileHistoryWindow : ZoomWindow
         Title = $"{title} - {PathDisplay.CollapseHome(_repoPath)}";
     }
 
+    /// <summary>
+    ///  Two or more commits picked in the file's grid (Ctrl or Shift): the window
+    ///  shows what happened to the file BETWEEN the ends of that selection. Upstream
+    ///  answers a multi-selection the same way — it diffs against the first of the
+    ///  selected revisions — and the port's repository grid already did, through
+    ///  <c>MainWindow.OnRangeSelected</c>; only this window was left showing whichever
+    ///  single commit happened to be the anchor of the selection.
+    /// </summary>
+    private void OnRangeSelected(string older, string newer)
+    {
+        _rangeBase = older ?? string.Empty;
+        Select(newer);
+    }
+
     private void OnRevisionSelected(string hash)
+    {
+        _rangeBase = string.Empty;
+        Select(hash);
+    }
+
+    private void Select(string hash)
     {
         _hash = hash ?? string.Empty;
         _nameInRevision = _hash.Length > 0 ? _history.GetFileNameForRevision(_hash) : string.Empty;
@@ -195,7 +224,11 @@ public sealed class FileHistoryWindow : ZoomWindow
             return;
         }
 
-        if (_loaded.TryGetValue(tab, out string? shown) && string.Equals(shown, _hash, StringComparison.Ordinal))
+        // What the tab is showing is identified by the COMPARISON, not by the
+        // revision: switching a selection of two commits to just the newer one keeps
+        // the same _hash and must still reload the Diff tab.
+        string key = _rangeBase.Length > 0 ? $"{_rangeBase}..{_hash}" : _hash;
+        if (_loaded.TryGetValue(tab, out string? shown) && string.Equals(shown, key, StringComparison.Ordinal))
         {
             return;
         }
@@ -208,7 +241,7 @@ public sealed class FileHistoryWindow : ZoomWindow
         if (ReferenceEquals(tab, _commitTab))
         {
             _detail.ShowCommit(_repoPath, hash);
-            _loaded[tab] = hash;
+            _loaded[tab] = key;
             return;
         }
 
@@ -229,7 +262,14 @@ public sealed class FileHistoryWindow : ZoomWindow
                     return;
                 }
 
-                if (ReferenceEquals(tab, _diffTab))
+                if (ReferenceEquals(tab, _diffTab) && _rangeBase.Length > 0)
+                {
+                    // A range: the file's changes between the two ends, taken as a
+                    // whole. The list is the range's whole file list, as it is for the
+                    // repository grid, with this file selected.
+                    _diff.ShowRange(_repoPath, _rangeBase, hash, name);
+                }
+                else if (ReferenceEquals(tab, _diffTab))
                 {
                     // File-scoped, like upstream's Diff tab: the commit's whole file list
                     // is still there — this is the port's DiffView — but the row for THIS
@@ -246,7 +286,7 @@ public sealed class FileHistoryWindow : ZoomWindow
                     _blame.ShowBlame(_repoPath, name, hash);
                 }
 
-                _loaded[tab] = hash;
+                _loaded[tab] = key;
             },
             "reading the file history");
     }

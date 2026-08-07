@@ -475,11 +475,12 @@ public sealed record RevisionRow(
 
     /// <summary>
     ///  Parents used by the lane-assignment pass instead of <see cref="ParentHashes"/>,
-    ///  or <c>null</c> to use the real ones. Set only by the synthesised
+    ///  or <c>null</c> to use the real ones. Set by the synthesised
     ///  "working directory" / "commit index" rows, which have no parents of their own
     ///  (DAG navigation must never walk into or out of them) but do need a real edge
     ///  down to the checked-out commit, laid out by the graph rather than painted over
-    ///  it afterwards.
+    ///  it afterwards — and by <see cref="ChainFollowedHistory"/>, where git refuses to
+    ///  rewrite the parent links at all.
     /// </summary>
     public IReadOnlyList<string>? GraphParents { get; init; }
 
@@ -817,6 +818,54 @@ public sealed class RevisionService
     /// </summary>
     public static IReadOnlyList<RevisionRow> BuildRevisionGraph(IReadOnlyList<RevisionRow> rows)
         => BuildGraph(rows as List<RevisionRow> ?? [.. rows]);
+
+    /// <summary>
+    ///  Re-links a <c>--follow</c> walk into the chain it actually is: each row's
+    ///  graph parent becomes the row BELOW it, and the last row of what is loaded so
+    ///  far has none.
+    ///
+    ///  <para><b>Why it is needed.</b> Every other narrowed walk gets its parent links
+    ///  rewritten by git (<c>--parents</c> + history simplification: <c>%P</c> then
+    ///  names the nearest SURVIVING ancestor), which is what keeps the DAG connected
+    ///  across the commits the filter removed. <c>--follow</c> is the exception —
+    ///  measured on this repository, git 2.51:</para>
+    ///  <code>
+    ///  git log --parents --follow --format=%h^%p -- src/crossplatform/HANDOFF.md
+    ///    94525c1d0^4384fbc1c   &lt;- 4384fbc1c is NOT in the result set
+    ///  git log --parents --format=%h^%p -- src/crossplatform/HANDOFF.md
+    ///    94525c1d0^b292aa32d   &lt;- rewritten to the next row, as everywhere else
+    ///  </code>
+    ///  <para>So while following renames every row named a parent that is not on
+    ///  screen: the lane pass found no lane waiting for any commit, opened a fresh one
+    ///  for each row and closed it again one row later. That is the staircase of
+    ///  disconnected stubs the file history was drawing — one lane per commit instead
+    ///  of one line through them all.</para>
+    ///
+    ///  <para><b>Why chaining is honest here.</b> <c>--follow</c> produces exactly one
+    ///  line of history by construction (git rejects it for several paths, and the
+    ///  walk is forced onto a single starting commit and the default order — see
+    ///  <see cref="LoadRevisionPage"/>), so "the next row" IS the surviving ancestor
+    ///  that rewriting would have named. The REAL parents are untouched: only
+    ///  <see cref="RevisionRow.GraphParents"/> is set, so DAG navigation, the parent
+    ///  menus and every diff keep using the commit's true parentage.</para>
+    /// </summary>
+    public static IReadOnlyList<RevisionRow> ChainFollowedHistory(IReadOnlyList<RevisionRow> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+
+        List<RevisionRow> chained = new(rows.Count);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            // The last loaded row's edge is left open: the walk continues below it,
+            // and pointing at a commit that is not there is what this fixes.
+            chained.Add(rows[i] with
+            {
+                GraphParents = i + 1 < rows.Count ? [rows[i + 1].Hash] : [],
+            });
+        }
+
+        return chained;
+    }
 
     /// <summary>
     ///  HEAD, the ref-name lookup and the note-carrying commits of one repository —

@@ -209,12 +209,6 @@ public sealed class DiffView : UserControl
     // Re-runs the load that produced the current file list (the refresh button).
     private Action? _reload;
 
-    // File the caller asked to land on, carried across the asynchronous fill of
-    // the changed-files list. Every load sets it (to null unless a caller asked
-    // for one), so the refresh button — which re-enters the same load without a
-    // path — never drags an old preselection back onto the list.
-    private string? _pendingSelection;
-
     private string? _repoPath;
     private string? _commitHash;   // the (right/"new") commit; also the "other" side in Range mode
     private string? _baseHash;     // the ("old"/left) commit in Range mode
@@ -1035,6 +1029,15 @@ public sealed class DiffView : UserControl
     ///  (i.e. <c>git diff &lt;base&gt; &lt;other&gt;</c>).
     /// </summary>
     public void ShowRange(string repoPath, string baseHash, string otherHash)
+        => ShowRange(repoPath, baseHash, otherHash, preselectPath: null);
+
+    /// <summary>
+    ///  As <see cref="ShowRange(string, string, string)"/>, but lands on
+    ///  <paramref name="preselectPath"/> — what the file-history window needs, where
+    ///  the range the user picked is about one file and the pane must open on it
+    ///  rather than on whatever sorts first.
+    /// </summary>
+    public void ShowRange(string repoPath, string baseHash, string otherHash, string? preselectPath)
     {
         _repoPath = repoPath;
         _commitHash = otherHash;
@@ -1049,7 +1052,8 @@ public sealed class DiffView : UserControl
         LoadFileList(
             () => DiffService.GetDiffFilesBetween(repoPath, baseHash, otherHash),
             count => F(ChangedFilesFormat(), range, count),
-            F(LoadingFilesFormat(), range));
+            F(LoadingFilesFormat(), range),
+            preselectPath);
     }
 
     /// <summary>
@@ -1131,7 +1135,13 @@ public sealed class DiffView : UserControl
         // Remembered so the toolbar's refresh button can re-run exactly this load.
         _reload = () => LoadFileList(load, statusFor, loadingText);
 
-        _pendingSelection = string.IsNullOrEmpty(preselectPath) ? null : preselectPath;
+        // The file to land on travels WITH this load, not in a field of the view.
+        // One user gesture can produce two loads (a Ctrl-click on the grid raises
+        // SelectionChanged twice), and a shared field made the second one consume
+        // what the first had already used up: the second list came back with no
+        // preselection and put the selection on its first row, so the pane showed a
+        // file the user never asked for.
+        string? wanted = string.IsNullOrEmpty(preselectPath) ? null : preselectPath;
 
         _files.Clear();
         _diff.Inlines?.Clear();
@@ -1148,7 +1158,7 @@ public sealed class DiffView : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     _files.SetFiles(rows);
-                    ApplyPendingSelection();
+                    Preselect(wanted);
                     _status.Text = statusFor(rows.Count);
                 });
             }
@@ -1163,11 +1173,8 @@ public sealed class DiffView : UserControl
     // The list has no "select by name" of its own, so the row nodes it just built
     // are searched and the pick is handed to the ListBox — which reports it back
     // through SelectedFileChanged, exactly as a click would, so the diff loads.
-    private void ApplyPendingSelection()
+    private void Preselect(string? wanted)
     {
-        string? wanted = _pendingSelection;
-        _pendingSelection = null;
-
         if (wanted is null || _files.List.ItemsSource is not IEnumerable<object> items)
         {
             return;
