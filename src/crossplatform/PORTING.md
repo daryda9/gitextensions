@@ -3260,6 +3260,30 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M110 (2026-08-07, `769b6fdcd`) — un menu non si apre più sopra la propria barra
+
+> Dall'utente: «la toolbar di "view" ha molte voci, quando la apro va a coprire la toolbar, fai in
+> modo che questo non accada e si apra a partire da sotto la toolbar».
+
+Il menu Vista ha una trentina di voci e **non ci sta** sotto la barra. La risposta predefinita del
+posizionatore dei popup è **far scorrere in su** tutta la carta finché non ci sta: il menu si apriva
+quindi **sopra la propria voce**, coprendo barra dei menu e toolbar — la voce a cui appartiene
+finiva nascosta dietro l'elenco che aveva aperto.
+
+Si tolgono le vie di fuga verticali e resta quella onesta: **niente FlipY, niente SlideY, ResizeY**.
+La carta viene accorciata allo spazio disponibile sotto la barra e **scorre**, come fa qualunque
+menu troppo lungo. Gli aggiustamenti orizzontali restano: un **sottomenu** si apre di lato e deve
+poter ribaltarsi dall'altra parte del genitore quando finisce lo schermo.
+
+Sta nelle styles **baseline**, non nel blocco moderno: un menu che copre la propria barra è un
+difetto in entrambi gli stili.
+
+**Verifica** su Xvfb: il menu Vista parte subito sotto la barra, scorre fino al blocco Appearance in
+fondo, e il sottomenu Language si apre ancora a destra. **Non coperto, di proposito**: un flyout
+aperto da uno split button della toolbar è ospitato dal flyout stesso e non dal template di
+`MenuItem`, quindi questa style non lo raggiunge — al momento nessuno di quei flyout è abbastanza
+alto da scorrere in su.
+
 ## M109 (2026-08-07, `7fcf2204e`) — pulsanti pieni e menu con la forma di VS Code
 
 > Dall'utente: «1) ci sono ancora dei pulsanti con i bordi bianchi all'interno della finestra di
