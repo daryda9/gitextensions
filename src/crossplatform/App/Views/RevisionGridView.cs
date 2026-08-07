@@ -52,6 +52,9 @@ public sealed class RevisionGridView : UserControl
     /// <summary>Gap between a column's divider and the text in that column.</summary>
     private const double ColumnTextInset = 6;
 
+    /// <summary>Marks the grids whose columns are THE columns (header and rows).</summary>
+    private const string ColumnGridTag = "revision-grid-columns";
+
     // Size of the identicon square drawn inside the avatar cell (centred).
     private const double AvatarSize = 18;
 
@@ -4765,6 +4768,10 @@ public sealed class RevisionGridView : UserControl
         {
             ColumnDefinitions = new ColumnDefinitions(
                 $"{EffectiveGraphWidth},*,{avatar},{author},{date},{hash}"),
+
+            // Marked so a live column drag can find the row grids among the panels the
+            // row template nests inside them, without guessing from the column count.
+            Tag = ColumnGridTag,
         };
     }
 
@@ -4838,11 +4845,13 @@ public sealed class RevisionGridView : UserControl
     ///  of the three fixed columns. A divider always resizes the column it belongs to
     ///  against the one that absorbs, so it has to be on the side facing the subject.</para>
     ///
-    ///  <para><b>Why the rows are not re-templated while dragging.</b> Every row is a
-    ///  Grid built from the same definitions, and rebuilding thousands of them per
-    ///  pointer move is not a drag, it is a slideshow. Only the header follows the
-    ///  pointer; the rows catch up in one rebind when the button is released, which is
-    ///  also when the width is written to the preferences.</para>
+    ///  <para><b>The rows follow live, without being rebuilt.</b> Re-templating them per
+    ///  pointer move would be a slideshow, not a drag; instead the drag walks the rows
+    ///  that are REALIZED — a screenful, never the whole history — and moves their column
+    ///  definitions, exactly as it moves the header's. A row realized mid-drag is already
+    ///  correct: <see cref="MakeColumns"/> reads the same fields. Nothing is rebound at
+    ///  the end, so there is no flash when the button comes up; that is only when the
+    ///  width is written to the preferences.</para>
     /// </summary>
     private Control ResizeHandle(int column, Func<double> get, Action<double> set)
     {
@@ -4900,6 +4909,7 @@ public sealed class RevisionGridView : UserControl
             double wanted = startWidth + (startX - e.GetPosition(this).X);
             set(ClampColumnWidth(column, get(), wanted));
             ApplyHeaderWidths();
+            ApplyRowWidths();
         };
 
         handle.PointerReleased += (_, e) =>
@@ -4911,9 +4921,6 @@ public sealed class RevisionGridView : UserControl
 
             dragging = false;
             e.Pointer.Capture(null);
-
-            // One rebind for the whole drag, then the widths are the user's for good.
-            RebindRows(preserveViewport: true);
             PersistColumnWidths();
         };
 
@@ -4939,10 +4946,34 @@ public sealed class RevisionGridView : UserControl
         return Math.Clamp(wanted, MinColumnWidth, Math.Max(MinColumnWidth, ceiling));
     }
 
-    /// <summary>Moves the header's own definitions, mid-drag, without touching the rows.</summary>
-    private void ApplyHeaderWidths()
+    /// <summary>Moves the header's own definitions, mid-drag.</summary>
+    private void ApplyHeaderWidths() => ApplyWidths(_headerGrid);
+
+    /// <summary>
+    ///  Moves the definitions of every row currently on screen, so the columns under the
+    ///  header keep up with it while the divider is being dragged.
+    ///
+    ///  <para>Only the realized containers: virtualization means that is a screenful,
+    ///  and the rows outside it will be built from the fields when they scroll in.</para>
+    /// </summary>
+    private void ApplyRowWidths()
     {
-        if (_headerGrid is not { } grid || grid.ColumnDefinitions.Count < 6)
+        foreach (Control container in _list.GetRealizedContainers())
+        {
+            foreach (Visual child in container.GetVisualDescendants())
+            {
+                if (child is Grid { Tag: ColumnGridTag } grid)
+                {
+                    ApplyWidths(grid);
+                    break;
+                }
+            }
+        }
+    }
+
+    private void ApplyWidths(Grid? grid)
+    {
+        if (grid is null || grid.ColumnDefinitions.Count < 6)
         {
             return;
         }
