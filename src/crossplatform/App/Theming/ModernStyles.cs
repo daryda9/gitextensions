@@ -616,6 +616,20 @@ public static class ModernStyles
             new DynamicResourceExtension("App.MenuMaxHeight")));
         styles.Add(menuHeight);
 
+        // Wheel and hover behaviour for a menu that scrolls (see Theming/MenuScrolling).
+        // All three hosts, because all three can produce a list longer than the screen:
+        // a menu-bar drop-down, a context menu and a split button's flyout.
+        foreach (Style menuScroll in new[]
+                 {
+                     new Style(x => x.OfType<MenuItem>().Template().OfType<ScrollViewer>()),
+                     new Style(x => x.OfType<ContextMenu>().Template().OfType<ScrollViewer>()),
+                     new Style(x => x.OfType<MenuFlyoutPresenter>().Template().OfType<ScrollViewer>()),
+                 })
+        {
+            menuScroll.Setters.Add(new Setter(MenuScrolling.EnabledProperty, true));
+            styles.Add(menuScroll);
+        }
+
         Style menuPlacement = new(x => x.OfType<MenuItem>().Template().OfType<Popup>());
         menuPlacement.Setters.Add(new Setter(
             Popup.PlacementConstraintAdjustmentProperty,
