@@ -5,6 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- VSTHRD003 warns about awaiting a task somebody else started, because that
+         deadlocks when the task needs the awaiting thread. This harness IS the
+         somebody else: what it asserts is the identity, single-flight and generation
+         behaviour of the tasks RepositoryNavigationSnapshotService hands out, so
+         holding one in a variable and awaiting it later is the test, not a mistake.
+         A console harness has no synchronization context for the deadlock to happen
+         on either. Scoped to this project on purpose — the app itself builds with
+         zero warnings and no exemptions. -->
+    <NoWarn>$(NoWarn);VSTHRD003</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />

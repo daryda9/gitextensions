@@ -1427,14 +1427,14 @@ public sealed class MainToolbar : UserControl
             },
         };
 
-        LoadShellsAsync();
+        LoadShells();
         return _shellHost;
     }
 
     // Probes PATH and reads the stored preference on a worker, then adopts the
     // result on the UI thread. Rebuild() calls MakeShellSplitButton again (language
     // switch), so this may run more than once — it is idempotent.
-    private void LoadShellsAsync()
+    private void LoadShells()
     {
         _ = Task.Run(() =>
         {
@@ -2381,7 +2381,23 @@ public sealed class MainToolbar : UserControl
 
             if (load.IsCompleted)
             {
-                await PopulateRepoLinksAsync(flyout, iconName, () => load, trailing);
+                // Prefetched and already finished: materialise it HERE instead of
+                // handing the populate helper a task somebody else started, which is
+                // the shape that deadlocks when the other party wants this thread.
+                // A fault is carried across as a fault, so the menu still degrades to
+                // "(unable to list)".
+                Func<Task<IReadOnlyList<RepoLink>>> ready;
+                try
+                {
+                    IReadOnlyList<RepoLink> links = await load;
+                    ready = () => Task.FromResult(links);
+                }
+                catch (Exception ex)
+                {
+                    ready = () => Task.FromException<IReadOnlyList<RepoLink>>(ex);
+                }
+
+                await PopulateRepoLinksAsync(flyout, iconName, ready, trailing);
                 flyout.ShowAt(anchor);
                 return;
             }
@@ -2404,18 +2420,10 @@ public sealed class MainToolbar : UserControl
 
         // Click handlers return void, so an unobserved exception here would take the
         // process down: a drop-down that cannot be listed must never do that.
-        void ShowLinks(Control anchor) => Dispatcher.UIThread.Post(async () =>
-        {
-            try
-            {
-                await ShowLinksAsync(anchor);
-            }
-            catch
-            {
-                // PopulateRepoLinksAsync already degrades to "(unable to list)"; this
-                // catches anything the flyout itself might throw.
-            }
-        });
+        // PopulateRepoLinksAsync already degrades to "(unable to list)"; Async.Run
+        // catches whatever the flyout itself might throw on top of that.
+        void ShowLinks(Control anchor)
+            => Async.Run(() => ShowLinksAsync(anchor), "listing the repository links");
 
         if (bodyAction is null && primaryPath is null)
         {
@@ -2672,11 +2680,13 @@ public sealed class MainToolbar : UserControl
         };
         button.Classes.Add("toolbtn");
         ToolTip.SetTip(button, T("TranslatedStrings/_buttonCheckoutBranch.Text", "Checkout a local branch"));
-        button.Click += async (_, _) =>
-        {
-            await PopulateBranchesAsync(flyout, BranchesProvider);
-            flyout.ShowAt(button);
-        };
+        button.Click += (_, _) => Async.Run(
+            async () =>
+            {
+                await PopulateBranchesAsync(flyout, BranchesProvider);
+                flyout.ShowAt(button);
+            },
+            "listing the branches");
 
         // Upstream's branchSelect_MouseUp: a RIGHT click on the button skips the list
         // and opens the checkout dialog straight away. Handled on the tunnelling
@@ -2771,11 +2781,13 @@ public sealed class MainToolbar : UserControl
             }
         }, RoutingStrategies.Tunnel);
 
-        button.Click += async (_, _) =>
-        {
-            await BuildWorkingDirMenuAsync(flyout);
-            flyout.ShowAt(button);
-        };
+        button.Click += (_, _) => Async.Run(
+            async () =>
+            {
+                await BuildWorkingDirMenuAsync(flyout);
+                flyout.ShowAt(button);
+            },
+            "building the repository menu");
         _overflow[button] = new OverflowEntry
         {
             Kind = OverflowKind.LazyMenu,
@@ -3449,17 +3461,11 @@ public sealed class MainToolbar : UserControl
                 Func<Control, Task>? show = entry.ShowMenu;
                 if (show is not null)
                 {
-                    lazy.Click += (_, _) => Dispatcher.UIThread.Post(async () =>
-                    {
-                        try
-                        {
-                            await show(_overflowButton);
-                        }
-                        catch
-                        {
-                            // A drop-down that cannot be listed must never break the toolbar.
-                        }
-                    });
+                    // A drop-down that cannot be listed must never break the toolbar,
+                    // which is what Async.Run guarantees here.
+                    lazy.Click += (_, _) => Async.Run(
+                        () => show(_overflowButton),
+                        "opening a parked toolbar menu");
                 }
 
                 return lazy;

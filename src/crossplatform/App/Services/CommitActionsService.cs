@@ -168,6 +168,12 @@ public sealed class CommitActionsService
     {
         GitModule module = GitContext.CreateModule(repoPath);
 
+        // Normalised once: the argument is declared non-null but has always been
+        // treated as optional here (an empty message means "let git name the stash"),
+        // and the two spellings of that test made the fallback's parameter read as
+        // possibly null.
+        string text = message ?? string.Empty;
+
         if (string.IsNullOrWhiteSpace(Exec(module, new GitArgumentBuilder("diff") { "--cached", "--name-only" })))
         {
             return new CommitActionResult(false, "There are no staged changes to stash.");
@@ -177,8 +183,8 @@ public sealed class CommitActionsService
         {
             "push",
             "--staged",
-            { !string.IsNullOrWhiteSpace(message), "-m" },
-            { !string.IsNullOrWhiteSpace(message), (message ?? string.Empty).Quote() },
+            { !string.IsNullOrWhiteSpace(text), "-m" },
+            { !string.IsNullOrWhiteSpace(text), text.Quote() },
         };
         ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
         if (result.ExitedSuccessfully)
@@ -194,7 +200,7 @@ public sealed class CommitActionsService
                 || output.Contains("error:", StringComparison.OrdinalIgnoreCase));
 
         return unsupported
-            ? StashStagedFallback(module, message)
+            ? StashStagedFallback(module, text)
             : new CommitActionResult(false, output);
     }
 

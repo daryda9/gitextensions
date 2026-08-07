@@ -195,9 +195,10 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
     private Control WithBrowse(TextBox tb)
     {
         Button browse = new() { Content = "Browse…", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
-        browse.Click += async (_, _) =>
-        {
-            try
+        // A cancelled or failed file picker must not crash the dialog: Async.Run is
+        // what turns a throw from the storage provider into a logged line.
+        browse.Click += (_, _) => Async.Run(
+            async () =>
             {
                 TopLevel? top = GetTopLevel(this);
                 if (top is null)
@@ -211,12 +212,8 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
                 {
                     tb.Text = path;
                 }
-            }
-            catch
-            {
-                // A cancelled or failed file picker must not crash the dialog.
-            }
-        };
+            },
+            "choosing a file for a plugin setting");
 
         Grid grid = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         Grid.SetColumn(tb, 0);

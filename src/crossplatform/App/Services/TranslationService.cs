@@ -69,7 +69,13 @@ public static class TranslationService
     // Startup pre-load (see BeginPreload): the catalogue parse kicked off before
     // Avalonia has built anything, plus the language list discovered by the same
     // background pass so the shell does not have to re-scan the disk.
-    private static Task? _preload;
+    // Serialises the pre-load against the start-up joiner, so the catalogue is parsed
+    // once no matter which of the two gets there first.
+    private static readonly object PreloadGate = new();
+
+    // The language the pre-load is for, kept separately from the task: the joiner needs
+    // to know WHAT to load, not to await WHO is loading it.
+    private static string? _preloadLanguage;
     private static IReadOnlyList<string>? _preloadedLanguages;
 
     /// <summary>Raised (on the thread that completed the load) after the active
@@ -164,48 +170,89 @@ public static class TranslationService
             return;
         }
 
-        _preload = Task.Run(() =>
+        _preloadLanguage = name;
+        Task.Run(() => LoadPreloaded(name)).Forget($"pre-loading the {name} catalogue");
+    }
+
+    // The pre-load body, also runnable by the joiner (see EnsureLoaded): whoever gets
+    // the gate first does the work, the other one finds the catalogue already in and
+    // returns. Never throws — a failure leaves the English literals in place.
+    private static void LoadPreloaded(string name)
+    {
+        lock (PreloadGate)
         {
-            IReadOnlyList<string> languages = AvailableLanguages();
-            _preloadedLanguages = languages;
+            LoadHoldingGate(name);
+        }
+    }
 
-            if (!languages.Any(l => string.Equals(l, name, StringComparison.OrdinalIgnoreCase)))
-            {
-                // The remembered catalogue is gone (partial install): stay English.
-                return;
-            }
+    // Parses and installs the catalogue. Requires PreloadGate, so the pre-load and the
+    // start-up joiner cannot both parse the same file.
+    private static void LoadHoldingGate(string name)
+    {
+        if (_catalog.Count > 0)
+        {
+            return;
+        }
 
-            Catalog catalog = Build(name);
-            if (catalog.Count > 0)
-            {
-                _catalog = catalog;
-            }
-        });
+        IReadOnlyList<string> languages = AvailableLanguages();
+        _preloadedLanguages = languages;
+
+        if (!languages.Any(l => string.Equals(l, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            // The remembered catalogue is gone (partial install): stay English.
+            return;
+        }
+
+        Catalog catalog = Build(name);
+        if (catalog.Count > 0)
+        {
+            _catalog = catalog;
+        }
     }
 
     /// <summary>
-    ///  Joins a <see cref="BeginPreload"/> started earlier, waiting at most
-    ///  <paramref name="timeout"/>. Returns true when there was nothing to wait for
-    ///  or the catalogue is in. Called once, from the start-up path, before the main
-    ///  window exists — never from a live UI thread.
+    ///  Joins a <see cref="BeginPreload"/> started earlier, giving it at most
+    ///  <paramref name="timeout"/>. Returns true when there was nothing to load or the
+    ///  catalogue is in. Called once, from the start-up path, just before the first
+    ///  window is constructed — which is the UI thread, hence the shape below.
     /// </summary>
     public static bool WaitForPreload(TimeSpan timeout)
     {
-        Task? preload = _preload;
-        if (preload is null)
+        string? name = _preloadLanguage;
+        if (name is null)
         {
             return true;
         }
 
+        // Not a wait on the pre-load TASK. This runs on the thread that is about to
+        // build the first window — Avalonia's UI thread — and blocking a UI thread on a
+        // task is how an app deadlocks, whatever the timeout says. Instead the joiner
+        // takes the same gate the pre-load holds and does the SAME work: if the pool
+        // thread finished, the catalogue is already in and this returns at once; if it
+        // is still parsing, the gate is held only for as long as the parse takes; if it
+        // never started, the joiner parses it here, which is the useful thing to do
+        // with a thread that would otherwise be idle.
+        if (!Monitor.TryEnter(PreloadGate, timeout))
+        {
+            // Still busy after the budget: ship English rather than hold the window.
+            return false;
+        }
+
         try
         {
-            return preload.Wait(timeout);
+            LoadHoldingGate(name);
         }
         catch
         {
-            // A faulted pre-load means "no catalogue"; the literals stay English.
+            // A failed catalogue means "no catalogue"; the literals stay English.
             return false;
         }
+        finally
+        {
+            Monitor.Exit(PreloadGate);
+        }
+
+        return _catalog.Count > 0;
     }
 
     /// <summary>

@@ -156,11 +156,6 @@ public sealed class MainMenu : UserControl
     public event Action? EditGitConfigRequested;
 
     /// <summary>
-    ///  Opens the port's <c>MaintenanceDialog</c> (compress / verify / prune in one place).
-    /// </summary>
-    public event Action? GitMaintenanceRequested;
-
-    /// <summary>
     ///  "Recover lost objects…" — opens <c>VerifyDialog</c>, the port of upstream's
     ///  <c>FormVerify</c>: the lost-object list with recovery into tags/branches.
     ///  Before M69 this entry fell back to <c>MaintenanceDialog</c> because the port had

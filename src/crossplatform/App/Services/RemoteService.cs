@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using GitCommands;
 using GitCommands.Config;
 using GitCommands.Git;
@@ -182,15 +183,68 @@ public sealed record PullOptions(
 public sealed class RemoteService
 {
     /// <summary>
-    ///  Runs an async git call from a synchronous service method without ever
-    ///  deadlocking the caller. Awaiting directly with <c>GetAwaiter().GetResult()</c>
-    ///  hangs forever when the caller sits on the Avalonia UI thread: the
-    ///  continuation is posted back to that same (now blocked) thread. Hopping to
-    ///  the thread pool first detaches the continuation from the UI
-    ///  SynchronizationContext. Callers should still stay off the UI thread — this
-    ///  only turns a hard hang into a short block.
+    ///  Reads the configured remotes synchronously.
+    ///
+    ///  <para>This service is sync by design — a dozen callers run it inside their own
+    ///  <c>Task.Run</c> — and it used to get its remotes by blocking on the core's
+    ///  <c>GetRemotesAsync</c> through a thread-pool hop. Blocking on a task is only
+    ///  ever a bet on where the continuation lands: the hop made the bet safe, it did
+    ///  not remove it, and it cost a pool thread per call. The core also exposes the
+    ///  same data synchronously (<c>GitExecutable.Execute</c>, as
+    ///  <c>GetRemoteNames</c> does), so nothing has to be waited on at all.</para>
+    ///
+    ///  <para>Output of <c>git remote -v</c> is two lines per remote —
+    ///  <c>name\turl (fetch)</c> and <c>name\turl (push)</c> — so the fetch URL is the
+    ///  one the panel shows and the push URL falls back to it, exactly as the core's
+    ///  parser does.</para>
     /// </summary>
-    private static T RunDetached<T>(Func<Task<T>> work) => Task.Run(work).GetAwaiter().GetResult();
+    private static IReadOnlyList<(string Name, string FetchUrl, string PushUrl)> ReadRemotes(GitModule module)
+    {
+        ExecutionResult result = module.GitExecutable.Execute(
+            new GitArgumentBuilder("remote") { "-v" },
+            throwOnErrorExit: false);
+
+        if (!result.ExitedSuccessfully)
+        {
+            return [];
+        }
+
+        List<string> order = [];
+        Dictionary<string, (string Fetch, string Push)> urls = new(StringComparer.Ordinal);
+
+        foreach (string line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            Match match = RemoteVerboseLine.Match(line.TrimEnd('\r'));
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            string name = match.Groups["name"].Value;
+            string url = match.Groups["url"].Value;
+            if (!urls.TryGetValue(name, out (string Fetch, string Push) known))
+            {
+                order.Add(name);
+                known = (string.Empty, string.Empty);
+            }
+
+            urls[name] = match.Groups["direction"].Value == "push"
+                ? (known.Fetch, url)
+                : (url, known.Push);
+        }
+
+        return [.. order.Select(name =>
+        {
+            (string fetch, string push) = urls[name];
+            return (name, fetch, push.Length > 0 ? push : fetch);
+        })];
+    }
+
+    // "origin<TAB>https://host/repo.git (fetch)" — the URL may itself contain spaces,
+    // so the direction is anchored to the end of the line rather than split on.
+    private static readonly Regex RemoteVerboseLine = new(
+        @"^(?<name>[^\t]+)\t(?<url>.*)\s\((?<direction>fetch|push)\)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
     ///  Lists the configured remotes (name + fetch/push URLs).
@@ -198,11 +252,7 @@ public sealed class RemoteService
     public IReadOnlyList<RemoteRow> ListRemotes(string repoPath)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        IReadOnlyList<Remote> remotes = RunDetached(module.GetRemotesAsync);
-        return [.. remotes.Select(r => new RemoteRow(
-            r.Name,
-            r.FetchUrl ?? string.Empty,
-            r.PushUrls.Count > 0 ? r.PushUrls[0] : r.FetchUrl ?? string.Empty)
+        return [.. ReadRemotes(module).Select(r => new RemoteRow(r.Name, r.FetchUrl, r.PushUrl)
         {
             ConfiguredPushUrl = ReadPushUrlSetting(module, r.Name),
         })];
@@ -1041,11 +1091,5 @@ public sealed class RemoteService
     }
 
     private static IReadOnlyList<RemoteRow> ListRemotesFrom(GitModule module)
-    {
-        IReadOnlyList<Remote> remotes = RunDetached(module.GetRemotesAsync);
-        return [.. remotes.Select(r => new RemoteRow(
-            r.Name,
-            r.FetchUrl ?? string.Empty,
-            r.PushUrls.Count > 0 ? r.PushUrls[0] : r.FetchUrl ?? string.Empty))];
-    }
+        => [.. ReadRemotes(module).Select(r => new RemoteRow(r.Name, r.FetchUrl, r.PushUrl))];
 }

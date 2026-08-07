@@ -1406,7 +1406,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         _menu.EditGitattributesRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".gitattributes")));
         _menu.EditMailmapRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".mailmap")));
         _menu.EditInfoExcludeRequested += () => WithRepo(p => _externalTools.OpenOrCreateFile(Path.Combine(p, ".git", "info", "exclude")));
-        _menu.GitMaintenanceRequested += () => _ = OpenMaintenanceAsync();
         _menu.RecoverLostObjectsRequested += () => _ = OpenVerifyAsync();
         _menu.SparseCheckoutRequested += () => _ = OpenSparseAsync();
         _menu.RepoSettingsRequested += () => _ = OpenSettingsAsync();
@@ -4060,11 +4059,19 @@ public sealed class MainWindow : Theming.ZoomWindow
         UpdateMenuRepositoryState();
     }
 
-    private async Task RefreshSubmoduleNavigationAsync(
-        string repoPath,
-        Task<RepositoryNavigationSnapshot> navigation,
-        int epoch)
+    // Takes the repository, not the snapshot task: the snapshot is asked of the cache
+    // HERE, so this method awaits work it started rather than a task handed in from
+    // outside — the shape that deadlocks when the other party wants this thread. The
+    // cache makes that free: both callers have just put their task in it, so the same
+    // instance comes back and nothing is discovered twice. If a concurrent Invalidate
+    // beat us to it we get the FRESHER snapshot, and the epoch check below still
+    // decides whether it may touch the toolbar.
+    private async Task RefreshSubmoduleNavigationAsync(string repoPath, int epoch)
     {
+        // Held as a local as well as awaited: the identity check further down compares
+        // it against _activeNavigationSnapshot to decide whether this result is still
+        // the one the window is waiting for.
+        Task<RepositoryNavigationSnapshot> navigation = _navigationSnapshots.GetAsync(repoPath);
         string? parent = null;
         bool failed = false;
         try
@@ -4126,7 +4133,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         _revisions.LoadRepository(repoPath);
         _tree.LoadRepository(repoPath, navigation);
         _statusBar.LoadRepository(repoPath);
-        _ = RefreshSubmoduleNavigationAsync(repoPath, navigation, epoch);
+        RefreshSubmoduleNavigationAsync(repoPath, epoch).Forget("refreshing the submodule navigation");
         RefreshToolbarState();
 
         if (refresh)
@@ -4189,30 +4196,41 @@ public sealed class MainWindow : Theming.ZoomWindow
             Task<RepositoryNavigationSnapshot> replacement = _navigationSnapshots.GetAsync(repoPath);
             _activeNavigationRepository = repoPath;
             _activeNavigationSnapshot = replacement;
-            _ = RefreshSubmoduleNavigationAsync(repoPath, replacement, epoch);
+            RefreshSubmoduleNavigationAsync(repoPath, epoch).Forget("refreshing the submodule navigation");
             return replacement;
         }
     }
 
-    private static async Task ObserveWarmupAsync(Task warmup)
-    {
-        try
-        {
-            await warmup.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Continue through the panels' existing safe error paths and let the next
-            // repository open retry rather than poisoning the process-wide prerequisite.
-            lock (CoreWarmupGate)
+    // Returns a task that completes WITH the warm-up but never faults, so the callers
+    // can await the prerequisite without having to guard it.
+    //
+    // A continuation rather than an await: this method exists precisely to observe a
+    // task created elsewhere, and awaiting one of those can deadlock if it ever needs
+    // the awaiting thread. The continuation carries no such dependency.
+    private static Task ObserveWarmupAsync(Task warmup)
+        => warmup.ContinueWith(
+            finished =>
             {
-                if (ReferenceEquals(s_coreWarmupTask, warmup))
+                if (!finished.IsFaulted && !finished.IsCanceled)
                 {
-                    s_coreWarmupTask = null;
+                    return;
                 }
-            }
-        }
-    }
+
+                // Reading Exception marks it observed; the panels have their own safe
+                // error paths, and the next repository open retries rather than
+                // poisoning the process-wide prerequisite.
+                _ = finished.Exception;
+                lock (CoreWarmupGate)
+                {
+                    if (ReferenceEquals(s_coreWarmupTask, warmup))
+                    {
+                        s_coreWarmupTask = null;
+                    }
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private static bool SameRepositoryPath(string path, string? other)
     {
@@ -4352,19 +4370,6 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
 
         _statusBar.SetText(TF("Added to favorites: {0}", _repoPath));
-    }
-
-    // Opens the Git maintenance dialog for the current repository.
-    private async Task OpenMaintenanceAsync()
-    {
-        if (_repoPath is null)
-        {
-            _statusBar.SetText(T("No repository is open."));
-            return;
-        }
-
-        await MaintenanceDialog.ShowAsync(this, _repoPath);
-        RefreshAll();
     }
 
     // Repository → Git maintenance → "Recover lost objects…" (upstream's FormVerify).

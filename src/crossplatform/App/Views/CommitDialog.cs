@@ -687,19 +687,19 @@ public sealed class CommitDialog : Theming.ZoomWindow
             HorizontalAlignment = HorizontalAlignment.Left,
         };
 
-        _commitBtn = MakeButton(() => DoCommit(push: false));
-        _commitPushBtn = MakeButton(() => DoCommit(push: true));
+        _commitBtn = MakeButton(() => Async.Run(() => DoCommitAsync(push: false), "committing"));
+        _commitPushBtn = MakeButton(() => Async.Run(() => DoCommitAsync(push: true), "committing and pushing"));
         _stashBtn = MakeButton(DoStashStaged);
-        _resetAllBtn = MakeButton(() => DoReset(includeStaged: true));
-        _resetUnstagedBtn = MakeButton(() => DoReset(includeStaged: false));
+        _resetAllBtn = MakeButton(() => Async.Run(() => DoResetAsync(includeStaged: true), "resetting all changes"));
+        _resetUnstagedBtn = MakeButton(() => Async.Run(() => DoResetAsync(includeStaged: false), "resetting unstaged changes"));
 
         _messageMenuBtn = new Button();
-        _messageMenuBtn.Click += async (_, _) => await ShowMessageMenuAsync(_messageMenuBtn);
+        _messageMenuBtn.Click += (_, _) => Async.Run(() => ShowMessageMenuAsync(_messageMenuBtn), "opening the commit-message menu");
 
         _templatesBtn = new Button();
-        _templatesBtn.Click += async (_, _) => await ShowTemplatesMenuAsync(_templatesBtn);
+        _templatesBtn.Click += (_, _) => Async.Run(() => ShowTemplatesMenuAsync(_templatesBtn), "opening the commit-template menu");
 
-        _createBranchBtn = MakeButton(PromptCreateBranch);
+        _createBranchBtn = MakeButton(() => Async.Run(PromptCreateBranchAsync, "creating a branch"));
 
         _optionsBtn = new Button();
         _optionsBtn.Click += (_, _) => ShowOptionsMenu(_optionsBtn);
@@ -749,7 +749,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // chevron: raising Click on the parked button would open its flyout off-screen.
         _toolbarActions[_messageMenuBtn] = anchor => _ = ShowMessageMenuAsync(anchor);
         _toolbarActions[_templatesBtn] = anchor => _ = ShowTemplatesMenuAsync(anchor);
-        _toolbarActions[_createBranchBtn] = _ => PromptCreateBranch();
+        _toolbarActions[_createBranchBtn] = _ => Async.Run(PromptCreateBranchAsync, "creating a branch");
 
         // Flat, like the ToolStrip upstream uses here: framed buttons made the row look
         // like a second set of commands competing with the column on the left, and cost
@@ -1065,7 +1065,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
                     && e.KeyModifiers.HasFlag(KeyModifiers.Control))
                 {
                     e.Handled = true;
-                    DoCommit(push: false);
+                    Async.Run(() => DoCommitAsync(push: false), "committing");
                     return;
                 }
 
@@ -1224,8 +1224,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
         e.SkipWorktree.Click += (_, _) => SetIndexFlag(list, skipWorktree: true);
         e.AssumeUnchanged.Click += (_, _) => SetIndexFlag(list, skipWorktree: false);
         e.RestoreHidden.Click += (_, _) => RestoreHiddenFiles();
-        e.SaveAs.Click += (_, _) => SaveSelectedAs(list);
-        e.Move.Click += (_, _) => MoveSelected(list);
+        e.SaveAs.Click += (_, _) => Async.Run(() => SaveSelectedAsAsync(list), "saving a file as");
+        e.Move.Click += (_, _) => Async.Run(() => MoveSelectedAsync(list), "renaming a file");
         e.Delete.Click += (_, _) => DeleteSelected(list);
     }
 
@@ -1463,7 +1463,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     ///  "Save selected as..." — for these lists the file always exists on disk, so
     ///  this copies the WORK-TREE version; there is no revision to extract here.
     /// </summary>
-    private async void SaveSelectedAs(ListBox list)
+    private async Task SaveSelectedAsAsync(ListBox list)
     {
         if (SingleRow(list) is not { } row)
         {
@@ -1508,7 +1508,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     ///  looking like a delete plus an untracked file. The new path is asked for as a
     ///  repository-relative path, which is what git mv takes.
     /// </summary>
-    private async void MoveSelected(ListBox list)
+    private async Task MoveSelectedAsync(ListBox list)
     {
         if (SingleRow(list) is not { } row)
         {
@@ -1655,23 +1655,26 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // External tools are launched detached but Process.Start itself can block on a
     // slow filesystem, so it goes to the pool; only the failure message comes back.
     private void RunTool(Func<ExternalToolResult> work)
-        => _ = Task.Run(() =>
-        {
-            try
+        => Async.OffUi(
+            () =>
             {
-                return work();
-            }
-            catch (Exception ex)
+                try
+                {
+                    return work();
+                }
+                catch (Exception ex)
+                {
+                    return new ExternalToolResult(false, ex.Message);
+                }
+            },
+            result =>
             {
-                return new ExternalToolResult(false, ex.Message);
-            }
-        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
-        {
-            if (!t.Result.Success)
-            {
-                SetStatus(FirstLine(t.Result.Message));
-            }
-        }), TaskScheduler.Default);
+                if (!result.Success)
+                {
+                    SetStatus(FirstLine(result.Message));
+                }
+            },
+            "launching an external tool");
 
     // ---------- list plumbing ----------
 
@@ -1766,7 +1769,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
         bool untracked = isNew && !staged;
         int token = ++_diffToken;
 
-        _ = Task.Run(() =>
+        Async.OffUi(
+            () =>
         {
             try
             {
@@ -1777,7 +1781,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
                 string message = string.Format(T("Could not load diff: {0}"), ex.Message);
                 return (Diff: new DiffLoad(message, string.Empty), Failed: true);
             }
-        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        },
+            loaded =>
         {
             // A newer selection already won the race; drop this result rather than
             // letting _diffText describe a file the panel is no longer showing.
@@ -1786,7 +1791,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
                 return;
             }
 
-            (DiffLoad diff, bool failed) = t.Result;
+            (DiffLoad diff, bool failed) = loaded;
             _diffPath = failed ? string.Empty : path;
             _diffStaged = staged;
             _diffFileIsNew = isNew;
@@ -1796,7 +1801,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
             // truncated whole-file view carries an EMPTY source, so line staging stays
             // disabled while the text is still shown.
             RenderDiff(diff.Source, diff.Display);
-        }), TaskScheduler.Default);
+        },
+            "loading the diff of a file");
     }
 
     // Blanks the panel and forgets everything line patching depends on.
@@ -2796,7 +2802,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
     // async void: it is an event handler in all but name (three button/hotkey call
     // sites), and every await inside is a modal the user drives.
-    private async void DoCommit(bool push)
+    private async Task DoCommitAsync(bool push)
     {
         int staged = _stagedList.Items.Count;
         string message = _messageBox.Text ?? string.Empty;
@@ -2939,7 +2945,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
             // Creating the branch is itself a git run through RunActionResult; the
             // commit is not chained onto it, the user presses Commit again on the
             // branch that now exists.
-            PromptCreateBranch();
+            Async.Run(PromptCreateBranchAsync, "creating a branch");
             SetStatus(T("Create the branch, then commit again."));
             return false;
         }
@@ -3057,7 +3063,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     ///  those rows, not a blind <c>.</c>.
     ///  </para>
     /// </summary>
-    private async void DoReset(bool includeStaged)
+    private async Task DoResetAsync(bool includeStaged)
     {
         // Upstream sizes the question from the WORK-TREE list only (it is the one
         // passed to StartResetChangesDialog), because that is where untracked files
@@ -3340,13 +3346,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
     private void ApplyTemplate(CommitTemplate template)
     {
-        _ = Task.Run(() => CommitActionsService.ReadTemplate(template))
-            .ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        Async.OffUi(
+            () => CommitActionsService.ReadTemplate(template),
+            text =>
             {
-                _messageBox.Text = t.Result;
+                _messageBox.Text = text;
                 _messageBox.Focus();
                 SetStatus(string.Format(T("Applied commit template {0}."), template.Name));
-            }), TaskScheduler.Default);
+            },
+            "reading a commit template");
     }
 
     // ---------- create branch ----------
@@ -3354,7 +3362,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // Prompts for a name, validates it with `git check-ref-format --branch` (plus a
     // duplicate check), then runs `git checkout -b <name> HEAD`, carrying the staged
     // and unstaged changes over to the new branch, exactly like the original form.
-    private async void PromptCreateBranch()
+    private async Task PromptCreateBranchAsync()
     {
         Theming.ZoomWindow prompt = new()
         {
@@ -3386,7 +3394,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
             IsDefault = true,
         };
         Button cancel = MakeButton(T("FormCommit/Cancel.Text", "Cancel"), prompt.Close);
-        create.Click += async (_, _) =>
+        create.Click += (_, _) => Async.Run(
+            async () =>
         {
             string name = (nameBox.Text ?? string.Empty).Trim();
             create.IsEnabled = false;
@@ -3412,7 +3421,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
             chosen = name;
             checkout = checkoutBox.IsChecked == true;
             prompt.Close();
-        };
+        },
+            "validating the new branch name");
 
         prompt.Content = new StackPanel
         {
@@ -3710,17 +3720,18 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private void RefreshBranchCaption()
     {
         string repo = _repoPath;
-        _ = Task.Run(() => ReadStatusBarInfo(repo))
-            .ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        Async.OffUi(
+            () => ReadStatusBarInfo(repo),
+            info =>
             {
-                StatusBarInfo info = t.Result;
                 _titleBranch = info.Branch;
                 _pushTarget = info.PushTarget;
                 _committerName = info.UserName;
                 _committerEmail = info.UserEmail;
                 UpdateTitle();
                 RenderStatusBar();
-            }), TaskScheduler.Default);
+            },
+            "reading the status bar information");
     }
 
     /// <summary>
@@ -3803,8 +3814,14 @@ public sealed class CommitDialog : Theming.ZoomWindow
             ? string.Format(T("FormCommit/_formTitle.Text", "Commit to {0} ({1})"), _titleBranch, _repoPath)
             : T("FormCommit/$this.Text", "Commit");
 
+    // Asks, then acts, from a void context. The five call sites are all inside plain
+    // handlers, so the wait cannot be awaited there: Async.Run is what keeps a throw
+    // inside onConfirmed from escaping as an unobserved exception.
+    private void ConfirmThen(string prompt, Action onConfirmed)
+        => Async.Run(() => ConfirmThenAsync(prompt, onConfirmed), "asking for confirmation");
+
     // Simple in-dialog confirmation flyout on the status line via a modal child window.
-    private async void ConfirmThen(string prompt, Action onConfirmed)
+    private async Task ConfirmThenAsync(string prompt, Action onConfirmed)
     {
         if (await ConfirmAsync(prompt))
         {
@@ -3898,21 +3915,24 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         _busy = true;
-        _ = Task.Run(() =>
-        {
-            try
+        Async.OffUi(
+            () =>
             {
-                return work();
-            }
-            catch (Exception ex)
+                try
+                {
+                    return work();
+                }
+                catch (Exception ex)
+                {
+                    return new CommitActionResult(false, ex.Message);
+                }
+            },
+            result =>
             {
-                return new CommitActionResult(false, ex.Message);
-            }
-        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
-        {
-            _busy = false;
-            onResult(t.Result);
-        }), TaskScheduler.Default);
+                _busy = false;
+                onResult(result);
+            },
+            "running a git command");
     }
 
     private void RunGitResult(Func<WorkingDirCommitResult> work, Action<WorkingDirCommitResult> onResult)
@@ -3923,21 +3943,24 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         _busy = true;
-        _ = Task.Run(() =>
-        {
-            try
+        Async.OffUi(
+            () =>
             {
-                return work();
-            }
-            catch (Exception ex)
+                try
+                {
+                    return work();
+                }
+                catch (Exception ex)
+                {
+                    return new WorkingDirCommitResult(false, ex.Message);
+                }
+            },
+            result =>
             {
-                return new WorkingDirCommitResult(false, ex.Message);
-            }
-        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
-        {
-            _busy = false;
-            onResult(t.Result);
-        }), TaskScheduler.Default);
+                _busy = false;
+                onResult(result);
+            },
+            "running a git command");
     }
 
     // Everything one Reload needs, gathered in a single off-UI-thread pass.
@@ -4019,7 +4042,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private void Reload()
     {
         string repo = _repoPath;
-        _ = Task.Run(() =>
+        Async.OffUi(
+            () =>
         {
             WorkingDirStatus status;
             try
@@ -4047,11 +4071,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
             }
 
             return new ReloadSnapshot(status, merging, mergeMessage, hidden);
-        }).ContinueWith(t => Dispatcher.UIThread.Post(() =>
+        },
+            snapshot =>
         {
-            WorkingDirStatus status = t.Result.Status;
-            _hiddenByIndexFlag = t.Result.HiddenByIndexFlag;
-            ApplyMergeState(t.Result);
+            WorkingDirStatus status = snapshot.Status;
+            _hiddenByIndexFlag = snapshot.HiddenByIndexFlag;
+            ApplyMergeState(snapshot);
 
             // Unmerged paths are shown inside the unstaged list with a "U" status,
             // like the original commit form, rather than in a separate panel.
@@ -4119,7 +4144,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
                     Close();
                 }
             }
-        }), TaskScheduler.Default);
+        },
+            "reloading the working directory");
     }
 
     // After a partial stage / unstage the file is normally still listed, but the

@@ -1205,8 +1205,10 @@ public sealed class CommitDetailView : UserControl
                 return;
             }
 
-            // The handler shells out to xdg-open; keep it off the UI thread.
-            Task.Run(() => _externalTools.OpenUrl(target));
+            // The handler shells out to xdg-open; keep it off the UI thread. Forget
+            // observes the fault: a browser that cannot be launched must report, not
+            // resurface later as an unhandled exception.
+            Task.Run(() => _externalTools.OpenUrl(target)).Forget($"opening {target}");
         };
 
         _linkTargets[link] = target;

@@ -158,7 +158,20 @@ public sealed class Executable : IExecutable
 
                 if (_errorOutputStream is not null)
                 {
-                    _process.StandardError.BaseStream.CopyToAsync(_errorOutputStream, cancellationToken);
+                    // Fire and forget by design — the copy runs for as long as the process
+                    // does — but its faults used to be dropped: an unobserved faulted task
+                    // is discarded silently, so a broken pipe or a closed destination stream
+                    // lost the command's stderr with nothing in the log to say so. The
+                    // continuation only observes; the success path is untouched.
+                    // The observer itself is the end of the chain: it only logs, so there is
+                    // nothing left to hand anyone.
+                    _ = _process.StandardError.BaseStream
+                        .CopyToAsync(_errorOutputStream, cancellationToken)
+                        .ContinueWith(
+                            copy => _logOperation.LogProcessEnd(copy.Exception!.GetBaseException()),
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
                 }
 
                 try

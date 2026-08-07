@@ -77,7 +77,11 @@ public sealed class CleanupDialog : Theming.ZoomWindow
 
     private readonly Border _confirmBar;
     private readonly TextBlock _confirmText;
-    private TaskCompletionSource<bool>? _confirm;
+    // The pending question, as the callback that answers it rather than the task that
+    // waits for it: whoever asks awaits a source it created itself (a task from a field
+    // could be anyone's, which is the shape that deadlocks), and the buttons, Escape
+    // and the window-close path only need a way to say yes or no.
+    private Action<bool>? _confirm;
 
     private bool _busy;
 
@@ -446,8 +450,9 @@ public sealed class CleanupDialog : Theming.ZoomWindow
         // The dry run is over; leaving "Previewing…" on screen next to a live question
         // reads as "still working" and invites a blind click on Delete.
         _status.Text = T("Waiting for confirmation…");
-        _confirm = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        bool go = await _confirm.Task;
+        TaskCompletionSource<bool> confirm = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _confirm = answer => confirm.TrySetResult(answer);
+        bool go = await confirm.Task;
         _confirm = null;
         _confirmBar.IsVisible = false;
 
@@ -678,7 +683,7 @@ public sealed class CleanupDialog : Theming.ZoomWindow
         _excludePaths.IsEnabled = _useExcludeFilter.IsChecked == true;
     }
 
-    private void ResolveConfirm(bool answer) => _confirm?.TrySetResult(answer);
+    private void ResolveConfirm(bool answer) => _confirm?.Invoke(answer);
 
     private void SetBusy(bool busy)
     {
