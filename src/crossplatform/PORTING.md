@@ -3260,6 +3260,57 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M115 (2026-08-07, `932d478ee`, `4384fbc1c`) — la barra della griglia e le sue tendine parlano la lingua dell'app
+
+> Dall'utente: «allinea la grafica di questi tasti a quella della schermata di commit» (la seconda
+> riga di barra della griglia) e poi «rendi consistenti anche i pulsanti di questi menu sopra, inoltre
+> sistema i bordi di tutte quelle tendine (goto, branches, commit message …) perché sono grossi e
+> strani».
+
+### I pulsanti della barra della griglia (`932d478ee`)
+`Go to`, `Branches`, `View`, `Date`, `Columns`, `Filter…`, il `⌄` delle ricerche recenti e la `✕`
+del filtro erano gli ultimi pulsanti incorniciati dell'app: una fila di scatole sotto una toolbar
+principale piatta (M77) e accanto a un dialogo di commit piatto (M107). `MakeBarButton` ora è
+piatto e porta la classe `toolbtn`, e la vista installa `Theming.BarButtonStyles.Apply(Styles)`:
+niente bordo, nessun riempimento a riposo, `App.Hover` sotto il puntatore, `App.Pressed` premuto.
+La casella di ricerca tiene il suo contorno perché è un **input**, non un comando.
+
+**Compromesso dichiarato.** Il contorno era l'affordance: un pulsante di barra a riposo non ha
+contrasto proprio contro la striscia, quindi toglierlo perde il 3:1 di WCAG 1.4.11 sul confine.
+Restano l'etichetta e il riempimento all'hover — esattamente ciò che regge la toolbar principale da
+M77. È una scelta di coerenza: o piatte tutte le barre, o incorniciate tutte, non una sola diversa.
+
+### Le tendine della stessa barra (`4384fbc1c`)
+Quelle sei tendine non sono `MenuFlyout`: sono `Flyout` con dentro controlli veri (radio, checkbox,
+una casella per l'hash), perché mescolano opzioni e comandi. Due difetti, tutti e due visibili nello
+screenshot dell'utente:
+
+1. **Bordo doppio.** Ogni tendina avvolgeva il proprio pannello in un `Border` (`App.Panel`, padding
+   2) *sopra* il `FlyoutPresenter` di Fluent, che è già una scatola piena, contornata e con un
+   padding generoso. Due cornici con in mezzo una striscia di un terzo colore: ecco il bordo «grosso
+   e strano». Ora la carta è il presenter e basta — superficie della palette, un capello di
+   `App.Border`, padding proprio a zero (il margine ce l'ha già il pannello di ogni carta), minimi di
+   Fluent (96×40, pensati per la prosa) azzerati — e i `Border` interni sono spariti. Sta nel blocco
+   **baseline**, perché la cornice doppia è un difetto in entrambi gli stili; il blocco modern
+   aggiunge l'angolo arrotondato e l'ombra che gli altri menu hanno già da M109.
+2. **Comandi a scatola.** `MakeMenuButton` produceva pulsanti Fluent — rettangolo pieno e
+   contornato ciascuno — quindi una carta di quattro comandi si leggeva come quattro scatole
+   impilate dentro una cornice, mentre ogni menu contestuale accanto disegna righe piatte. Ora
+   portano la classe `menubtn` di `BarButtonStyles.ApplyMenus`: piatti a riposo, pillola arrotondata
+   sotto il puntatore, cioè la stessa forma che `ModernStyles.MenuStyles` dà a un `MenuItem` vero.
+
+**Perché `ApplyMenus` va sull'`Application` e non sulla vista.** Il contenuto di un flyout vive in
+una **pop-up root** propria: le `Styles` dichiarate sul controllo che possiede il flyout non lo
+raggiungono mai, solo quelle dell'applicazione. Per questo non si poteva riusare `Apply`, che ogni
+barra installa su sé stessa; l'installazione avviene in `BuildBaseline`.
+
+### Verifica
+Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS. In GUI su Xvfb: la carta di `Go to`
+ha **una** cornice, le quattro voci sono righe piatte, il puntatore su «Backward» accende la pillola,
+la casella dell'hash tiene il suo contorno; stessa cosa per `View` (la carta lunga con checkbox,
+radio e il comando in fondo) e per la tendina del tipo di filtro. Angoli tondi e ombra non si vedono
+sotto Xvfb — manca il compositore, degrado noto e documentato su `PopupShadowRoom`.
+
 ## M114 (2026-08-07, `571b87864`) — colonne della griglia ridimensionabili
 
 > Dall'utente: «rendi le colonne della home screen di subject, author e date ridimensionabili (vedi
