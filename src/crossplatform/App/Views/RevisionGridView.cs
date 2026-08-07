@@ -5641,7 +5641,9 @@ public sealed class RevisionGridView : UserControl
 
     private static MenuItem MakeItem(string header, Action action)
     {
-        MenuItem item = new() { Header = Strip(header) };
+        // Escaped, not just stripped: half these captions quote a ref name, and an
+        // underscore in one is a character and not an access key (see Theming/MenuText).
+        MenuItem item = new() { Header = Theming.MenuText.Escape(Strip(header)) };
         item.Click += (_, _) => action();
         return item;
     }
@@ -5766,7 +5768,7 @@ public sealed class RevisionGridView : UserControl
 
                 string name = names[index];
                 item.Tag = name;
-                item.Header = $"{baseCaption} '{name}'…";
+                item.Header = Theming.MenuText.Escape($"{baseCaption} '{name}'…");
                 item.IsVisible = true;
                 item.IsEnabled = enabled?.Invoke(ctx, name) ?? true;
             });
@@ -6087,16 +6089,33 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
+        string target = row.Hash;
+
+        // Would the move orphan commits? Upstream asks this before letting the reset
+        // through, and since e3206275a it asks with "git merge-base --is-ancestor"
+        // rather than a dry-run push to the repository itself (which LFS breaks). Off
+        // the UI thread: it is a git call.
+        bool lossy = await Task.Run(() => _branchTags.ResetWouldLoseCommits(_repoPath, branch, target));
+
+        // Upstream's own wording for this hazard, so a translated build says it in the
+        // user's language. Shown only when the answer is "yes, commits would be lost";
+        // upstream prints it unconditionally because its dialog has room for a standing
+        // explanation, where this is a one-shot confirmation.
+        string warning = lossy
+            ? " " + T("FormResetAnotherBranch/lblResetBranchWarning.Text",
+                "You can only reset a branch safely if there is a direct path from it to selected revision.\n"
+                + "Forcing a branch to reset if it has not been merged might leave some commits unreachable.")
+            : string.Empty;
+
         if (!await ConfirmAsync(string.Format(
                 T("Move branch '{0}' to commit {1}? {2}"),
                 branch,
                 row.ShortHash,
-                T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone."))))
+                T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone.")) + warning))
         {
             return;
         }
 
-        string target = row.Hash;
         RunRefOp(
             string.Format(T("Moving {0}…"), branch),
             repo => _branchTags.ResetBranchTo(repo, branch, target));

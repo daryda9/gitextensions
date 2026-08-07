@@ -22,11 +22,25 @@ public static class GitContext
     /// </summary>
     public static GitModule CreateModule(string repoPath)
     {
+        IGitExecutorProvider provider = Container().GetRequiredService<IGitExecutorProvider>();
+        return new GitModule(provider, repoPath);
+    }
+
+    /// <summary>
+    ///  The core's branch-name normaliser (<c>git check-ref-format</c> rules, as
+    ///  upstream's dialogs apply them). Obtained from the same container as everything
+    ///  else: the implementation is internal to GitCommands, so the registration is the
+    ///  only way to it, and re-deriving those rules by hand is exactly the duplication
+    ///  the port avoids.
+    /// </summary>
+    public static IGitBranchNameNormaliser BranchNameNormaliser()
+        => Container().GetRequiredService<IGitBranchNameNormaliser>();
+
+    private static ServiceContainer Container()
+    {
         ServiceContainer container = new();
         container.AddService<IGitDirectoryResolver>(new GitDirectoryResolver());
         GitCommands.ServiceContainerRegistry.RegisterServices(container);
-
-        IGitExecutorProvider provider = container.GetRequiredService<IGitExecutorProvider>();
-        return new GitModule(provider, repoPath);
+        return container;
     }
 }

@@ -2022,7 +2022,7 @@ public sealed class RepoObjectsTree : UserControl
 
     private static MenuItem MenuItem(string text, string? icon, Action onClick)
     {
-        MenuItem item = new() { Header = text };
+        MenuItem item = new() { Header = Theming.MenuText.Escape(text) };
         if (icon is not null && IconLoader.Image(icon) is { } img)
         {
             item.Icon = img;
@@ -3151,11 +3151,34 @@ public sealed class RepoObjectsTree : UserControl
 
             // Branch is optional: empty lets git create a branch named after the path.
             string? branch = await PromptAsync(TF("Branch/revision for '{0}' (blank = new branch):", target), string.Empty, T("FormCreateWorktree/$this.Text", "Create a new worktree"));
-            RunWorktree(() => _worktreeService.AddWorktree(_repoPath!, target, branch ?? string.Empty));
+
+            // A worktree is created to be worked in, so offer to switch to it — the same
+            // prompt upstream added in 6c302d839, and the same one the clone flow shows.
+            RunWorktree(
+                () => _worktreeService.AddWorktree(_repoPath!, target, branch ?? string.Empty),
+                onSuccess: () => _ = OfferToOpenWorktreeAsync(target));
         }
         catch
         {
             // No status surface on this control; the prompt/mutation simply aborts.
+        }
+    }
+
+    // Asks whether to make the freshly created worktree the open repository. Best effort
+    // like every other prompt in this control: a path git created but the user declines
+    // to open is not an error, and the tree has already refreshed to show it.
+    private async Task OfferToOpenWorktreeAsync(string path)
+    {
+        try
+        {
+            if (await ConfirmAsync(TF("Switch to the new worktree '{0}'?", path)))
+            {
+                OpenRepositoryRequested?.Invoke(Path.GetFullPath(path));
+            }
+        }
+        catch
+        {
+            // No status surface on this control; the prompt simply aborts.
         }
     }
 
@@ -3397,7 +3420,7 @@ public sealed class RepoObjectsTree : UserControl
         });
     }
 
-    private void RunWorktree(Func<WorktreeOpResult> work)
+    private void RunWorktree(Func<WorktreeOpResult> work, Action? onSuccess = null)
     {
         if (_repoPath is not { Length: > 0 })
         {
@@ -3437,6 +3460,10 @@ public sealed class RepoObjectsTree : UserControl
                 {
                     OperationCompleted?.Invoke();
                     Refresh();
+
+                    // After the refresh: what the callback offers (opening the new
+                    // worktree) is a follow-up to a tree that already shows the result.
+                    onSuccess?.Invoke();
                 }
             });
         });

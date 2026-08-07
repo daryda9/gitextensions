@@ -2668,6 +2668,13 @@ public sealed class MainWindow : Theming.ZoomWindow
         {
             RefreshAll();
         }
+
+        // The dialog offers to switch to a worktree it just created; only the host can
+        // change the open repository, and only once the modal is gone.
+        if (dialog.RepositoryToOpen is { Length: > 0 } created)
+        {
+            OpenRepository(created);
+        }
     }
 
     private async Task CheckoutBranchPickerAsync()

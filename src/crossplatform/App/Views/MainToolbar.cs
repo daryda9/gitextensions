@@ -2939,7 +2939,7 @@ public sealed class MainToolbar : UserControl
             MenuItem category = new()
             {
                 // A category name is user data, so its underscores need escaping too.
-                Header = group.Key.Replace("_", "__"),
+                Header = Theming.MenuText.Escape(group.Key),
                 Icon = IconLoader.Image("star"),
             };
 
@@ -2985,7 +2985,7 @@ public sealed class MainToolbar : UserControl
             // underscore in the data ("git_ext_mod") has to be escaped to survive.
             // The number prefix is added afterwards precisely so its own single
             // underscore survives as an access key, exactly as upstream's "&1:" is.
-            Header = (numberPrefix ?? string.Empty) + link.Label.Replace("_", "__"),
+            Header = Theming.MenuText.Escape((numberPrefix ?? string.Empty) + link.Label),
             Icon = IconLoader.Image(link.Icon is { Length: > 0 } i ? i : iconName),
             Tag = link.Label + " " + link.Path,
         };

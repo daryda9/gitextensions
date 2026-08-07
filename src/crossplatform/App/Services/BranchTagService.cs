@@ -845,6 +845,49 @@ public sealed class BranchTagService
     ///  and it matches upstream, which treats every branch as unmerged when HEAD is
     ///  detached.</para>
     /// </summary>
+    /// <summary>
+    ///  Whether moving <paramref name="name"/> to <paramref name="target"/> would leave
+    ///  commits unreachable — the question upstream's <c>FormResetAnotherBranch</c> asks
+    ///  before it lets the reset through.
+    ///
+    ///  <para>The test is <c>git merge-base --is-ancestor &lt;branch&gt; &lt;target&gt;</c>:
+    ///  if the branch tip is already an ancestor of the target the move is a
+    ///  fast-forward and nothing is lost; otherwise the commits between the two are only
+    ///  reachable through that branch, and the move drops them. Upstream used to answer
+    ///  the same question with a dry-run <c>git push</c> to the repository itself, which
+    ///  does not work with LFS, and replaced it with exactly this call (e3206275a).</para>
+    ///
+    ///  <para>Anything that stops the question being answered — an unknown ref, a git
+    ///  that errors out — reports <see langword="true"/>: "assume commits would be lost"
+    ///  is the safe default for a warning.</para>
+    /// </summary>
+    public bool ResetWouldLoseCommits(string repoPath, string name, string target)
+    {
+        try
+        {
+            string branchName = name?.Trim() ?? string.Empty;
+            string targetish = target?.Trim() ?? string.Empty;
+            if (branchName.Length == 0 || targetish.Length == 0)
+            {
+                return true;
+            }
+
+            GitModule module = GitContext.CreateModule(repoPath);
+            GitArgumentBuilder args = new("merge-base")
+            {
+                "--is-ancestor",
+                branchName.Quote(),
+                targetish.Quote(),
+            };
+
+            return !module.GitExecutable.Execute(args, throwOnErrorExit: false).ExitedSuccessfully;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
     public bool IsBranchMerged(string repoPath, string name)
     {
         try

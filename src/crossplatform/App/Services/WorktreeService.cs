@@ -1,4 +1,5 @@
 using GitCommands;
+using GitCommands.Git;
 using GitExtensions.Extensibility;
 using GitExtUtils;
 
@@ -195,7 +196,8 @@ public sealed class WorktreeService
     /// <summary>
     ///  Adds a worktree at <paramref name="path"/>. When <paramref name="branch"/>
     ///  is non-empty it is used as the checkout target (<c>git worktree add &lt;path&gt; &lt;branch&gt;</c>);
-    ///  otherwise git creates a new branch named after the path.
+    ///  otherwise a new branch is created, named after the path and normalised to git's
+    ///  ref rules (<see cref="NewBranchName"/>) rather than left to git's own raw guess.
     /// </summary>
     public WorktreeOpResult AddWorktree(string repoPath, string path, string branch)
     {
@@ -207,13 +209,27 @@ public sealed class WorktreeService
             return new WorktreeOpResult(false, "Worktree path cannot be empty.");
         }
 
-        GitArgumentBuilder args = new("worktree")
-        {
-            "add",
-            target.Quote(),
-        };
+        GitArgumentBuilder args = new("worktree") { "add" };
 
         string reference = branch?.Trim() ?? string.Empty;
+        if (reference.Length == 0)
+        {
+            // No ref given: git would name the new branch after the last path segment
+            // AS TYPED, and a segment with a space (or any other character
+            // git check-ref-format rejects) makes the whole add fail. Upstream hit the
+            // same wall in its own dialog and fixed it by normalising the name before
+            // handing it to git (6c302d839); the port has no separate name field, so
+            // the name it derives is what gets normalised.
+            string derived = NewBranchName(target);
+            if (derived.Length > 0)
+            {
+                args.Add("-b");
+                args.Add(derived.Quote());
+            }
+        }
+
+        args.Add(target.Quote());
+
         if (reference.Length > 0)
         {
             args.Add(reference);
@@ -258,6 +274,37 @@ public sealed class WorktreeService
         => reference.StartsWith("refs/heads/", StringComparison.Ordinal)
             ? reference["refs/heads/".Length..]
             : reference;
+
+    /// <summary>
+    ///  The branch name <c>git worktree add</c> should create for a worktree at
+    ///  <paramref name="path"/>: git's own choice — the last path segment — put through
+    ///  the core's <c>git check-ref-format</c> normaliser, so a path like
+    ///  <c>~/work/my feature</c> yields <c>my_feature</c> instead of failing the add.
+    ///  Empty when there is nothing usable to derive, in which case the caller leaves
+    ///  the naming to git exactly as before.
+    /// </summary>
+    internal static string NewBranchName(string path)
+    {
+        try
+        {
+            string leaf = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (leaf.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            string normalised = GitContext.BranchNameNormaliser()
+                .Normalise(leaf, new GitBranchNameOptions(AppSettings.AutoNormaliseSymbol));
+
+            // A name the normaliser cannot rescue (all-invalid input) is worse than no
+            // name: let git decide and report its own error.
+            return normalised.Trim();
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
 
     private static WorktreeOpResult Run(GitModule module, ArgumentString args)
     {

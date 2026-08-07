@@ -41,6 +41,14 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
     /// </summary>
     public bool Changed { get; private set; }
 
+    /// <summary>
+    ///  Set when the user accepted the offer to switch to a worktree just created here;
+    ///  the host opens it after the dialog closes. Null means "stay where we are".
+    ///  <para>A property and not a call into the host: this dialog knows nothing about
+    ///  MainWindow, exactly as <see cref="Changed"/> only reports that a refresh is due.</para>
+    /// </summary>
+    public string? RepositoryToOpen { get; private set; }
+
     public WorktreesDialog(string repoPath)
     {
         _repoPath = repoPath;
@@ -239,9 +247,13 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
             return;
         }
 
-        // Branch is optional: empty lets git create a branch named after the path.
+        // Branch is optional: empty lets git create a branch named after the path
+        // (normalised to git's ref rules by the service).
         string? branch = await PromptAsync($"Branch/revision for '{target}' (blank = new branch):", string.Empty);
-        Run($"Add '{target}'", () => _service.AddWorktree(_repoPath, target, branch ?? string.Empty));
+        Run(
+            $"Add '{target}'",
+            () => _service.AddWorktree(_repoPath, target, branch ?? string.Empty),
+            onSuccess: () => _ = OfferToOpenAsync(target));
     }
 
     private async Task DoRemoveAsync()
@@ -257,7 +269,19 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
         }
     }
 
-    private void Run(string label, Func<WorktreeOpResult> work)
+    // Offers to make the freshly created worktree the open repository, mirroring what
+    // upstream added in 6c302d839 (and what the clone flow has always done). Accepting
+    // closes this dialog: the host cannot switch the repository under an open modal.
+    private async Task OfferToOpenAsync(string path)
+    {
+        if (await ConfirmAsync($"Switch to the new worktree '{path}'?"))
+        {
+            RepositoryToOpen = System.IO.Path.GetFullPath(path);
+            Close();
+        }
+    }
+
+    private void Run(string label, Func<WorktreeOpResult> work, Action? onSuccess = null)
     {
         if (_busy)
         {
@@ -290,6 +314,11 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
                 _status.Text = $"{label}: {(result.Success ? "OK" : "failed")}";
                 _output.Text = result.Output;
                 ReloadList();
+
+                if (result.Success)
+                {
+                    onSuccess?.Invoke();
+                }
             });
         });
     }
