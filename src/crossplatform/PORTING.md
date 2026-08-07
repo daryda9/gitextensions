@@ -3260,6 +3260,32 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M112 (2026-08-07, `0cba58207`) — il menu che scorre risponde alla rotella e al puntatore
+
+> Dall'utente: «non funziona bene lo scroll, ad esempio con il touchpad funziona male se vado su o
+> giù, inoltre se rimango con il cursore sulla freccia di sotto non scorre, devo per forza cliccare».
+
+Due difetti veri del menu reso scorrevole in M111.
+
+**La rotella** muoveva **una riga per scatto**. Col mouse è lento in un menu da trenta voci; col
+touchpad, che manda **frazioni** di scatto, si legge come un menu che non si muove e poi salta. Ora
+sono **84px — tre righe — per scatto**, e una frazione di scatto muove una frazione di quello: che è
+esattamente lo scorrimento morbido che mancava al touchpad.
+
+**Restare sul chevron** non faceva nulla: Fluent li disegna come `RepeatButton`, che agiscono solo
+mentre sono **premuti**, quindi leggere il menu voleva dire un clic per riga. Ora il puntatore fermo
+sopra scorre, **6px ogni 16ms**, finché non se ne va.
+
+Entrambi stanno in `Theming/MenuScrolling`, agganciati da una **attached property** che una style
+mette sullo `ScrollViewer` dentro il popup: nessuna view ne sa niente e gli handler muoiono con lo
+ScrollViewer. Applicato a tutti e tre gli ospiti che possono produrre una lista più lunga dello
+schermo: tendina della barra, menu contestuale, flyout di uno split button. I due chevron si
+distinguono **per posizione** e non per nome: i nomi sono del template di Fluent.
+
+**Verifica** su Xvfb: uno scatto muove tre righe (misurato sulla voce in cima alla carta), il
+puntatore fermo sul chevron in basso porta il menu Vista fino a Refresh in fondo, quello in alto lo
+riporta a Branches, e nel log non resta niente.
+
 ## M111 (2026-08-07, `6926e58fb`) — il menu si ferma al bordo inferiore della finestra
 
 > Dall'utente, con screenshot: «ora va bene il margine superiore, ma esce dal bordo sotto della
