@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Shapes;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -4842,6 +4843,17 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     private Control ResizeHandle(int column, Func<double> get, Action<double> set)
     {
+        // The 1px rule the user actually sees: a grab strip with no mark on it is a
+        // feature nobody finds. It brightens under the pointer, which is the other half
+        // of the affordance — the cursor alone only speaks once you are already on it.
+        Rectangle rule = new()
+        {
+            Width = 1,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Fill = B("App.Border"),
+        };
+
         Border handle = new()
         {
             Width = ResizeHandleWidth,
@@ -4852,10 +4864,14 @@ public sealed class RevisionGridView : UserControl
             Margin = new Thickness(-ResizeHandleWidth / 2, 0, 0, 0),
 
             // Transparent, not null: a null background is not hit-testable, and the
-            // divider would be invisible to the pointer as well as to the eye.
+            // strip would be invisible to the pointer as well as to the eye.
             Background = Brushes.Transparent,
             Cursor = new Cursor(StandardCursorType.SizeWestEast),
+            Child = rule,
         };
+
+        handle.PointerEntered += (_, _) => rule.Fill = B("App.Accent");
+        handle.PointerExited += (_, _) => rule.Fill = B("App.Border");
 
         double startWidth = 0;
         double startX = 0;
