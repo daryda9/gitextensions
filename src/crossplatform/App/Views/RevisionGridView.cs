@@ -1824,12 +1824,7 @@ public sealed class RevisionGridView : UserControl
 
         return new Flyout
         {
-            Content = new Border
-            {
-                Background = B("App.Panel"),
-                Padding = new Thickness(2),
-                Child = panel,
-            },
+            Content = panel,
         };
     }
 
@@ -1985,6 +1980,7 @@ public sealed class RevisionGridView : UserControl
                 HorizontalContentAlignment = HorizontalAlignment.Left,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
+            item.Classes.Add(Theming.BarButtonStyles.MenuClass);
             item.Click += (_, _) =>
             {
                 _mruButton.Flyout?.Hide();
@@ -1998,12 +1994,7 @@ public sealed class RevisionGridView : UserControl
             Content = new ScrollViewer
             {
                 MaxHeight = 320,
-                Content = new Border
-                {
-                    Background = B("App.Panel"),
-                    Padding = new Thickness(2),
-                    Child = panel,
-                },
+                Content = panel,
             },
         };
     }
@@ -2674,7 +2665,7 @@ public sealed class RevisionGridView : UserControl
         // Upstream's ToggleHighlightSelectedBranch has no "back to HEAD" counterpart
         // other than a refresh; this puts the anchor back on the checked-out commit
         // without re-walking the history.
-        Button anchorToHead = MakeBarButton(T("Highlight current branch's history"));
+        Button anchorToHead = MakeMenuButton(T("Highlight current branch's history"));
         anchorToHead.Margin = new Thickness(0, 3, 0, 0);
         anchorToHead.HorizontalAlignment = HorizontalAlignment.Stretch;
         anchorToHead.Click += (_, _) => HighlightBranchOf(null);
@@ -2685,12 +2676,7 @@ public sealed class RevisionGridView : UserControl
 
         return new Flyout
         {
-            Content = new Border
-            {
-                Background = B("App.Panel"),
-                Padding = new Thickness(2),
-                Child = panel,
-            },
+            Content = panel,
         };
     }
 
@@ -2835,12 +2821,7 @@ public sealed class RevisionGridView : UserControl
 
         return new Flyout
         {
-            Content = new Border
-            {
-                Background = B("App.Panel"),
-                Padding = new Thickness(2),
-                Child = panel,
-            },
+            Content = panel,
         };
     }
 
@@ -2865,12 +2846,7 @@ public sealed class RevisionGridView : UserControl
 
         return new Flyout
         {
-            Content = new Border
-            {
-                Background = B("App.Panel"),
-                Padding = new Thickness(2),
-                Child = panel,
-            },
+            Content = panel,
         };
     }
 
@@ -2965,12 +2941,7 @@ public sealed class RevisionGridView : UserControl
 
         return new Flyout
         {
-            Content = new Border
-            {
-                Background = B("App.Panel"),
-                Padding = new Thickness(2),
-                Child = panel,
-            },
+            Content = panel,
         };
     }
 
@@ -4101,12 +4072,7 @@ public sealed class RevisionGridView : UserControl
 
         panel.Children.Add(go);
 
-        flyout.Content = new Border
-        {
-            Background = B("App.Panel"),
-            Padding = new Thickness(2),
-            Child = panel,
-        };
+        flyout.Content = panel;
         return flyout;
     }
 
@@ -4127,22 +4093,28 @@ public sealed class RevisionGridView : UserControl
             VerticalContentAlignment = VerticalAlignment.Center,
         };
 
-    // A full-width, left-aligned button used inside the "Go to" flyout.
+    // A full-width, left-aligned command inside a flyout card — a menu entry in all
+    // but type, so it wears the menu-entry look (Theming/BarButtonStyles.ApplyMenus:
+    // flat at rest, a rounded fill under the pointer). The outline it used to carry
+    // was the affordance for a button that stands alone; inside a card of stacked
+    // commands it drew a box per row instead, which is not how the app's other menus
+    // read.
     private static Button MakeMenuButton(string text)
-        => new()
+    {
+        Button button = new()
         {
             Content = text,
-            Background = B("App.Panel"),
+            Background = Brushes.Transparent,
             Foreground = B("App.Text"),
-            // Flyout command button with no fill contrast of its own: the outline is
-            // the affordance, so App.BorderStrong.
-            BorderBrush = B("App.BorderStrong"),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(0),
             Padding = StyleDensity.BarButtonWide,
             FontSize = 12,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
+        button.Classes.Add(Theming.BarButtonStyles.MenuClass);
+        return button;
+    }
 
     // Opens the "Go to" flyout and focuses the hash box (Ctrl+Shift+G).
     private void OpenGoTo()

@@ -93,6 +93,49 @@ internal static class BarButtonStyles
             new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
     }
 
+    /// <summary>The class a button inside a drop-down must carry to look like a menu
+    /// entry.</summary>
+    internal const string MenuClass = "menubtn";
+
+    /// <summary>
+    ///  Installs the look of a MENU entry for buttons carrying <see cref="MenuClass"/>:
+    ///  no fill and no outline at rest, a rounded fill under the pointer — the pill
+    ///  <see cref="ModernStyles"/> gives a real <see cref="MenuItem"/>.
+    ///
+    ///  <para><b>Why it must be installed on the Application.</b> A flyout's content
+    ///  lives in a pop-up root of its own, so styles declared on the view that OWNS the
+    ///  flyout never reach it; only the application's do. That is also why this cannot
+    ///  simply reuse <see cref="Apply"/>, which each bar installs on itself.</para>
+    ///
+    ///  <para>The port builds a few drop-downs out of plain buttons instead of
+    ///  <see cref="MenuItem"/>s (the grid's Go-to card, which mixes commands with a hash
+    ///  box). Those buttons were carrying Fluent's default chrome — a filled, outlined
+    ///  rectangle each — so a card of four commands read as four boxes stacked inside a
+    ///  frame, next to context menus that draw the same commands as flat rows.</para>
+    /// </summary>
+    internal static void ApplyMenus(Styles styles)
+    {
+        IBrush hover = Brush("App.Hover", "#444448");
+        IBrush pressed = Brush("App.Pressed", "#555558");
+
+        styles.Add(MenuPresenter(null,
+            new Setter(ContentPresenter.BackgroundProperty, Fade(hover)),
+            new Setter(Animatable.TransitionsProperty, new Transitions()),
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent),
+            new Setter(ContentPresenter.CornerRadiusProperty, Metrics.Radius.SmCorner)));
+
+        styles.Add(MenuPresenter(":pointerover",
+            new Setter(ContentPresenter.BackgroundProperty, hover),
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
+
+        styles.Add(MenuPresenter(":pressed",
+            new Setter(ContentPresenter.BackgroundProperty, pressed),
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
+    }
+
+    private static Style MenuPresenter(string? state, params Setter[] setters)
+        => Presenter<Button>(state, MenuClass, setters);
+
     private static Style ActionPresenter(string? state, params Setter[] setters)
     {
         Style style = new(x =>
@@ -141,10 +184,14 @@ internal static class BarButtonStyles
     // ends up on screen.
     private static Style Presenter<T>(string? state, params Setter[] setters)
         where T : TemplatedControl
+        => Presenter<T>(state, Class, setters);
+
+    private static Style Presenter<T>(string? state, string cssClass, params Setter[] setters)
+        where T : TemplatedControl
     {
         Style style = new(x =>
         {
-            Selector selector = x.OfType<T>().Class(Class);
+            Selector selector = x.OfType<T>().Class(cssClass);
             if (state is not null)
             {
                 selector = selector.Class(state);

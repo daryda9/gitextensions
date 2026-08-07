@@ -630,6 +630,37 @@ public static class ModernStyles
             styles.Add(menuScroll);
         }
 
+        // ---- a flyout card is ONE card ---------------------------------------------
+        // Fluent's FlyoutPresenter arrives as a filled, outlined, generously padded
+        // box, and the port's own drop-downs (the grid's Go to / Branches / View /
+        // Date / Columns cards) each wrapped their content in a panel of their own on
+        // top of it. Two borders with a strip of a third colour between them: that is
+        // the "thick and strange" edge. The presenter is the card — the inner wrappers
+        // are gone (RevisionGridView) and this gives the one that remains the palette's
+        // own surface, a hairline, and no padding of its own, because each card's panel
+        // already carries its margin.
+        //
+        // Baseline, not modern: a double frame is a defect in both styles.
+        SolidColorBrush? flyoutPanel = P(app, "App.Panel");
+        SolidColorBrush? flyoutBorder = P(app, "App.Border");
+        if (flyoutPanel is not null && flyoutBorder is not null)
+        {
+            Style flyout = new(x => x.OfType<FlyoutPresenter>());
+            flyout.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, flyoutPanel));
+            flyout.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, flyoutBorder));
+            flyout.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(1)));
+            flyout.Setters.Add(new Setter(TemplatedControl.PaddingProperty, default(Thickness)));
+            // Fluent sizes a flyout for prose (min 96x40, max 456); these cards are
+            // sized by what is in them.
+            flyout.Setters.Add(new Setter(Layoutable.MinWidthProperty, 0.0));
+            flyout.Setters.Add(new Setter(Layoutable.MinHeightProperty, 0.0));
+            styles.Add(flyout);
+        }
+
+        // The buttons those cards are built out of (see BarButtonStyles.ApplyMenus):
+        // application-level, because a pop-up root cannot see a view's own styles.
+        BarButtonStyles.ApplyMenus(styles);
+
         Style menuPlacement = new(x => x.OfType<MenuItem>().Template().OfType<Popup>());
         menuPlacement.Setters.Add(new Setter(
             Popup.PlacementConstraintAdjustmentProperty,
@@ -992,6 +1023,7 @@ public static class ModernStyles
                  {
                      new Style(x => x.OfType<ContextMenu>()),
                      new Style(x => x.OfType<MenuFlyoutPresenter>()),
+                     new Style(x => x.OfType<FlyoutPresenter>()),
                  })
         {
             card.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, Metrics.Radius.MdCorner));
@@ -1024,6 +1056,7 @@ public static class ModernStyles
                  {
                      new Style(x => x.OfType<ContextMenu>().Template().OfType<Border>()),
                      new Style(x => x.OfType<MenuFlyoutPresenter>().Template().OfType<Border>()),
+                     new Style(x => x.OfType<FlyoutPresenter>().Template().OfType<Border>()),
                  })
         {
             cardBorder.Setters.Add(new Setter(Border.CornerRadiusProperty, Metrics.Radius.MdCorner));
