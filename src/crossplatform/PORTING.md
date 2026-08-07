@@ -3260,6 +3260,69 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M105 (2026-08-07, `321e09a3f`) — build a zero warning
+
+> Dall'utente, guardando l'output di `./run.sh`: «noto tutti questi warning, come mai» — 34 righe a
+> ogni avvio, perché `dotnet run` **ricompila** e `-v q` non nasconde le diagnostiche del compilatore.
+> Direzione: «fixa i warning, non zittirli, DEVI RISOLVERLI (passata vera) tutti».
+
+Risolti tutti: app + i due harness compilano con **`Avvisi: 0`**. Trentadue delle trentaquattro righe
+venivano da due cause **strutturali**, ognuna con un guasto vero dietro:
+
+1. **`async void` e lambda `async` passate a `EventHandler`** (13). Un'eccezione che sfugge da lì viene
+   alzata senza nessuno che la prenda e **il processo muore**: il dialogo di commit non deve poter
+   uccidere l'app perché git ha risposto qualcosa di inatteso. Nuovo `App/Async.cs`: `Async.Run` avvia
+   il lavoro da un contesto void, riporta l'eccezione e tiene l'app in piedi.
+2. **`Task.Run(work).ContinueWith(t => … t.Result …)`** (12). Leggere `Result` **blocca** se il task
+   non è finito e la continuazione **inghiotte** i fault: un errore di git diventava un dialogo che
+   non si aggiornava mai. `Async.OffUi` fa `await`: stesso threading, nessuna lettura bloccante,
+   fault riportati.
+
+Gli altri, uno per uno (nessuno "sistemato" con un `NoWarn`):
+- **`RemoteService`** non blocca più su `GetRemotesAsync` del core con un salto sul thread pool: legge
+  `git remote -v` in modo **sincrono** (`GitExecutable.Execute`, come fa `GetRemoteNames`), che è ciò
+  che i suoi ~12 chiamanti sincroni volevano. Il parse tiene il TAB come separatore e ancora la
+  direzione a fine riga, così un URL con spazi non spezza la colonna.
+- **`TranslationService`**: il join d'avvio non aspetta più il **task** di pre-load dal thread che sta
+  per costruire la prima finestra (che è l'UI thread — bloccarlo su un task è come si deadlocka
+  un'app, timeout o no). Ora pre-load e joiner prendono lo **stesso gate** e fanno lo stesso parse:
+  se il pool ha finito il catalogo è già dentro, se è a metà il gate dura quanto il parse, se non è
+  mai partito lo fa il joiner. Il timeout resta e continua a spedire inglese se sfora.
+- **`MainWindow`**: `RefreshSubmoduleNavigationAsync` non riceve più il task dello snapshot ma lo
+  chiede **alla cache** (stessa istanza, niente scoperto due volte; l'identità serve ancora al
+  controllo di staleness, quindi resta in una **locale**), e l'osservatore del warm-up è una
+  `ContinueWith` invece di un `await` su un task altrui.
+- **`CleanupDialog`** tiene la domanda in sospeso come **la callback che la risponde**
+  (`Action<bool>`), con il `TaskCompletionSource` **locale** al metodo che chiede.
+- **`MainToolbar`**: il task dei repo-link già completato viene **materializzato** (valore o fault)
+  invece di essere passato avanti; `LoadShellsAsync` → `LoadShells` (ritorna void);
+  **`CommitDetailView`** osserva il task di `xdg-open`.
+- **`CommitActionsService`** normalizza una volta il messaggio dello stash (CS8604).
+- **`MainMenu.GitMaintenanceRequested` cancellato** (CS0067): non veniva **mai alzato**, quindi il
+  `MaintenanceDialog` — un extra del port, non di upstream — era **irraggiungibile**. Tutti e cinque i
+  suoi pulsanti esistono già come voci di menu (compress, recover lost objects, delete index.lock,
+  edit .git/config), quindi il dialogo è stato **eliminato** invece di ricablato.
+
+**Una modifica al sorgente condiviso** (`src/app/GitCommands/Git/Executable.cs`, compilato anche dalla
+build Windows — è la seconda dopo le guardie `OperatingSystem.IsWindows()`): la copia di stderr resta
+fire-and-forget, ma un fault ora arriva al **command log** invece di essere scartato in silenzio (un
+task fallito e non osservato viene buttato via senza un rumore).
+
+**L'unica esenzione, argomentata sul posto**: l'harness `NavigationSnapshot` tiene `VSTHRD003` in
+`NoWarn` nel **proprio** csproj — tenere un task che il servizio ha consegnato e attenderlo dopo *è*
+ciò che quell'harness verifica, e un harness console non ha synchronization context su cui deadlockare.
+
+### Verifica
+`Avvisi: 0 / Errori: 0` su tutti gli otto progetti (`-t:Rebuild`). Entrambi gli harness **PASS**. In
+GUI su Xvfb, percorso per percorso su ciò che è stato toccato: tendine di branch e repository, dialogo
+**Remotes** (due remote con le URL giuste, uguali a `git remote -v`), dialogo di commit con i menu
+"Commit message" e "Commit templates", **stage e unstage** di un file vero (indice riportato allo stato
+iniziale), e **entrambe** le risposte alla conferma di clean su un repo di prova in `/tmp` (Cancel
+lascia i file, Delete li rimuove). Nessuna riga `[Async]` e nessuna eccezione in nessun run.
+Falso allarme escluso con una **misura**: con `Language=Italian` i menu restano inglesi, ma lo erano
+**anche prima** della modifica (verificato ricompilando con `TranslationService.cs` stashato) — è il
+debito noto del layer di traduzione, non una regressione. Prossima libera: **M106**.
+
 ## M104 (2026-08-07, `56772bcc3`) — le ultime nove icone senza glifo
 
 > Dall'utente, il log di `./run.sh`: quattro righe `[IconLoader] icon '…' has no vector glyph, drawing
