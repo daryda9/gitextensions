@@ -705,11 +705,11 @@ public sealed class MainToolbar : UserControl
     {
         _immediateSuperprojectPath = immediateSuperprojectPath;
         bool canGoUp = !string.IsNullOrWhiteSpace(immediateSuperprojectPath);
-        Image? replacement = IconLoader.Image(canGoUp ? "NavigateUp" : "SubmodulesManage");
-        if (_submodulesIcon is not null && replacement is not null)
-        {
-            _submodulesIcon.Source = replacement.Source;
-        }
+        // Retarget, not a Source assignment: handing a fresh icon's Source to the live
+        // control leaves that control holding a glyph source nobody resolved and no
+        // longer following the style switch (the M77 trap). Retarget swaps the geometry
+        // in place and keeps the plumbing.
+        IconLoader.Retarget(_submodulesIcon, canGoUp ? "NavigateUp" : "SubmodulesManage");
 
         if (_submodulesHost is not null)
         {

@@ -192,6 +192,24 @@ internal static class Icons
     private const string Search = "M6 11a5 5 0 1 0 10 0a5 5 0 1 0-10 0 M15.5 15.5l4.5 4.5";
     private const string Filter = "M3 5h18l-7 8v7l-4-2v-5z";
 
+    // A page with ruled lines: the stored text of a commit message template. It is
+    // File plus the lines rather than Log (which has no folded corner) because the
+    // template IS a file on disk, and the fold is what the rest of the file family
+    // is recognised by at 16px.
+    private const string FileLines = "M6 3.5h8l4 4v13H6z M14 3.5v4h4 M9 11.5h6 M9 15h6 M9 18.5h4";
+
+    // The GPG verdicts. A shield says "this was checked", and the mark inside says
+    // how it came out — a tick, a warning, a cross. The same three serve the commit
+    // row and the tag row of the GPG tab: the verdict is what the icon carries, and
+    // whether it is about the commit or its tag is already the row's own label. One
+    // shape per verdict beats six near-identical shapes at 16px.
+    private const string Shield =
+        "M12 3l7.5 3v5.5c0 4.5-3.2 7.4-7.5 9-4.3-1.6-7.5-4.5-7.5-9V6z";
+    private const string ShieldCheck = Shield + " M8.5 11.5l2.5 2.5 4.5-5";
+    private const string ShieldAlert =
+        Shield + " M12 7.5v4.5 M11.4 15.5a.6 .6 0 1 0 1.2 0a.6 .6 0 1 0-1.2 0";
+    private const string ShieldCross = Shield + " M9.5 9.5l5 5 M14.5 9.5l-5 5";
+
     // A bisect is a halving of a range, so the glyph is a range: a history line
     // with both ends capped and an arrow singling out the commit in the middle.
     // Deliberately not the plain Commit dot, which stands for one commit.
@@ -382,6 +400,24 @@ internal static class Icons
         ["CommitId"] = Commit,
         ["GotoCommit"] = Commit,
         ["Bisect"] = Bisect,
+
+        // The commit dialog's Commit button asks for the repository-state name, where
+        // the toolbar asks for "Commit" and passes the state name as the CLASSIC one.
+        // Only the clean state is ever requested as a name, so only it is mapped: in
+        // the classic style this still loads RepoStateClean.png, the same bitmap as
+        // before, because the name travels with the glyph.
+        ["RepoStateClean"] = Commit,
+
+        // The dropdown of stored commit-message templates.
+        ["CommitTemplates"] = FileLines,
+
+        // GPG verdicts, commit row and tag row alike.
+        ["CommitSignatureOk"] = ShieldCheck,
+        ["CommitSignatureWarning"] = ShieldAlert,
+        ["CommitSignatureError"] = ShieldCross,
+        ["TagOk"] = ShieldCheck,
+        ["TagWarning"] = ShieldAlert,
+        ["TagError"] = ShieldCross,
         ["BisectGood"] = RingCheck,
         ["BisectBad"] = RingCross,
         ["BisectSkip"] = RingSkip,
@@ -424,6 +460,11 @@ internal static class Icons
         ["Key"] = Key,
         ["Console"] = Terminal,
         ["cmd"] = Terminal,
+
+        // The "Git bash" menu item. Upstream draws the Git-for-Windows logo, which
+        // is both wrong on Linux and untranslatable into one pen: what the command
+        // opens is a shell, so it gets the shell's glyph.
+        ["GitForWindows"] = Terminal,
         ["GitCommandLog"] = Log,
         ["Blame"] = User,
         ["Author"] = User,
@@ -469,6 +510,10 @@ internal static class Icons
         ["ExpandAll"] = ExpandVertical,
         ["ArrowUp"] = ArrowUp,
         ["ArrowDown"] = ArrowDown,
+
+        // Leaving a submodule for its super-project: the same arrow the reorder
+        // commands use, because it is the same gesture — one step up.
+        ["NavigateUp"] = ArrowUp,
         ["DeleteText"] = Backspace,
 
         // Lower-case on purpose: Data is Ordinal and the call site asks for
@@ -487,6 +532,11 @@ internal static class Icons
         ["star"] = Star,
         ["StarRemove"] = StarOff,
         ["EditFilter"] = Filter,
+
+        // Upstream's funnel-with-a-pencil, the icon of the parked filter box in the
+        // toolbar's overflow menu. It is the same command as EditFilter, so it is the
+        // same funnel: the pencil would be a second mark for nothing at 16px.
+        ["FunnelPencil"] = Filter,
         ["SyntaxHighlighting"] = Highlighter,
 
         // The magnifier had a const but no key: the one call site that wanted it asked
@@ -544,6 +594,9 @@ internal static class Icons
         ["CommitSummary"] = Green,
         ["BisectGood"] = Green,
         ["FileStatusAdded"] = Green,
+        ["RepoStateClean"] = Green,
+        ["CommitSignatureOk"] = Green,
+        ["TagOk"] = Green,
 
         // Destroy. The bin is red at every call site that draws it, and so is every
         // reset: they are the commands that lose work.
@@ -552,6 +605,11 @@ internal static class Icons
         ["DeleteFile"] = Red,
         ["RemoteDelete"] = Red,
         ["BisectBad"] = Red,
+
+        // A failed signature is a negative verdict, the same role BisectBad carries:
+        // nothing is destroyed, but the answer is "no".
+        ["CommitSignatureError"] = Red,
+        ["TagError"] = Red,
         ["FileStatusRemoved"] = Red,
         ["DashboardFolderError"] = Red,
         ["ResetCurrentBranchToHere"] = Red,
@@ -600,6 +658,8 @@ internal static class Icons
         ["TagCreate"] = Amber,
         ["star"] = Amber,
         ["Warning"] = Amber,
+        ["CommitSignatureWarning"] = Amber,
+        ["TagWarning"] = Amber,
         ["ReloadRevisionsDirty"] = Amber,
         ["RevertCommit"] = Amber,
         ["FileStatusUnknown"] = Amber,
@@ -629,6 +689,7 @@ internal static class Icons
         ["SelectBranch"] = Cyan,
         ["WorkTree"] = Cyan,
         ["SubmodulesManage"] = Cyan,
+        ["NavigateUp"] = Cyan,
         ["SubmodulesUpdate"] = Cyan,
         ["SubmodulesSync"] = Cyan,
         ["FolderSubmodule"] = Cyan,
