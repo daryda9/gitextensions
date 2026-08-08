@@ -766,7 +766,11 @@ public static class ModernStyles
                     new RowDefinition(GridLength.Auto),
                 },
             };
-            Grid.SetRow(bar, 0);
+            // The marker's row is NOT set here: Grid.Row defaults to 0, which is where
+            // the classic look wants it, and leaving it unset keeps it a style-settable
+            // property. Setting it would make it a local value, and a local value beats
+            // a style setter — the modern style's move to row 2 would silently do
+            // nothing, which is exactly what happened the first time.
             Grid.SetRow(header, 1);
             layout.Children.Add(bar);
             layout.Children.Add(header);
