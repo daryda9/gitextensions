@@ -159,6 +159,49 @@ public sealed class UiState
     public string TitleBar { get; set; } = GitExtensions.Avalonia.Theming.WindowChrome.MergedName;
 
     /// <summary>
+    ///  How many repositories one window holds: "Tabs" — the default — keeps a strip of
+    ///  open repositories and submodules across the top, VS Code style; "Single" gives
+    ///  the window one repository at a time, as it worked before the strip existed.
+    ///
+    ///  <para>Stored as a name rather than as a bool for the same reason as
+    ///  <see cref="TitleBar"/> and <see cref="Style"/>: the file is meant to be read
+    ///  (and hand-edited) by a human, and "RepoTabs": "Single" says what it means where
+    ///  "RepoTabs": false would only say which way a flag whose polarity is not written
+    ///  down happens to point.</para>
+    ///
+    ///  <para>Anything that is not exactly "Single" — including the absent key of every
+    ///  state file written before this option existed — reads as "Tabs"
+    ///  (<c>Theming/RepoTabsOption.Parse</c>), so an upgrade opens in the new
+    ///  arrangement.</para>
+    /// </summary>
+    public string RepoTabs { get; set; } = GitExtensions.Avalonia.Theming.RepoTabsOption.TabsName;
+
+    /// <summary>
+    ///  The repositories the tab strip held when the app was last closed, in strip
+    ///  order, so a session comes back with the same set of tabs rather than only the
+    ///  last one (<see cref="LastRepoPath"/>, which stays the answer while
+    ///  <see cref="RepoTabs"/> is "Single").
+    ///
+    ///  <para>Every path is only a hint and is validated at restore time: a repository
+    ///  may have been moved or deleted between two runs, and a tab that cannot be opened
+    ///  must be dropped, not fatal. <see cref="UiStateService"/> additionally caps the
+    ///  list — see the sanitiser — because nothing else bounds how many entries a
+    ///  hand-edited or truncated file can carry into start-up.</para>
+    /// </summary>
+    public List<RepoTabState> OpenRepoTabs { get; set; } = [];
+
+    /// <summary>
+    ///  Path of the tab that was in front, or null for "the first one".
+    ///
+    ///  <para>A path rather than an index: the sanitiser drops blank and duplicate
+    ///  entries from <see cref="OpenRepoTabs"/>, so an index saved beside them would
+    ///  quietly point at a different repository after any such repair. It is validated
+    ///  against the surviving list for the same reason — an active path that names no
+    ///  open tab is dropped rather than left to select nothing.</para>
+    /// </summary>
+    public string? ActiveRepoTab { get; set; }
+
+    /// <summary>
     ///  Whether the modern style's vector icons are painted in their accent role
     ///  (green for create, red for destroy, blue for transfer…) rather than all in the
     ///  text colour.
@@ -280,6 +323,46 @@ public sealed class UiState
     public string? LastRepoPath { get; set; }
 }
 
+/// <summary>
+///  One entry of <see cref="UiState.OpenRepoTabs"/>: a repository the tab strip had
+///  open, plus the little per-tab state that makes reopening it feel like coming back
+///  rather than starting again.
+///
+///  <para>A class of its own rather than a bare list of paths because a tab is more
+///  than its path, and a parallel array per field would have to stay index-aligned
+///  through the sanitiser's de-duplication — which is exactly the drift this port
+///  avoids elsewhere (see <see cref="UiState.ActiveRepoTab"/>).</para>
+/// </summary>
+public sealed class RepoTabState
+{
+    /// <summary>
+    ///  Full path of the repository or submodule working directory. The identity of the
+    ///  tab: the sanitiser de-duplicates on it and <see cref="UiState.ActiveRepoTab"/>
+    ///  names a tab by it. Never null — an entry whose path is blank is dropped.
+    /// </summary>
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>
+    ///  Whether the user pinned the tab, VS Code style: pinned tabs are kept when the
+    ///  rest of the strip is closed and are never reused for another repository.
+    /// </summary>
+    public bool Pinned { get; set; }
+
+    /// <summary>
+    ///  The commit that was selected in this tab's grid, or null for "whatever the grid
+    ///  lands on". A hint like every path here: the commit may have been rewritten or
+    ///  garbage-collected between two runs, so a miss simply selects the default.
+    /// </summary>
+    public string? SelectedCommit { get; set; }
+
+    /// <summary>
+    ///  This tab's bottom-panel tab, in the same vocabulary as
+    ///  <see cref="UiState.BottomTab"/>, or null to inherit that global choice — which
+    ///  is what every tab restored from a file written before the strip existed does.
+    /// </summary>
+    public string? BottomTab { get; set; }
+}
+
 /// <summary>Reads/writes <see cref="UiState"/> to a JSON file, tolerating a
 /// missing or corrupt file by returning defaults.</summary>
 public sealed class UiStateService
@@ -358,6 +441,12 @@ public sealed class UiStateService
         // stated once and the normalised file always holds one of the two names.
         s.TitleBar = GitExtensions.Avalonia.Theming.WindowChrome.Name(
             GitExtensions.Avalonia.Theming.WindowChrome.Parse(s.TitleBar));
+
+        // Same round trip, same reason: "absent or unknown means Tabs" is stated once,
+        // in the parser, and the normalised file always holds one of the two names.
+        s.RepoTabs = GitExtensions.Avalonia.Theming.RepoTabsOption.Name(
+            GitExtensions.Avalonia.Theming.RepoTabsOption.Parse(s.RepoTabs));
+        SanitizeRepoTabs(s);
         // Round-tripped through the enum, so an unknown or hand-edited name lands on
         // "Standard" rather than reaching the zoom (see UiSizes.Parse). This round trip is
         // ALSO where the M86 migration lands on disk: a file holding one of the four older
@@ -387,6 +476,69 @@ public sealed class UiStateService
         s.GridViewOptions ??= [];
         return s;
     }
+
+    /// <summary>
+    ///  Repairs the restored tab strip in place: no null list, no blank or duplicate
+    ///  paths, no unbounded list, and an active path that really names one of the tabs.
+    ///
+    ///  <para>The cap is the load-bearing part. Every other entry in this file describes
+    ///  one window and costs nothing to get wrong, but each surviving tab here is a
+    ///  repository the next start-up will open — a truncated, merged or hand-edited file
+    ///  must not be able to launch a hundred git processes before the window is even
+    ///  visible. Thirty is far past any real strip and still bounded.</para>
+    ///
+    ///  <para>De-duplication is first-wins and ignores a trailing separator, because the
+    ///  same repository reached through the tree and through the recent list can be
+    ///  written once with and once without it; two tabs over one working directory would
+    ///  then fight over the same watcher. It is deliberately NOT a full path
+    ///  canonicalisation (no symlink resolution, no case folding): that touches the disk,
+    ///  and this runs on every save.</para>
+    /// </summary>
+    private static void SanitizeRepoTabs(UiState s)
+    {
+        // A null from a hand-edited or truncated file must not become a NullReference at
+        // the first tab click: no tabs is a valid strip.
+        List<RepoTabState> tabs = s.OpenRepoTabs ?? [];
+        List<RepoTabState> kept = [];
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (RepoTabState tab in tabs)
+        {
+            if (tab is null || string.IsNullOrWhiteSpace(tab.Path))
+            {
+                continue;
+            }
+
+            tab.Path = tab.Path.Trim();
+            if (!seen.Add(TabKey(tab.Path)))
+            {
+                continue;
+            }
+
+            kept.Add(tab);
+            if (kept.Count == MaxRepoTabs)
+            {
+                break;
+            }
+        }
+
+        s.OpenRepoTabs = kept;
+
+        string? active = string.IsNullOrWhiteSpace(s.ActiveRepoTab) ? null : s.ActiveRepoTab.Trim();
+
+        // An active path that no longer names a tab — dropped as a duplicate, cut by the
+        // cap, or never in the list at all — becomes null, which the strip reads as "the
+        // first tab". Left as it was it would select nothing and show an empty window.
+        s.ActiveRepoTab = active is not null && seen.Contains(TabKey(active)) ? active : null;
+    }
+
+    /// <summary>How many tabs one strip may be restored with (see
+    /// <see cref="SanitizeRepoTabs"/> for why there is a limit at all).</summary>
+    private const int MaxRepoTabs = 30;
+
+    // The identity a tab is de-duplicated and looked up by: the path without a trailing
+    // separator, so "/src/repo" and "/src/repo/" are one tab.
+    private static string TabKey(string path)
+        => path.Length > 1 ? path.TrimEnd('/') : path;
 
     // Only the three positions the layout can actually build are accepted; anything
     // else collapses to the default. The names mirror Views.CommitInfoPosition, which

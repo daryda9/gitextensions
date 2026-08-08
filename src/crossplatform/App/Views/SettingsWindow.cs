@@ -90,6 +90,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly ComboBox _style;
     private readonly ComboBox _uiSize;
     private readonly ComboBox _titleBar;
+    private readonly ComboBox _repoTabs;
     private readonly CheckBox _coloredIcons;
 
     // One three-state checkbox per GitConfigChoices entry, same order.
@@ -169,6 +170,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // arrangement is independent of the visual style, so it is previewed, reverted and
     // persisted on its own (see Theming/WindowChrome).
     private bool _revertMergedTitleBar;
+
+    // And once more for the repository tab strip, for exactly the same reason: how many
+    // repositories a window holds is independent of style, size and title bar, so it is
+    // previewed, reverted and persisted on its own (see Theming/RepoTabsOption).
+    private bool _revertRepoTabs;
 
     private bool _applied;
 
@@ -531,6 +537,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _titleBar.Items.Add(new ComboBoxItem { Content = "Separate menu bar" });
         _titleBar.SelectionChanged += (_, _) => PreviewTitleBar();
 
+        // How many repositories a window holds. Tabs first because it is the default.
+        // No upstream trans-unit either: upstream opens one repository per window and
+        // has no such choice.
+        _repoTabs = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        _repoTabs.Items.Add(new ComboBoxItem { Content = "Tabs" });
+        _repoTabs.Items.Add(new ComboBoxItem { Content = "Single repository" });
+        _repoTabs.SelectionChanged += (_, _) => PreviewRepoTabs();
+
         // No upstream trans-unit: upstream ships coloured bitmaps and has nothing to
         // toggle, so the caption is a literal like "Style" and "UI size".
         _coloredIcons = new CheckBox { Content = "Colour the icons" };
@@ -556,7 +570,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             null, "The application colour theme, its visual style — \"Modern\" for the "
                 + "current vector icons and neutral palette, \"Classic\" for the earlier "
                 + "look — how large the interface is drawn (\"Standard\" matches the "
-                + "original Git Extensions) and where the menu sits. They are all "
+                + "original Git Extensions), where the menu sits and whether one window "
+                + "holds several repositories. They are all "
                 + "independent, so any combination works, and all of them are applied "
                 + "immediately as a preview and persisted on OK or Apply (reverted on "
                 + "Cancel).",
@@ -588,6 +603,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "bar\" keeps the desktop's title bar and puts the menu on the row "
                     + "below it. Independent of the style above — either arrangement works "
                     + "in Modern and in Classic — and applied immediately, no restart."),
+            Field(null, "Repository tabs", _repoTabs, dim,
+                "\"Tabs\" — the default — keeps every repository and submodule you open "
+                    + "in one window, on a strip of tabs at the top of it, so switching "
+                    + "between them costs a click and each one keeps its own selected "
+                    + "commit. \"Single repository\" hides the strip and gives the window "
+                    + "one repository at a time, as it worked before. The open tabs are "
+                    + "remembered across restarts either way, and the choice is applied "
+                    + "immediately, no restart."),
             coloredIconsField);
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
@@ -729,6 +752,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                 UiScaling.Apply(_revertUiSize);
                 ThemeManager.SetColoredIcons(_revertColoredIcons);
                 WindowChrome.Apply(_revertMergedTitleBar);
+                RepoTabsOption.Apply(_revertRepoTabs);
             }
         };
     }
@@ -888,6 +912,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // opened, previewed and cancelled once already.
         _revertMergedTitleBar = WindowChrome.Merged;
         _titleBar.SelectedIndex = _revertMergedTitleBar ? 0 : 1;
+
+        // Read from the live holder for the same reason as the title bar: it is the
+        // arrangement the window is wearing right now, which the file may not be.
+        _revertRepoTabs = RepoTabsOption.Enabled;
+        _repoTabs.SelectedIndex = _revertRepoTabs ? 0 : 1;
         return (ui.Theme, ui.Style);
     }
 
@@ -1013,6 +1042,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
     private bool SelectedMergedTitleBar => _titleBar.SelectedIndex != 1;
 
+    // Live as well: the main window listens to RepoTabsOption.Changed and shows or hides
+    // its strip, so the arrangement can be tried on and cancelled like the rest of this
+    // page. Nothing is closed when the strip is hidden — the tabs are still there.
+    private void PreviewRepoTabs() => RepoTabsOption.Apply(SelectedRepoTabs);
+
+    private bool SelectedRepoTabs => _repoTabs.SelectedIndex != 1;
+
     private UiSize SelectedUiSize
         => UiSizes.All[Math.Max(0, _uiSize.SelectedIndex)];
 
@@ -1133,6 +1169,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         ui.UiSize = UiSizes.Name(SelectedUiSize);
         ui.ColoredIcons = _coloredIcons.IsChecked == true;
         ui.TitleBar = WindowChrome.Name(SelectedMergedTitleBar);
+        ui.RepoTabs = RepoTabsOption.Name(SelectedRepoTabs);
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
@@ -1141,6 +1178,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         UiScaling.Apply(SelectedUiSize);
         ThemeManager.SetColoredIcons(ui.ColoredIcons);
         WindowChrome.Apply(SelectedMergedTitleBar);
+        RepoTabsOption.Apply(SelectedRepoTabs);
 
         // The host owns the live UiState instance and re-serialises it on close, which
         // would otherwise overwrite the value just written to the file. Telling it
@@ -1159,6 +1197,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _revertUiSize = SelectedUiSize;
         _revertColoredIcons = ui.ColoredIcons;
         _revertMergedTitleBar = SelectedMergedTitleBar;
+        _revertRepoTabs = SelectedRepoTabs;
     }
 
     // ---- hotkeys ------------------------------------------------------------
