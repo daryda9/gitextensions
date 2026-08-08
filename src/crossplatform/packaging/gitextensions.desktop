@@ -8,3 +8,8 @@ Type=Application
 Categories=Development;RevisionControl;
 Keywords=git;vcs;version control;source control;
 StartupNotify=true
+# The WM_CLASS Avalonia gives every window of this app (its assembly name, verified
+# with xprop). Without it a desktop shell cannot tell that the running window belongs
+# to this entry: the launcher shows the icon above, the open window shows the shell's
+# generic placeholder, and the two sit side by side in the dock instead of being one.
+StartupWMClass=GitExtensions.Avalonia

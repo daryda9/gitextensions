@@ -58,6 +58,12 @@ public class App : Application
         // varying these font resources as well would be a second, competing size knob.
         // MainWindow applies the persisted zoom level from ui-state.json once it is known.
         Theming.UiScaling.InstallChromeBaseline();
+
+        // The product logo on every window, so the desktop shell stops drawing its
+        // placeholder next to the correctly-iconed launcher entry (see Theming/AppIcon).
+        // On the application's styles rather than on each window: one statement, and no
+        // window opened later can forget it.
+        Theming.AppIcon.Apply(Styles);
     }
 
     public override void OnFrameworkInitializationCompleted()
