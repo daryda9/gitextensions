@@ -3260,6 +3260,37 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M129 (2026-08-08, `764a0d250`) — la scheda selezionata, in modern, è sottolineata
+
+> Dall'utente, con lo screenshot del pannello di VS Code: «per quanto riguarda le schede di sotto,
+> cambia lo stile della selezione del tab del modern mettendolo simile a questo».
+
+La striscia in basso è un insieme di **viste della stessa selezione**, non una pila di pagine, e il
+riferimento la legge così: OUTPUT / DEBUG CONSOLE / TERMINAL / PORTS sono etichette, una delle quali
+**sottolineata**. Il port disegnava invece una scheda rialzata, piena e contornata.
+
+Solo nel blocco **modern**: il classico tiene la sua scheda piena, l'aspetto che ha sempre avuto. Il
+template è ora condiviso e prende il bordo del marcatore come parametro — **sopra** nel classico, dove
+legge come il cappello della scheda, **sotto** nel modern, dove sottolinea l'etichetta. In entrambi i
+casi il marcatore mantiene una **riga di layout propria**, che è la ragione per cui questo template
+esiste (Fluent disegna la sua pipe sopra la cella dell'etichetta, e a questa densità finisce sul
+testo).
+
+**Il conto dei segnali, dichiarato.** Il classico ne porta quattro (riempimento, bordo, barra, peso);
+questo ne porta due, ed entrambi sono misurati: la sottolineatura accento contro la striscia sta allo
+stesso 3.95:1 (chiaro) / 3.72:1 (scuro) a cui era tenuto il bordo, e il salto d'inchiostro da
+`App.TextDim` a `App.Text` è un secondo indizio che non dipende dal vedere un filo da 2px. Cambiano
+**posizione** (un bordo che viene disegnato) e **luminosità**: la selezione non è mai solo colore.
+
+**Trovato per strada.** Il colore a riposo del marcatore era **assegnato dentro il template**, quindi
+era un *valore locale* — e in Avalonia un valore locale batte un setter di stile: la regola
+«`:selected` → accento» non aveva **mai** dipinto nulla. Ora entrambi gli stati sono stili, e la
+striscia classica si prende la barra superiore che avrebbe sempre dovuto disegnare.
+
+**Verificato** su Xvfb: in modern «Commit» ha 91px di sottolineatura accento (misurata a schermo,
+2px), niente riempimento né contorno, le altre schede in inchiostro smorzato; in classic la scheda
+piena con la barra in alto. Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
 ## M128 (2026-08-08, `7a33eb988`) — il menu nella barra del titolo, come VS Code
 
 > Dall'utente: «tutta la toolbar (start, repository, navigate…) deve essere nella barra di sopra, la
