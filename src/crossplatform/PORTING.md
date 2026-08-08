@@ -3260,6 +3260,49 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M127 (2026-08-08, `3b8ee7ec0`) — il pulsante della shell apre un terminale che sopravvive
+
+> Dall'utente: «ho notato che il tasto bash, almeno in linux non fa niente».
+
+Il cablaggio era a posto (`MainToolbar.LaunchCurrentShell` → `OpenShellRequested` →
+`ExternalToolService.OpenTerminal`). A sbagliare era il **giudizio sul lancio**. Su questa macchina
+`x-terminal-emulator` — la scelta di Debian, primo candidato della lista — è un collegamento a
+**Warp**, la cui CLI rifiuta `-e`:
+
+```
+$ x-terminal-emulator -e bash
+error: unexpected argument '-e' found
+  tip: to pass '-e' as a value, use '-- -e'
+```
+
+Warp stampa il suo usage ed esce con 2 — ma `Process.Start` era già riuscito, quindi il launcher
+riportava «Opened terminal in …», **smetteva di provare gli altri candidati** e nessun terminale
+compariva. Il pulsante non faceva niente e la barra di stato diceva il contrario.
+
+Ora un terminale ha una **finestra di grazia** (700 ms) per dimostrare di essere sopravvissuto: ancora
+in esecuzione, oppure uscito con 0 (il client di gnome-terminal passa il lavoro al suo server e
+ritorna), vale come aperto; un'uscita **diversa da zero** è un fallimento e si passa al candidato
+successivo. Se falliscono tutti, il messaggio riporta la lamentela del programma — «unexpected
+argument '-e'» — perché è la riga che dice il perché.
+
+La lista dei candidati cresce dai cinque di prima: `kgx`, `ptyxis`, `tilix`, `terminator`,
+`mate-terminal`, `alacritty`, `kitty`, `foot`, `urxvt`. `ExecArg` è diventato nullable per i due che
+prendono il programma come **argomento finale nudo** (kitty, foot) invece che dietro una bandiera.
+
+I lanci di strumenti esterni passano **fuori dal thread UI** (`MainWindow.WithRepo` via `Async.OffUi`):
+la finestra di grazia è un'attesa, e sul thread UI un'attesa è una finestra congelata.
+
+**Verificato**: `x-terminal-emulator -e bash` esce non-zero e viene saltato; il candidato successivo
+(`gnome-terminal --working-directory <repo> -- bash`) parte e la barra di stato dice «Opened terminal
+in /home/dario/git_ext_mod». Nota sul rig headless: gnome-terminal è client/server, quindi la finestra
+si apre sul display dove gira **il server**, non su quello Xvfb del test. Build `Avvisi: 0 /
+Errori: 0`, harness navigation snapshot PASS.
+
+**Resta fuori**: Warp non viene usato affatto: il suo `-e` non esiste e non ha (per quanto visto) un
+modo documentato di aprire una directory da riga di comando. Se lo si vuole come terminale del port,
+serve un'impostazione «comando del terminale» dove l'utente scrive la riga esatta — non è stata
+aggiunta qui.
+
 ## M126 (2026-08-08, `0156dd902`) — un dialogo si apre sul pulsante per cui è stato aperto
 
 > Dall'utente: «quando si apre la finestra di push, devo cliccare per forza il pulsante, puoi lasciarmi
