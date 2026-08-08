@@ -3260,6 +3260,36 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M125 (2026-08-08, `96715fac8`) — markdown nell'evidenziazione della sintassi
+
+> Dall'utente, su un diff di `HANDOFF.md`: «mi sembra si sia rotta la syntax highlighting».
+
+Non era rotta — verificato subito dopo M123 su `DiffView.cs` (i `using` blu) e su un `.csproj` (le
+stringhe arancioni). Il markdown però non è **mai** stato fra i linguaggi riconosciuti: `Detect`
+copriva cs, famiglia C, js/ts, py, sh, go, rs, sql, markup, config e json, e `.md` cadeva in
+`_ => null`. Ed è il formato dei due file che in quel pannello si guardano più spesso.
+
+Il markdown non entra nello scanner a parole chiave: parole chiave non ne ha, e il significato lo
+porta la **forma della riga**. Ha una passata sua, sei marchi decisi in ordine:
+
+1. una riga di fence (``` o ~~~) commuta il bit di blocco — **lo stesso** che ogni altro linguaggio usa
+   per un commento a blocchi, quindi la macchina a stati per riga del renderer non cambia — e tutto
+   ciò che sta dentro è code span;
+2. un titolo (`#`…`######` seguito da spazio) è colorato per intero — `#tag` e i righelli di cancelletti
+   più lunghi di sei non lo sono;
+3. una citazione tiene il suo `>`, un elemento di lista tiene il suo marcatore (`-`, `*`, `+`, `12.`) —
+   solo il marcatore: il testo è prosa e vuole ancora il colore della riga di diff su cui sta;
+4. nella prosa: i code span fra backtick, `**grassetto**` / `*enfasi*`, e la **URL** di un link
+   `[testo](url)` — la URL e non l'etichetta, perché l'etichetta è la prosa che si legge.
+
+Nient'altro viene toccato: prosa che si legge come prosa è il punto. Approssimato come tutto il resto
+del file: un diff mostra frammenti, quindi un fence aperto sopra l'hunk mostrato è invisibile; dentro
+un patch lo stato è giusto, perché il renderer ripercorre le righe dall'alto.
+
+**Verificato** su Xvfb, diff di `HANDOFF.md` e `PORTING.md`: code span arancioni, `**grassetto**` nel
+colore delle parole chiave, e un blocco fence colorato per intero mantenendo il verde della riga
+aggiunta. Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
 ## M124 (2026-08-08, `76595811c`) — la storia di un file tiene i suoi rami e i suoi merge
 
 > Dall'utente, con le due finestre affiancate: «sulla sinistra ho cliccato su *filter file in grid*,
