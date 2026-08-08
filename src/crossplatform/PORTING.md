@@ -3260,6 +3260,47 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M119 (2026-08-08, `fc24d6e8e`) — una toolbar sola, un filtro solo, come in `FormBrowse`
+
+Confronto voce per voce fra `ToolStripMain` (`FormBrowse.Designer.cs`, righe 205–224),
+`FormBrowse.InitMenusAndToolbars.cs`, `FilterToolBar.Designer.cs` e la barra del port. Lavoro
+delegato a un subagent in worktree, integrato con cherry-pick.
+
+**La striscia principale era già fedele**: tutte e 19 le voci dell'originale, nello stesso ordine, con
+i separatori al posto giusto, più due aggiunte del port (Apri repository, Nuovo branch). Le
+divergenze vere erano altrove.
+
+- **Superficie di filtro duplicata, rimossa dalla toolbar.** `ToolStripFilters` era ripetuto **due
+  volte** nel port: una mezza copia in alto e quella completa sulla barra della griglia (M115). Il menu
+  «All branches ▾» in alto per giunta scriveva sempre «All branches» anche con la griglia sul solo
+  branch corrente — non ridondante, **falso**. Via il menu e via la coppia «Filter:» + casella:
+  la barra della griglia porta già tutto (filtro rapido, tipo di campo, MRU, ambito dei branch con il
+  selettore dei ref, il dialogo `Filter…`, la `✕` di reset). `Ctrl+E` ora va dritto alla casella della
+  griglia.
+- **Indicatore «repo — path (branch)» in fondo a destra, rimosso**: nessun corrispettivo in
+  `ToolStripMain`, terza copia dello stesso dato, ed era la prima cosa che finiva nell'overflow «»`.
+- **Aggiunte le due scorciatoie di `InsertFetchPullShortcuts`** che mancavano: Pull - merge e
+  Pull - rebase, solo icona, che alzano `PullActionRequested` (già instradato da
+  `MainWindow.RunPullAction`).
+- **Suffissi di hotkey nei tooltip** dove upstream li annota in `RefreshShortcutKeys`: Open, Refresh
+  (F5), Fetch, Commit, selettore di branch, shell.
+- Eliminata la macchineria di overflow ormai morta (`OverflowKind.Menu/Filter/Text/Skip`,
+  `MakeMenuButton`, `SubItems/TextSource/FilterBox`).
+
+**Non fatto, con motivo.** «Fetch all» e «Fetch and prune all»: upstream li distingue con tre PNG
+diversi, mentre `Icons.cs` mappa `PullFetch`, `PullFetchAll` e `PullFetchPruneAll` sullo **stesso**
+glifo — solo icona sarebbero tre pulsanti identici. Restano nel menu a tendina di Pull; servono tre
+glifi nuovi. Il sesto clone upstream, «Pull» semplice, fa esattamente ciò che fa il corpo dello split
+button accanto, con la stessa icona. `ToolStripScripts` non ha nulla da mostrare: il port non ha gli
+script utente (SKIP dichiarato). La **barra di stato** resta: upstream non ne ha
+(`toolPanel.BottomToolStripPanelVisible = false`), ma è l'unico canale di feedback delle operazioni
+del port — e dopo queste rimozioni non duplica più niente della toolbar.
+
+**Verificato** su Xvfb a 1600×1000: la striscia ora **entra tutta**, nessun overflow «»` (prima
+traboccava, nascondendo proprio la casella di filtro e l'etichetta del repo); gruppo remoto
+Fetch ↓ · Pull-merge · Pull-rebase · Pull ▾ · Push ↑ · Commit · Stash ▾; **una** sola casella di
+filtro a schermo. Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
 ## M118 (2026-08-08, `1582e4128`) — il grafo delle revisioni disegnato come nell'originale
 
 > Dall'utente, con gli screenshot a confronto: «l'interfaccia è parecchio differente».
