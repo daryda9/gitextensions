@@ -38,6 +38,14 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     private readonly MainMenu _menu = new();
     private readonly MainToolbar _toolbar = new();
+
+    // The client-side title bar and the resize strips that go with it: both exist only
+    // while the menu is merged into the title bar (see ApplyWindowChrome).
+    private TitleBar? _titleBar;
+    private Panel? _grips;
+
+    // The window's Content: the root dock with the resize strips layered over it.
+    private Panel? _layered;
     private readonly StatusBarView _statusBar = new();
     private readonly RepoObjectsTree _tree = new();
     private readonly RevisionGridView _revisions = new();
@@ -288,7 +296,17 @@ public sealed class MainWindow : Theming.ZoomWindow
         root.Children.Add(_statusBar);
         root.Children.Add(main);
         _root = root;
-        Content = root;
+
+        // The window's own frame — the desktop's title bar, or the client-side one the
+        // merged arrangement draws — is decided here and re-decided whenever the option
+        // changes. It also assigns Content, because with the merged bar the content is
+        // the root plus the resize strips layered over it.
+        //
+        // Driven off WindowChrome's own event rather than off SetAppearance: the choice
+        // can equally be made in the Settings dialog, and one subscription covers both
+        // doors.
+        ApplyWindowChrome();
+        Theming.WindowChrome.Changed += OnWindowChromeChanged;
 
         WireEvents();
         InstallHotkeys();
@@ -338,6 +356,15 @@ public sealed class MainWindow : Theming.ZoomWindow
         // its own Position/Width/Height describe the maximized frame, so the values
         // worth saving have to be captured while it is still normal.
         PositionChanged += (_, _) => CaptureNormalPlacement();
+
+        // The resize strips belong to a window that still has edges to drag.
+        PropertyChanged += (_, e) =>
+        {
+            if (e.Property == WindowStateProperty)
+            {
+                UpdateResizeGrips();
+            }
+        };
         SizeChanged += (_, _) =>
         {
             CaptureNormalPlacement();
@@ -353,6 +380,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         Closing += (_, _) =>
         {
             PersistLayout();
+            Theming.WindowChrome.Changed -= OnWindowChromeChanged;
             _watcher.Dispose();
             _dropTarget?.Dispose();
         };
@@ -3800,7 +3828,12 @@ public sealed class MainWindow : Theming.ZoomWindow
             return;
         }
 
-        double barBottom = _menu.Bounds.Bottom;
+        // Translated into the window's own space, not read off Bounds: since the modern
+        // style the menu can be a child of the title bar rather than of the root dock,
+        // and Bounds is relative to whichever parent it currently has.
+        double barBottom = _menu.TranslatePoint(new Point(0, _menu.Bounds.Height), this) is Point p
+            ? p.Y
+            : _menu.Bounds.Bottom;
         double available = Bounds.Height - barBottom - Theming.Metrics.Space.Sm;
         app.Resources["App.MenuMaxHeight"] = Math.Max(MinimumMenuHeight, available);
     }
@@ -3839,6 +3872,11 @@ public sealed class MainWindow : Theming.ZoomWindow
         Theming.SystemTheme.Seed(_uiState.SystemThemeSeen);
         Theming.SystemTheme.Follow(_uiState.Theme == Theming.SystemTheme.Name);
         Theming.ThemeManager.Apply(VariantOf(_uiState.Theme), StyleOf(_uiState.Style));
+
+        // Where the menu sits is the third Appearance dimension, orthogonal to the other
+        // two. Pushed into the live holder here so the constructor's ApplyWindowChrome
+        // reads the stored answer, and so a value changed anywhere else is honoured.
+        Theming.WindowChrome.Apply(Theming.WindowChrome.Parse(_uiState.TitleBar));
     }
 
     // Changes one dimension (or both), applies the resulting pair, and persists it.
@@ -3856,6 +3894,108 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         ApplyAppearance();
         _uiStateService.Save(_uiState);
+    }
+
+    // ---- window chrome (the title bar) ----------------------------------------------
+
+    // Posted for the reason RevisionGridView posts its own style handler: the event is
+    // raised from inside the dialog's preview, and re-parenting the menu is not
+    // something to do underneath a caller that is still running.
+    private void OnWindowChromeChanged() => Dispatcher.UIThread.Post(ApplyWindowChrome);
+
+    /// <summary>
+    ///  Puts the window in the frame the <see cref="Theming.WindowChrome"/> option calls
+    ///  for: the merged bar — no system frame at all, the menu sharing one row with the
+    ///  caption and the window buttons (see <see cref="TitleBar"/>) — or the standard
+    ///  one, the desktop's own title bar with the menu on the row below it.
+    /// </summary>
+    /// <remarks>
+    ///  <para><b>Why the frame is dropped rather than "extended into".</b> The X11
+    ///  backend of Avalonia 11.3 ignores <c>ExtendClientAreaToDecorationsHint</c>
+    ///  outright — measured on this desktop: the hint leaves
+    ///  <c>IsExtendedIntoWindowDecorations</c> false and mutter goes on drawing its own
+    ///  bar. <see cref="Window.SystemDecorations"/> is honoured, so that is the lever,
+    ///  and it takes the resize border away with the title bar; <see cref="ResizeGrips"/>
+    ///  hands that back.</para>
+    ///
+    ///  <para>Nothing here looks at the visual style: the two are orthogonal, and the
+    ///  merged bar takes its colours from the live palette like the rest of the chrome,
+    ///  so it wears Classic's surface under Classic and Modern's under Modern.</para>
+    ///
+    ///  <para>It is re-runnable on purpose: the option is switchable without a restart
+    ///  and this is what re-lays the window when it changes.</para>
+    /// </remarks>
+    private void ApplyWindowChrome()
+    {
+        bool clientSide = Theming.WindowChrome.Merged;
+
+        // The Content is assigned ONCE, here, and never swapped afterwards: it is the
+        // dock plus the layer the resize strips live on. Re-assigning it per arrangement
+        // would mean handing a control that already has a parent to the presenter, and
+        // it would also make the zoom host (Theming/UiScaling) rebuild for nothing.
+        if (_layered is null)
+        {
+            _layered = new Panel();
+            _layered.Children.Add(_root);
+            Content = _layered;
+        }
+        else if (clientSide == (_titleBar is not null))
+        {
+            return;
+        }
+
+        // Always take the menu off its current parent first: it is ONE control that
+        // moves between the two layouts, so the entries, their events and their state
+        // are the same objects either way — nothing is rebuilt and nothing to re-wire.
+        _root.Children.Remove(_menu);
+        if (_titleBar is not null)
+        {
+            _titleBar.Detach();
+            _root.Children.Remove(_titleBar);
+            _titleBar = null;
+        }
+
+        if (clientSide)
+        {
+            _titleBar = new TitleBar(this, _menu);
+            DockPanel.SetDock(_titleBar, Dock.Top);
+            _root.Children.Insert(0, _titleBar);
+
+            if (_grips is null)
+            {
+                _grips = new Panel();
+                foreach (Control grip in ResizeGrips.Build(this))
+                {
+                    _grips.Children.Add(grip);
+                }
+            }
+
+            if (!_layered.Children.Contains(_grips))
+            {
+                _layered.Children.Add(_grips);
+            }
+        }
+        else
+        {
+            DockPanel.SetDock(_menu, Dock.Top);
+            _root.Children.Insert(0, _menu);
+            if (_grips is not null)
+            {
+                _layered.Children.Remove(_grips);
+            }
+        }
+
+        SystemDecorations = clientSide ? SystemDecorations.None : SystemDecorations.Full;
+        UpdateResizeGrips();
+    }
+
+    // The strips are only useful on a window that has an edge to drag.
+    private void UpdateResizeGrips()
+    {
+        if (_grips is not null)
+        {
+            _grips.IsVisible = WindowState == WindowState.Normal;
+        }
     }
 
     // Opens the modal Settings window over the main window, passing the current
@@ -3889,6 +4029,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         UiState saved = _uiStateService.Load();
         _uiState.Theme = saved.Theme;
         _uiState.Style = saved.Style;
+        _uiState.TitleBar = saved.TitleBar;
 
         // Same reason as the two above: PersistLayout() writes this instance in full on
         // close, so a size chosen in the dialog would be undone by the exit save.

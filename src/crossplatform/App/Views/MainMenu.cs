@@ -1,8 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 using GitExtensions.Extensibility.Plugins;
@@ -40,6 +42,43 @@ public sealed class MainMenu : UserControl
     // translation is clipped, low enough that a pathological entry still cannot
     // grow the popup past a normal window.
     private const double MenuPopupMaxWidth = 900d;
+
+    // ---- overflow ("…") ------------------------------------------------------------
+    //
+    // Merged into the title bar this row is shared with the window caption and the
+    // window buttons (see Views/TitleBar), so it can genuinely run out of room. The
+    // entries that do not fit are moved — the real MenuItem, not a copy — into a
+    // trailing "…" entry, exactly as VS Code's title-bar menu does. Because the "…"
+    // is itself a top-level entry of the SAME Menu, arrow-key navigation reaches it
+    // without any extra plumbing, which is what keeps the overflow keyboard-usable.
+    //
+    // Unconditional, and cheap to leave so: on a separate menu bar the row has the
+    // whole window width to itself, so the fit always succeeds and "…" stays hidden.
+    private Menu _bar = new();
+    private MenuItem _overflow = new();
+
+    // Every top-level entry in bar order, whether it is currently on the bar or in
+    // the overflow. This is the single source of truth ApplyOverflow rebuilds both
+    // collections from, so an entry can never change rank or be listed twice.
+    private readonly List<MenuItem> _topLevel = [];
+
+    // Natural (unconstrained) bar width per top-level entry, captured while the entry
+    // is ON the bar. An entry parked in the overflow is not realised as a bar item any
+    // more, so its width could not be measured there — hence the cache. Every Build()
+    // starts with all entries on the bar, so the first layout pass fills it.
+    private readonly Dictionary<MenuItem, double> _naturalWidth = new();
+
+    // How many leading entries of _topLevel are on the bar right now.
+    private int _onBar;
+
+    // Width of the "…" entry, reserved before deciding what fits. It can only be
+    // measured while the entry is visible, i.e. while something already overflows, so
+    // the first transition into overflow uses this seed and the next pass corrects it.
+    private const double OverflowWidthSeed = 34;
+    private double _overflowWidth = OverflowWidthSeed;
+
+    // Set while ApplyOverflow is queued, so one measure pass cannot post several.
+    private bool _overflowPending;
 
     private MenuItem _openRecent = new();
     private MenuItem _favorites = new();
@@ -241,6 +280,40 @@ public sealed class MainMenu : UserControl
         // A language switch re-labels the menu in place — no restart. The handler
         // is posted so the rebuild never runs inside the loader's continuation.
         TranslationService.LanguageChanged += OnLanguageChanged;
+
+        // A style switch re-templates the entries, so every width the overflow was
+        // measured from is out of date (see InvalidateBarMetrics).
+        ThemeManager.StyleChanged += OnStyleChanged;
+    }
+
+    private void OnStyleChanged() => Dispatcher.UIThread.Post(InvalidateBarMetrics);
+
+    /// <summary>
+    ///  Throws away the measured widths the overflow decides from and puts every entry
+    ///  back on the bar, so the next layout pass measures them all afresh.
+    /// </summary>
+    /// <remarks>
+    ///  An entry parked in the "…" is no longer a bar item, so it is not re-measured
+    ///  when the styling changes underneath it — its cached width silently stays at what
+    ///  the OLD style made it. That is not academic: switching Classic → Modern left
+    ///  "Help" in the overflow, and because the stale width kept the total over budget it
+    ///  stayed there, with the "…" the only sign anything was missing, until a resize
+    ///  happened to restore it. Restoring first is what makes the re-measure possible.
+    /// </remarks>
+    private void InvalidateBarMetrics()
+    {
+        _naturalWidth.Clear();
+        _overflowWidth = OverflowWidthSeed;
+        ApplyOverflow(_topLevel.Count);
+        InvalidateMeasure();
+
+        // The HOST's measure, not only this control's, and that is the whole point.
+        // Avalonia re-measures an invalidated control with its PREVIOUS constraint and
+        // only propagates upwards if the desired size changed — and this control's does
+        // not, because the constraint it was last given is the narrow one the host had
+        // decided on. So the host would never re-run FitTo, and the bar would sit at a
+        // width computed for the old style until something else resized it.
+        (this.GetVisualParent() as Layoutable)?.InvalidateMeasure();
     }
 
     private void OnLanguageChanged()
@@ -600,12 +673,25 @@ public sealed class MainMenu : UserControl
             () => DashboardRefreshRequested?.Invoke(),
             gesture: BrowseCommand.Refresh));
 
+        // The overflow entry. No access key and no icon: it is chrome, not a command,
+        // and it must read as the same "…" on every desktop and in every language.
+        _overflow = new MenuItem { Header = "…", IsVisible = false };
+
         Menu menu = new()
         {
             Background = toolbar,
             Foreground = text,
-            Items = { start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help },
+            Items = { start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help, _overflow },
         };
+        _bar = menu;
+
+        // A rebuild throws away every previous entry, so the width cache goes with it;
+        // and it starts with everything on the bar, which is what lets the very first
+        // layout pass measure them all (see _naturalWidth).
+        _topLevel.Clear();
+        _topLevel.AddRange([start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help]);
+        _naturalWidth.Clear();
+        _onBar = _topLevel.Count;
 
         // Fluent caps every flyout — a menu popup included — at FlyoutThemeMaxWidth
         // (456px), and the item template clips rather than ellipsises what does not
@@ -622,6 +708,128 @@ public sealed class MainMenu : UserControl
         // Visibility and greying always follow the last state the host pushed in, so
         // a language rebuild cannot resurrect a menu that should be hidden.
         ApplyRepositoryState();
+    }
+
+    // ---- overflow -------------------------------------------------------------------
+
+    /// <summary>
+    ///  Decides how much of the bar fits in <paramref name="available"/> logical pixels
+    ///  and returns the width it will actually take. The host
+    ///  (<see cref="TitleBar"/>) calls this from its own measure pass, before measuring
+    ///  this control, so the answer is a MEASUREMENT of the real entries and never a
+    ///  hard-coded breakpoint.
+    /// </summary>
+    /// <remarks>
+    ///  <para>The split itself is applied on the dispatcher rather than here.
+    ///  Re-parenting entries mutates <see cref="Menu.Items"/>, and mutating a control's
+    ///  children from inside a measure pass is the classic way to build a layout loop;
+    ///  posting it means the change lands between passes and the next pass simply sees
+    ///  the new shape.</para>
+    /// </remarks>
+    internal double FitTo(double available)
+    {
+        // Refresh the cache from the pass that has just been measured. Entries hidden
+        // by the host (SetRepositoryState) measure to zero and are deliberately NOT
+        // cached: they cost nothing, so they always "fit" and stay on the bar, which is
+        // also why they can never turn up inside the "…" flyout.
+        foreach (MenuItem item in _topLevel)
+        {
+            if (item.IsVisible && item.DesiredSize.Width > 0)
+            {
+                _naturalWidth[item] = item.DesiredSize.Width;
+            }
+        }
+
+        if (_overflow.IsVisible && _overflow.DesiredSize.Width > 0)
+        {
+            _overflowWidth = _overflow.DesiredSize.Width;
+        }
+
+        double total = 0;
+        foreach (MenuItem item in _topLevel)
+        {
+            total += WidthOf(item);
+        }
+
+        int wanted;
+        double used;
+        if (double.IsInfinity(available) || double.IsNaN(available) || total <= available)
+        {
+            wanted = _topLevel.Count;
+            used = total;
+        }
+        else
+        {
+            double budget = Math.Max(0, available - _overflowWidth);
+            used = 0;
+            wanted = 0;
+            for (int i = 0; i < _topLevel.Count; i++)
+            {
+                double step = WidthOf(_topLevel[i]);
+                if (used + step > budget)
+                {
+                    break;
+                }
+
+                used += step;
+                wanted++;
+            }
+
+            used += _overflowWidth;
+        }
+
+        RequestOverflow(wanted);
+        return Math.Min(used, Math.Max(0, available));
+    }
+
+    // Cached width, or "unknown" for an entry never yet measured on the bar. Unknown
+    // reads as zero on purpose: it can only happen before the first layout pass, when
+    // everything is still on the bar anyway, and the pass that follows corrects it.
+    private double WidthOf(MenuItem item)
+        => item.IsVisible && _naturalWidth.TryGetValue(item, out double w) ? w : 0;
+
+    private void RequestOverflow(int onBar)
+    {
+        if (onBar == _onBar || _overflowPending)
+        {
+            return;
+        }
+
+        _overflowPending = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _overflowPending = false;
+            ApplyOverflow(onBar);
+        }, DispatcherPriority.Loaded);
+    }
+
+    // Rebuilds both collections from _topLevel. Both are cleared first: a MenuItem has
+    // one logical parent, so it must leave the bar before it can enter the flyout.
+    private void ApplyOverflow(int onBar)
+    {
+        onBar = Math.Clamp(onBar, 0, _topLevel.Count);
+        if (onBar == _onBar)
+        {
+            return;
+        }
+
+        _onBar = onBar;
+        _bar.Items.Clear();
+        _overflow.Items.Clear();
+        for (int i = 0; i < _topLevel.Count; i++)
+        {
+            if (i < onBar)
+            {
+                _bar.Items.Add(_topLevel[i]);
+            }
+            else
+            {
+                _overflow.Items.Add(_topLevel[i]);
+            }
+        }
+
+        _overflow.IsVisible = onBar < _topLevel.Count;
+        _bar.Items.Add(_overflow);
     }
 
     // Repository → Git maintenance. Upstream is a submenu of four entries

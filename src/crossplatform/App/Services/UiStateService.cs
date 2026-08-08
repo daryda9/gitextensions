@@ -144,6 +144,21 @@ public sealed class UiState
     public string Style { get; set; } = "Modern";
 
     /// <summary>
+    ///  Where the main menu sits: "Merged" — the default — puts it in the window's own
+    ///  title bar next to the caption and the window buttons, VS Code style; "Standard"
+    ///  leaves the desktop's title bar alone and keeps the menu on the row below it.
+    ///
+    ///  <para><b>Independent of <see cref="Style"/>.</b> It is a layout choice, not a
+    ///  palette one, and both arrangements are drawn from whichever palette is in force,
+    ///  so all four combinations are valid.</para>
+    ///
+    ///  <para>Anything that is not exactly "Standard" — including the absent key of every
+    ///  state file written before this option existed — reads as "Merged"
+    ///  (<c>Theming/WindowChrome.Parse</c>), so an upgrade opens in the new arrangement.</para>
+    /// </summary>
+    public string TitleBar { get; set; } = GitExtensions.Avalonia.Theming.WindowChrome.MergedName;
+
+    /// <summary>
     ///  Whether the modern style's vector icons are painted in their accent role
     ///  (green for create, red for destroy, blue for transfer…) rather than all in the
     ///  text colour.
@@ -338,6 +353,11 @@ public sealed class UiStateService
         s.Theme = s.Theme is "Light" or "Dark" ? s.Theme : GitExtensions.Avalonia.Theming.SystemTheme.Name;
         s.SystemThemeSeen = s.SystemThemeSeen == "Light" ? "Light" : "Dark";
         s.Style = s.Style == "Classic" ? "Classic" : "Modern";
+
+        // Round-tripped through the parser, so "absent or unknown means Merged" is
+        // stated once and the normalised file always holds one of the two names.
+        s.TitleBar = GitExtensions.Avalonia.Theming.WindowChrome.Name(
+            GitExtensions.Avalonia.Theming.WindowChrome.Parse(s.TitleBar));
         // Round-tripped through the enum, so an unknown or hand-edited name lands on
         // "Standard" rather than reaching the zoom (see UiSizes.Parse). This round trip is
         // ALSO where the M86 migration lands on disk: a file holding one of the four older

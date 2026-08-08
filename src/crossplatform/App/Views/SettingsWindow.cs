@@ -89,6 +89,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly ComboBox _theme;
     private readonly ComboBox _style;
     private readonly ComboBox _uiSize;
+    private readonly ComboBox _titleBar;
     private readonly CheckBox _coloredIcons;
 
     // One three-state checkbox per GitConfigChoices entry, same order.
@@ -163,6 +164,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // Same contract again, for icon colouring: its own field because ThemeManager
     // takes it through its own call, not as part of the theme/style pair.
     private bool _revertColoredIcons;
+
+    // And again for where the menu sits. NOT part of the theme/style pair either: the
+    // arrangement is independent of the visual style, so it is previewed, reverted and
+    // persisted on its own (see Theming/WindowChrome).
+    private bool _revertMergedTitleBar;
 
     private bool _applied;
 
@@ -518,6 +524,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         _uiSize.SelectionChanged += (_, _) => PreviewUiSize();
 
+        // Where the menu sits. Merged first because it is the default. No upstream
+        // trans-unit: upstream is WinForms on Windows and has no such choice.
+        _titleBar = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        _titleBar.Items.Add(new ComboBoxItem { Content = "Menu in the title bar" });
+        _titleBar.Items.Add(new ComboBoxItem { Content = "Separate menu bar" });
+        _titleBar.SelectionChanged += (_, _) => PreviewTitleBar();
+
         // No upstream trans-unit: upstream ships coloured bitmaps and has nothing to
         // toggle, so the caption is a literal like "Style" and "UI size".
         _coloredIcons = new CheckBox { Content = "Colour the icons" };
@@ -542,10 +555,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             AppearanceKey, AppearanceText,
             null, "The application colour theme, its visual style — \"Modern\" for the "
                 + "current vector icons and neutral palette, \"Classic\" for the earlier "
-                + "look — and how large the interface is drawn. \"Standard\" matches the "
-                + "original Git Extensions. The three are independent, so any combination "
-                + "works, and all of them are applied immediately as a preview and "
-                + "persisted on OK or Apply (reverted on Cancel).",
+                + "look — how large the interface is drawn (\"Standard\" matches the "
+                + "original Git Extensions) and where the menu sits. They are all "
+                + "independent, so any combination works, and all of them are applied "
+                + "immediately as a preview and persisted on OK or Apply (reverted on "
+                + "Cancel).",
             text,
             dim,
             Field("ColorsSettingsPage/gbTheme.Text", "Theme", _theme, dim),
@@ -566,6 +580,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "restart needed. Because menus and drop-downs are drawn inside the "
                     + "window so that they scale with it, they cannot extend past its "
                     + "edges: in a small dialog they open into less room than before."),
+            Field(null, "Title bar", _titleBar, dim,
+                "\"Menu in the title bar\" — the default — draws the window's own title "
+                    + "bar: the menu, the window caption and the minimise, maximise and "
+                    + "close buttons share one row, and entries that do not fit move into "
+                    + "a \"…\" that reappears as the window is widened. \"Separate menu "
+                    + "bar\" keeps the desktop's title bar and puts the menu on the row "
+                    + "below it. Independent of the style above — either arrangement works "
+                    + "in Modern and in Classic — and applied immediately, no restart."),
             coloredIconsField);
 
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
@@ -706,6 +728,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     _revertStyle == "Classic" ? AppStyle.Classic : AppStyle.Modern);
                 UiScaling.Apply(_revertUiSize);
                 ThemeManager.SetColoredIcons(_revertColoredIcons);
+                WindowChrome.Apply(_revertMergedTitleBar);
             }
         };
     }
@@ -859,6 +882,12 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // it at startup and it is what the icons on screen are drawn with right now.
         _revertColoredIcons = ThemeManager.ColoredIcons;
         _coloredIcons.IsChecked = _revertColoredIcons;
+
+        // Read from the live holder for the same reason again: it is the arrangement the
+        // window is wearing right now, which the file may not be if this dialog was
+        // opened, previewed and cancelled once already.
+        _revertMergedTitleBar = WindowChrome.Merged;
+        _titleBar.SelectedIndex = _revertMergedTitleBar ? 0 : 1;
         return (ui.Theme, ui.Style);
     }
 
@@ -977,6 +1006,12 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // Live as well, and cheaper than either: every glyph on screen listens to
     // ThemeManager.StyleChanged and repaints itself, so nothing is rebuilt.
     private void PreviewIconColors() => ThemeManager.SetColoredIcons(_coloredIcons.IsChecked == true);
+
+    // Live as well: the main window listens to WindowChrome.Changed and re-lays its own
+    // frame, so the arrangement can be tried on and cancelled like the rest of this page.
+    private void PreviewTitleBar() => WindowChrome.Apply(SelectedMergedTitleBar);
+
+    private bool SelectedMergedTitleBar => _titleBar.SelectedIndex != 1;
 
     private UiSize SelectedUiSize
         => UiSizes.All[Math.Max(0, _uiSize.SelectedIndex)];
@@ -1097,6 +1132,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         ui.Style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
         ui.UiSize = UiSizes.Name(SelectedUiSize);
         ui.ColoredIcons = _coloredIcons.IsChecked == true;
+        ui.TitleBar = WindowChrome.Name(SelectedMergedTitleBar);
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
         _uiStateService.Save(ui);
@@ -1104,6 +1140,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         ThemeManager.Apply(SelectedVariant, SelectedStyle);
         UiScaling.Apply(SelectedUiSize);
         ThemeManager.SetColoredIcons(ui.ColoredIcons);
+        WindowChrome.Apply(SelectedMergedTitleBar);
 
         // The host owns the live UiState instance and re-serialises it on close, which
         // would otherwise overwrite the value just written to the file. Telling it
@@ -1121,6 +1158,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _revertStyle = ui.Style;
         _revertUiSize = SelectedUiSize;
         _revertColoredIcons = ui.ColoredIcons;
+        _revertMergedTitleBar = SelectedMergedTitleBar;
     }
 
     // ---- hotkeys ------------------------------------------------------------
