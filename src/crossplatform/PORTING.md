@@ -3340,6 +3340,43 @@ scheda con la riga selezionata ripristinata, `Ctrl+W`, `Ctrl+PagGiù`, chiusura 
 due schede e i loro stati, opzione su «Single repository» (striscia via all'istante) e Annulla
 (striscia di nuovo lì). Build `Avvisi: 0 / Errori: 0`.
 
+## M132 (2026-08-08, `d7c73b0a3`) — schede trascinabili, e il doppio clic sulla scheda fissa davvero
+
+> Dall'utente: «aggiungi il riordino delle tab con drag e che quando faccio doppio click anche sulla
+> tab "corsiva" questa si fissi».
+
+### Perché il doppio clic sulla scheda non fissava
+
+Il codice per farlo c'era già (`root.DoubleTapped → Pin`) e non è mai partito. Colpa di `Sync`, che a
+ogni chiamata faceva `Children.Clear()` e ri-aggiungeva gli stessi controlli: il **primo** clic attiva
+la scheda, l'attivazione chiama `Sync`, e ri-genitorare un controllo azzera lo stato di input che
+Avalonia tiene per lui — così il secondo clic arrivava a un controllo che il primo non l'aveva mai
+visto. Ricostruire una lista di controlli identici sembra innocuo; non lo è per nessun gesto che viva
+su più eventi, e il drag sarebbe morto allo stesso modo.
+
+Due cambi, non uno:
+
+- `Sync` tocca i figli **solo** se la sequenza è davvero diversa (confronto per riferimento); una
+  semplice attivazione ora ridipinge e basta;
+- il doppio clic si legge da `e.ClickCount == 2` nel `PointerPressed`, come fa l'albero, così il
+  gesto sopravvive a qualunque cosa il primo clic abbia fatto alla striscia.
+
+### Riordino
+
+Premuto un tab, il drag **inizia solo dopo 5 px** di spostamento: un clic normale — e il doppio clic
+qui sopra — non riordina niente per sbaglio. Da lì la scheda si sposta viva sotto il puntatore,
+prendendo lo slot della prima scheda il cui **punto medio** sta alla sua destra (così due schede si
+scambiano appena si supera metà della vicina, non tutta). Il puntatore viene catturato dalla striscia:
+un drag che scivola giù nell'albero altrimenti non finirebbe mai e il clic dopo lo riprenderebbe.
+
+Trascinare **fissa** la scheda, come in VS Code: una scheda che stai mettendo in un posto preciso è
+una che vuoi tenere, e lasciarla in anteprima permetterebbe al clic singolo successivo di cancellare
+la disposizione appena fatta. Feedback: la scheda trascinata al 60% di opacità — il riordino è già
+visibile di suo, non serve altro.
+
+L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
+riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
+
 ## M130 (2026-08-08) — i pulsanti dello stash come quelli del commit
 
 > Dall'utente, con lo screenshot della finestra Stash: «rendi coerenti anche i pulsanti con i bordi
