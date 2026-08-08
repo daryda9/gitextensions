@@ -3260,6 +3260,86 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M131 (2026-08-08, `6bf91a68d`) — più repository in una finestra, stile VS Code
+
+> Dall'utente: «voglio poter scorrere tra le repo in stile vscode, quindi con delle tab che mi
+> consentono di tenere aperte più repo o submodules contemporaneamente nella stessa finestra […] se
+> clicco un nuovo submodule si sostituisce a quello attivo, mentre se faccio doppio clic si fissa».
+> Con quattro scelte fatte da lui prima di scrivere una riga: **qualsiasi repo** può stare in una
+> scheda (non solo i submodule), stato **leggero con ripristino**, schede **persistite**, striscia
+> **sotto la toolbar**.
+
+### Cos'è una scheda
+
+Non una seconda copia dell'area di lavoro. `MainWindow` ha **una sola** copia delle viste e da sempre
+cambia repository con `OpenRepository` + guardia epoch; una scheda è un segnalibro più il poco stato
+che vale la pena ricordare — la riga su cui si era e il pannello in basso che si stava leggendo. È la
+scelta esplicita dell'utente fra le tre offerte: la variante «viste vive per scheda» avrebbe voluto
+`MainWindow` (4800 righe) spezzata in un `RepoTabView`, N watcher e N insiemi di loader accesi, per
+guadagnare uno switch istantaneo su un'operazione che già costa qualche centinaio di ms.
+
+### Anteprima e fissaggio
+
+La regola di VS Code, presa alla lettera:
+
+- **clic singolo** su un submodule o un worktree nell'albero → la repo si apre nella scheda di
+  *anteprima*, in corsivo. Il clic singolo dopo **sostituisce** quella scheda, non ne aggiunge una;
+- **doppio clic** → la scheda si fissa, il corsivo sparisce e da lì in poi ogni nuova anteprima
+  nasce accanto;
+- ogni altra porta (picker, dashboard, recenti, clone, cartella trascinata, riga di comando) apre
+  **fissato**: sono atti deliberati, non sguardi.
+
+Il clic singolo è nuovo nell'albero (`PreviewRepositoryRequested`) e risponde solo per i due tipi di
+nodo che aprono una repository: un branch continua a richiedere il doppio clic per il checkout. Con
+l'opzione spenta l'evento non viene ascoltato, quindi l'albero si comporta esattamente come prima.
+
+Due gesti esistenti hanno dovuto cedere il passo, ed entrambe le eccezioni sono strette il più
+possibile:
+
+- il worktree **già aperto** non veniva annunciato affatto (`OnActivate` lo saltava): il doppio clic
+  sulla repo che il clic singolo aveva appena messo in anteprima non arrivava a nessuno e non
+  fissava niente. Ora l'annuncio parte comunque; senza schede l'host risponde «Repository is already
+  open», che è più di quanto dicesse prima (silenzio indistinguibile da un clic mancato);
+- il submodule che **è** la repo corrente chiede una seconda istanza (come `SubmoduleNode.
+  OnDoubleClick` dell'originale). Resta così, tranne quando quella repo è la scheda di anteprima
+  attiva: lì il doppio clic è il fissaggio, non la richiesta di un'altra finestra.
+
+### Lo stato che una scheda si porta dietro
+
+`ShowRepoTab` è l'unico punto in cui una scheda va in scena, e quindi l'unico in cui quella che si
+lascia viene catturata. Il campo che serve è `_loadedTab`, **non** `_repoTabs.Active`: quando la
+striscia ci avverte ha già spostato la propria scheda attiva, quindi «quella che sto lasciando» è
+l'ultima che questa finestra ha caricato. Con `Active` la selezione si perdeva a ogni clic sulla
+striscia — trovato a schermo, non a mente.
+
+Il commit selezionato non può essere applicato subito: la griglia carica in modo asincrono.
+`RevisionGridView.SelectCommitWhenLoaded` **registra e basta** la richiesta, che viene onorata
+quando la prima pagina atterra. Anche qui la prima stesura era sbagliata in un modo che solo la
+prova mostra: provava la selezione immediatamente, cioè contro le righe della repo che si stava
+**lasciando**, bruciando l'unico colpo su una storia che quel commit non poteva contenere.
+
+### Contorno
+
+- `Ctrl+W` (già `BrowseCommand.CloseRepository`) chiude **questa** scheda, non tutte; chiusa
+  l'ultima si torna alla dashboard. `Ctrl+PagGiù`/`PagSu` scorrono le schede, in tunnel perché una
+  lista con il fuoco non le mangi, e ad anello.
+- Un clic sulla scheda **già attiva** normalmente non fa nulla; la striscia lo annuncia lo stesso
+  (`Picked`) per l'unico caso in cui significa qualcosa: la dashboard aperta dal menu sopra l'area
+  di lavoro, dove quel clic vuol dire «torna a questa repo».
+- Le schede sono persistite in `ui-state.json` (`OpenRepoTabs`, `ActiveRepoTab`, tetto di 30) e
+  ripristinate all'avvio; un percorso sparito viene semplicemente saltato. Un path sulla **riga di
+  comando** le scavalca: è un'istruzione esplicita e diventa una scheda in più.
+- Opzione in Appearance, «Repository tabs», con le schede come **default**; indipendente da
+  Modern/Classic e dalla barra del titolo, anteprima dal vivo e ripristino su Annulla.
+
+### Verifica
+
+Su Xvfb, con tre worktree reali: anteprima in corsivo, sostituzione in loco al clic singolo
+successivo, fissaggio al doppio clic, terza scheda al clic su un altro worktree, ritorno alla prima
+scheda con la riga selezionata ripristinata, `Ctrl+W`, `Ctrl+PagGiù`, chiusura e riapertura con le
+due schede e i loro stati, opzione su «Single repository» (striscia via all'istante) e Annulla
+(striscia di nuovo lì). Build `Avvisi: 0 / Errori: 0`.
+
 ## M130 (2026-08-08) — i pulsanti dello stash come quelli del commit
 
 > Dall'utente, con lo screenshot della finestra Stash: «rendi coerenti anche i pulsanti con i bordi
