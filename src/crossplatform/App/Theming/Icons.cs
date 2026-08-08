@@ -545,6 +545,29 @@ internal static class Icons
         ["Search"] = Search,
     };
 
+    /// <summary>
+    ///  Glyph name -> the name of the 2015 PNG that draws the same thing, for the few
+    ///  glyphs the port named after the COMMAND rather than after upstream's file.
+    ///
+    ///  <para>Only the classic style reads it (<c>GlyphSource.Draw</c>), and only to
+    ///  find a bitmap: in modern the vector is the icon and the file name is
+    ///  irrelevant. Without it the classic style asked the asset loader for a PNG that
+    ///  does not exist, printed <c>[IconLoader] icon 'Search' did not resolve</c> and
+    ///  fell back to drawing the vector — right on screen, noisy in the log, and the
+    ///  2015 bitmap that DOES exist under another name never got drawn.</para>
+    /// </summary>
+    private static readonly Dictionary<string, string> ClassicNames = new(StringComparer.Ordinal)
+    {
+        // Upstream's magnifier ships as Preview.png; the port asks for "Search",
+        // which is what the button does (walk the matches of the tree filter).
+        ["Search"] = "Preview",
+    };
+
+    /// <summary>The 2015 PNG name for a glyph named after its command, or
+    /// <see langword="null"/> when the glyph's own name is already the file's.</summary>
+    internal static string? ClassicNameOf(string name)
+        => ClassicNames.TryGetValue(name, out string? classic) ? classic : null;
+
     // ---- the accent roles -------------------------------------------------
     //
     // The glyphs above are monochrome BY CONSTRUCTION — stroke-only line art, one

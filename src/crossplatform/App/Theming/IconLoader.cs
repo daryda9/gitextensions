@@ -433,7 +433,8 @@ internal sealed class GlyphSource : IImage
         // If the name has no PNG (a glyph drawn for something the 2015 set never had)
         // the vector is drawn anyway: a blank icon would be a worse answer than a
         // slightly modern-looking one.
-        if (ThemeManager.CurrentStyle == AppStyle.Classic && IconLoader.Load(_classicName ?? _name) is { } bitmap)
+        if (ThemeManager.CurrentStyle == AppStyle.Classic
+            && IconLoader.Load(_classicName ?? Icons.ClassicNameOf(_name) ?? _name) is { } bitmap)
         {
             context.DrawImage(bitmap, destRect);
             return;
