@@ -117,6 +117,17 @@ public sealed class StashPanel : UserControl
 
     public StashPanel()
     {
+        // The panel's own actions (Apply/Pop/Drop and the four save buttons) are not on
+        // a bar: they get the raised fill of the commit dialog's actions instead of
+        // Fluent's outline, which drew seven pale rectangles across the window. Modern
+        // only — the framed button IS the classic look — and the panel is rebuilt with
+        // its window on every opening, so the check is made at the right moment.
+        // The pane toolbar's buttons are handled by FileStatusListView itself.
+        if (Theming.ThemeManager.CurrentStyle == Theming.AppStyle.Modern)
+        {
+            Theming.BarButtonStyles.ApplyActions(Styles);
+        }
+
         _stashList = new ListBox
         {
             SelectionMode = SelectionMode.Single,
@@ -170,6 +181,15 @@ public sealed class StashPanel : UserControl
 
         _dropButton = new Button { Margin = gap };
         _dropButton.Click += (_, _) => _ = DoDropAsync();
+
+        foreach (Button action in new[]
+                 {
+                     _saveButton, _stashDialogButton, _stagedButton, _stashSelectedButton,
+                     _applyButton, _popButton, _dropButton,
+                 })
+        {
+            action.Classes.Add(Theming.BarButtonStyles.ActionClass);
+        }
 
         // WrapPanel, not a horizontal StackPanel: translated verbs are much
         // wider than the English ones and this column is only 340 px.
