@@ -110,14 +110,20 @@ public sealed record RevisionFilter
     public bool SimplifyByDecoration { get; init; }
 
     /// <summary>
-    ///  Trace the single path in <see cref="PathFilter"/> across renames →
-    ///  <c>--follow --find-renames --find-copies</c>. This is what the file history
-    ///  needs: without it the walk stops dead at the commit that renamed the file.
+    ///  Trace the single path in <see cref="PathFilter"/> across renames. This is what
+    ///  the file history needs: without it the walk stops dead at the commit that
+    ///  renamed the file.
+    ///
+    ///  <para>It is a REQUEST, not an argument. <see cref="RevisionService.LoadRevisionPage"/>
+    ///  normally answers it by expanding the path into every name the file has had and
+    ///  walking those as an ordinary path filter (<see cref="FollowedPathService"/>),
+    ///  which is what keeps the graph's branches and merges; the
+    ///  <c>--follow --find-renames --find-copies</c> that <see cref="BuildLogArguments"/>
+    ///  emits is only what is left when that expansion cannot run.</para>
     ///
     ///  <para>Only honoured when the path filter names EXACTLY ONE path (see
     ///  <see cref="FollowsSinglePath"/>) — git rejects <c>--follow</c> with several
-    ///  pathspecs. It also constrains the walk itself, which
-    ///  <see cref="RevisionService.LoadRevisionPage"/> enforces; see the notes there.</para>
+    ///  pathspecs, and "which file is being followed" has no answer either.</para>
     /// </summary>
     public bool FollowRenames { get; init; }
 
@@ -259,9 +265,11 @@ public sealed record RevisionFilter
             args.Add("--simplify-by-decoration");
         }
 
-        // Rename following, for the file history. Emitted only when the path filter
-        // names ONE path: git refuses --follow with several pathspecs, and passing it
-        // anyway would fail the whole walk.
+        // Rename following, for the file history — the FALLBACK form of it: the caller
+        // normally clears FollowRenames after expanding the path into all of the file's
+        // historic names, so reaching this is what "the expansion could not run" looks
+        // like. Emitted only when the path filter names ONE path: git refuses --follow
+        // with several pathspecs, and passing it anyway would fail the whole walk.
         if (FollowsSinglePath)
         {
             args.Add("--follow");
@@ -552,7 +560,29 @@ public sealed record RevisionGraphSegment(
 ///  very likely continues past it — the cheap equivalent of the original's
 ///  incremental loading, without paying for a full <c>git rev-list --count</c>.</para>
 /// </summary>
-public sealed record RevisionPage(IReadOnlyList<RevisionRow> Rows, bool HasMore);
+public sealed record RevisionPage(IReadOnlyList<RevisionRow> Rows, bool HasMore)
+{
+    /// <summary>
+    ///  True when this page came from a real <c>--follow</c> walk, i.e. the historic
+    ///  names could NOT be expanded into an ordinary path filter (folder, several
+    ///  paths, over-long pathspec, failed expansion — see
+    ///  <see cref="FollowedPathService"/>). Git then refuses to rewrite the parent
+    ///  links, so the caller has to chain the rows itself
+    ///  (<see cref="RevisionService.ChainFollowedHistory"/>) instead of trusting the
+    ///  parents it was given. False for every other walk, including the expanded file
+    ///  history, whose parents git rewrites like any other path filter's.
+    /// </summary>
+    public bool FollowedWithoutParentRewrite { get; init; }
+
+    /// <summary>
+    ///  Commit hash → the name the file had in that commit, when this page came from
+    ///  a file history that resolved its historic names. Empty otherwise. The file
+    ///  history window reads its title, its Diff/View/Blame tabs and "Save as" from
+    ///  it — the same information the pathspec expansion had to collect anyway, so it
+    ///  is handed over instead of being looked up a second time.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? PathByHash { get; init; }
+}
 
 /// <summary>
 ///  Loads revisions for a repository by reusing the Git Extensions core
@@ -682,18 +712,45 @@ public sealed class RevisionService
         //                    remote/tag/stash inclusion can be switched off).
         //   CurrentBranch -> ""             (git log defaults to HEAD)
         //   Filtered      -> the given refs (or HEAD when none supplied)
-        // --follow is measurably fragile (git 2.43): it needs a SINGLE starting commit
-        // and the default date order, or it silently stops at the commit that renamed
-        // the file instead of failing. Measured on a repo with one rename:
+        //
+        // A file history asks to follow renames, and --follow is a poor tool for a
+        // GRAPH: it suppresses parent rewriting (every row names an off-screen parent)
+        // and it is fragile (git 2.43/2.51) — it needs a SINGLE starting commit and the
+        // default date order, or it silently stops at the commit that renamed the file:
         //   git log --follow -- sub/new.txt                       -> 6 commits (correct)
         //   git log --follow HEAD --branches --remotes --tags -- … -> 3 commits (truncated)
         //   git log --follow --topo-order HEAD -- …                -> 3 commits (truncated)
-        //   git log --follow --author-date-order HEAD -- …         -> 6 commits (fine)
-        // A truncated history looks exactly like a complete one, so the walk is forced
-        // into the shape that works rather than trusting the caller's toggles: the
-        // scope/remotes/tags/stashes and the topological order are IGNORED while
-        // following. The caller (RevisionGridView's file-history mode) hides the
-        // controls that would suggest otherwise.
+        // So the follow request is first turned into an ORDINARY path filter over every
+        // name the file has ever had (FollowedPathService, upstream's BuildPathFilter):
+        // git then rewrites the parents as it does for any path filter, the graph keeps
+        // its branches and merges, and none of the constraints above apply — the walk is
+        // free to honour the caller's scope, order and paging again.
+        FollowedPaths followed = FollowedPaths.None;
+        if (criteria.FollowsSinglePath)
+        {
+            followed = FollowedPathService.Resolve(
+                repoPath,
+                criteria.PathFilter,
+                criteria.ExactRenamesAndCopiesOnly,
+                // The first page of a walk re-reads; the follow-up pages reuse it, so
+                // paging through a file's history costs one expansion, not one per page.
+                refresh: skip <= 0,
+                cancellationToken);
+
+            if (followed.CanReplaceFollow)
+            {
+                criteria = criteria with
+                {
+                    FollowRenames = false,
+                    PathFilter = followed.PathSpec,
+                };
+            }
+        }
+
+        // True only for what the expansion could NOT serve (a folder, several paths, an
+        // over-long pathspec, a failed expansion). Those keep walking with real
+        // --follow, in the one shape that stays complete — the caller's scope/order
+        // toggles are ignored, and the rows have to be chained by hand afterwards.
         bool following = criteria.FollowsSinglePath;
 
         string scopeArgs;
@@ -823,7 +880,11 @@ public sealed class RevisionService
             hasMore = false;
         }
 
-        return new RevisionPage(rows, HasMore: hasMore);
+        return new RevisionPage(rows, HasMore: hasMore)
+        {
+            FollowedWithoutParentRewrite = following,
+            PathByHash = followed.PathByHash.Count > 0 ? followed.PathByHash : null,
+        };
     }
 
     /// <summary>
@@ -840,6 +901,14 @@ public sealed class RevisionService
     ///  Re-links a <c>--follow</c> walk into the chain it actually is: each row's
     ///  graph parent becomes the row BELOW it, and the last row of what is loaded so
     ///  far has none.
+    ///
+    ///  <para><b>This is the FALLBACK path only.</b> A file history normally never
+    ///  reaches it: <see cref="LoadRevisionPage"/> replaces the follow request with an
+    ///  ordinary path filter over every historic name (<see cref="FollowedPathService"/>),
+    ///  which keeps the real branches and merges. Chaining flattens them into one line,
+    ///  so it is used exclusively where that replacement cannot run — a folder, several
+    ///  paths, an over-long pathspec or a failed expansion — signalled by
+    ///  <see cref="RevisionPage.FollowedWithoutParentRewrite"/>.</para>
     ///
     ///  <para><b>Why it is needed.</b> Every other narrowed walk gets its parent links
     ///  rewritten by git (<c>--parents</c> + history simplification: <c>%P</c> then

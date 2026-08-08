@@ -39,8 +39,8 @@ namespace GitExtensions.Avalonia.Views;
 ///  "Detect and follow…" toggles), the Reload button, the message/identity line, and
 ///  the file-specific commands it plants in the grid's row menu through
 ///  <see cref="RevisionGridView.AddCommitCommand"/>: "Save as", "Copy path" (both of
-///  which need the name the file had IN THAT REVISION — see
-///  <see cref="FileHistoryService.GetFilePathByRevision"/>) and the revert /
+///  which need the name the file had IN THAT REVISION, which the grid's own walk hands
+///  over through <see cref="RevisionGridView.FileHistoryPathsResolved"/>) and the revert /
 ///  cherry-pick pair, which keep their host-handler-else-do-it-here contract.</para>
 ///
 ///  <para>Deliberately NOT ported here. The "Blame options" drop-down upstream keeps
@@ -62,7 +62,6 @@ public sealed class FileHistoryView : UserControl
     private static string F(string format, params object?[] args)
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
-    private readonly FileHistoryService _service = new();
     private readonly RevisionGridView _grid = new();
     private readonly TextBlock _status;
     private readonly Button _fullHistoryButton;
@@ -90,15 +89,12 @@ public sealed class FileHistoryView : UserControl
     private string? _shownFile;
 
     // Commit hash -> the name the file had in that revision. The grid's row model
-    // (RevisionRow) carries no file name, so the mapping is kept here and loaded
-    // alongside the grid's walk; without it "Save as" on a commit older than a
-    // rename would read (or fail to read) the wrong path.
+    // (RevisionRow) carries no file name, so the mapping is kept here and handed over
+    // by the grid's walk (which had to resolve the historic names to build its
+    // pathspec); without it "Save as" on a commit older than a rename would read (or
+    // fail to read) the wrong path.
     private IReadOnlyDictionary<string, string> _pathByHash =
         new Dictionary<string, string>(StringComparer.Ordinal);
-
-    // Guards the path map against a stale load: a second file asked for while the
-    // first map was still being built must not overwrite it.
-    private int _mapToken;
 
     // The selected commit, kept only so the path line can be re-worded when the name
     // map lands after the selection (the map is one git call behind the grid's walk).
@@ -180,6 +176,17 @@ public sealed class FileHistoryView : UserControl
         };
         _grid.RangeSelected += (older, newer) => RangeSelected?.Invoke(older, newer);
         _grid.RevisionActivated += hash => RevisionActivated?.Invoke(hash);
+
+        // The name-per-revision map arrives from the grid's own walk: resolving the
+        // file's historic names is what builds that walk's pathspec, so the map is
+        // already paid for (it used to cost a second `git log --follow --name-only`
+        // from here). It lands one page load after the first selection, hence the
+        // re-worded status line.
+        _grid.FileHistoryPathsResolved += map =>
+        {
+            _pathByHash = map;
+            ShowStatus();
+        };
 
         // File-specific commands in the grid's own row menu. The two headers below
         // that the grid routes ("Revert this commit…", "Cherry-pick") land in their
@@ -646,8 +653,9 @@ public sealed class FileHistoryView : UserControl
     /// <summary>
     ///  Loads and displays the commit history of <paramref name="filePath"/> in
     ///  the repository at <paramref name="repoPath"/>, in the revision grid. Heavy
-    ///  git work runs off the UI thread (the grid's own walk, plus the per-revision
-    ///  file-name map this view needs on top of it).
+    ///  git work runs off the UI thread — the grid's own walk, which now also carries
+    ///  the per-revision file-name map this view needs (see the
+    ///  <c>FileHistoryPathsResolved</c> subscription in the constructor).
     /// </summary>
     public void ShowHistory(string repoPath, string filePath)
     {
@@ -655,41 +663,14 @@ public sealed class FileHistoryView : UserControl
         _filePath = filePath;
         _shownFile = filePath;
         _selectedHash = string.Empty;
+
+        // A file asked for while the previous file's map was still loading must not
+        // keep answering with the old names: start from "the current name" and let the
+        // grid's walk fill it in again.
+        _pathByHash = new Dictionary<string, string>(StringComparer.Ordinal);
         ShowStatus();
 
         _grid.LoadFileHistory(repoPath, filePath, _options);
-
-        // The name-per-revision map, in its own git call (one `git log --name-only`,
-        // as before): the grid's rows do not carry it, and "Save as" on a pre-rename
-        // commit is wrong without it.
-        FileHistoryOptions options = _options;
-        int token = ++_mapToken;
-        _ = Task.Run(() =>
-        {
-            IReadOnlyDictionary<string, string> map;
-            try
-            {
-                map = _service.GetFilePathByRevision(repoPath, filePath, options);
-            }
-            catch (Exception)
-            {
-                // A missing map degrades to "use the current path" — never to a
-                // broken history.
-                map = new Dictionary<string, string>(StringComparer.Ordinal);
-            }
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (token == _mapToken)
-                {
-                    _pathByHash = map;
-
-                    // The map lands one git call after the grid's first selection, so
-                    // the line was written before the historic name was knowable.
-                    ShowStatus();
-                }
-            });
-        });
     }
 
     /// <summary>

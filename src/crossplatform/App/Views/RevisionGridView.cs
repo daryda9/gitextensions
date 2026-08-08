@@ -327,16 +327,25 @@ public sealed class RevisionGridView : UserControl
     // --- File-history mode ------------------------------------------------------
     //
     // Set by LoadFileHistory instead of LoadRepository: the same grid, but showing
-    // ONE file's history (path filter + --follow) rather than the repository's. The
-    // flag exists because that walk is not free to be reshaped — see the measured
-    // notes in RevisionService.LoadRevisionPage — so the controls that would reshape
-    // it are hidden rather than left as decorations that quietly do nothing:
-    // "Branches" (the scope is forced to a single starting commit), "View" (walk
-    // order, remotes/tags/stashes, artificial rows — all inert or harmful here) and
-    // the advanced "Filter…"/reset pair (its own path field would fight this one).
-    // Everything that still means what it says stays: the quick box, Go to, Date,
-    // Columns, the graph, the ref decorations, multi-selection and the row menu.
+    // ONE file's history rather than the repository's. The walk is an ORDINARY
+    // path-filtered walk over every name the file has had (see
+    // RevisionService.LoadRevisionPage), so it is as free to be reshaped as the
+    // repository's: "Branches" and "View" (walk order, remotes/tags/stashes,
+    // highlighting) mean exactly what they say here and stay visible. Only two things
+    // do not survive the mode: the advanced "Filter…"/reset pair, whose own path field
+    // would fight this one, and the "Artificial commits" entry of the View flyout —
+    // the working directory and the index are the pending work of the REPOSITORY, not
+    // commits in a file's log.
     private bool _fileHistoryMode;
+
+    /// <summary>
+    ///  Raised (on the UI thread) after a file-history page has loaded, with commit
+    ///  hash → the name the file had in that commit. It is the by-product of resolving
+    ///  the historic names into the walk's pathspec, so the host gets it for free
+    ///  instead of running a second <c>git log --follow --name-only</c> of its own.
+    ///  Empty for a walk that resolved nothing.
+    /// </summary>
+    public event Action<IReadOnlyDictionary<string, string>>? FileHistoryPathsResolved;
 
     // The file whose history is shown (repository-relative, as given), for the
     // status line. Empty outside file-history mode.
@@ -1424,8 +1433,15 @@ public sealed class RevisionGridView : UserControl
     ///  <para><paramref name="filePath"/> is repository-relative (POSIX or native
     ///  separators; it is normalised here) and is quoted when it contains blanks, so
     ///  a name with spaces stays ONE path — which is also what
-    ///  <see cref="RevisionFilter.FollowsSinglePath"/> requires for
-    ///  <c>--follow</c> to be emitted at all.</para>
+    ///  <see cref="RevisionFilter.FollowsSinglePath"/> requires for the rename
+    ///  following to be honoured at all.</para>
+    ///
+    ///  <para>Following renames does NOT mean the walk uses <c>--follow</c>: the
+    ///  service first expands the request into every name the file has had and then
+    ///  runs an ordinary path-filtered walk over all of them, which is what keeps the
+    ///  file's real branches and merges in the graph. See
+    ///  <see cref="RevisionService.LoadRevisionPage"/> and
+    ///  <see cref="FollowedPathService"/>.</para>
     ///
     ///  <para><paramref name="options"/> are the four <c>git log</c> switches the
     ///  upstream <c>FormFileHistory</c> exposes (follow renames / exact renames only /
@@ -1459,15 +1475,23 @@ public sealed class RevisionGridView : UserControl
             && string.Equals(_fileHistoryFile, path, StringComparison.Ordinal)
             && _gitFilter == filter;
 
+        bool entering = !_fileHistoryMode;
+
         _fileHistoryMode = true;
         _fileHistoryFile = path;
         _repoPath = repoPath;
         _gitFilter = filter;
 
-        // The walk is pinned to one starting commit while following (see
-        // RevisionService.LoadRevisionPage); keep the field honest about it so the
-        // status line does not claim "all branches".
-        _branchScope = BranchScope.CurrentBranch;
+        if (entering)
+        {
+            // The walk is an ordinary path-filtered one, so it reaches every branch
+            // that touched the file — which is the whole point: the repository grid's
+            // "filter file in grid" shows those commits, and a file history that
+            // stopped at the current branch was showing fewer. The user can still
+            // narrow it from the Branches flyout; only the default is set here, and
+            // only on entry, so a later choice survives a refresh.
+            _branchScope = BranchScope.AllBranches;
+        }
 
         // No working-directory / index rows: they are the pending work of the
         // REPOSITORY, they are never part of a file's log, and nothing feeds their
@@ -1475,9 +1499,13 @@ public sealed class RevisionGridView : UserControl
         // explicitly rather than "happens to be empty".
         _showArtificial = false;
 
-        // Hide, once, the controls that cannot keep their promise in this mode.
-        _branchesButton.IsVisible = false;
-        _viewButton.IsVisible = false;
+        // "Branches" and "View" now reshape a walk that can be reshaped, so they stay;
+        // only the entry that cannot (artificial commits) is dropped from the View
+        // flyout, which is rebuilt here because it was first built outside this mode.
+        _viewButton.Flyout = BuildViewFlyout();
+
+        // Still hidden: the advanced filter's own path field would fight this one, and
+        // its ✕ would empty the tab.
         _filterButton.IsVisible = false;
         _resetFilterButton.IsVisible = false;
 
@@ -1656,11 +1684,14 @@ public sealed class RevisionGridView : UserControl
                     hasMore = true;
                 }
 
-                // While following renames git does NOT rewrite the parent links, so
-                // the rows name parents that are not in the result set and the lane
-                // pass draws one dead-end stub per commit instead of one line through
-                // them (see RevisionService.ChainFollowedHistory).
-                IReadOnlyList<RevisionRow> forGraph = filter.FollowsSinglePath
+                // A file history is normally walked as an ordinary path filter over
+                // every name the file has had, so git rewrites the parents and the real
+                // branches and merges survive. Only where that expansion could not run
+                // (folder, several paths, over-long pathspec, failed expansion) does the
+                // walk still use --follow — and there git rewrites nothing, so the rows
+                // name parents that are not in the result set and the lane pass would
+                // draw one dead-end stub per commit. The page says which one it was.
+                IReadOnlyList<RevisionRow> forGraph = page.FollowedWithoutParentRewrite
                     ? RevisionService.ChainFollowedHistory(merged)
                     : merged;
 
@@ -1677,6 +1708,24 @@ public sealed class RevisionGridView : UserControl
                     _loadingPage = false;
                     _loaded = merged;
                     _hasMore = hasMore;
+
+                    if (_fileHistoryMode)
+                    {
+                        // The expansion collected the name the file had in each commit
+                        // on the way to building the pathspec; hand it to the host
+                        // rather than have it ask git the same question again.
+                        if (page.PathByHash is { Count: > 0 } pathByHash)
+                        {
+                            FileHistoryPathsResolved?.Invoke(pathByHash);
+                        }
+
+                        // The --follow fallback IS pinned to one starting commit, so the
+                        // scope the flyout shows would be a claim the walk did not keep.
+                        if (page.FollowedWithoutParentRewrite)
+                        {
+                            _branchScope = BranchScope.CurrentBranch;
+                        }
+                    }
 
                     int laneCount = graphed.Count > 0 ? graphed[0].LaneCount : 1;
                     _graphWidth = Math.Clamp(laneCount, 1, MaxGraphLanes) * LaneWidth;
@@ -2643,10 +2692,18 @@ public sealed class RevisionGridView : UserControl
             OptShowStashes,
             T("TranslatedStrings/_stashesText.Text", "Stashes"),
             ToggleShowStashes));
-        panel.Children.Add(OptionCheck(
-            OptShowArtificialCommits,
-            T("Artificial commits"),
-            ToggleShowArtificialCommits));
+        // The working directory and the index are the pending work of the REPOSITORY;
+        // a file's log never contains them, and nothing feeds their counts there
+        // (LoadFileHistory turns them off), so the entry is left out rather than
+        // offered as a toggle that does nothing.
+        if (!_fileHistoryMode)
+        {
+            panel.Children.Add(OptionCheck(
+                OptShowArtificialCommits,
+                T("Artificial commits"),
+                ToggleShowArtificialCommits));
+        }
+
         panel.Children.Add(OptionCheck(
             OptShowGitNotes,
             T("RevisionGridControl/showGitNotesToolStripMenuItem.Text", "Git notes"),
