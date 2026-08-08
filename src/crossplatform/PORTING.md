@@ -3260,6 +3260,24 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M122 (2026-08-08, `af9f0301a`) — lo stile classico ritrova il bitmap della lente
+
+> Dall'utente, dalla console: `[IconLoader] icon 'Search' did not resolve (…/Search.png): no such asset`.
+
+Il port chiama quel glifo con il nome di ciò che il pulsante **fa** (percorrere le occorrenze del
+filtro dell'albero), mentre il set 2015 spedisce la stessa lente come `Preview.png`. Il nome del file
+lo legge **solo** lo stile classico (`GlyphSource.Draw`): chiedeva un PNG che non esiste, stampava
+l'avviso, ripiegava sul vettore — giusto a schermo, rumoroso nel log — e il bitmap che invece esiste,
+sotto l'altro nome, non veniva mai disegnato.
+
+`Icons.ClassicNameOf` mappa i pochi glifi battezzati col nome del comando sul file dell'originale, e
+`GlyphSource.Draw` lo consulta prima dell'asset loader. Il modern non cambia: lì il vettore **è**
+l'icona e nessun nome di file entra in gioco.
+
+**Verificato**: avviato in Classic (`ui-state.json` → `Style: Classic`, poi ripristinato), **zero**
+righe `[IconLoader]` nel log e la lente del 2015 disegnata accanto alla casella di ricerca dell'albero.
+Build `Avvisi: 0 / Errori: 0`.
+
 ## M121 (2026-08-08, `c8ffa023c`) — anche la toolbar di File History è piatta
 
 > Dall'utente: «allinea questi tasti di file history allo stile di quelli in commit».
