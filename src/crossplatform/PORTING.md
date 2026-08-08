@@ -3260,6 +3260,30 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M130 (2026-08-08) — i pulsanti dello stash come quelli del commit
+
+> Dall'utente, con lo screenshot della finestra Stash: «rendi coerenti anche i pulsanti con i bordi
+> bianchi della finestra di stash con quelli della finestra di commit».
+
+Sette pulsanti — Apply / Pop / Drop sotto la lista degli stash e Save stash / Stash… / Stash staged /
+Stash selected changes in fondo — erano gli ultimi rimasti con la chrome di default di Fluent: fondo
+piatto e **contorno chiaro**, cioè sette rettangoli pallidi in una finestra dove tutto il resto è
+piatto. È lo stesso difetto che M109 aveva già risolto nel dialogo di commit, e la cura è quella già
+scritta: `BarButtonStyles.ApplyActions`, riempimento alzato di un passo (`App.PanelAlt`) e nessun
+bordo.
+
+Due dettagli deliberati:
+
+- **Non** `Apply` (i `toolbtn`): quelli sono i pulsanti *su una barra*, che a riposo non hanno né
+  fondo né bordo. Questi stanno su un pannello, dove ciò che dice «pulsante» è il riempimento. La
+  toolbar della lista file, in mezzo alla finestra, è già piatta perché la disegna `FileStatusListView`.
+- **Solo in Modern**, come nel dialogo di commit: il pulsante incorniciato *è* l'aspetto classico. Il
+  controllo si fa nel costruttore del pannello, che è ricostruito insieme alla sua finestra a ogni
+  apertura, quindi legge lo stile corrente e non uno vecchio.
+
+I dialoghi interni al pannello (conferme Sì/No, OK/Annulla) restano com'erano: sono finestre a sé, e
+lì la coppia incorniciata è la convenzione.
+
 ## M129 (2026-08-08, `764a0d250`) — la scheda selezionata, in modern, è sottolineata
 
 > Dall'utente, con lo screenshot del pannello di VS Code: «per quanto riguarda le schede di sotto,
