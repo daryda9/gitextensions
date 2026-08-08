@@ -3260,6 +3260,77 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M124 (2026-08-08, `76595811c`) — la storia di un file tiene i suoi rami e i suoi merge
+
+> Dall'utente, con le due finestre affiancate: «sulla sinistra ho cliccato su *filter file in grid*,
+> a destra è lo stesso file su *file history* e non visualizza vari branch del file, ma fa vedere tutto
+> in un unico ramo».
+
+Stesso controllo (`RevisionGridView`) in entrambi i pannelli: diversa è la **domanda fatta a git**. Il
+filtro sulla griglia emette `--parents` con semplificazione, quindi git **riscrive** i link ai parent e
+il DAG resta connesso *e ramificato*. La finestra File History aggiungeva `--follow`, che la
+riscrittura la sopprime del tutto (misurato, git 2.51). M116 aveva tamponato collegando ogni riga a
+quella sotto: via la scaletta di monconi, ma rami e merge appiattiti in una linea. In più `--follow` è
+fragile con più commit di partenza, quindi il walk era forzato su HEAD — «93 commits (current branch)»
+contro i «97 (all branches)» della griglia.
+
+**La soluzione è quella dell'originale**, che al walk del grafo `--follow` non lo passa affatto
+(`RevisionGridControl`, commento «git log --follow is not working as expected»): due passi.
+
+1. `git log --format=… --name-only --follow <opzioni rename> -- <path>` per raccogliere **tutti i nomi
+   storici** del file;
+2. il walk ordinario con quei nomi come pathspec, **senza** `--follow`.
+
+Nuovo `App/Services/FollowedPathService.cs`. La seconda passata su tutti i nomi con `--all` parte
+**solo se il file è stato davvero rinominato** (più di un nome), così un file mai rinominato costa una
+chiamata sola; il risultato è in cache per `(repo, path, exactOnly)` e la prima pagina del walk la
+rinfresca, quindi la paginazione paga l'espansione una volta.
+
+Misurato su un repo di prova (rename + ramo laterale + merge con conflitto):
+
+```
+PRIMA  git log --parents --follow … -- sub/new.txt
+  0cd34fa^508bd8c     508bd8c NON è nel risultato
+  6d04cd1^3c7c1e1     3c7c1e1 NON è nel risultato
+  … 6 righe, nessun merge, nessun ramo
+DOPO   git log --parents HEAD --branches --remotes --tags -- "sub/new.txt" "sub/old.txt"
+  508bd8c^446a78c 6d04cd1   ← il merge, con entrambi i parent presenti
+  … 7 righe, ogni parent nel risultato
+```
+
+Su questo repository, `RevisionGridView.cs`: 65 righe con parent non riscritti → **67 righe, tutti i
+rami, parent riscritti**.
+
+**Caduto `--follow`, cadono i suoi vincoli**: scope, remoti/tag/stash, `--topo-order` /
+`--author-date-order` e lo `--skip` vero tornano a valere. Riabilitati in modalità file-history:
+**Branches** (all/current/filtered con il selettore dei ref) e **View** (remote branches, tag, stash,
+note, ordine, commit per pagina, evidenziazioni); lo scope d'ingresso è ora **all branches**, e solo
+all'ingresso, così una scelta successiva dell'utente sopravvive al refresh. Restano nascosti il
+dialogo **Filter…** con la sua **✕** (il suo campo path litigherebbe con quello della scheda) e la voce
+**Artificial commits** (il log di un file non contiene mai working directory e index).
+
+**Il fallback resta**: cartella, più path, pathspec oltre 31000 caratteri (l'originale lì mostra un
+errore), espansione fallita → si torna a `--follow` + `ChainFollowedHistory` di M116, e la pagina lo
+dichiara con `RevisionPage.FollowedWithoutParentRewrite` — il concatenamento ora è deciso da **come è
+andata la pagina**, non dal filtro richiesto. In quel caso lo scope torna a CurrentBranch, così
+l'etichetta non mente.
+
+La mappa dei **nomi storici** (`FileHistoryView._pathByHash`, che regge titolo, schede Diff/View/Blame
+e «Save as») non si costruisce più con una chiamata git tutta sua: è un sottoprodotto del passo 1,
+consegnato dal nuovo evento `FileHistoryPathsResolved`. Una sonda in meno per file.
+
+**Verificato** su Xvfb: nel repo di prova la finestra mostra 7 commit «all branches» con la corsia
+`feature` e il merge; selezionando il commit precedente al rename la riga di stato dice «In this
+revision the file is named sub/old.txt» e il Diff gira su quel nome; Topo-order ora riordina davvero il
+walk (prima era ignorato). Su questo repository, `HANDOFF.md`: 98 righe «all branches» e i due
+`Merge branch 'linux-avalonia-port'` disegnati con le loro due corsie. Build `Avvisi: 0 / Errori: 0`,
+harness navigation snapshot PASS.
+
+**Da sapere** (non è una regressione, ed è identico all'originale): con *Show full history* attivo e
+*Simplify merges* spento, `--full-history --parents` fa tenere a git **tutti** i merge — 3604 commit
+per un file qui contro 71 senza `--parents`. `FilterInfo` di upstream emette la stessa coppia; prima il
+`--follow` forzato mascherava la cosa.
+
 ## M123 (2026-08-08, `37658f73c`) — il pannello del diff virtualizzato su AvaloniaEdit
 
 > Dall'utente: «questa finestra (quella di testo quando apro un file da Diff), se la scorro, a volte è
