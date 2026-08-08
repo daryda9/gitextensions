@@ -3260,6 +3260,20 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M121 (2026-08-08, `c8ffa023c`) — anche la toolbar di File History è piatta
+
+> Dall'utente: «allinea questi tasti di file history allo stile di quelli in commit».
+
+I quattro pulsanti di `FileHistoryView` (Load file history, Detect and follow renames ▾,
+Show Full History ▾, il log dei comandi) erano l'**ultima** striscia incorniciata rimasta: una fila di
+scatole quattro righe sopra la barra piatta della griglia, in una finestra che vive accanto al dialogo
+di commit, piatto da M107. Ora portano la classe `toolbtn` di `Theming.BarButtonStyles` come ogni
+altra barra: niente bordo, nessun riempimento a riposo, `App.Hover` sotto il puntatore, `App.Pressed`
+premuto. Stesso compromesso dichiarato a M115 — un pulsante di barra a riposo non ha contrasto
+proprio, quindi etichetta più riempimento all'hover sostituiscono il contorno, in cambio di **una**
+grafica di barra in tutta l'app. **Verificato** su Xvfb: striscia piatta e «Load file history» che si
+accende al passaggio. Build `Avvisi: 0 / Errori: 0`.
+
 ## M120 (2026-08-08, `3f6a28c1b`) — la finestra File History disposta come l'originale
 
 Confronto con `FormFileHistory.cs` / `.Designer.cs`. Lavoro delegato a un subagent in worktree,
