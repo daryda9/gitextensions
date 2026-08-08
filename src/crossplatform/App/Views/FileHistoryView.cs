@@ -197,48 +197,31 @@ public sealed class FileHistoryView : UserControl
             T("FormFileHistory/cherryPickThisCommitToolStripMenuItem.Text", "Cherry-pick"),
             CherryPickCommit);
 
-        _fullHistoryButton = new Button
-        {
-            Background = B("App.Control"),
-            Foreground = B("App.Text"),
-            Padding = StyleDensity.BarButtonWide,
-        };
+        _fullHistoryButton = BarButton(StyleDensity.BarButtonWide, new Thickness(0));
         _fullHistoryButton.Click += (_, _) => ShowFullHistoryMenu();
 
         // The two "Detect and follow…" switches. They used to sit in the row context
         // menu, which is now the grid's; a drop-down of their own keeps them visible
         // (and keeps them next to the other git log switch, which is what they are).
-        _followButton = new Button
-        {
-            Background = B("App.Control"),
-            Foreground = B("App.Text"),
-            Padding = StyleDensity.BarButtonWide,
-            Margin = new Thickness(0, 0, 6, 0),
-        };
+        _followButton = BarButton(StyleDensity.BarButtonWide, new Thickness(0, 0, 6, 0));
         _followButton.Click += (_, _) => ShowFollowMenu();
 
         // Upstream's toolStripSplitLoad ("Reload"): re-runs the log for the same file.
-        _reloadButton = new Button
-        {
-            Background = B("App.Control"),
-            Foreground = B("App.Text"),
-            Padding = StyleDensity.BarButtonWide,
-            Margin = new Thickness(0, 0, 6, 0),
-        };
+        _reloadButton = BarButton(StyleDensity.BarButtonWide, new Thickness(0, 0, 6, 0));
         _reloadButton.Click += (_, _) => Reload();
 
         // Upstream's last item on this strip (gitcommandLogToolStripMenuItem →
         // FormGitCommandLog.ShowOrActivate): what git was actually run to produce the
         // history in front of you. Icon only with a tooltip, as upstream — it is a
         // diagnostic, and a caption would give it the weight of the three switches.
-        _commandLogButton = new Button
-        {
-            Background = B("App.Control"),
-            Foreground = B("App.Text"),
-            Padding = StyleDensity.BarButton,
-            Margin = new Thickness(6, 0, 0, 0),
-        };
+        _commandLogButton = BarButton(StyleDensity.BarButton, new Thickness(6, 0, 0, 0));
         _commandLogButton.Click += (_, _) => ShowCommandLog();
+
+        // The strip wears the app's bar look — flat, a fill only under the pointer —
+        // like the main toolbar, the commit dialog's pane toolbars and the grid's own
+        // bar (M107/M115). Framed buttons here were the last outlined strip left, and
+        // this one sits four rows above the grid's flat one.
+        Theming.BarButtonStyles.Apply(Styles);
 
         // WrapPanel, not a fixed-width horizontal StackPanel: the Italian captions
         // are longer than the English ones (HANDOFF §3).
@@ -265,6 +248,22 @@ public sealed class FileHistoryView : UserControl
 
         ApplyTranslations();
         TranslationService.LanguageChanged += OnLanguageChanged;
+    }
+
+    // A button of this view's toolbar: flat, borderless, carrying the shared bar
+    // class (Theming/BarButtonStyles) that paints its hover and pressed fills.
+    private static Button BarButton(Thickness padding, Thickness margin)
+    {
+        Button button = new()
+        {
+            Background = Brushes.Transparent,
+            Foreground = B("App.Text"),
+            BorderThickness = new Thickness(0),
+            Padding = padding,
+            Margin = margin,
+        };
+        button.Classes.Add(Theming.BarButtonStyles.Class);
+        return button;
     }
 
     // ------------------------------------------------------- per-revision file name
