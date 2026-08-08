@@ -3320,6 +3320,20 @@ marcatore di dipingere.
 **Verificato**: Modern → Classic → Modern dal dialogo, a caldo, senza crash, con la sottolineatura di
 nuovo al suo posto (91px) al ritorno.
 
+### Seconda correzione (`c3008bd0b`) — la linea andava ancora sopra l'etichetta
+
+> Dall'utente, con lo screenshot: «la linea blu va sotto la scritta».
+
+Il template chiamava `Grid.SetRow(bar, 0)`: la riga diventava così un **valore locale**
+sull'elemento, e — di nuovo — un valore locale batte un setter di stile, quindi lo spostamento a riga
+2 del blocco modern non faceva nulla. Stessa trappola del colore del marcatore due commit prima,
+nello stesso template, una proprietà più in là. Ora la riga **non viene impostata affatto** nel
+template: `Grid.Row` vale già 0 di suo, che è dove la vuole il classico, e lasciarla non impostata è
+ciò che la tiene raggiungibile da uno stile.
+
+**Verificato**: in modern la linea sta sotto «File tree»; in classic la scheda resta piena con la
+barra sopra.
+
 ## M128 (2026-08-08, `7a33eb988`) — il menu nella barra del titolo, come VS Code
 
 > Dall'utente: «tutta la toolbar (start, repository, navigate…) deve essere nella barra di sopra, la
