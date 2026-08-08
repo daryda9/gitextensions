@@ -8,6 +8,11 @@
     <PackageVersion Include="Avalonia.Desktop" Version="11.3.14" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.3.14" />
     <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.3.14" />
+    <!-- The Avalonia port of ICSharpCode's editor, which is what upstream's
+         FileViewerInternal hosts on Windows. Pinned to the 11.3 line because
+         AvaloniaEdit ships one build per Avalonia minor: 11.4.x compiles against
+         Avalonia 11.4 APIs and would only fail at run time on our 11.3.14. -->
+    <PackageVersion Include="Avalonia.AvaloniaEdit" Version="11.3.0" />
     <PackageVersion Include="Ben.Demystifier" Version="0.4.1" />
     <PackageVersion Include="JetBrains.Annotations" Version="2021.2.0" />
     <PackageVersion Include="Microsoft.VisualStudio.Composition" Version="17.2.41" />

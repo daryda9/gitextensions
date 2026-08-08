@@ -1,16 +1,18 @@
 using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Controls.Documents;
 using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
+using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using AvaloniaEdit;
+using AvaloniaEdit.Document;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 
@@ -49,73 +51,13 @@ public sealed class DiffView : UserControl
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
-    // Diff line colours. These used to be literals "tuned for the dark palette",
-    // which made them 1.88:1 (added) and 2.90:1 (removed) against the light theme's
-    // #F3F3F3 — measurably unreadable. They now come from App.DiffAdded /
-    // App.DiffRemoved, whose dark values are exactly the two literals that were
-    // here, so the dark theme is unchanged and the light theme gets the darkened
-    // pair (4.58:1 and 5.39:1).
-    //
-    // Resolved lazily and cached: the identity of these two instances is load
-    // bearing (the render pass compares with ReferenceEquals), and ThemeManager
-    // mutates the resource brush in place, so a hot theme switch repaints without
-    // invalidating the cache.
-    private static IBrush? _addedBrush;
-    private static IBrush? _removedBrush;
+    // The pane's colours now live in DiffPalette, next to the two colorizing
+    // transformers that are their only consumers.
 
-    private static IBrush AddedBrush => _addedBrush ??= B("App.DiffAdded");
-
-    private static IBrush RemovedBrush => _removedBrush ??= B("App.DiffRemoved");
-
-    // Syntax highlighting repaints the content of a +/- line with the token
-    // colours, so the line's identity moves to a background tint (which is how
-    // the original marks added/removed lines too).
-    private static readonly IBrush AddedTint = new SolidColorBrush(Color.FromArgb(0x28, 0x6A, 0xC7, 0x76));
-    private static readonly IBrush RemovedTint = new SolidColorBrush(Color.FromArgb(0x28, 0xE0, 0x6C, 0x6C));
-
-    // Token colours for the syntax highlighter, from App.Token* — the same move the
-    // diff colours above already made, and for the same measured reason: as literals
-    // "tuned for the dark palette" the five scored 1.31:1 (number) to 2.29:1 (comment)
-    // on the light theme's surfaces. The dark values in ThemeManager are those very
-    // literals, except comment/preprocessor, which needed an imperceptible lift to
-    // clear AA on the +/- tints below (see the ThemeManager comment).
-    //
-    // Resolved lazily and cached, exactly like AddedBrush/RemovedBrush: the resource
-    // brush INSTANCE is what gets cached, and ThemeManager mutates its Color in place,
-    // so a hot theme switch repaints these without touching the cache. Copying into a
-    // new SolidColorBrush here would freeze them on the theme that happened to be
-    // active first.
-    private static IBrush? _keyword;
-    private static IBrush? _string;
-    private static IBrush? _comment;
-    private static IBrush? _number;
-    private static IBrush? _preprocessor;
-
-    private static IBrush KeywordBrush => _keyword ??= B("App.TokenKeyword");
-
-    private static IBrush StringBrush => _string ??= B("App.TokenString");
-
-    private static IBrush CommentBrush => _comment ??= B("App.TokenComment");
-
-    private static IBrush NumberBrush => _number ??= B("App.TokenNumber");
-
-    private static IBrush PreprocessorBrush => _preprocessor ??= B("App.TokenPreprocessor");
-
-    // Search highlight: amber for every occurrence, a stronger amber for the one
-    // the ▲/▼ navigation currently sits on. Literal colours (like the diff
-    // colours above) because the palette has no "highlight" resource.
-    private static readonly IBrush MatchBrush = new SolidColorBrush(Color.FromArgb(0x70, 0xC8, 0x9B, 0x2C));
-    private static readonly IBrush CurrentMatchBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xA8, 0x2E));
-
-    // Guard rails for the inline-run highlighter (see RenderDiff): splitting a
-    // line into several Runs costs a text-layout box per Run, so on a very large
-    // diff we keep the match list (counter + navigation still work) but render
-    // the diff as one Run per line, as before.
-    private const int MaxHighlightLines = 20_000;
-    private const int MaxHighlightMatches = 2_000;
-
-    // Hard cap on the match list itself, so an incremental search for "e" on a
-    // huge patch cannot allocate without bound.
+    // Hard cap on the match list, so an incremental search for "e" on a huge patch
+    // cannot allocate without bound. The old, much lower caps on HIGHLIGHTING are
+    // gone: the highlight is a per-visible-line transformer, so it costs the same
+    // whether it has ten hits or ten thousand.
     private const int MaxSearchMatches = 20_000;
 
     // Which comparison the currently loaded file list represents, so file
@@ -130,9 +72,10 @@ public sealed class DiffView : UserControl
     }
 
     private readonly FileStatusListView _files;
-    private readonly SelectableTextBlock _diff;
+    private readonly TextEditor _editor;
+    private readonly DiffLineColorizer _colorizer = new();
+    private readonly DiffSearchColorizer _searchColorizer = new();
     private readonly TextBlock _status;
-    private readonly ScrollViewer _diffScroll;
 
     // Diff-toolbar state (session-persisted in DiffTextService.Session).
     private readonly DiffDisplayOptions _options = DiffTextService.Session;
@@ -184,14 +127,15 @@ public sealed class DiffView : UserControl
     private readonly Button _findCloseButton;
     private readonly DispatcherTimer _findDebounce;
 
-    // The term currently highlighted, the (line, column, length) of every
-    // occurrence in the rendered text, and the Run each occurrence was rendered
-    // into (empty when highlighting was suppressed — see MaxHighlightLines).
+    // The term currently highlighted and every occurrence of it in the document.
+    // The list is what both the counter and the search colorizer read.
     private string _searchTerm = string.Empty;
-    private readonly List<(int Line, int Start, int Length)> _searchMatches = [];
-    private readonly List<Run> _matchRuns = [];
+    private readonly List<DiffSearchMatch> _searchMatches = [];
     private int _matchIndex = -1;
-    private bool _highlightSuppressed;
+
+    // Set when the match list hit MaxSearchMatches and stopped growing, so the
+    // counter can say that "m" is a floor rather than a total.
+    private bool _matchesTruncated;
 
     // Launches the external editor / file manager for the file context menu.
     private readonly ExternalToolService _tools = new();
@@ -201,8 +145,8 @@ public sealed class DiffView : UserControl
     // real status message (a command line, an error) with a stale one.
     private bool _hasCommit;
 
-    // Line indices (into the currently rendered diff) of each hunk header, and
-    // where the ▲/▼ navigation currently sits.
+    // 1-based document line numbers of each hunk header, and where the ▲/▼
+    // navigation currently sits.
     private readonly List<int> _hunkLines = [];
     private int _hunkIndex = -1;
 
@@ -219,8 +163,9 @@ public sealed class DiffView : UserControl
     // the context-menu command, so a toggle re-runs the same comparison.
     private bool _forceWorkingTreeCompare;
 
-    // The raw unified-diff text currently displayed (the SelectableTextBlock's
-    // Text is cleared while inlines are rendered, so keep our own copy to copy).
+    // The raw unified-diff text currently displayed. Kept alongside the editor's
+    // document because "Copy diff" must hand over the patch even when the pane is
+    // showing a placeholder ("Loading diff…", an error).
     private string _currentDiffText = string.Empty;
 
     // Path of the file the displayed patch belongs to: the syntax highlighter
@@ -294,14 +239,47 @@ public sealed class DiffView : UserControl
         fileMenu.Opening += (_, _) => UpdateFileMenuState();
         _files.List.ContextMenu = fileMenu;
 
-        _diff = new SelectableTextBlock
+        // The patch pane. AvaloniaEdit ships its own control theme inside the
+        // package; it is pulled into THIS control's styles rather than the
+        // application's, so the dependency stays where it is used.
+        Styles.Add(new StyleInclude(new Uri("avares://GitExtensions.Avalonia/"))
+        {
+            Source = new Uri("avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"),
+        });
+
+        _editor = new TextEditor
         {
             FontFamily = Monospace,
-            FontSize = 12,
+            FontSize = _options.FontSize,
             Foreground = B("App.Text"),
-            Margin = new Thickness(12, 10, 12, 12),
-            TextWrapping = TextWrapping.NoWrap,
+            Background = B("App.Window"),
+            Padding = new Thickness(12, 10, 12, 12),
+            IsReadOnly = true,
+            WordWrap = false,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+
+        // The pane shows a patch, not source it can navigate: the editor's URL
+        // detection would turn every http:// in a diff into a click target, and
+        // scrolling past the last line only makes "go to line" land oddly.
+        _editor.Options.EnableHyperlinks = false;
+        _editor.Options.EnableEmailHyperlinks = false;
+        _editor.Options.AllowScrollBelowDocument = false;
+        _editor.Options.HighlightCurrentLine = false;
+        ApplyNonPrintingOption();
+
+        // Order matters: the search wash is added last so it paints over the
+        // added/removed tint rather than under it.
+        _editor.TextArea.TextView.LineTransformers.Add(_colorizer);
+        _editor.TextArea.TextView.LineTransformers.Add(_searchColorizer);
+
+        // The palette brushes are mutated in place by ThemeManager, but nothing
+        // tells a text-view line that its brush changed colour, so a switch has to
+        // ask for a repaint. ActualThemeVariantChanged covers dark/light and is an
+        // instance event (no unsubscribe needed); StyleChanged covers modern/classic
+        // and is static, hence the attach/detach dance below.
+        _editor.ActualThemeVariantChanged += (_, _) => RedrawDiff();
 
         _copyDiffItem = new MenuItem();
         _copyDiffItem.Click += (_, _) => CopyDiffText();
@@ -333,17 +311,10 @@ public sealed class DiffView : UserControl
             _copyNewVersionItem.IsEnabled = hasFile;
             _copyOldVersionItem.IsEnabled = hasFile;
         };
-        _diff.ContextMenu = diffMenu;
-
-        _diff.FontSize = _options.FontSize;
-
-        _diffScroll = new ScrollViewer
-        {
-            Content = _diff,
-            Background = B("App.Window"),
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        };
+        // On the TextArea, not on the TextEditor: the editor's own template puts a
+        // ScrollViewer in between, and a menu on the outer control never sees the
+        // right-click that lands on the text.
+        _editor.TextArea.ContextMenu = diffMenu;
 
         // ---- diff toolbar (mirrors the Windows diff viewer's right-hand strip) ----
         AddToolbarStyles();
@@ -382,7 +353,7 @@ public sealed class DiffView : UserControl
             {
                 _options.ShowNonPrinting = v;
                 DiffViewerOptions.Persist();
-                RenderDiff(_currentDiffText);
+                ApplyNonPrintingOption();
             });
 
         _ignoreWhitespaceEolButton = ToggleTool(
@@ -412,15 +383,15 @@ public sealed class DiffView : UserControl
                 ReloadDiff();
             });
 
-        // Display-only: the patch is already loaded, so this re-renders it instead
-        // of re-running git.
+        // Display-only: the patch is already loaded, so this just re-colours the
+        // visible lines instead of re-running git.
         _syntaxButton = ToggleTool(
             "{;}", _extras.SyntaxHighlighting,
             v =>
             {
                 _extras.SyntaxHighlighting = v;
                 DiffViewerOptions.Persist();
-                RenderDiff(_currentDiffText);
+                ApplySyntaxLanguage();
             },
             icon: "SyntaxHighlighting");
 
@@ -556,7 +527,7 @@ public sealed class DiffView : UserControl
         DockPanel.SetDock(_findBar, Dock.Top);
         diffPane.Children.Add(toolbarBar);
         diffPane.Children.Add(_findBar);
-        diffPane.Children.Add(_diffScroll);
+        diffPane.Children.Add(_editor);
 
         _status = new TextBlock
         {
@@ -610,6 +581,45 @@ public sealed class DiffView : UserControl
 
         // Ctrl+C: copy the file path when the file list is focused, otherwise the diff.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+    }
+
+    /// <inheritdoc/>
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        ThemeManager.StyleChanged += RedrawDiff;
+    }
+
+    /// <inheritdoc/>
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        // StyleChanged is a STATIC event: a view that forgets to unsubscribe grows
+        // its invocation list for the lifetime of the process.
+        ThemeManager.StyleChanged -= RedrawDiff;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    // Repaints the visible lines with whatever the palette brushes now hold.
+    private void RedrawDiff() => _editor.TextArea.TextView.Redraw();
+
+    // The ¶ toggle. This used to rewrite the diff text (spaces to "·", tabs to
+    // "→   "), which put the mangled text in the clipboard whenever the user
+    // selected any of it and misaligned every tab; the editor draws the marks
+    // instead, over the real characters and only for the visible lines.
+    private void ApplyNonPrintingOption()
+    {
+        bool on = _options.ShowNonPrinting;
+        _editor.Options.ShowSpaces = on;
+        _editor.Options.ShowTabs = on;
+        _editor.Options.ShowEndOfLine = on;
+    }
+
+    // Hands the colorizer the language of the loaded patch (or nothing, when the
+    // toggle is off or the extension is unknown) and repaints.
+    private void ApplySyntaxLanguage()
+    {
+        _colorizer.Language = _extras.SyntaxHighlighting ? DiffSyntaxHighlighter.Detect(_diffPath) : null;
+        RedrawDiff();
     }
 
     // ------------------------------------------------------------ translation
@@ -770,12 +780,19 @@ public sealed class DiffView : UserControl
             if (_files.IsKeyboardFocusWithin)
             {
                 CopySelectedFilePath();
-            }
-            else
-            {
-                CopyDiffText();
+                e.Handled = true;
+                return;
             }
 
+            // A live text selection belongs to the editor: swallowing Ctrl+C here
+            // would copy the whole patch over what the user had just selected with
+            // the mouse. With nothing selected the old meaning stands.
+            if (_editor.SelectionLength > 0 && _editor.IsKeyboardFocusWithin)
+            {
+                return;
+            }
+
+            CopyDiffText();
             e.Handled = true;
         }
     }
@@ -970,7 +987,7 @@ public sealed class DiffView : UserControl
 
     private void SelectAllAndCopy()
     {
-        _diff.SelectAll();
+        _editor.SelectAll();
         CopyToClipboard(_currentDiffText);
     }
 
@@ -1166,8 +1183,7 @@ public sealed class DiffView : UserControl
         string? wanted = string.IsNullOrEmpty(preselectPath) ? null : preselectPath;
 
         _files.Clear();
-        _diff.Inlines?.Clear();
-        _diff.Text = string.Empty;
+        ShowPlaceholder(string.Empty);
         _currentDiffText = string.Empty;
         _status.Text = loadingText;
         _hasCommit = true;
@@ -1517,7 +1533,7 @@ public sealed class DiffView : UserControl
 
         _options.FontSize = size;
         DiffViewerOptions.Persist();
-        _diff.FontSize = size;
+        _editor.FontSize = size;
         _status.Text = F(T("Text size {0:0}pt"), size);
     }
 
@@ -1544,16 +1560,15 @@ public sealed class DiffView : UserControl
         _status.Text = F(T("Change {0} of {1}"), next + 1, _hunkLines.Count);
     }
 
-    // The diff pane is a uniform monospace block, so a line's offset is simply
-    // its index times the measured average line height.
+    // Brings a 1-based document line into view. This used to be an estimate — the
+    // block's height divided by its line count — because a SelectableTextBlock has
+    // no notion of lines; the editor knows exactly where line n is.
     private void ScrollToLine(int line)
     {
-        int lineCount = Math.Max(1, _currentDiffText.Split('\n').Length);
-        double height = _diff.Bounds.Height;
-        double lineHeight = height > 0 ? height / lineCount : _diff.FontSize * 1.4;
-        double y = Math.Max(0, (line * lineHeight) + _diff.Margin.Top - (lineHeight * 2));
-
-        _diffScroll.Offset = new Vector(_diffScroll.Offset.X, y);
+        line = Math.Clamp(line, 1, Math.Max(1, _editor.Document?.LineCount ?? 1));
+        _editor.TextArea.Caret.Line = line;
+        _editor.TextArea.Caret.Column = 1;
+        _editor.ScrollToLine(line);
     }
 
     // ------------------------------------------------------- search / go to line
@@ -1611,10 +1626,12 @@ public sealed class DiffView : UserControl
             ApplySearchTerm(string.Empty);
         }
 
-        _diff.Focus();
+        _editor.Focus();
     }
 
-    // Re-renders with a new highlight term and jumps to the first occurrence.
+    // Re-collects the occurrences of a new term and jumps to the first one. No
+    // re-render any more: the highlight is a transformer, so only the visible
+    // lines are repainted.
     private void ApplySearchTerm(string term)
     {
         if (string.Equals(term, _searchTerm, StringComparison.Ordinal))
@@ -1623,7 +1640,7 @@ public sealed class DiffView : UserControl
         }
 
         _searchTerm = term;
-        RenderDiff(_currentDiffText);
+        CollectMatches();
 
         if (_searchMatches.Count > 0)
         {
@@ -1646,37 +1663,31 @@ public sealed class DiffView : UserControl
         SelectMatch(_matchIndex < 0 ? (step > 0 ? 0 : _searchMatches.Count - 1) : _matchIndex + step, scroll: true);
     }
 
-    // Moves the "current match" marker. Only two Run backgrounds change, so
-    // walking a large result set never re-renders the diff.
+    // Moves the "current match" marker. Walking a large result set costs one
+    // repaint of the visible lines, whatever the size of the patch.
     private void SelectMatch(int index, bool scroll)
     {
         int count = _searchMatches.Count;
         if (count == 0)
         {
             _matchIndex = -1;
+            _searchColorizer.SetCurrent(-1);
+            RedrawDiff();
             UpdateMatchCounter();
             return;
         }
 
         index = ((index % count) + count) % count;   // wrap around both ends
 
-        if (_matchIndex >= 0 && _matchIndex < _matchRuns.Count)
-        {
-            _matchRuns[_matchIndex].Background = MatchBrush;
-        }
-
         _matchIndex = index;
-
-        if (index < _matchRuns.Count)
-        {
-            _matchRuns[index].Background = CurrentMatchBrush;
-        }
+        _searchColorizer.SetCurrent(index);
 
         if (scroll)
         {
             ScrollToLine(_searchMatches[index].Line);
         }
 
+        RedrawDiff();
         UpdateMatchCounter();
     }
 
@@ -1698,9 +1709,9 @@ public sealed class DiffView : UserControl
 
         _matchCounter.Text = F(T("{0} of {1}"), _matchIndex + 1, _searchMatches.Count);
 
-        // Say so rather than silently showing an unhighlighted diff.
-        ToolTip.SetTip(_matchCounter, _highlightSuppressed
-            ? F(T("Too many matches to highlight ({0}); use ▲/▼ to walk them."), _searchMatches.Count)
+        // Say so rather than quietly presenting a capped total as the real one.
+        ToolTip.SetTip(_matchCounter, _matchesTruncated
+            ? F(T("Only the first {0} matches are listed."), _searchMatches.Count)
             : null);
     }
 
@@ -1714,10 +1725,10 @@ public sealed class DiffView : UserControl
             return;
         }
 
-        int lineCount = Math.Max(1, _currentDiffText.Split('\n').Length);
+        int lineCount = Math.Max(1, _editor.Document?.LineCount ?? 1);
         line = Math.Clamp(line, 1, lineCount);
 
-        ScrollToLine(line - 1);
+        ScrollToLine(line);
         _status.Text = F(T("Line {0} of {1}"), line, lineCount);
     }
 
@@ -1984,8 +1995,7 @@ public sealed class DiffView : UserControl
         // The language of the patch content, for the syntax highlighter.
         _diffPath = row.Name;
 
-        _diff.Inlines?.Clear();
-        _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
+        ShowPlaceholder(T("FormBrowse/_loading.Text", "Loading diff…"));
 
         _ = Task.Run(async () =>
         {
@@ -2021,163 +2031,58 @@ public sealed class DiffView : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        _diff.Inlines?.Clear();
-                        _diff.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                        ShowPlaceholder(F("{0}: {1}", ErrorWord(), ex.Message));
                     }
                 });
             }
         });
     }
 
-    // Renders spaces/tabs/CR as visible symbols when the ¶ toggle is on.
-    private static string ApplyNonPrinting(string line) => line
-        .Replace("\r", "␍", StringComparison.Ordinal)
-        .Replace("\t", "→   ", StringComparison.Ordinal)
-        .Replace(" ", "·", StringComparison.Ordinal);
+    // Puts a one-line message in the pane (the loading notice, an error) and
+    // clears everything that was derived from the previous patch. The copy of the
+    // patch the clipboard commands read is deliberately NOT touched here.
+    private void ShowPlaceholder(string message)
+    {
+        _hunkLines.Clear();
+        _hunkIndex = -1;
+        _searchMatches.Clear();
+        _matchIndex = -1;
+        _matchesTruncated = false;
+        _searchColorizer.SetMatches([]);
+        _colorizer.Invalidate();
+        _editor.Document = new TextDocument(message);
+    }
 
-    // Colour each diff line: added green, removed red, hunk headers blue,
-    // file/meta headers gray. When a search term is active the occurrences are
-    // highlighted by splitting the affected lines into several Runs — see
-    // CollectMatches for the size limits that turn that off.
+    /// <summary>
+    ///  Hands the patch to the editor.
+    ///
+    ///  <para>What used to make this method expensive is gone: it built one
+    ///  <c>Run</c> per line, plus one per syntax span and per search hit, for the
+    ///  WHOLE patch, and every Run is its own text-layout box — about half a
+    ///  millisecond per line, before the layout pass that followed it. The colours
+    ///  now come from two <c>DocumentColorizingTransformer</c>s that AvaloniaEdit
+    ///  runs for the VISIBLE lines only, so all that is left here is building the
+    ///  document plus two linear passes over the text: the hunk headers the ▲/▼
+    ///  navigation needs, and the search hits the counter needs.</para>
+    /// </summary>
     private void RenderDiff(string diffText)
     {
         _currentDiffText = diffText;
-        _diff.Text = string.Empty;
-        InlineCollection inlines = _diff.Inlines ??= [];
-        inlines.Clear();
-        _hunkLines.Clear();
-        _hunkIndex = -1;
-        _matchRuns.Clear();
-        _matchIndex = -1;
 
-        string[] rawLines = diffText.Split('\n');
+        // The block-comment table the colorizer keeps is indexed by line number,
+        // and those now mean something else.
+        _colorizer.Invalidate();
 
-        // What the user actually sees, which is also what the search must match.
-        string[] display = new string[rawLines.Length];
-        for (int i = 0; i < rawLines.Length; i++)
-        {
-            display[i] = _options.ShowNonPrinting ? ApplyNonPrinting(rawLines[i]) : rawLines[i];
-        }
+        _editor.Document = new TextDocument(diffText);
+        _editor.CaretOffset = 0;
+        _editor.ScrollToHome();
 
-        bool inlineHighlight = CollectMatches(display);
-        int matchCursor = 0;
+        ApplySyntaxLanguage();
+        CollectHunks();
+        CollectMatches();
 
-        // Syntax highlighting obeys the same size rule as the search highlighting:
-        // both work by splitting lines into extra Runs, and each Run is its own
-        // text-layout box. Past the cap the patch renders one Run per line, as
-        // before, rather than making a huge file crawl.
-        SyntaxLanguage? language = _extras.SyntaxHighlighting && rawLines.Length <= MaxHighlightLines
-            ? DiffSyntaxHighlighter.Detect(_diffPath)
-            : null;
-        SyntaxState syntaxState = new();
-        List<SyntaxSpan> spans = [];
-
-        int lineNumber = -1;
-        foreach (string rawLine in rawLines)
-        {
-            lineNumber++;
-            string line = rawLine;
-            IBrush? brush = null;
-
-            if (line.StartsWith("+++", StringComparison.Ordinal) ||
-                line.StartsWith("---", StringComparison.Ordinal) ||
-                line.StartsWith("diff ", StringComparison.Ordinal) ||
-                line.StartsWith("index ", StringComparison.Ordinal) ||
-                line.StartsWith("new file", StringComparison.Ordinal) ||
-                line.StartsWith("deleted file", StringComparison.Ordinal) ||
-                line.StartsWith("rename ", StringComparison.Ordinal) ||
-                line.StartsWith("copy ", StringComparison.Ordinal) ||
-                line.StartsWith("similarity ", StringComparison.Ordinal))
-            {
-                brush = B("App.TextDim");
-            }
-            else if (line.StartsWith("@@", StringComparison.Ordinal))
-            {
-                brush = B("App.Accent");
-                _hunkLines.Add(lineNumber);
-            }
-            else if (line.StartsWith('+'))
-            {
-                brush = AddedBrush;
-            }
-            else if (line.StartsWith('-'))
-            {
-                brush = RemovedBrush;
-            }
-
-            line = display[lineNumber];
-
-            // Only the content lines carry code; the file/hunk headers keep their
-            // own colour. A tokenized +/- line moves its identity to a background
-            // tint, because its foreground now belongs to the tokens.
-            IBrush? lineBackground = null;
-            spans.Clear();
-
-            if (language is not null &&
-                (brush is null || ReferenceEquals(brush, AddedBrush) || ReferenceEquals(brush, RemovedBrush)))
-            {
-                // The leading +/-/space is diff syntax, not code.
-                int from = rawLine.Length > 0 && rawLine[0] is '+' or '-' or ' ' ? 1 : 0;
-                DiffSyntaxHighlighter.Tokenize(language, line, from, syntaxState, spans);
-
-                if (ReferenceEquals(brush, AddedBrush))
-                {
-                    lineBackground = AddedTint;
-                }
-                else if (ReferenceEquals(brush, RemovedBrush))
-                {
-                    lineBackground = RemovedTint;
-                }
-            }
-
-            // Skip past matches belonging to earlier lines (only possible when
-            // highlighting is suppressed, but keeps the cursor honest).
-            while (matchCursor < _searchMatches.Count && _searchMatches[matchCursor].Line < lineNumber)
-            {
-                matchCursor++;
-            }
-
-            bool lineHasMatch = inlineHighlight
-                && matchCursor < _searchMatches.Count
-                && _searchMatches[matchCursor].Line == lineNumber;
-
-            int firstRun = inlines.Count;
-            int pos = 0;
-
-            while (lineHasMatch
-                && matchCursor < _searchMatches.Count
-                && _searchMatches[matchCursor].Line == lineNumber)
-            {
-                (_, int start, int length) = _searchMatches[matchCursor];
-
-                EmitSpans(inlines, line, pos, start, brush, lineBackground, spans);
-
-                // A match is always exactly one Run, whatever the tokens under it:
-                // the ▲/▼ navigation addresses matches by Run.
-                Run hit = Segment(line.Substring(start, length), brush, MatchBrush);
-                inlines.Add(hit);
-                _matchRuns.Add(hit);
-
-                pos = start + length;
-                matchCursor++;
-            }
-
-            EmitSpans(inlines, line, pos, line.Length, brush, lineBackground, spans);
-
-            // The line break rides on the line's last Run, so an unhighlighted
-            // patch still costs exactly one Run per line, as it did before.
-            if (inlines.Count == firstRun)
-            {
-                inlines.Add(Segment("\n", brush, lineBackground));
-            }
-            else if (inlines[^1] is Run tail)
-            {
-                tail.Text += "\n";
-            }
-        }
-
-        // A reload (new file, new toggle) rebuilds the match list: put the
-        // marker back on the first hit and refresh the counter.
+        // A reload (new file, new toggle) rebuilds the match list: put the marker
+        // back on the first hit and refresh the counter.
         if (_searchMatches.Count > 0)
         {
             SelectMatch(0, scroll: false);
@@ -2188,130 +2093,91 @@ public sealed class DiffView : UserControl
         }
     }
 
-    // Emits line[from..to], splitting it wherever a syntax span applies. The spans
-    // are ordered and clipped to the range, so this can be called once per
-    // between-matches region of the same line.
-    private static void EmitSpans(
-        InlineCollection inlines,
-        string line,
-        int from,
-        int to,
-        IBrush? baseForeground,
-        IBrush? background,
-        List<SyntaxSpan> spans)
+    // The line numbers of the "@@ … @@" headers, for ▲/▼. Read straight off the
+    // document rather than from a split of the text: the document is what every
+    // other line number in this view now refers to, and testing two characters
+    // costs nothing where materialising each line as a string would not.
+    private void CollectHunks()
     {
-        if (to <= from)
+        _hunkLines.Clear();
+        _hunkIndex = -1;
+
+        if (_editor.Document is not TextDocument document)
         {
             return;
         }
 
-        if (spans.Count == 0)
+        foreach (DocumentLine line in document.Lines)
         {
-            inlines.Add(Segment(line[from..to], baseForeground, background));
-            return;
-        }
-
-        int pos = from;
-        foreach (SyntaxSpan span in spans)
-        {
-            int start = Math.Max(span.Start, from);
-            int end = Math.Min(span.Start + span.Length, to);
-            if (end <= start)
+            if (line.Length >= 2 &&
+                document.GetCharAt(line.Offset) == '@' &&
+                document.GetCharAt(line.Offset + 1) == '@')
             {
-                continue;
+                _hunkLines.Add(line.LineNumber);
             }
-
-            if (start > pos)
-            {
-                inlines.Add(Segment(line[pos..start], baseForeground, background));
-            }
-
-            inlines.Add(Segment(line[start..end], TokenBrush(span.Kind), background));
-            pos = end;
         }
-
-        if (pos < to)
-        {
-            inlines.Add(Segment(line[pos..to], baseForeground, background));
-        }
-    }
-
-    private static IBrush TokenBrush(SyntaxTokenKind kind) => kind switch
-    {
-        SyntaxTokenKind.Keyword => KeywordBrush,
-        SyntaxTokenKind.String => StringBrush,
-        SyntaxTokenKind.Comment => CommentBrush,
-        SyntaxTokenKind.Number => NumberBrush,
-        _ => PreprocessorBrush,
-    };
-
-    private static Run Segment(string text, IBrush? foreground, IBrush? background)
-    {
-        Run run = new(text);
-        if (foreground is not null)
-        {
-            run.Foreground = foreground;
-        }
-
-        if (background is not null)
-        {
-            run.Background = background;
-        }
-
-        return run;
     }
 
     /// <summary>
     ///  Fills <see cref="_searchMatches"/> with every occurrence of the current
-    ///  search term (case-insensitive) in the rendered lines, and decides whether
-    ///  the renderer should highlight them inline.
+    ///  search term (case-insensitive) and hands the list to the search colorizer.
     ///
-    ///  <para>Two explicit limits, because a highlight costs Run objects and each
-    ///  Run is a separate text-layout box: no inline highlighting past
-    ///  <see cref="MaxHighlightLines"/> rendered lines or
-    ///  <see cref="MaxHighlightMatches"/> hits, and the match list itself stops at
-    ///  <see cref="MaxSearchMatches"/>. Beyond those the counter and the ▲/▼
-    ///  navigation keep working (they only need line numbers) and the counter's
-    ///  tooltip says the highlighting was dropped.</para>
+    ///  <para>Only one limit is left, <see cref="MaxSearchMatches"/>, and it is
+    ///  about the list itself: an incremental search for "e" on a huge patch must
+    ///  not allocate without bound. The old caps on <i>highlighting</i> are gone —
+    ///  the wash is painted per visible line now, so the total number of hits no
+    ///  longer costs anything to draw.</para>
     /// </summary>
-    private bool CollectMatches(string[] display)
+    private void CollectMatches()
     {
         _searchMatches.Clear();
-        _highlightSuppressed = false;
+        _matchesTruncated = false;
+        _matchIndex = -1;
 
         string term = _searchTerm;
-        if (term.Length == 0)
+        if (term.Length > 0 && _editor.Document is TextDocument document)
         {
-            return false;
-        }
-
-        for (int i = 0; i < display.Length; i++)
-        {
-            string line = display[i];
-            int from = 0;
-
-            while (from <= line.Length - term.Length)
+            foreach (DocumentLine line in document.Lines)
             {
-                int at = line.IndexOf(term, from, StringComparison.OrdinalIgnoreCase);
-                if (at < 0)
+                if (line.Length < term.Length)
                 {
-                    break;
+                    continue;
                 }
 
-                _searchMatches.Add((i, at, term.Length));
-                from = at + term.Length;
-
-                if (_searchMatches.Count >= MaxSearchMatches)
+                if (!ScanLine(document.GetText(line), line.LineNumber, term))
                 {
-                    _highlightSuppressed = true;
-                    return false;
+                    _matchesTruncated = true;
+                    break;
                 }
             }
         }
 
-        bool inline = display.Length <= MaxHighlightLines && _searchMatches.Count <= MaxHighlightMatches;
-        _highlightSuppressed = !inline && _searchMatches.Count > 0;
+        _searchColorizer.SetMatches(_searchMatches);
+        RedrawDiff();
+    }
 
-        return inline;
+    // Returns false once the match list is full, which stops the outer walk.
+    private bool ScanLine(string text, int lineNumber, string term)
+    {
+        int from = 0;
+        while (from <= text.Length - term.Length)
+        {
+            int at = text.IndexOf(term, from, StringComparison.OrdinalIgnoreCase);
+            if (at < 0)
+            {
+                return true;
+            }
+
+            _searchMatches.Add(new DiffSearchMatch(lineNumber, at, term.Length));
+            from = at + term.Length;
+
+            if (_searchMatches.Count >= MaxSearchMatches)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
+

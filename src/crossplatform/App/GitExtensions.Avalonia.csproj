@@ -109,6 +109,7 @@
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" />
   </ItemGroup>
 
   <ItemGroup>
