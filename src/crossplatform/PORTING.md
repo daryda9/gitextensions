@@ -3260,6 +3260,29 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M126 (2026-08-08, `0156dd902`) — un dialogo si apre sul pulsante per cui è stato aperto
+
+> Dall'utente: «quando si apre la finestra di push, devo cliccare per forza il pulsante, puoi lasciarmi
+> il focus direttamente sul pulsante di push?».
+
+Upstream il problema non ce l'ha: una form WinForms ha un `AcceptButton` e l'ordine di tabulazione
+parte da lì. Una finestra Avalonia si mostra **senza nulla di focalizzato**, quindi aprire Push dalla
+toolbar e poi dover tornare al mouse per premere Push è un viaggio di troppo.
+
+`DialogKeys.FocusOnOpen(window, primary)` mette la tastiera sul pulsante principale appena la finestra
+è su; lo usano **Push** e **Pull**. Focus, non attivazione: nulla parte finché l'utente non preme
+Spazio o Invio. Non è applicato ai dialoghi che si aprono su una **domanda** — lì la tastiera
+appartiene al campo da compilare — né a quelli distruttivi, dove un tasto di conferma non deve mai
+essere lo stato a riposo.
+
+Un dialogo che durante `Opened` mette il caret in un campo suo se lo tiene: questa è la riserva per una
+finestra che nessuno ha reclamato, non un sovrascritto. Con il pulsante focalizzato la finestra ha
+anche una rotta per i tasti, quindi Escape viene instradato — per questi due `EnsureFocusRoute` diventa
+ridondante.
+
+**Verificato** su Xvfb: la finestra di push si apre con l'anello di focus intorno a **Push**, e Invio
+lo preme. Build `Avvisi: 0 / Errori: 0`.
+
 ## M125 (2026-08-08, `96715fac8`) — markdown nell'evidenziazione della sintassi
 
 > Dall'utente, su un diff di `HANDOFF.md`: «mi sembra si sia rotta la syntax highlighting».
