@@ -188,14 +188,6 @@ public sealed class MainToolbar : UserControl
     /// </summary>
     public event Action<string>? OpenShellRequested;
 
-    // Right-side branch-scope + text filter, echoing the original FormBrowse
-    // toolbar's "All branches ▾" scope dropdown and "Filter:" combo. The toolbar
-    // performs no filtering itself: choosing a scope raises BranchScopeChanged
-    // (0 = All branches, 1 = Current branch, 2 = Filtered) and typing in the
-    // filter box raises FilterChanged; the host drives the revision grid.
-    public event Action<int>? BranchScopeChanged;
-    public event Action<string>? FilterChanged;
-
     // Submodules / worktrees split buttons. The toolbar itself performs no git
     // work: the host supplies a provider that lists the repo's submodules /
     // worktrees (off the UI thread), and choosing one raises
@@ -326,10 +318,6 @@ public sealed class MainToolbar : UserControl
     /// </summary>
     private ToolbarRepoState _state = new();
 
-    // Far-right working-directory indicator (repo name + ~-collapsed path); created
-    // lazily on the first UpdateState() call and reused thereafter.
-    private TextBlock? _repoIndicator;
-
     // Inline branch dropdown (button + its caption) and repo-path dropdown (button
     // + its caption), placed near the left of the toolbar to mirror the original
     // FormBrowse repo-path / branch selectors. Captions are refreshed in place by
@@ -449,7 +437,6 @@ public sealed class MainToolbar : UserControl
         // Stale descriptors would keep the discarded controls (and their captions)
         // alive in the overflow menu.
         _overflow.Clear();
-        _repoIndicator = null;
 
         // The "»" overflow button: shown by OverflowPanel only when the strip is
         // too narrow for every item, and dropping a menu with the items left out.
@@ -475,10 +462,16 @@ public sealed class MainToolbar : UserControl
         // a separator of its own.
 
         // ---- refresh (upstream group 1: RefreshButton alone) ---------------------
+        // Upstream ends FormBrowse.RefreshShortcutKeys by suffixing the gesture onto the
+        // tooltip of every toolbar button that has one (RefreshButton gets F5, Commit,
+        // branchSelect, EditSettings, userShell and toggleLeftPanel likewise). The port
+        // only did it for two of them, so the rest are annotated here and below.
         bar.AddItem(IconOnly(MakeButton("RepoOpen", T("FormBrowse/openToolStripMenuItem.Text", "Open"),
-            T("Dashboard/_openRepository.Text", "Open repository"), () => OpenRepoRequested?.Invoke())));
+            TipWithGesture(T("Dashboard/_openRepository.Text", "Open repository"), BrowseCommand.OpenRepo),
+            () => OpenRepoRequested?.Invoke())));
         bar.AddItem(IconOnly(MakeButton("ReloadRevisions", T("FormBrowse/RefreshButton.ToolTipText", "Refresh"),
-            T("FormBrowse/RefreshButton.ToolTipText", "Refresh"), () => RefreshRequested?.Invoke())));
+            TipWithGesture(T("FormBrowse/RefreshButton.ToolTipText", "Refresh"), BrowseCommand.Refresh),
+            () => RefreshRequested?.Invoke())));
 
         // ---- view / layout group (upstream group 2) ------------------------------
         bar.AddItem(Separator(border));
@@ -541,18 +534,49 @@ public sealed class MainToolbar : UserControl
             T("FormCommit/createBranchToolStripButton.ToolTipText", "Create a new branch"), () => NewBranchRequested?.Invoke())));
 
         // ---- remote / commit group (upstream group 4) ----------------------------
-        // Fetch sits immediately before Pull, where FormBrowse.InitMenusAndToolbars
-        // inserts its fetch/pull shortcut buttons; then Pull, Push, Commit, Stash.
+        // Upstream does NOT stop at one Fetch button here: FormBrowse.InitMenusAndToolbars
+        // .InsertFetchPullShortcuts clones six entries of the Pull drop-down into the
+        // strip, immediately before toolStripButtonPull, so the actions people run most
+        // are one click away instead of a click plus a menu. The port had only the first
+        // of the six; the two that the icon set can render unambiguously follow it below,
+        // in upstream's order.
+        //
+        // The clones are image-only buttons that simply perform the drop-down entry
+        // (upstream literally calls PerformClick on it) — here, RaisePull with the same
+        // action, which the host already routes through MainWindow.RunPullAction.
         bar.AddItem(Separator(border));
         bar.AddItem(IconOnly(MakeButton("PullFetch", T("FormBrowse/_pullFetch.Text", "Fetch"),
-            T("FormBrowse/fetchToolStripMenuItem.ToolTipText", "Fetch from remote"), () => FetchRequested?.Invoke())));
+            TipWithGesture(T("FormBrowse/fetchToolStripMenuItem.ToolTipText", "Fetch from remote"),
+                BrowseCommand.QuickFetch),
+            () => FetchRequested?.Invoke())));
+
+        // Upstream's second and third clones — "Fetch all" and "Fetch and prune all" —
+        // are NOT here, and deliberately so: upstream tells them apart by three
+        // distinct PNGs (one arrow, stacked arrows, stacked arrows with a red prune
+        // mark), while the port's icon set maps all three fetch actions onto the same
+        // glyph. Icon-only they would be three identical buttons in a row, so both
+        // stay where they already work, in the Pull drop-down two items to the right.
+        bar.AddItem(IconOnly(MakeButton(PullIcon(GitPullAction.Merge),
+            T("FormBrowse/_pullMerge.Text", "Pull - merge"),
+            TipWithGesture(T("FormBrowse/_pullMerge.Text", "Pull - merge"), BrowseCommand.QuickPull),
+            () => RaisePull(GitPullAction.Merge))));
+
+        bar.AddItem(IconOnly(MakeButton(PullIcon(GitPullAction.Rebase),
+            T("FormBrowse/_pullRebase.Text", "Pull - rebase"),
+            T("FormBrowse/_pullRebase.Text", "Pull - rebase"),
+            () => RaisePull(GitPullAction.Rebase))));
+
+        // Upstream's sixth clone is a plain "Pull" running the DEFAULT action — which
+        // is exactly what the split button's body immediately to its right already
+        // does, wearing the same icon. Two identical buttons side by side would be
+        // noise, so it is left out.
         bar.AddItem(MakePullSplitButton(border));
         _pushButton = IconOnly(MakeButton("Push", T("FormBrowse/toolStripButtonPush.Text", "Push"),
             T("FormPush/_errorPushToRemoteCaption.Text", "Push to remote"), () => PushRequested?.Invoke(),
             out _pushCaption, out _pushIcon));
         bar.AddItem(_pushButton);
         _commitButton = MakeButton("CommitSummary", T("FormBrowse/toolStripButtonCommit.Text", "Commit"),
-            T("Commit changes"), () => CommitRequested?.Invoke(),
+            TipWithGesture(T("Commit changes"), BrowseCommand.Commit), () => CommitRequested?.Invoke(),
             out _commitCaption, out _commitIcon);
         bar.AddItem(_commitButton);
         bar.AddItem(MakeStashSplitButton(border));
@@ -570,81 +594,17 @@ public sealed class MainToolbar : UserControl
             TipWithGesture(T("FormBrowse/EditSettings.ToolTipText", "Settings"), BrowseCommand.OpenSettings),
             () => SettingsRequested?.Invoke())));
 
-        // ---- branch-scope + filter group (right side) ---------------------------
-        // Mirrors the original FormBrowse "All branches ▾" scope dropdown and the
-        // "Filter:" combo. Placed after the buttons and before the (lazily-added)
-        // repo indicator so the two selectors read on the right of the strip.
-        bar.AddItem(Separator(border));
-        bar.AddItem(MakeMenuButton("Branch", T("FormBrowse/tssbtnShowBranches.Text", "All branches"),
-            T("Which branches the revision grid shows"), new[]
-        {
-            ("Branch", T("FormBrowse/tssbtnShowBranches.Text", "All branches"), (Action)(() => BranchScopeChanged?.Invoke(0))),
-            ("Branch", T("Current branch"), (Action)(() => BranchScopeChanged?.Invoke(1))),
-            ("Branch", T("Filtered"), (Action)(() => BranchScopeChanged?.Invoke(2))),
-        }));
-
-        TextBlock filterLabel = new()
-        {
-            // The colon is punctuation, not part of the translatable noun.
-            Text = string.Format("{0}:", T("FormBrowse/ToolStripFilters.Text", "Filter")),
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Brush("App.TextDim", "#8A8A8A"),
-            FontSize = 12,
-            Margin = new Thickness(8, 0, 4, 0),
-        };
-        bar.AddItem(filterLabel);
-        _overflow[filterLabel] = new OverflowEntry { Kind = OverflowKind.Skip };
-
-        TextBox filterBox = new()
-        {
-            Width = 180,
-            Watermark = T("search term, then Enter"),
-            Background = Brush("App.Panel", "#252526"),
-            Foreground = Brush("App.Text", "#DCDCDC"),
-            BorderBrush = border,
-            BorderThickness = new Thickness(1),
-            FontSize = 12,
-            Padding = new Thickness(6, 2, 4, 2),
-            VerticalContentAlignment = VerticalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        ToolTip.SetTip(filterBox, T("Type a term and press Enter to search the whole history with git"));
-
-        // ENTER submits, exactly as upstream's FilterToolBar does
-        // (FilterToolBar.cs:386-434) — NOT every keystroke.
+        // Upstream's second strip, ToolStripFilters, used to be echoed here by a
+        // half-copy: an "All branches ▾" menu and a "Filter:" box. Both are gone.
         //
-        // The box used to raise FilterChanged on TextChanged, and the host answered
-        // it with an in-memory sieve over the rows already loaded: a term living in
-        // a commit that had not been paged in was simply never found, and every
-        // keystroke re-sifted the list. Submitting on Enter is what lets the same
-        // event carry the term all the way into `git log` (the grid's ApplyFilter
-        // now applies it to the field chosen in its "Filter type" dropdown), and it
-        // is also what makes a git-side filter affordable at all.
-        filterBox.KeyDown += (_, e) =>
-        {
-            if (e.Key is Key.Enter or Key.Return)
-            {
-                FilterChanged?.Invoke(filterBox.Text ?? string.Empty);
-                e.Handled = true;
-                return;
-            }
-
-            if (e.Key == Key.Escape)
-            {
-                filterBox.Text = string.Empty;
-                FilterChanged?.Invoke(string.Empty);
-                e.Handled = true;
-            }
-        };
-        bar.AddItem(filterBox);
-        _overflow[filterBox] = new OverflowEntry
-        {
-            Kind = OverflowKind.Filter,
-            Label = T("FormBrowse/ToolStripFilters.Text", "Filter"),
-            Icon = "FunnelPencil",
-            FilterBox = filterBox,
-        };
-
+        // The port already carries the WHOLE of FilterToolBar one row lower, on the
+        // revision grid's own bar (M115): the quick-filter box with its "Filter type"
+        // drop-down and its recent-searches list, the branch-scope menu with the
+        // filtered-refs picker, the "Filter…" dialog and the reset "✕". Keeping a
+        // weaker second copy up here was not upstream fidelity but duplication: the
+        // scope menu had no state to show (it read "All branches" even with the grid
+        // on the current branch only) and the box sifted through a different code
+        // path. One filter surface, as upstream has, and it is the complete one.
         Content = bar;
     }
 
@@ -709,7 +669,6 @@ public sealed class MainToolbar : UserControl
         }
 
         IBrush text = Brush("App.Text", "#DCDCDC");
-        IBrush dim = Brush("App.TextDim", "#8A8A8A");
         IBrush accent = Brush("App.Accent", "#007ACC");
 
         // Push: mirror upstream's ToolStripPushButton — the caption is
@@ -763,50 +722,12 @@ public sealed class MainToolbar : UserControl
                 : CollapseHome(repoPath);
         }
 
-        // Working-directory indicator, created lazily and updated in place.
-        if (_repoIndicator is null)
-        {
-            _repoIndicator = new TextBlock
-            {
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Foreground = dim,
-                FontSize = 11,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                MaxWidth = 480,
-                Margin = new Thickness(16, 0, 4, 0),
-            };
-            _bar.AddItem(_repoIndicator);
-            _overflow[_repoIndicator] = new OverflowEntry
-            {
-                Kind = OverflowKind.Text,
-                TextSource = _repoIndicator,
-            };
-        }
-
-        if (string.IsNullOrWhiteSpace(repoPath))
-        {
-            _repoIndicator.Text = T("(no repository)");
-            _repoIndicator.Foreground = dim;
-            ToolTip.SetTip(_repoIndicator, null);
-        }
-        else
-        {
-            string name = System.IO.Path.GetFileName(repoPath.TrimEnd('/', '\\'));
-            if (string.IsNullOrEmpty(name))
-            {
-                name = repoPath;
-            }
-
-            string shown = CollapseHome(repoPath);
-            string label = string.IsNullOrWhiteSpace(branch)
-                ? string.Format(T("{0} — {1}"), name, shown)
-                : string.Format(T("{0} — {1} ({2})"), name, shown, branch);
-
-            _repoIndicator.Text = label;
-            _repoIndicator.Foreground = dim;
-            ToolTip.SetTip(_repoIndicator, label);
-        }
+        // The strip used to end with a far-right "repo — path (branch)" label. It had
+        // no counterpart in ToolStripMain and said, a third time, what the working-dir
+        // button and the branch button a few centimetres to its left already say (and
+        // the grid's own header line a fourth). Being the last item, it was also the
+        // first thing pushed into the "»" overflow, so it mostly cost width without
+        // ever being read. Gone.
     }
 
     // Path display (home collapsed to "~") is shared with the revision grid's
@@ -1309,7 +1230,8 @@ public sealed class MainToolbar : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
         };
         _shellBody.Classes.Add("toolbtn");
-        ToolTip.SetTip(_shellBody, T("Open a terminal in the repository directory"));
+        ToolTip.SetTip(_shellBody, TipWithGesture(
+            T("Open a terminal in the repository directory"), BrowseCommand.GitBash));
         _shellBody.Click += (_, _) => LaunchCurrentShell();
 
         Border divider = new()
@@ -1437,8 +1359,11 @@ public sealed class MainToolbar : UserControl
 
         if (_shellBody is not null)
         {
-            ToolTip.SetTip(_shellBody, string.Format(
-                T("Open {0} in the repository directory"), shell.Name));
+            // Upstream suffixes userShell's tooltip with the GitBash gesture; the port
+            // does the same, so the shell button advertises its shortcut like the rest.
+            ToolTip.SetTip(_shellBody, TipWithGesture(
+                string.Format(T("Open {0} in the repository directory"), shell.Name),
+                BrowseCommand.GitBash));
         }
 
         // The overflow ("»") entry picks the caption up on its own through
@@ -2143,77 +2068,6 @@ public sealed class MainToolbar : UserControl
         PullRequested?.Invoke();
     }
 
-    // A flat toolbar button that drops a menu (icon + caption + a small chevron),
-    // used for the commit-info-position selector. Each entry is an icon name, its
-    // menu text, and the action to run when chosen.
-    private Button MakeMenuButton(string iconName, string label, string tooltip,
-        (string Icon, string Text, Action OnClick)[] items)
-    {
-        StackPanel content = new()
-        {
-            Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 4,
-        };
-
-        Image? icon = IconLoader.Image(iconName);
-        if (icon is not null)
-        {
-            icon.VerticalAlignment = VerticalAlignment.Center;
-            content.Children.Add(icon);
-        }
-
-        content.Children.Add(new TextBlock
-        {
-            Text = label,
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Brush("App.Text", "#DCDCDC"),
-            FontSize = 12,
-        });
-        content.Children.Add(new TextBlock
-        {
-            Text = "▾", // ▾ chevron hints at the drop-down.
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = Brush("App.Text", "#DCDCDC"),
-            FontSize = 10,
-        });
-
-        MenuFlyout flyout = new();
-        foreach ((string ic, string text, Action onClick) in items)
-        {
-            MenuItem menuItem = new() { Header = text };
-            Image? mIcon = IconLoader.Image(ic);
-            if (mIcon is not null)
-            {
-                menuItem.Icon = mIcon;
-            }
-
-            menuItem.Click += (_, _) => onClick();
-            flyout.Items.Add(menuItem);
-        }
-
-        Button button = new()
-        {
-            Content = content,
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(1),
-            Padding = StyleDensity.BarButton,
-            VerticalAlignment = VerticalAlignment.Center,
-            Cursor = new Cursor(StandardCursorType.Hand),
-            Flyout = flyout,
-        };
-        button.Classes.Add("toolbtn");
-        ToolTip.SetTip(button, tooltip);
-        _overflow[button] = new OverflowEntry
-        {
-            Kind = OverflowKind.Menu,
-            Label = label,
-            Icon = iconName,
-            SubItems = items,
-        };
-        return button;
-    }
-
     // A split button (icon + caption + chevron) whose drop-down is populated on
     // demand from a host-supplied provider (which does its git work off the UI
     // thread). Each entry opens that path as the active repository via
@@ -2626,7 +2480,9 @@ public sealed class MainToolbar : UserControl
             Cursor = new Cursor(StandardCursorType.Hand),
         };
         button.Classes.Add("toolbtn");
-        ToolTip.SetTip(button, T("TranslatedStrings/_buttonCheckoutBranch.Text", "Checkout a local branch"));
+        ToolTip.SetTip(button, TipWithGesture(
+            T("TranslatedStrings/_buttonCheckoutBranch.Text", "Checkout a local branch"),
+            BrowseCommand.CheckoutBranch));
         button.Click += (_, _) => Async.Run(
             async () =>
             {
@@ -3196,20 +3052,8 @@ public sealed class MainToolbar : UserControl
         /// <summary>Group rule: rendered as a menu separator.</summary>
         Separator,
 
-        /// <summary>Static drop-down: rendered as a submenu with fixed entries.</summary>
-        Menu,
-
         /// <summary>Provider-backed drop-down: re-shows the button's own flyout.</summary>
         LazyMenu,
-
-        /// <summary>The revision filter box, mirrored into the menu.</summary>
-        Filter,
-
-        /// <summary>A read-only indicator, rendered as a disabled menu item.</summary>
-        Text,
-
-        /// <summary>Decoration that carries no meaning on its own (e.g. a caption).</summary>
-        Skip,
     }
 
     /// <summary>
@@ -3222,10 +3066,7 @@ public sealed class MainToolbar : UserControl
         public string Label { get; init; } = string.Empty;
         public string Icon { get; init; } = string.Empty;
         public Action? Invoke { get; init; }
-        public (string Icon, string Text, Action OnClick)[]? SubItems { get; init; }
         public Func<Control, Task>? ShowMenu { get; init; }
-        public TextBlock? TextSource { get; init; }
-        public TextBox? FilterBox { get; init; }
 
         /// <summary>Caption TextBlock to read the live label from, when set.</summary>
         public TextBlock? LiveCaption { get; init; }
@@ -3270,7 +3111,7 @@ public sealed class MainToolbar : UserControl
         bool lastWasSeparator = true; // suppress a leading separator
         foreach (Control item in _bar.HiddenItems)
         {
-            if (!_overflow.TryGetValue(item, out OverflowEntry? entry) || entry.Kind == OverflowKind.Skip)
+            if (!_overflow.TryGetValue(item, out OverflowEntry? entry))
             {
                 continue;
             }
@@ -3314,90 +3155,6 @@ public sealed class MainToolbar : UserControl
 
         switch (entry.Kind)
         {
-            case OverflowKind.Text:
-                return new MenuItem
-                {
-                    Header = entry.TextSource?.Text ?? label,
-                    IsEnabled = false,
-                };
-
-            case OverflowKind.Filter:
-            {
-                // The real (hidden) TextBox cannot live in two visual trees, so the
-                // menu hosts a mirror that writes straight back into it, and submits
-                // on Enter exactly as the inline box does.
-                TextBox? source = entry.FilterBox;
-                TextBox mirror = new()
-                {
-                    Width = 200,
-                    Text = source?.Text ?? string.Empty,
-                    Watermark = source?.Watermark,
-                    Background = Brush("App.Panel", "#252526"),
-                    Foreground = Brush("App.Text", "#DCDCDC"),
-                    BorderBrush = Brush("App.BorderStrong", "#88898F"),
-                    BorderThickness = new Thickness(1),
-                    FontSize = 12,
-                    Padding = new Thickness(6, 2, 4, 2),
-                    VerticalContentAlignment = VerticalAlignment.Center,
-                };
-                if (source is not null)
-                {
-                    mirror.TextChanged += (_, _) => source.Text = mirror.Text ?? string.Empty;
-                }
-
-                mirror.KeyDown += (_, e) =>
-                {
-                    if (e.Key is Key.Enter or Key.Return)
-                    {
-                        FilterChanged?.Invoke(mirror.Text ?? string.Empty);
-                        e.Handled = true;
-                        return;
-                    }
-
-                    if (e.Key == Key.Escape)
-                    {
-                        mirror.Text = string.Empty;
-                        FilterChanged?.Invoke(string.Empty);
-                        e.Handled = true;
-                    }
-                };
-
-                StackPanel host = new()
-                {
-                    Orientation = Orientation.Horizontal,
-                    Spacing = 6,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Children =
-                    {
-                        new TextBlock
-                        {
-                            Text = string.Format("{0}:", T("FormBrowse/ToolStripFilters.Text", "Filter")),
-                            VerticalAlignment = VerticalAlignment.Center,
-                            Foreground = Brush("App.TextDim", "#8A8A8A"),
-                            FontSize = 12,
-                        },
-                        mirror,
-                    },
-                };
-
-                // StaysOpenOnClick keeps the menu up while the user types.
-                MenuItem filterItem = new() { Header = host, StaysOpenOnClick = true };
-                return filterItem;
-            }
-
-            case OverflowKind.Menu:
-            {
-                MenuItem parent = new() { Header = label, Icon = IconLoader.Image(entry.Icon) };
-                foreach ((string ic, string text, Action onClick) in entry.SubItems ?? [])
-                {
-                    MenuItem child = new() { Header = text, Icon = IconLoader.Image(ic) };
-                    child.Click += (_, _) => onClick();
-                    parent.Items.Add(child);
-                }
-
-                return parent;
-            }
-
             case OverflowKind.LazyMenu:
             {
                 // The entries come from an off-thread provider, so we do not build a

@@ -1232,10 +1232,9 @@ public sealed class MainWindow : Theming.ZoomWindow
         _toolbar.OpenShellRequested += exe => WithRepo(p => _externalTools.OpenTerminal(p, exe));
         _toolbar.CloseRepositoryRequested += ShowDashboard;
 
-        // Right-side branch-scope + filter selectors: drive the revision grid's own
-        // scope/filter logic (the grid's header menu keeps working independently).
-        _toolbar.BranchScopeChanged += i => { if (_repoPath is not null) _revisions.SetBranchScope((BranchScope)i); };
-        _toolbar.FilterChanged += t => { if (_repoPath is not null) _revisions.ApplyFilter(t); };
+        // The toolbar no longer carries a branch-scope menu or a filter box of its
+        // own: upstream's ToolStripFilters lives, whole, on the revision grid's bar,
+        // and the grid drives its own scope/filter logic from there. Nothing to wire.
 
         // Submodules / worktrees split-button dropdowns. Providers list off the UI
         // thread; choosing an entry opens that path as the active repository. The
@@ -2514,14 +2513,12 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     // Ctrl+E (upstream: ToolStripFilters.SetFocus) — the revision filter box.
     //
-    // There are two of them in this port: the toolbar's "Filter:" box, and the one
-    // in the revision grid's own header. Whichever is on screen is the right answer,
-    // and at narrow widths only the second one is: the toolbar moves its box into
-    // the "»" overflow flyout, where it is still a visual descendant but is never
-    // arranged, so focusing it would put the caret nowhere.
+    // There used to be two of them, and the toolbar's copy was preferred; now that
+    // the strip carries no filter of its own there is exactly one, in the revision
+    // grid's own header, which is where the whole of ToolStripFilters lives.
     private void FocusFilterBox()
     {
-        TextBox? filter = VisibleTextBox(_toolbar) ?? VisibleTextBox(_revisions);
+        TextBox? filter = VisibleTextBox(_revisions);
         if (filter is null)
         {
             _statusBar.SetText(T("No filter box is on screen."));
