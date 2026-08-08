@@ -3260,6 +3260,37 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M117 (2026-08-08, `c92d4252b`) — la lista dei file dice di che confronto è
+
+> Dall'utente, con gli screenshot dell'originale a confronto: nella lista dei file cambiati
+> l'originale scrive «(5) Diff with A 8c37814a: …», il port mostrava solo le righe dei file.
+
+L'originale intesta **ogni** lista di file cambiati con il confronto da cui viene — è
+`FileStatusWithDescription.Summary`, composto in `FileStatusDiffCalculator` come
+`TranslatedStrings.DiffWithParent + DescribeRevision(a)`. Senza quell'intestazione il pannello non
+dice mai **quale sia il lato «A»**: per un commit singolo è il suo primo parent, per una selezione
+multipla è l'estremo più vecchio, e dalle sole righe dei file i due casi sono indistinguibili.
+
+`FileStatusListView.SetFiles(rows, summary)` disegna il riepilogo come riga di intestazione sopra i
+gruppi che il builder ha già prodotto. È un `FileListGroupNode` normale: piegarlo piega tutta la
+lista e nient'altro nel controllo deve sapere che è speciale. Una lista che **non** è un confronto
+(l'albero dei file, le liste staged/unstaged del dialogo di commit, che si presentano da sole con le
+proprie didascalie) non passa alcun riepilogo e resta identica a prima.
+
+Nominare una revisione costa una chiamata a git (`git log -1 --format=%s`), quindi
+`DiffService.DescribeRevision` / `FirstParentOf` vengono invocate sul **thread di background** del
+load, accanto al diff stesso: il riepilogo viaggia col load, come la preselezione da M116. Il commit
+radice è confrontato con l'albero vuoto — non c'è revisione da nominare, e la lista resta senza
+intestazione invece di scriverne una che non nomina nulla.
+
+**Verificato** su Xvfb: commit singolo → `(5)  Diff with A 94525c1d: docs(crossplatform): reco…`;
+Ctrl su un secondo commit → `(9)  Diff with A 932d478e: fix(crossplatform): the gr…`, cioè l'estremo
+più vecchio. Build `Avvisi: 0 / Errori: 0`.
+
+**Differenza che resta.** Con 2–4 revisioni selezionate e `ShowDiffForAllParents` attivo, l'originale
+mostra **più gruppi** (il merge base e i due lati); il port ne mostra uno, il diff fra gli estremi.
+Non è un caso d'uso segnalato dall'utente e costa tre confronti in più per selezione.
+
 ## M116 (2026-08-07, `2924ccc7e`) — una sola linea nella storia di un file, e il diff di una selezione multipla
 
 > Dall'utente, sulla finestra File History: «la linea relativa ai commit è duplicata per ogni commit,
