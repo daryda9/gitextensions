@@ -3291,6 +3291,35 @@ striscia classica si prende la barra superiore che avrebbe sempre dovuto disegna
 2px), niente riempimento né contorno, le altre schede in inchiostro smorzato; in classic la scheda
 piena con la barra in alto. Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
 
+### Correzione immediata (`13d3d1b68`) — il cambio di stile faceva crashare la striscia
+
+> Dall'utente: «ora appena switcho da modern a classic crasha».
+
+La prima stesura dava al modern un **template proprio** per spostare il marcatore in basso. Passare
+Modern → Classic ri-templatizzava quindi ogni `TabItem`, e alla passata di layout successiva Avalonia
+lanciava:
+
+```
+System.InvalidOperationException: The control StackPanel already has a visual parent
+ContentPresenter (Name = PART_ContentPresenter) while trying to add it as a child of
+ContentPresenter (Name = PART_ContentPresenter, Host = TabItem)
+```
+
+Il contenuto dell'intestazione — il pannello icona+etichetta con cui la scheda è costruita — è ancora
+tenuto dal presenter del template **uscente** quando quello entrante misura e prova ad adottarlo.
+Scambiare il template di un controllo il cui `Header` è un controllo vivo non è sicuro.
+
+Quindi torna un **template solo**, con tre righe: marcatore, etichetta, marcatore. Il marcatore è un
+`Border` unico in riga 0, e il blocco modern lo sposta in riga 2 con un setter sulla proprietà
+allegata `Grid.Row` — un cambio di **proprietà**, non un albero visuale nuovo. La riga d'estremità
+inutilizzata è `Auto` e collassa a nulla. Anche il raggio degli angoli passa da valore assegnato nel
+template a valore **legato** alla scheda, così lo stile modern può squadrarlo: assegnare è un valore
+locale, e un valore locale batte un setter di stile — la stessa trappola che aveva già impedito al
+marcatore di dipingere.
+
+**Verificato**: Modern → Classic → Modern dal dialogo, a caldo, senza crash, con la sottolineatura di
+nuovo al suo posto (91px) al ritorno.
+
 ## M128 (2026-08-08, `7a33eb988`) — il menu nella barra del titolo, come VS Code
 
 > Dall'utente: «tutta la toolbar (start, repository, navigate…) deve essere nella barra di sopra, la
