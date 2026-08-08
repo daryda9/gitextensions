@@ -47,8 +47,10 @@ public sealed class SyntaxLanguage
         string? blockStart,
         string? blockEnd,
         char[] quotes,
-        bool hashPreprocessor)
+        bool hashPreprocessor,
+        bool isMarkdown = false)
     {
+        IsMarkdown = isMarkdown;
         Name = name;
         Keywords = keywords;
         LineComments = lineComments;
@@ -72,6 +74,14 @@ public sealed class SyntaxLanguage
     internal char[] Quotes { get; }
 
     internal bool HashPreprocessor { get; }
+
+    /// <summary>
+    ///  Markdown is scanned by its own rules (see <c>TokenizeMarkdown</c>): it has no
+    ///  keywords, its "strings" are code spans delimited by backticks, and what carries
+    ///  the meaning is the shape of the LINE — a heading, a fence, a quote, a bullet.
+    ///  Feeding it to the keyword scanner would colour prose at random.
+    /// </summary>
+    internal bool IsMarkdown { get; }
 }
 
 /// <summary>
@@ -193,6 +203,13 @@ public static class DiffSyntaxHighlighter
     private static readonly SyntaxLanguage Config =
         new("Config", Empty, ["#"], null, null, ScriptQuotes, hashPreprocessor: false);
 
+    // Backtick as the only quote: an inline code span. BlockStart/BlockEnd are the
+    // fence, which TokenizeMarkdown drives through SyntaxState.InBlockComment — the
+    // same "this line starts inside a block" bit every other language uses, so the
+    // renderer's per-line state machinery needs nothing new.
+    private static readonly SyntaxLanguage Markdown =
+        new("Markdown", Empty, NoLineComments, "```", "```", ['`'], hashPreprocessor: false, isMarkdown: true);
+
     private static readonly SyntaxLanguage Json =
         new("JSON", Empty, NoLineComments, null, null, ['"'], hashPreprocessor: false);
 
@@ -229,8 +246,197 @@ public static class DiffSyntaxHighlighter
             "yml" or "yaml" or "toml" or "ini" or "cfg" or "conf" or "gitignore" or "dockerfile" or "editorconfig"
                 => Config,
             "json" => Json,
+            "md" or "markdown" or "mdown" or "mkd" => Markdown,
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///  Markdown, which is a different job from every other language here: there are no
+    ///  keywords to look up, and what carries the meaning is the shape of the LINE.
+    ///
+    ///  <para>Six marks, in the order they are decided: a fence line (``` / ~~~) toggles
+    ///  the block bit and everything inside it is a code span; a heading is coloured
+    ///  whole; a block quote keeps its &gt; marker; a list bullet keeps its marker; then,
+    ///  inside the prose, `code` spans, **bold** / *emphasis*, and the URL of a
+    ///  [text](url) link. Nothing else is touched — prose that reads as prose is the
+    ///  point.</para>
+    ///
+    ///  <para>Approximate by construction, as the rest of this file is: a diff shows
+    ///  fragments, so a fence opened outside the shown hunk is invisible to us. The
+    ///  renderer replays the lines it has from the top of the patch, so within one patch
+    ///  the fence state is right.</para>
+    /// </summary>
+    private static void TokenizeMarkdown(string line, int from, SyntaxState state, List<SyntaxSpan> into)
+    {
+        int i = from;
+        int indent = i;
+        while (indent < line.Length && char.IsWhiteSpace(line[indent]))
+        {
+            indent++;
+        }
+
+        // ---- fenced code -------------------------------------------------------
+        bool isFence = indent + 2 < line.Length
+            && ((line[indent] == '`' && line[indent + 1] == '`' && line[indent + 2] == '`')
+                || (line[indent] == '~' && line[indent + 1] == '~' && line[indent + 2] == '~'));
+
+        if (isFence)
+        {
+            // The fence line itself belongs to the block on both sides, opening or
+            // closing: colouring it as code is what makes the block read as one.
+            state.InBlockComment = !state.InBlockComment;
+            into.Add(new SyntaxSpan(i, line.Length - i, SyntaxTokenKind.String));
+            return;
+        }
+
+        if (state.InBlockComment)
+        {
+            into.Add(new SyntaxSpan(i, line.Length - i, SyntaxTokenKind.String));
+            return;
+        }
+
+        // ---- whole-line shapes --------------------------------------------------
+        if (indent < line.Length && line[indent] == '#')
+        {
+            int hashes = indent;
+            while (hashes < line.Length && line[hashes] == '#')
+            {
+                hashes++;
+            }
+
+            // "# " is a heading; "#tag" is not, and neither is a row of #### rules
+            // longer than markdown allows.
+            if (hashes - indent <= 6 && (hashes >= line.Length || line[hashes] == ' '))
+            {
+                into.Add(new SyntaxSpan(indent, line.Length - indent, SyntaxTokenKind.Keyword));
+                return;
+            }
+        }
+
+        if (indent < line.Length && line[indent] == '>')
+        {
+            // Only the marker: the quoted text is still prose and still wants the
+            // added/removed colour of the diff line it sits on.
+            into.Add(new SyntaxSpan(indent, 1, SyntaxTokenKind.Comment));
+            i = indent + 1;
+        }
+        else if (MarkdownBulletLength(line, indent) is > 0 and int bullet)
+        {
+            into.Add(new SyntaxSpan(indent, bullet, SyntaxTokenKind.Preprocessor));
+            i = indent + bullet;
+        }
+
+        // ---- inline -------------------------------------------------------------
+        while (i < line.Length)
+        {
+            char c = line[i];
+
+            if (c == '`')
+            {
+                int end = line.IndexOf('`', i + 1);
+                if (end < 0)
+                {
+                    // Unclosed: colour to the end of the line rather than dropping the
+                    // mark, which is what a half-written line in a diff looks like.
+                    into.Add(new SyntaxSpan(i, line.Length - i, SyntaxTokenKind.String));
+                    return;
+                }
+
+                into.Add(new SyntaxSpan(i, end - i + 1, SyntaxTokenKind.String));
+                i = end + 1;
+                continue;
+            }
+
+            if (c is '*' or '_')
+            {
+                int run = 1;
+                while (i + run < line.Length && line[i + run] == c && run < 2)
+                {
+                    run++;
+                }
+
+                int close = IndexOfRun(line, i + run, c, run);
+                if (close > 0)
+                {
+                    into.Add(new SyntaxSpan(i, close + run - i, SyntaxTokenKind.Keyword));
+                    i = close + run;
+                    continue;
+                }
+            }
+
+            if (c == '[')
+            {
+                int text = line.IndexOf(']', i + 1);
+                if (text > 0 && text + 1 < line.Length && line[text + 1] == '(')
+                {
+                    int url = line.IndexOf(')', text + 2);
+                    if (url > 0)
+                    {
+                        // The URL, not the label: the label is the prose the reader
+                        // reads, the URL is the machinery.
+                        into.Add(new SyntaxSpan(text + 1, url - text, SyntaxTokenKind.String));
+                        i = url + 1;
+                        continue;
+                    }
+                }
+            }
+
+            i++;
+        }
+    }
+
+    /// <summary>Length of the list marker at <paramref name="at"/> ("- ", "* ", "+ ",
+    /// "12. "), or 0 when the line does not start a list item.</summary>
+    private static int MarkdownBulletLength(string line, int at)
+    {
+        if (at >= line.Length)
+        {
+            return 0;
+        }
+
+        if (line[at] is '-' or '*' or '+')
+        {
+            return at + 1 < line.Length && line[at + 1] == ' ' ? 2 : 0;
+        }
+
+        int digits = at;
+        while (digits < line.Length && char.IsAsciiDigit(line[digits]))
+        {
+            digits++;
+        }
+
+        return digits > at && digits + 1 < line.Length && line[digits] == '.' && line[digits + 1] == ' '
+            ? digits + 2 - at
+            : 0;
+    }
+
+    /// <summary>Index of the next run of <paramref name="length"/> copies of
+    /// <paramref name="c"/> at or after <paramref name="from"/>, or -1.</summary>
+    private static int IndexOfRun(string line, int from, char c, int length)
+    {
+        for (int i = from; i + length <= line.Length; i++)
+        {
+            if (line[i] != c)
+            {
+                continue;
+            }
+
+            int run = 0;
+            while (i + run < line.Length && line[i + run] == c)
+            {
+                run++;
+            }
+
+            if (run >= length)
+            {
+                return i;
+            }
+
+            i += run;
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -249,6 +455,12 @@ public static class DiffSyntaxHighlighter
 
         if (from >= line.Length)
         {
+            return;
+        }
+
+        if (language.IsMarkdown)
+        {
+            TokenizeMarkdown(line, from, state, into);
             return;
         }
 
