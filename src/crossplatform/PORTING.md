@@ -3260,6 +3260,82 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M123 (2026-08-08, `37658f73c`) — il pannello del diff virtualizzato su AvaloniaEdit
+
+> Dall'utente: «questa finestra (quella di testo quando apro un file da Diff), se la scorro, a volte è
+> lentissima, comincia a laggare … a volte è anche lentissima a caricare il diff del file».
+
+### Misura, prima di toccare
+Il pannello era **un solo blocco di testo** (`SelectableTextBlock` dentro uno `ScrollViewer`) con un
+`Run` per riga, più altri `Run` per gli span di sintassi e le occorrenze della ricerca. Niente di
+virtualizzato. Su un patch di **498 righe**: 119 ms di costruzione + **363 ms di layout**; con
+l'evidenziazione forzata a zero ancora 61 + 238 ms — cioè **~0,5 ms per riga è il pavimento**, e
+l'evidenziazione pesa solo il ~35%. Con «Show entire file» (≡) attivo git emette il file intero
+(`-U1000000`) e ogni fotogramma di scroll ridisegnava **tutte** le righe, non solo quelle a schermo.
+
+### La scelta
+L'originale non si è mai scritto un renderer di testo: `FileViewerInternal` ospita l'editor di
+ICSharpCode. Il port fa lo stesso con **AvaloniaEdit** (`Avalonia.AvaloniaEdit` **11.3.0**, fissato
+alla linea 11.3: il pacchetto esce una build per minor di Avalonia e la 11.4.x compila contro API di
+Avalonia 11.4 che sulla nostra 11.3.14 fallirebbero solo a run time — il floor `>= 11.0.0` del nuspec
+non è una dichiarazione di compatibilità). Virtualizza per riga visibile, quindi layout, disegno **e**
+colorazione smettono di scalare con la dimensione del file.
+
+| caso | prima (build/totale) | dopo |
+|---|---|---|
+| patch di 30 righe | 0 / 4 ms | 0 / 8 ms |
+| patch C# di 146 righe, sintassi on | 17 / 38 ms | 4 / 17 ms |
+| file C# di 1382 righe, ≡ on | 32 / 241 ms | 1 / 4 ms |
+| file di 997 righe, ≡ on | 14 / 671 ms | 13 / 40 ms |
+| **`PORTING.md`, 6559 righe, ≡ on** | **95 / 1547 ms** | **65 / 70 ms** |
+
+Il caso da 30 righe è rumore: l'editor ha un piccolo costo fisso di setup che il vecchio percorso non
+aveva, ed è l'unico caso in cui il vecchio renderer reggeva il confronto.
+
+### Com'è fatto
+`RenderDiff` ora costruisce un `TextDocument` e fa due passate lineari (intestazioni di hunk,
+occorrenze) invece di decine di migliaia di `Run`. Il nuovo `App/Views/DiffColorizing.cs` porta
+`DiffLineClassifier` (le regole di prefisso, condivise fra il raccoglitore di hunk e il colorizer),
+`DiffPalette` (i colori, ancora risolti pigramente come **istanze** di brush della palette, così la
+mutazione in place di `ThemeManager` li raggiunge), `DiffLineColorizer` e `DiffSearchColorizer`.
+`DiffSyntaxHighlighter` è riusato **intatto**: la virtualizzazione toglie lo stato progressivo dello
+scanner, quindi il colorizer tiene un `bool[]` a crescita pigra e in avanti — «la riga n comincia
+dentro un commento a blocchi» — con una scansione per riga solo per le righe davvero raggiunte.
+
+### Cosa passa all'editor e cosa resta nostro
+**Dell'editor**: selezione e caret (selezione libera col mouse verificata, drag e Ctrl+C compresi),
+tutto l'indirizzamento per riga — «vai alla riga» e la navigazione ▲/▼ fra hunk **stimavano** la y di
+una riga come `altezzaBlocco / numeroRighe`, ora è esatta — i segni ¶ (`ShowSpaces/ShowTabs/ShowEndOfLine`),
+scrolling e virtualizzazione. **Nostri**: la barra di ricerca (UI tradotta, contatore, ▲/▼/F3/Esc/Enter,
+casella «vai alla riga»): il `SearchPanel` di AvaloniaEdit ha una UI fissa non tradotta e nessun
+«vai alla riga», quindi non è installato; la raccolta delle occorrenze e il lavaggio ambra, la
+colorazione del diff e la sintassi, la raccolta degli hunk, la toolbar, il menu a ingranaggio, lo zoom,
+il menu contestuale, la codifica e tutti gli interruttori dei flag di git.
+
+### Tre cambi di comportamento, dichiarati
+1. **¶ non riscrive più il testo.** Prima sostituiva spazi/tab/CR con `·`/`→   `/`␍` **nel documento**,
+   quindi una selezione copiava il testo alterato e i tab si disallineavano; ora l'editor disegna i
+   segni sopra i caratteri veri. Conseguenza: sparisce il `␍` esplicito per un CR isolato (l'editor
+   disegna un marcatore di fine riga senza distinguere CRLF). È l'unica cosa davvero non conservata.
+2. **Ctrl+C** nel diff ora scende all'editor quando c'è una selezione viva, e copia l'intero patch solo
+   quando non c'è nulla di selezionato: intercettarlo sempre avrebbe reso inutile la selezione col mouse.
+3. **Spariti i tetti dell'evidenziazione della ricerca** (`MaxHighlightLines` 20 000 /
+   `MaxHighlightMatches` 2 000): esistevano perché ogni occorrenza costava un `Run`. Resta
+   `MaxSearchMatches` (20 000), il cui tooltip ora dice «solo le prime N occorrenze sono elencate»
+   invece di «troppe da evidenziare», che non era più vero.
+
+### Pacchetto `.deb`
+Nessuna modifica a `packaging/build-deb.sh`. Verificato con un `dotnet publish -c Release -r linux-x64
+--self-contained true` vero: `AvaloniaEdit.dll` finisce nella publish, il launcher nativo e i 66
+`Translation/*.xlf` ci sono ancora, e il `cp -a "$PUBLISH_DIR/."` dello script porta il nuovo assembly
+in `/opt/gitextensions` da solo. AvaloniaEdit è puro managed senza payload nativo, quindi il
+`Depends: git` del control resta valido.
+
+**Verificato** su Xvfb: tinte +/− e colori dei token, `@@` e intestazioni, barra di ricerca
+(«1 di 1», «4 di 112», lavaggio per occorrenza e ambra forte sulla corrente), F3, vai alla riga 900 su
+1382, ▲/▼, ¶ on/off, A+/A−, menu contestuale a quattro voci, selezione col trascinamento e uno
+switch Dark→Light a caldo. Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
 ## M122 (2026-08-08, `af9f0301a`) — lo stile classico ritrova il bitmap della lente
 
 > Dall'utente, dalla console: `[IconLoader] icon 'Search' did not resolve (…/Search.png): no such asset`.
