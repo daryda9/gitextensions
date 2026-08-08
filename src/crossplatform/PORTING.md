@@ -3260,6 +3260,53 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M118 (2026-08-08, `1582e4128`) — il grafo delle revisioni disegnato come nell'originale
+
+> Dall'utente, con gli screenshot a confronto: «l'interfaccia è parecchio differente».
+
+Prima cosa che salta all'occhio in un confronto affiancato: il **grafo**. Lavoro delegato a un
+subagent in worktree, integrato qui con cherry-pick.
+
+- **Palette delle corsie** — via gli otto colori inventati dal port, dentro i sette
+  `AppColorDefaults.GraphBranch1..7` dell'originale (`#F064A0`, `#78B4E6`, `#24C221`, `#A078F0`,
+  `#DD3228`, `#1AC6A6`, `#E7B00F`), nello stesso ordine. `GraphBranch8` upstream è `Color.Empty`,
+  quindi il ciclo è di **sette**, come lo calcola `RevisionGraphLaneColor`.
+- **Metriche** — `LaneWidth` 14 → 16, nodo 8 → 10, tratto della corsia 2: i valori di
+  `GraphRenderer.LaneWidth/NodeDimension/LaneLineWidth` al 100%.
+- **Forma del nodo e marcatore di HEAD** — nodo **quadrato** quando la riga porta dei ref, cerchio
+  altrimenti, più un anello di 2px sulla riga di HEAD: sono esattamente le regole `square`/`hasOutline`
+  di `GraphRenderer.DrawItem`. L'anello usa `App.Text` (upstream `SystemColors.WindowText`) per
+  sopravvivere alla palette scura.
+- **Segmenti** — un cambio di corsia è ora una Bézier cubica che esce e rientra **verticale** dal nodo
+  e si adagia sulla diagonale (`RenderGraphWithDiagonals`, attivo di default upstream); le verticali
+  pure restano linee dritte e nitide.
+- **`StraightenLaneShifts`** in `BuildGraph` — i segmenti sono memorizzati **spezzati sul nodo** (metà
+  sopra, metà sotto), quindi un arco di branch/merge da una corsia faceva tutto lo spostamento dentro
+  una metà e scendeva dritto nell'altra: pendenza doppia rispetto all'originale, con un gomito sul
+  bordo riga. Il passo fa incontrare le due metà a metà dello spostamento, ottenendo un'unica diagonale
+  da nodo a nodo come `GraphRenderer`. Scatta solo dove il collegamento non è ambiguo (esattamente una
+  metà per lato del bordo, in quella corsia), quindi un merge che entra in una corsia che prosegue
+  dritta resta com'è. `FromLane`/`ToLane` logici non si toccano: `ComputeGraphRelatives` e il conteggio
+  delle corsie sono intatti (M114 e M116 salvi).
+- **Larghezze di colonna** — Author 170 → 130, Commit ID 90 → 64 (upstream 60, più lo spazio per lo
+  short hash a 8 caratteri che questo port mostra sempre): ~70px restituiti alla colonna Subject.
+  L'**ordine** era già quello dell'originale; era sbagliato solo il commento di classe che diceva
+  altro.
+
+**Verificato** su Xvfb a quattro posizioni di scorrimento: corsia rosa nella palette upstream, nodo di
+HEAD quadrato con anello, righe con ref quadrate e commit semplici tondi, l'arco del branch verso HEAD
+come **una** diagonale piena (niente gomito), 3–4 corsie concorrenti con la riga `Merge tag 'v4.2.1'`
+che emette il suo arco ambra. Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
+**Non portato, con motivo.** Il nodo delle righe artificiali resta il quadrato vuoto del port
+(l'originale le disegna tonde e le distingue con icone nella colonna del messaggio, che qui non ci
+sono: toglierlo perderebbe l'indizio senza guadagnare quello upstream). Il colore delle non-relative
+resta `App.TextDim` invece del `Color.LightGray` letterale, invisibile sul fondo scuro; il
+*comportamento* già coincideva. `StraightenGraphDiagonals`, `MergeGraphLanesHavingCommonParent` e
+`ReduceGraphCrossings` non sono portati: lavorano sul modello a segmenti/`LaneSharing` di upstream,
+che lo sweep di corsie del port non ha, e agiscono sull'**assegnazione** delle corsie, non sull'aspetto
+di un layout dato.
+
 ## M117 (2026-08-08, `c92d4252b`) — la lista dei file dice di che confronto è
 
 > Dall'utente, con gli screenshot dell'originale a confronto: nella lista dei file cambiati
