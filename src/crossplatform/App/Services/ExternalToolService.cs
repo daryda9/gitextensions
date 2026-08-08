@@ -43,12 +43,27 @@ public sealed class ExternalToolService
     // ProcessStartInfo.WorkingDirectory). ExecArg introduces the command to run
     // instead of the login shell: gnome-terminal deprecated "-e" in favour of the
     // "--" separator, everything else in this list understands "-e".
-    private static readonly (string Exe, string? DirArg, string ExecArg)[] Terminals =
+    // ExecArg is null for the terminals that take the program as a bare trailing
+    // argument (kitty, foot); everything else introduces it with a flag.
+    private static readonly (string Exe, string? DirArg, string? ExecArg)[] Terminals =
     {
+        // Debian's "whatever the user chose" alias goes first, but it is NOT trusted:
+        // on this machine it resolves to Warp, whose CLI rejects -e, prints its usage
+        // and exits 2. That is exactly the reported "the bash button does nothing" —
+        // the launch succeeded, the terminal did not. Hence the exit check below.
         ("x-terminal-emulator", null, "-e"),
         ("gnome-terminal", "--working-directory", "--"),
+        ("kgx", "--working-directory", "--"),
+        ("ptyxis", "--working-directory", "--"),
         ("konsole", "--workdir", "-e"),
         ("xfce4-terminal", "--working-directory", "-e"),
+        ("tilix", "--working-directory", "-e"),
+        ("terminator", "--working-directory", "-e"),
+        ("mate-terminal", "--working-directory", "-e"),
+        ("alacritty", "--working-directory", "-e"),
+        ("kitty", "--directory", null),
+        ("foot", "--working-directory", null),
+        ("urxvt", null, "-e"),
         ("xterm", null, "-e"),
     };
 
@@ -243,7 +258,7 @@ public sealed class ExternalToolService
     // Runs a console editor inside the first terminal emulator we find.
     private ExternalToolResult OpenInTerminalEditor(string command, string path)
     {
-        foreach ((string exe, string? _, string _) in Terminals)
+        foreach ((string exe, string? _, string? _) in Terminals)
         {
             if (!OnPath(exe))
             {
@@ -407,7 +422,9 @@ public sealed class ExternalToolService
             ? null
             : shellExecutable;
 
-        foreach ((string exe, string? dirArg, string execArg) in Terminals)
+        List<string> failures = [];
+
+        foreach ((string exe, string? dirArg, string? execArg) in Terminals)
         {
             if (!OnPath(exe))
             {
@@ -425,11 +442,15 @@ public sealed class ExternalToolService
 
             if (shell is not null)
             {
-                args.Add(execArg);
+                if (execArg is not null)
+                {
+                    args.Add(execArg);
+                }
+
                 args.Add(shell);
             }
 
-            ExternalToolResult result = LaunchDetached(exe, args, workingDir: dir,
+            ExternalToolResult result = LaunchTerminal(exe, args, dir,
                 friendly: shell is null
                     ? $"Opened terminal in {dir}"
                     : $"Opened {shell} in {dir}");
@@ -437,10 +458,13 @@ public sealed class ExternalToolService
             {
                 return result;
             }
+
+            failures.Add(exe);
         }
 
-        return new ExternalToolResult(false,
-            "No terminal emulator found (tried x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, xterm).");
+        return new ExternalToolResult(false, failures.Count > 0
+            ? $"No terminal emulator would start (tried {string.Join(", ", failures)})."
+            : "No terminal emulator found on PATH.");
     }
 
     // ---- shells (upstream ShellProvider / FillUserShells) ----------------------
@@ -573,6 +597,74 @@ public sealed class ExternalToolService
         catch (Exception ex)
         {
             // Missing binary (Win32Exception), no display, permissions, etc.
+            return new ExternalToolResult(false, $"Could not launch {exe}: {ex.Message}");
+        }
+    }
+
+    /// <summary>How long a terminal is given to fail before we call the launch good.</summary>
+    private static readonly TimeSpan TerminalStartupGrace = TimeSpan.FromMilliseconds(700);
+
+    /// <summary>
+    ///  Starts a terminal and gives it a moment to prove it survived.
+    ///
+    ///  <para><see cref="Process.Start(ProcessStartInfo)"/> succeeding means the binary
+    ///  was executed, not that a terminal opened. A candidate that does not understand
+    ///  the arguments we pass — <c>x-terminal-emulator</c> pointing at a terminal with
+    ///  a different CLI is the case that prompted this — prints its usage and exits
+    ///  non-zero in a few milliseconds, and the old code reported that as success and
+    ///  stopped trying: the button did nothing and said it had worked.</para>
+    ///
+    ///  <para>A terminal that is still running after the grace period is a terminal
+    ///  that opened; one that exited 0 (the gnome-terminal client hands off to its
+    ///  server and returns) is fine too. Only a non-zero exit is a failure, and the
+    ///  caller then tries the next candidate. Blocking for up to
+    ///  <see cref="TerminalStartupGrace"/>, which is why the callers run this off the
+    ///  UI thread.</para>
+    /// </summary>
+    private ExternalToolResult LaunchTerminal(string exe, IReadOnlyList<string> args, string dir, string friendly)
+    {
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = exe,
+                UseShellExecute = false,
+                WorkingDirectory = dir,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+            };
+
+            foreach (string arg in args)
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using Process? proc = Process.Start(psi);
+            if (proc is null)
+            {
+                return new ExternalToolResult(false, $"Could not start {exe}.");
+            }
+
+            if (proc.WaitForExit(TerminalStartupGrace) && proc.ExitCode != 0)
+            {
+                // Its complaint is the useful part of the message: "unexpected argument
+                // '-e'" says precisely why this candidate is not the one.
+                string complaint = proc.StandardError.ReadToEnd().Trim();
+                int newline = complaint.IndexOf('\n');
+                if (newline > 0)
+                {
+                    complaint = complaint[..newline];
+                }
+
+                return new ExternalToolResult(false, complaint.Length > 0
+                    ? $"{exe}: {complaint}"
+                    : $"{exe} exited with {proc.ExitCode}.");
+            }
+
+            return new ExternalToolResult(true, friendly);
+        }
+        catch (Exception ex)
+        {
             return new ExternalToolResult(false, $"Could not launch {exe}: {ex.Message}");
         }
     }

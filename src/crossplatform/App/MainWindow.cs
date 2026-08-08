@@ -1929,7 +1929,12 @@ public sealed class MainWindow : Theming.ZoomWindow
             return;
         }
 
-        Surface(action(_repoPath));
+        // Off the UI thread: launching an external tool means starting a process, and
+        // the terminal launcher deliberately waits a moment to see whether the terminal
+        // it started survived (ExternalToolService.LaunchTerminal). On the UI thread
+        // that wait is a visible freeze of the whole window.
+        string repo = _repoPath;
+        Async.OffUi(() => action(repo), Surface, "launching the external tool");
     }
 
     // Reflects an external-tool result in the status bar; failures are reported
