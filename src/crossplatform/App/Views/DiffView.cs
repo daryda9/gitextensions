@@ -1020,7 +1020,8 @@ public sealed class DiffView : UserControl
             () => DiffService.GetChangedFiles(repoPath, commitHash),
             count => F(ChangedFilesFormat(), commitHash, count),
             F(LoadingFilesFormat(), commitHash),
-            preselectPath);
+            preselectPath,
+            () => DiffWithHeader(repoPath, DiffService.FirstParentOf(repoPath, commitHash)));
     }
 
     /// <summary>
@@ -1053,7 +1054,8 @@ public sealed class DiffView : UserControl
             () => DiffService.GetDiffFilesBetween(repoPath, baseHash, otherHash),
             count => F(ChangedFilesFormat(), range, count),
             F(LoadingFilesFormat(), range),
-            preselectPath);
+            preselectPath,
+            () => DiffWithHeader(repoPath, baseHash));
     }
 
     /// <summary>
@@ -1075,7 +1077,9 @@ public sealed class DiffView : UserControl
         LoadFileList(
             () => DiffService.GetChangedFilesAgainstWorkingTree(repoPath, commitHash),
             count => F(ChangedFilesFormat(), range, count),
-            F(LoadingFilesFormat(), range));
+            F(LoadingFilesFormat(), range),
+            preselectPath: null,
+            () => DiffWithHeader(repoPath, commitHash));
     }
 
     /// <summary>
@@ -1116,6 +1120,23 @@ public sealed class DiffView : UserControl
             F(LoadingFilesFormat(), name));
     }
 
+    /// <summary>
+    ///  The header the changed-file list shows above its rows: upstream's
+    ///  <c>"Diff with A " + DescribeRevision(a)</c>
+    ///  (<c>FileStatusDiffCalculator</c>), i.e. the "A" side every row is a diff
+    ///  AGAINST — the selected commit's first parent, or the older end of a range.
+    ///
+    ///  <para>Empty for a root commit, whose rows are diffed against the empty tree:
+    ///  there is no revision to name, and the list then has no header rather than a
+    ///  header naming nothing. Runs a git call, so it is only ever invoked from the
+    ///  background thread of a load.</para>
+    /// </summary>
+    private static string DiffWithHeader(string repoPath, string? sideA)
+    {
+        string described = DiffService.DescribeRevision(repoPath, sideA);
+        return described.Length > 0 ? T("Diff with A ") + described : string.Empty;
+    }
+
     // Composed status texts are single formats with placeholders, never
     // assembled from translated fragments: {0} is the comparison being shown
     // (a hash or a range) and {1} the file count.
@@ -1130,7 +1151,8 @@ public sealed class DiffView : UserControl
         Func<IReadOnlyList<DiffFileRow>> load,
         Func<int, string> statusFor,
         string loadingText,
-        string? preselectPath = null)
+        string? preselectPath = null,
+        Func<string>? summaryFor = null)
     {
         // Remembered so the toolbar's refresh button can re-run exactly this load.
         _reload = () => LoadFileList(load, statusFor, loadingText);
@@ -1155,9 +1177,14 @@ public sealed class DiffView : UserControl
             try
             {
                 IReadOnlyList<DiffFileRow> rows = load();
+
+                // Named on THIS thread, next to the diff itself: describing a
+                // revision costs a git call, and the UI thread must not pay it.
+                string summary = summaryFor?.Invoke() ?? string.Empty;
+
                 Dispatcher.UIThread.Post(() =>
                 {
-                    _files.SetFiles(rows);
+                    _files.SetFiles(rows, summary);
                     Preselect(wanted);
                     _status.Text = statusFor(rows.Count);
                 });

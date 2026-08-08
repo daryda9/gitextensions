@@ -499,6 +499,50 @@ public static class DiffService
         return patch?.Text ?? "(no differences between the commit and the working tree)";
     }
 
+    /// <summary>
+    ///  How a revision is named in the changed-file list's group header:
+    ///  <c>&lt;short hash&gt;: &lt;subject&gt;</c>, which is upstream's
+    ///  <c>DescribeRevision</c> (<c>FileStatusDiffCalculator</c>) in the form the
+    ///  port can build without a revision cache.
+    ///
+    ///  <para>An empty or unparsable hash — the root commit's absent parent — gives
+    ///  the empty string, and the caller then omits the header rather than naming a
+    ///  revision that does not exist.</para>
+    /// </summary>
+    public static string DescribeRevision(string repoPath, string? hash)
+    {
+        if (hash is not { Length: > 0 } || !ObjectId.TryParse(hash, out ObjectId id) || id.IsZero)
+        {
+            return string.Empty;
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        // One cheap plumbing call rather than a revision cache: this runs on the
+        // background thread of the file-list load, alongside the diff itself.
+        GitArgumentBuilder args = new("log") { "-1", "--format=%s", id.ToString() };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        string subject = result.ExitedSuccessfully ? result.StandardOutput.Trim() : string.Empty;
+        string shortHash = hash.Length > 8 ? hash[..8] : hash;
+
+        return subject.Length > 0 ? $"{shortHash}: {subject}" : shortHash;
+    }
+
+    /// <summary>
+    ///  The first parent of a commit as a hash string, empty for a root commit — the
+    ///  "A" side of the comparison a single-commit selection shows.
+    /// </summary>
+    public static string FirstParentOf(string repoPath, string commitHash)
+    {
+        if (!ObjectId.TryParse(commitHash, out ObjectId id))
+        {
+            return string.Empty;
+        }
+
+        ObjectId parent = GetFirstParent(GitContext.CreateModule(repoPath), id);
+        return parent.IsZero ? string.Empty : parent.ToString();
+    }
+
     private static ObjectId GetFirstParent(GitModule module, ObjectId commitId)
     {
         IReadOnlyList<ObjectId> parents = module.GetParents(commitId);

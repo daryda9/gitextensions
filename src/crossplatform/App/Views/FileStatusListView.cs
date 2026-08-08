@@ -90,6 +90,16 @@ public sealed class FileStatusListView : UserControl
     private Image? _asTreeIcon;
 
     private IReadOnlyList<DiffFileRow> _files = [];
+
+    // What the whole list is a diff OF, shown as a header row above everything —
+    // upstream's FileStatusWithDescription.Summary ("Diff with A <sha>: <subject>").
+    // Empty for a list that is not a comparison (the file tree, the commit dialog's
+    // staged/unstaged lists, which say what they are in their own captions).
+    private string _summary = string.Empty;
+
+    /// <summary>Identity of the summary header row; not a grouping key of the
+    /// builder, so it cannot collide with a path/extension/status group.</summary>
+    private const string SummaryKey = "\u0000summary";
     private DiffFileFilter _filter = DiffFileFilter.None;
     private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
 
@@ -350,8 +360,18 @@ public sealed class FileStatusListView : UserControl
     ///  Replaces the loaded rows and selects the first one, raising
     ///  <see cref="SelectedFileChanged"/> exactly once for the new selection.
     /// </summary>
-    public void SetFiles(IReadOnlyList<DiffFileRow> rows)
+    public void SetFiles(IReadOnlyList<DiffFileRow> rows) => SetFiles(rows, summary: null);
+
+    /// <summary>
+    ///  As <see cref="SetFiles(IReadOnlyList{DiffFileRow})"/>, with the comparison
+    ///  the rows come from shown as a header row above them — the port of upstream's
+    ///  group header, which names the "A" side of every diff the pane shows
+    ///  (<c>(N)  Diff with A 1a2b3c4d: subject</c>). Passing <see langword="null"/>
+    ///  or an empty string leaves the list headerless, as it was.
+    /// </summary>
+    public void SetFiles(IReadOnlyList<DiffFileRow> rows, string? summary)
     {
+        _summary = summary ?? string.Empty;
         _files = rows;
         _collapsed.Clear();
         _selectedName = null;
@@ -657,6 +677,31 @@ public sealed class FileStatusListView : UserControl
             GrouperFor(mode),
             _collapsed,
             (header, count) => F("{0}  ({1})", header, count));
+
+        // The comparison header, above every group the builder made. It behaves like
+        // any other group row — clicking it folds the whole list — so nothing else in
+        // this control has to know it is special.
+        if (_summary.Length > 0)
+        {
+            bool folded = _collapsed.Contains(SummaryKey);
+            List<object> withSummary =
+            [
+                new FileListGroupNode
+                {
+                    Key = SummaryKey,
+                    Header = F("({0})  {1}", fileCount, _summary),
+                    Count = fileCount,
+                    IsCollapsed = folded,
+                },
+            ];
+
+            if (!folded)
+            {
+                withSummary.AddRange(items);
+            }
+
+            items = withSummary;
+        }
 
         _suppressSelection = true;
         _list.ItemsSource = items;
