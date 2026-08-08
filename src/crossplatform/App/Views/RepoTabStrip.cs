@@ -115,6 +115,13 @@ public sealed class RepoTabStrip : UserControl
             Child = _scroll,
         };
 
+        // Reordering listens on the strip as a whole, not on each tab: once a drag is
+        // under way the pointer is captured here, and the tab it started on may well
+        // have moved out from under it.
+        PointerMoved += OnPointerMovedOverStrip;
+        PointerReleased += (_, _) => EndDrag();
+        PointerCaptureLost += (_, _) => EndDrag();
+
         // Nothing to lay out when no repository is open; the host shows the dashboard.
         IsVisible = false;
     }
@@ -308,27 +315,170 @@ public sealed class RepoTabStrip : UserControl
         }
     }
 
+    // ---- drag to reorder ---------------------------------------------------
+
+    // The tab a press landed on and where it landed. A drag only STARTS once the pointer
+    // has travelled DragSlop, so an ordinary click — and the double click that pins —
+    // never rearranges the strip by accident.
+    private RepoTabEntry? _pressed;
+    private Point _pressedAt;
+    private bool _dragging;
+
+    private const double DragSlop = 5;
+
+    private void BeginDrag(RepoTabEntry entry, Point at)
+    {
+        _pressed = entry;
+        _pressedAt = at;
+        _dragging = false;
+    }
+
+    private void OnPointerMovedOverStrip(object? sender, PointerEventArgs e)
+    {
+        if (_pressed is null)
+        {
+            return;
+        }
+
+        if (!e.GetCurrentPoint(_strip).Properties.IsLeftButtonPressed)
+        {
+            // The button came up somewhere we never heard about.
+            EndDrag();
+            return;
+        }
+
+        Point at = e.GetPosition(_strip);
+        if (!_dragging)
+        {
+            if (Math.Abs(at.X - _pressedAt.X) < DragSlop)
+            {
+                return;
+            }
+
+            _dragging = true;
+
+            // Dragging a tab claims it, the way an editor pins the preview you start
+            // arranging: a tab you are putting in a particular place is one you mean to
+            // keep, and leaving it a preview would let the next single click delete the
+            // arrangement you just made.
+            Pin(_pressed.Path);
+
+            // From here every move and the release must reach THIS control even if the
+            // pointer leaves the strip — a drag that wanders down into the tree would
+            // otherwise never end, and the next click would resume it.
+            e.Pointer.Capture(this);
+            Visual(_pressed).SetDragging(true);
+        }
+
+        MoveTo(_pressed, IndexAt(at.X));
+    }
+
+    private void EndDrag()
+    {
+        if (_pressed is not null && _dragging)
+        {
+            Visual(_pressed).SetDragging(false);
+
+            // The order is part of what the host persists, and a reorder changes nothing
+            // else — no activation, no load.
+            Changed?.Invoke();
+        }
+
+        _pressed = null;
+        _dragging = false;
+    }
+
+    // The slot the pointer is over: the first tab whose MIDPOINT is to its right, which
+    // is what makes a tab swap places as soon as it is dragged past half of its
+    // neighbour rather than all the way across it.
+    private int IndexAt(double x)
+    {
+        for (int i = 0; i < _tabs.Count; i++)
+        {
+            Rect bounds = Visual(_tabs[i]).Root.Bounds;
+            if (x < bounds.X + (bounds.Width / 2))
+            {
+                return i;
+            }
+        }
+
+        return _tabs.Count - 1;
+    }
+
+    private void MoveTo(RepoTabEntry entry, int target)
+    {
+        int current = _tabs.IndexOf(entry);
+        if (current < 0 || target < 0 || current == target)
+        {
+            return;
+        }
+
+        _tabs.RemoveAt(current);
+        _tabs.Insert(Math.Clamp(target, 0, _tabs.Count), entry);
+        Sync();
+    }
+
     // ---- paint -------------------------------------------------------------
 
     // Rebuilds the row of children from the model, re-using each tab's visual so the
     // pointer-over state (and the pointer capture of a click in flight) survives a
     // neighbour appearing or disappearing.
+    //
+    // The children are touched ONLY when the sequence actually differs — a plain
+    // activation repaints and nothing else. Clearing and re-adding the same controls
+    // looks harmless and is not: re-parenting a control resets the input state Avalonia
+    // keeps for it, and the first thing that costs is the DOUBLE CLICK — the press that
+    // activates the tab used to re-parent it, so the second press arrived at a control
+    // that had never seen the first and DoubleTapped never fired. It also breaks a drag
+    // in flight, which is the other gesture that lives across several events.
     private void Sync()
     {
-        _strip.Children.Clear();
+        if (!SameChildren())
+        {
+            _strip.Children.Clear();
+            foreach (RepoTabEntry entry in _tabs)
+            {
+                _strip.Children.Add(Visual(entry).Root);
+            }
+        }
+
         foreach (RepoTabEntry entry in _tabs)
         {
-            if (!_visuals.TryGetValue(entry, out TabVisual? visual))
-            {
-                visual = Build(entry);
-                _visuals[entry] = visual;
-            }
-
-            visual.Apply(ReferenceEquals(entry, _active));
-            _strip.Children.Add(visual.Root);
+            Visual(entry).Apply(ReferenceEquals(entry, _active));
         }
 
         IsVisible = _tabs.Count > 0;
+    }
+
+    private TabVisual Visual(RepoTabEntry entry)
+    {
+        if (!_visuals.TryGetValue(entry, out TabVisual? visual))
+        {
+            visual = Build(entry);
+            _visuals[entry] = visual;
+        }
+
+        return visual;
+    }
+
+    // Whether the strip already holds exactly these tabs, in this order.
+    private bool SameChildren()
+    {
+        if (_strip.Children.Count != _tabs.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < _tabs.Count; i++)
+        {
+            if (!_visuals.TryGetValue(_tabs[i], out TabVisual? visual)
+                || !ReferenceEquals(_strip.Children[i], visual.Root))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void Refresh(RepoTabEntry entry)
@@ -420,6 +570,18 @@ public sealed class RepoTabStrip : UserControl
             }
             else if (props.IsLeftButtonPressed)
             {
+                // The second press of a double click, read from the press itself rather
+                // than waited for as a DoubleTapped: this is the gesture that claims a
+                // preview tab, and it has to survive whatever the FIRST press did to the
+                // strip (an activation, a load, a rebuild).
+                if (e.ClickCount == 2)
+                {
+                    e.Handled = true;
+                    Pin(entry.Path);
+                    return;
+                }
+
+                BeginDrag(entry, e.GetPosition(_strip));
                 Activate(entry.Path);
 
                 // Raised even when the tab was ALREADY the active one, which
@@ -430,14 +592,6 @@ public sealed class RepoTabStrip : UserControl
                 // be the one tab in the strip that does nothing.
                 Picked?.Invoke(entry);
             }
-        };
-
-        // Double click claims the tab, exactly as it claims a preview tab in an editor:
-        // the second click of "I keep coming back to this one".
-        root.DoubleTapped += (_, e) =>
-        {
-            e.Handled = true;
-            Pin(entry.Path);
         };
 
         root.ContextMenu = BuildMenu(entry);
@@ -586,8 +740,18 @@ public sealed class RepoTabStrip : UserControl
     {
         private bool _hovered;
         private bool _active;
+        private bool _dragging;
 
         internal Border Root => root;
+
+        // A tab being dragged is half-transparent, which is the whole feedback it needs:
+        // the reorder itself happens live under the pointer, so the strip already shows
+        // where the tab is going. Nothing is torn out of the layout and no gap is drawn.
+        internal void SetDragging(bool dragging)
+        {
+            _dragging = dragging;
+            Paint();
+        }
 
         internal void SetHover(bool hovered)
         {
@@ -618,6 +782,7 @@ public sealed class RepoTabStrip : UserControl
             bool shown = _active || _hovered;
             close.Opacity = shown ? 1 : 0;
             close.IsHitTestVisible = shown;
+            root.Opacity = _dragging ? 0.6 : 1;
         }
     }
 }
