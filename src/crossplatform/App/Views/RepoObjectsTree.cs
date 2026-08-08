@@ -188,6 +188,20 @@ public sealed class RepoObjectsTree : UserControl
     /// </summary>
     public event Action<string>? OpenRepositoryRequested;
 
+    /// <summary>
+    ///  Raised on the UI thread when a SINGLE click lands on a submodule or worktree
+    ///  node, carrying the same absolute path <see cref="OpenRepositoryRequested"/>
+    ///  carries — but as a <i>preview</i>: the host is expected to show it in the
+    ///  throw-away tab that the next preview replaces, VS Code's single-click-a-file
+    ///  behaviour. The double click that follows raises the pinned event above, which
+    ///  is what turns that tab into a lasting one.
+    ///
+    ///  <para>A host that does not keep tabs (the option is off) simply ignores this
+    ///  event, and the tree behaves exactly as it did before: a single click only
+    ///  selects, and only a double click opens.</para>
+    /// </summary>
+    public event Action<string>? PreviewRepositoryRequested;
+
     /// <summary>Requests a separate application instance for the current submodule.</summary>
     public event Action<string>? OpenRepositoryInNewInstanceRequested;
 
@@ -2245,6 +2259,10 @@ public sealed class RepoObjectsTree : UserControl
             {
                 OnActivate(item);
             }
+            else
+            {
+                PreviewOnSingleClick(item);
+            }
 
             return;
         }
@@ -2325,6 +2343,28 @@ public sealed class RepoObjectsTree : UserControl
         return null;
     }
 
+    // The single click that precedes an activation. Only the two node types that OPEN a
+    // repository answer to it — a branch must still take a double click to be checked
+    // out, and a tag a double click to spawn a branch — so this is the tree's whole
+    // contribution to the preview tab: click a submodule to look at it, double-click it
+    // to keep it. The same two guards OnActivate applies (an uninitialised submodule has
+    // nothing to open, the current worktree is already on screen) apply here, silently:
+    // a single click is not a command and must not produce an error banner.
+    private void PreviewOnSingleClick(TreeViewItem item)
+    {
+        switch (item)
+        {
+            case { Tag: WorktreeRow worktree }
+                when !worktree.IsSamePath(_repoPath) && !worktree.IsPrunable:
+                PreviewRepositoryRequested?.Invoke(worktree.Path);
+                break;
+
+            case { Tag: SubmoduleRow submodule } when submodule is { Exists: true, IsCurrent: false }:
+                PreviewRepositoryRequested?.Invoke(SubmoduleFullPath(submodule));
+                break;
+        }
+    }
+
     // Double-click / Enter. Upstream gives each node type its own OnDoubleClick:
     // a local branch is checked out (LocalBranchNode), a REMOTE branch is checked out too
     // (RemoteBranchNode.cs:73-76 — the port did nothing at all), a TAG creates a branch
@@ -2346,8 +2386,14 @@ public sealed class RepoObjectsTree : UserControl
                 StashDialogRequested?.Invoke(stash.Name);
                 break;
 
+            // The worktree that is already on screen is NOT skipped here, though opening
+            // it is a no-op: the host has to hear the gesture, because with the tab strip
+            // on, a double click on the repository one single click ago put in the
+            // preview tab is precisely what pins it. A host without tabs answers with
+            // "Repository is already open", which is what the gesture deserves anyway —
+            // silence used to be indistinguishable from a missed click.
             case TreeViewItem { Tag: WorktreeRow worktree }:
-                if (!worktree.IsSamePath(_repoPath) && !worktree.IsPrunable)
+                if (!worktree.IsPrunable)
                 {
                     OpenRepositoryRequested?.Invoke(worktree.Path);
                 }

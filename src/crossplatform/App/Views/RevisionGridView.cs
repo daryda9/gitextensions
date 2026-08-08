@@ -1740,6 +1740,7 @@ public sealed class RevisionGridView : UserControl
                     // single place where scroll offset, selection and keyboard focus
                     // are carried across the rebind (see ApplyFilterCore).
                     ApplyFilterCore(_search.Text, keepViewport);
+                    ApplyPendingSelection();
                 });
             }
             catch (Exception ex)
@@ -4689,6 +4690,45 @@ public sealed class RevisionGridView : UserControl
     ///  loaded rows this is a no-op. Used by the commit-detail parent/child links.
     /// </summary>
     public void SelectCommit(string hash) => GoToCommit(hash);
+
+    /// <summary>
+    ///  Asks for <paramref name="hash"/> to be selected as soon as the walk has rows —
+    ///  <see cref="SelectCommit"/> can only find what is already loaded, and the caller
+    ///  that knows which commit it wants (the repository tab strip, restoring the row
+    ///  the user was on) asks for it at the very moment the load STARTS.
+    ///
+    ///  <para>One shot, and cleared on the first page that arrives whether or not it
+    ///  contained the commit: a hash that is not in this repository's history — a stale
+    ///  entry in the saved tab state, a rewritten commit — must not sit there waiting to
+    ///  hijack a later reload's selection. Nothing is reported when it misses, because
+    ///  restoring a selection is not a command the user issued.</para>
+    /// </summary>
+    /// <remarks>
+    ///  Recorded only — deliberately NOT tried against the rows that happen to be on
+    ///  screen. The caller asks the instant the switch begins, when those rows still
+    ///  belong to the repository being left: attempting the lookup there consumes the
+    ///  one shot on a history that cannot contain the commit, and the page that does
+    ///  arrives to find nothing pending.
+    /// </remarks>
+    public void SelectCommitWhenLoaded(string? hash)
+        => _pendingSelection = string.IsNullOrWhiteSpace(hash) ? null : hash.Trim();
+
+    private string? _pendingSelection;
+
+    private void ApplyPendingSelection()
+    {
+        if (_pendingSelection is not { Length: > 0 } hash || _rows.Count == 0)
+        {
+            return;
+        }
+
+        _pendingSelection = null;
+        int index = FindIndex(_rows, hash);
+        if (index >= 0)
+        {
+            SelectIndex(index);
+        }
+    }
 
     private void GoToCommit(string? text)
     {

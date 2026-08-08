@@ -87,6 +87,14 @@ public sealed class MainWindow : Theming.ZoomWindow
     private DockPanel _root = null!;
     private bool _dashboardShowing;
 
+    // The strip of open repositories, under the toolbar. It owns WHICH repositories are
+    // open and which one is active; this window owns what "active" means — everything
+    // below the strip is still one single set of views, loaded with whatever the active
+    // tab points at. That is the whole design: a tab is a bookmark plus the little bit of
+    // per-repository state worth restoring (the row the user was on, the bottom tab),
+    // not a second copy of the work area.
+    private readonly Views.RepoTabStrip _repoTabs = new();
+
     // Splitter-driven definitions we persist/restore. The revision/bottom and
     // detail/diff definitions are recreated whenever the layout is rebuilt (split
     // orientation / commit-info position changes), so they are not readonly.
@@ -293,6 +301,11 @@ public sealed class MainWindow : Theming.ZoomWindow
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         root.Children.Add(_menu);
         root.Children.Add(_toolbar);
+        // Under the toolbar, above the work area: the toolbar acts on the window, the
+        // strip decides what the window is looking at. (Docked before the status bar and
+        // the fill child, because a DockPanel reads its children in order.)
+        DockPanel.SetDock(_repoTabs, Dock.Top);
+        root.Children.Add(_repoTabs);
         root.Children.Add(_statusBar);
         root.Children.Add(main);
         _root = root;
@@ -307,6 +320,13 @@ public sealed class MainWindow : Theming.ZoomWindow
         // doors.
         ApplyWindowChrome();
         Theming.WindowChrome.Changed += OnWindowChromeChanged;
+
+        // The strip's option comes from the same state file as the chrome's, and like it
+        // has to be in force before anything reads it (the first OpenRepository below
+        // branches on it).
+        Theming.RepoTabsOption.Apply(Theming.RepoTabsOption.Parse(_uiState.RepoTabs));
+        WireRepoTabs();
+        AddHandler(KeyDownEvent, OnRepoTabNavigationKey, RoutingStrategies.Tunnel);
 
         WireEvents();
         InstallHotkeys();
@@ -337,7 +357,17 @@ public sealed class MainWindow : Theming.ZoomWindow
             // CLI argument > cwd if it is a repo > last repo opened > dashboard.
             string? initial = FindRepositoryRoot(App.InitialRepoPath ?? Directory.GetCurrentDirectory())
                 ?? (_uiState.LastRepoPath is string last ? FindRepositoryRoot(last) : null);
-            if (initial is not null)
+
+            // The saved tabs answer the same question as `initial` does — which
+            // repository is on screen — so they are tried first and, when they answer,
+            // the chain above is not consulted at all. A path on the COMMAND LINE is an
+            // explicit instruction and outranks them: it is opened the usual way, and
+            // simply becomes one more tab.
+            if (App.InitialRepoPath is null && RestoreRepoTabs())
+            {
+                // The strip decided, and RestoreRepoTabs already loaded its active tab.
+            }
+            else if (initial is not null)
             {
                 OpenRepository(initial);
             }
@@ -480,11 +510,15 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     // Re-selects the bottom panel tab the user was last on. Keyed by name because
     // the Diff tab leaves the strip while split view is on (SyncDiffTab).
-    private void RestoreBottomTab()
+    private void RestoreBottomTab() => SelectBottomTab(_uiState.BottomTab);
+
+    // The same lookup, from any key: the repository tabs restore the pane their own
+    // repository was last showing, which is not the one the session started on.
+    private void SelectBottomTab(string? key)
     {
         try
         {
-            TabItem? tab = _uiState.BottomTab switch
+            TabItem? tab = key switch
             {
                 "Diff" => _diffTab,
                 "FileTree" => _fileTreeTab,
@@ -794,6 +828,7 @@ public sealed class MainWindow : Theming.ZoomWindow
             // observation, not a choice.
             _uiState.SystemThemeSeen = Theming.SystemTheme.LastSeenName;
             _uiState.LastRepoPath = _repoPath;
+            SaveRepoTabs();
             // The two splits go out as the raw star weights the grid holds, which after a
             // GridSplitter drag are pixel magnitudes (Avalonia rewrites a dragged star
             // definition with its current extent). UiStateService normalizes each PAIR to
@@ -1129,8 +1164,33 @@ public sealed class MainWindow : Theming.ZoomWindow
         _revisions.OperationCompleted += RefreshAll;
         _tree.RefSelected += OnRevisionSelected;
         _tree.OpenRepositoryRequested += OpenRepositoryPath;
+        // A single click on a submodule or worktree: shown in the preview tab, which the
+        // next single click replaces. With the strip turned off OpenRepository ignores a
+        // preview outright, so the tree keeps its old "only a double click opens" feel.
+        _tree.PreviewRepositoryRequested += path =>
+        {
+            if (Theming.RepoTabsOption.Enabled && Directory.Exists(path) && !SameRepositoryPath(path, _repoPath))
+            {
+                _statusBar.SetText(TF("Opening repository: {0}", path));
+                OpenRepository(path, pinned: false);
+            }
+        };
         _tree.OpenRepositoryInNewInstanceRequested += path =>
         {
+            // A submodule row that IS the current repository asks for a second window
+            // (upstream's SubmoduleNode.OnDoubleClick). One case now means something
+            // else: it is the row a single click just put in the PREVIEW tab, and the
+            // double click that followed is the pin gesture — not a request for another
+            // window. Anything else (a pinned tab, the strip turned off) still spawns
+            // the instance.
+            if (Theming.RepoTabsOption.Enabled
+                && _repoTabs.Active is { Pinned: false } preview
+                && SameRepositoryPath(path, preview.Path))
+            {
+                _repoTabs.Pin(preview.Path);
+                return;
+            }
+
             _statusBar.SetText(TF("Opening repository in a new instance: {0}", path));
             _toolbar.OpenRepositoryInNewInstance(path);
         };
@@ -1258,7 +1318,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         // The shell split button names the shell to launch; unwired it would fall back
         // to the default terminal, which is a worse but not wrong behaviour.
         _toolbar.OpenShellRequested += exe => WithRepo(p => _externalTools.OpenTerminal(p, exe));
-        _toolbar.CloseRepositoryRequested += ShowDashboard;
+        _toolbar.CloseRepositoryRequested += CloseActiveRepository;
 
         // The toolbar no longer carries a branch-scope menu or a filter box of its
         // own: upstream's ToolStripFilters lives, whole, on the revision grid's bar,
@@ -2280,7 +2340,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         // --- repository / remote operations (identical to the menu handlers)
         Bind(BrowseCommand.Refresh, RefreshAll);
         Bind(BrowseCommand.OpenRepo, () => _ = PickRepositoryAsync());
-        Bind(BrowseCommand.CloseRepository, ShowDashboard);
+        Bind(BrowseCommand.CloseRepository, CloseActiveRepository);
         Bind(BrowseCommand.Commit, OpenCommitDialog);
         Bind(BrowseCommand.OpenSettings, () => _ = OpenSettingsAsync());
         Bind(BrowseCommand.GitBash, () => WithRepo(p => _externalTools.OpenTerminal(p)));
@@ -4197,6 +4257,17 @@ public sealed class MainWindow : Theming.ZoomWindow
         {
             if (SameRepositoryPath(path, _repoPath))
             {
+                // The double click that follows a preview's single click lands here: the
+                // repository IS already open, and what the gesture asks for is not a
+                // load but the promotion of its tab from preview to kept. Without this
+                // the "already open" answer below would swallow the only way to pin a
+                // tab from the tree.
+                if (Theming.RepoTabsOption.Enabled && _repoTabs.Active is { Pinned: false })
+                {
+                    _repoTabs.Pin(path);
+                    return;
+                }
+
                 bool pending;
                 lock (_activeNavigationGate)
                 {
@@ -4276,7 +4347,38 @@ public sealed class MainWindow : Theming.ZoomWindow
         return null;
     }
 
-    private void OpenRepository(string repoPath)
+    // Every door into a repository — the picker, the dashboard, a clone, the tree's
+    // "Open", a dropped folder, the command line — goes through here, and here is where
+    // the tab strip is told about it. Opening always PINS: those are deliberate acts.
+    // Only the tree's single click asks for a preview (OpenRepository(path, pinned:
+    // false)), which is the one gesture cheap enough to be undone by the next one.
+    private void OpenRepository(string repoPath) => OpenRepository(repoPath, pinned: true);
+
+    private void OpenRepository(string repoPath, bool pinned)
+    {
+        if (!Theming.RepoTabsOption.Enabled)
+        {
+            // One repository at a time: the strip is not on screen and a preview open —
+            // which only the single click produces — is not a thing the user asked for.
+            if (pinned)
+            {
+                LoadRepository(repoPath);
+            }
+
+            return;
+        }
+
+        // Open() activates, and its Activated event is what loads: a path that is
+        // already the active tab therefore does NOT reload — clicking the submodule you
+        // are already looking at, or double-clicking the preview you just opened to pin
+        // it, costs nothing.
+        _repoTabs.Open(repoPath, pinned);
+        UpdateRepoTabsVisibility();
+    }
+
+    // Loads a repository into the (single) set of views. Split out of OpenRepository so
+    // that switching tabs can reuse it without going back through the strip.
+    private void LoadRepository(string repoPath)
     {
         _repoPath = repoPath;
         int epoch = ++_repositoryEpoch;
@@ -4296,6 +4398,197 @@ public sealed class MainWindow : Theming.ZoomWindow
         _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
         UpdateMenuRepositoryState();
+    }
+
+    // ---- repository tabs ---------------------------------------------------------
+
+    private void WireRepoTabs()
+    {
+        // The strip decides WHICH repository is active; this is the only place that
+        // turns that decision into a load, whoever made it (a click on a tab, an
+        // Open(), a close picking the neighbour).
+        _repoTabs.Activated += ShowRepoTab;
+
+        // The last tab was closed: there is no repository to show any more, which is
+        // exactly what the dashboard is for.
+        _repoTabs.Emptied += () =>
+        {
+            ShowDashboard();
+            UpdateRepoTabsVisibility();
+        };
+
+        // Clicking the active tab is normally a no-op, except when the dashboard took
+        // the work area over ("Dashboard" in the menu): then it means "back to this
+        // repository", and the tab the strip still calls active has to be re-loaded.
+        _repoTabs.Picked += entry =>
+        {
+            if (_dashboardShowing)
+            {
+                ShowRepoTab(entry);
+            }
+        };
+
+        _repoTabs.Changed += UpdateRepoTabsVisibility;
+
+        // Turning the option off must not strand the user on a hidden strip: the active
+        // repository stays open, the others are simply no longer reachable until it is
+        // turned back on (they are still in the saved state).
+        Theming.RepoTabsOption.Changed += () => Dispatcher.UIThread.Post(UpdateRepoTabsVisibility);
+    }
+
+    // Puts one tab's repository on screen, with the little state that tab carries.
+    // Every route into a tab ends here — a click on the strip, Ctrl+PageDown, an Open(),
+    // the restore at start-up — which is why the OUTGOING tab is captured here and
+    // nowhere else: the strip has already moved its own active entry by the time it
+    // tells us, so the tab being left is the one this window last loaded, not the one
+    // the strip now calls active.
+    private void ShowRepoTab(Views.RepoTabEntry entry)
+    {
+        CaptureTabState(_loadedTab);
+        _loadedTab = entry;
+        // Asked for BEFORE the load: the grid can only honour it once the first page
+        // lands, and it holds the request until then.
+        _revisions.SelectCommitWhenLoaded(entry.SelectedCommit);
+        LoadRepository(entry.Path);
+        if (entry.BottomTab is { Length: > 0 } bottom)
+        {
+            SelectBottomTab(bottom);
+        }
+    }
+
+    // The strip is on screen only when it has something to say: the option is on and at
+    // least one repository is open. On the dashboard there is none, so it disappears
+    // with the work area.
+    private void UpdateRepoTabsVisibility()
+        => _repoTabs.IsVisible = Theming.RepoTabsOption.Enabled && _repoTabs.Tabs.Count > 0;
+
+    // The tab whose repository is currently loaded in the views, which is NOT always the
+    // strip's active entry: between a click and the load, the strip has already moved on.
+    private Views.RepoTabEntry? _loadedTab;
+
+    // Writes the live view state into the tab that is about to lose it — the row the user
+    // was on and the bottom pane they were reading — so coming back lands where they left
+    // rather than at the top of the history. A tab that has since been closed, or a
+    // dashboard with no repository behind it, has nothing worth keeping.
+    private void CaptureTabState(Views.RepoTabEntry? entry)
+    {
+        if (entry is null || _dashboardShowing || !_repoTabs.Tabs.Contains(entry))
+        {
+            return;
+        }
+
+        entry.SelectedCommit = _revisions.SelectedCommitHashes.Count > 0
+            ? _revisions.SelectedCommitHashes[0]
+            : null;
+        entry.BottomTab = CurrentBottomTabKey();
+    }
+
+    // Ctrl+W (BrowseCommand.CloseRepository) and the tab's own close affordance mean the
+    // same thing once there are tabs: close THIS repository, not "leave every repository
+    // and go to the dashboard". With the option off the old meaning is the only one.
+    private void CloseActiveRepository()
+    {
+        if (Theming.RepoTabsOption.Enabled && _repoTabs.Active is { } active)
+        {
+            _repoTabs.Close(active.Path);
+            UpdateRepoTabsVisibility();
+            return;
+        }
+
+        ShowDashboard();
+    }
+
+    // Ctrl+PageDown / Ctrl+PageUp, VS Code's own gesture for walking the open tabs.
+    // Handled in the tunnel so a focused list or text box cannot swallow it first, and
+    // wrapping at both ends because a strip of tabs is a ring, not a line.
+    private void OnRepoTabNavigationKey(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyModifiers != KeyModifiers.Control
+            || (e.Key != Key.PageDown && e.Key != Key.PageUp)
+            || !Theming.RepoTabsOption.Enabled
+            || _repoTabs.Tabs.Count < 2
+            || _repoTabs.Active is not { } active)
+        {
+            return;
+        }
+
+        IReadOnlyList<Views.RepoTabEntry> tabs = _repoTabs.Tabs;
+        int index = -1;
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            if (ReferenceEquals(tabs[i], active))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            return;
+        }
+
+        int step = e.Key == Key.PageDown ? 1 : -1;
+        _repoTabs.Activate(tabs[(index + step + tabs.Count) % tabs.Count].Path);
+        e.Handled = true;
+    }
+
+    // Start-up: the repositories that were open last time, minus the ones that have
+    // since been moved or deleted — a saved path is a hint, exactly like LastRepoPath.
+    // Returns whether anything was restored, so the caller can fall back to its usual
+    // "CLI argument > cwd > last repository > dashboard" chain.
+    private bool RestoreRepoTabs()
+    {
+        if (!Theming.RepoTabsOption.Enabled || _uiState.OpenRepoTabs.Count == 0)
+        {
+            return false;
+        }
+
+        List<Views.RepoTabEntry> restored = [];
+        foreach (RepoTabState saved in _uiState.OpenRepoTabs)
+        {
+            if (FindRepositoryRoot(saved.Path) is null)
+            {
+                continue;
+            }
+
+            restored.Add(new Views.RepoTabEntry
+            {
+                Path = saved.Path,
+                Pinned = saved.Pinned,
+                SelectedCommit = saved.SelectedCommit,
+                BottomTab = saved.BottomTab,
+            });
+        }
+
+        if (restored.Count == 0)
+        {
+            return false;
+        }
+
+        // Restore() deliberately does not raise Activated — nothing has been loaded yet —
+        // so the active tab is opened here, through the one door that loads.
+        string? active = _uiState.ActiveRepoTab;
+        _repoTabs.Restore(restored, active);
+        UpdateRepoTabsVisibility();
+
+        ShowRepoTab(_repoTabs.Active ?? restored[0]);
+        return true;
+    }
+
+    private void SaveRepoTabs()
+    {
+        CaptureTabState(_loadedTab);
+        _uiState.OpenRepoTabs = _repoTabs.Tabs
+            .Select(t => new RepoTabState
+            {
+                Path = t.Path,
+                Pinned = t.Pinned,
+                SelectedCommit = t.SelectedCommit,
+                BottomTab = t.BottomTab,
+            })
+            .ToList();
+        _uiState.ActiveRepoTab = _repoTabs.Active?.Path;
     }
 
     // Takes the repository, not the snapshot task: the snapshot is asked of the cache

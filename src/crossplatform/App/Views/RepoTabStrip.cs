@@ -135,6 +135,13 @@ public sealed class RepoTabStrip : UserControl
     public event Action? Emptied;
 
     /// <summary>
+    ///  Raised for every left click on a tab, including a click on the tab that is
+    ///  already active — the case <see cref="Activated"/> swallows. Hosts that show
+    ///  something else over the work area (the dashboard) use it to come back.
+    /// </summary>
+    public event Action<RepoTabEntry>? Picked;
+
+    /// <summary>
     ///  Raised after any add / close / pin / activate, for persistence. Always AFTER
     ///  <see cref="Activated"/> / <see cref="Emptied"/>, so what the host writes out is
     ///  the settled state and not the one halfway through the operation.
@@ -414,6 +421,14 @@ public sealed class RepoTabStrip : UserControl
             else if (props.IsLeftButtonPressed)
             {
                 Activate(entry.Path);
+
+                // Raised even when the tab was ALREADY the active one, which
+                // Activate deliberately keeps silent. The host needs the click
+                // itself in one case: the dashboard is on screen (the user asked
+                // for it from the menu) and the repository the strip still calls
+                // active is not loaded any more — without this, clicking it would
+                // be the one tab in the strip that does nothing.
+                Picked?.Invoke(entry);
             }
         };
 
