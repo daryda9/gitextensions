@@ -3260,6 +3260,56 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M120 (2026-08-08, `3f6a28c1b`) — la finestra File History disposta come l'originale
+
+Confronto con `FormFileHistory.cs` / `.Designer.cs`. Lavoro delegato a un subagent in worktree,
+integrato con cherry-pick.
+
+- **La toolbar sta in cima.** Upstream ancora `ToolStripFilters` sopra `splitContainer1`; il port
+  metteva la riga del path **sopra** gli interruttori, così la finestra si apriva su una stringa che la
+  status line della griglia ripete identica due righe più sotto. Ora prima la toolbar, poi la riga.
+- **La riga di stato è collassata quando non ha nulla da dire.** Il suo unico messaggio permanente è
+  il nome che il file aveva nella revisione selezionata, e solo quando `--follow` ha attraversato un
+  rename (upstream mette lo stesso fatto fra parentesi nel titolo; il port lo fa già). Resta la
+  superficie per i messaggi di Save as / revert, con un unico setter che la mostra e la nasconde.
+- **Una sola sonda sul blob.** Il marcatore «Git could not identify the file» era calcolato **due
+  volte**, nella view e nella finestra; upstream lo calcola una volta e lo mette nella didascalia
+  della scheda Commit — che è ciò che la finestra fa già da M113. Via il doppione, cioè via un
+  `git cat-file` a ogni freccia.
+- **Manca(va) un pulsante**: il **Git command log** (`gitcommandLogToolStripMenuItem`), aggiunto solo
+  icona come upstream, aperto non modale perché questa finestra vive accanto alla principale. I due
+  pulsanti con didascalia ora portano le immagini dell'originale (`ReloadRevisions`, `FileHistory`).
+- **Proporzioni dello splitter**: upstream `SplitterDistance 101/419`, cioè un quarto alla griglia; il
+  port apriva a 40/60. Ora `1*,4,3*` con un `MinHeight` **sulla riga** di 240 — pavimento che upstream
+  non gli serve perché i suoi 101px sono 101px di righe (la sua toolbar è fuori dallo split), mentre il
+  riquadro del port porta anche la striscia degli interruttori, la barra della griglia e la sua status
+  line. Il pavimento **deve** stare sulla `RowDefinition`: una riga a stella non rilegge il `MinHeight`
+  del figlio, e al primo tentativo la griglia sbordava dipingendo sopra le schede (visto a schermo,
+  poi corretto).
+- **Ctrl+Tab / Ctrl+Shift+Tab** ciclano le quattro schede saltando quelle disabilitate (il `TabControl`
+  di WinForms lo fa gratis, quello di Avalonia no; upstream le stacca, quindi il suo ciclo non può
+  fermarcisi). Registrati in tunneling, così gli editor e la navigazione del focus non se li mangiano.
+
+**Verificato** su Xvfb: toolbar in cima con i quattro pulsanti e nessuna riga del path duplicata, le
+due tendine con i loro stati, «Load file history» che ricarica, griglia a un quarto e schede a tre
+quarti, Ctrl+Tab che percorre Diff→View→Blame (ognuna caricata pigramente all'arrivo) e Ctrl+Shift+Tab
+che torna a Commit, il pulsante del log che mostra le chiamate `git log --follow` / `blame` di questa
+finestra. Su un file davvero rinominato la riga dice «In this revision the file is named …» e la
+scheda Diff carica sotto il nome storico (M113 intatto); Shift su quattro righe dà il diff di
+intervallo con `HANDOFF.md` selezionato e l'intestazione «(9) Diff with A 9604da5a: …» (M116 e M117
+intatti). Build `Avvisi: 0 / Errori: 0`, harness PASS.
+
+**Non portato, con motivo.** «Load history on show» / «Load blame on show»: esistono perché upstream
+lancia un **processo** separato il cui primo log può essere lento — qui la finestra è in-process e già
+carica pigramente per scheda — e persisterli vuol dire un campo nuovo in `ViewPrefsService`, fuori dal
+perimetro dell'unità. La tendina «Blame options» (11 interruttori): il port ha già
+ignore-whitespace / detect-copy-in-file / detect-copy-in-all nella barra di `BlameView`, accanto alla
+blame che riplasmano; duplicarli su una striscia che di solito guarda un diff darebbe due fonti di
+verità. Difftool e «Difftool selected ↔ local» (F3): appartengono al pannello diff. Dimensioni:
+tenute quelle del port (1100×700, min 640×420) invece dei 748×444 di upstream, che precedono il grafo
+e il set di colonne che questa griglia disegna. Le righe artificiali: la griglia della storia di un
+file non ne mostra, quindi non c'è nulla da staccare.
+
 ## M119 (2026-08-08, `fc24d6e8e`) — una toolbar sola, un filtro solo, come in `FormBrowse`
 
 Confronto voce per voce fra `ToolStripMain` (`FormBrowse.Designer.cs`, righe 205–224),
