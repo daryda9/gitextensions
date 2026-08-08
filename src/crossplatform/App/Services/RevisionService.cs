@@ -519,7 +519,24 @@ public sealed record RevisionGraphSegment(
     double FromY,
     double ToLane,
     double ToY,
-    int ColorLane);
+    int ColorLane)
+{
+    /// <summary>
+    ///  Where this segment meets the row edge WHEN DRAWN, which is not always the lane
+    ///  it logically belongs to: an edge that changes lane is stretched over a whole
+    ///  row (node to node) rather than over the half row it is stored in, so the two
+    ///  halves meet at the middle of the shift instead of forming a kink on the row
+    ///  boundary. See the straightening pass in <c>RevisionService.BuildGraph</c>.
+    ///
+    ///  <para>Kept separate from <see cref="FromLane"/>/<see cref="ToLane"/> because
+    ///  those stay the integral lane indices everything else reasons about (relative /
+    ///  non-relative propagation, lane counting); only the renderer reads these.</para>
+    /// </summary>
+    public double DrawFromLane { get; init; } = FromLane;
+
+    /// <inheritdoc cref="DrawFromLane"/>
+    public double DrawToLane { get; init; } = ToLane;
+}
 
 /// <summary>
 ///  One page of the revision walk, as returned by
@@ -1065,6 +1082,10 @@ public sealed class RevisionService
         int laneCount = 1;
         List<RevisionRow> result = new(input.Count);
 
+        // The per-row segment lists, kept mutable so the straightening pass below can
+        // patch a segment's drawing coordinates after its neighbour row is known.
+        List<List<RevisionGraphSegment>> rowSegments = new(input.Count);
+
         foreach (RevisionRow row in input)
         {
             string?[] incoming = lanes.ToArray();
@@ -1188,8 +1209,11 @@ public sealed class RevisionService
 
             laneCount = Math.Max(laneCount, Math.Max(nodeLane + 1, Math.Max(incoming.Length, outgoing.Length)));
 
+            rowSegments.Add(segments);
             result.Add(row with { NodeLane = nodeLane, NodeColor = nodeColor, GraphSegments = segments });
         }
+
+        StraightenLaneShifts(rowSegments);
 
         // Writes a lane slot, growing both parallel lists as needed.
         void SetLane(int index, string? value, int color)
@@ -1216,6 +1240,90 @@ public sealed class RevisionService
         }
 
         return result;
+    }
+
+    /// <summary>
+    ///  Spreads every lane change over a WHOLE row instead of over the half row that
+    ///  happens to carry it.
+    ///
+    ///  <para>Segments are stored split at the node (top half = row edge → centre,
+    ///  bottom half = centre → row edge), so a branch or merge edge that moves one lane
+    ///  across did the whole move inside one half and then ran straight down the other:
+    ///  twice the slope of the original's, with a visible kink on the row boundary. The
+    ///  original draws such an edge from node centre to node centre (GraphRenderer:
+    ///  <c>p.Start.Y = centre - rowHeight</c>, <c>p.End.Y = centre + rowHeight</c>), i.e.
+    ///  one straight diagonal per row.</para>
+    ///
+    ///  <para>Meeting the two halves at the MIDDLE of the shift on the row boundary
+    ///  gives exactly that: the pair becomes one straight line from one node to the
+    ///  next. Only the drawing coordinates move — the logical lanes are untouched.</para>
+    ///
+    ///  <para>Applied only where the join is unambiguous (exactly one half on each side
+    ///  of the boundary in that lane). Where several segments share a lane on the
+    ///  boundary — a merge joining a lane that also continues straight down — there is
+    ///  no single line to straighten, and the halves are left as they are.</para>
+    /// </summary>
+    private static void StraightenLaneShifts(List<List<RevisionGraphSegment>> rowSegments)
+    {
+        for (int r = 0; r + 1 < rowSegments.Count; r++)
+        {
+            List<RevisionGraphSegment> upper = rowSegments[r];
+            List<RevisionGraphSegment> lower = rowSegments[r + 1];
+
+            for (int u = 0; u < upper.Count; u++)
+            {
+                RevisionGraphSegment bottomHalf = upper[u];
+                if (bottomHalf.ToY < 1.0)
+                {
+                    continue;
+                }
+
+                if (CountAtBoundary(upper, s => s.ToY >= 1.0 && s.ToLane == bottomHalf.ToLane) != 1)
+                {
+                    continue;
+                }
+
+                int match = -1;
+                int matches = 0;
+                for (int l = 0; l < lower.Count; l++)
+                {
+                    if (lower[l].FromY <= 0.0 && lower[l].FromLane == bottomHalf.ToLane)
+                    {
+                        match = l;
+                        matches++;
+                    }
+                }
+
+                if (matches != 1)
+                {
+                    continue;
+                }
+
+                RevisionGraphSegment topHalf = lower[match];
+                double mid = (bottomHalf.FromLane + topHalf.ToLane) / 2;
+                if (mid == bottomHalf.ToLane)
+                {
+                    continue;
+                }
+
+                upper[u] = bottomHalf with { DrawToLane = mid };
+                lower[match] = topHalf with { DrawFromLane = mid };
+            }
+        }
+
+        static int CountAtBoundary(List<RevisionGraphSegment> segments, Func<RevisionGraphSegment, bool> match)
+        {
+            int count = 0;
+            foreach (RevisionGraphSegment segment in segments)
+            {
+                if (match(segment))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
     }
 
     private static int FirstFree(List<string?> lanes)

@@ -21,8 +21,9 @@ namespace GitExtensions.Avalonia.Views;
 /// <summary>
 ///  A commit-list view (revision grid) for the Avalonia/Linux port. Loads the
 ///  recent history of a repository off the UI thread and renders it as a
-///  multi-column list (DAG graph / Hash / Author / Date / Subject, with ref
-///  names shown inline). Uses a <see cref="ListBox"/> with a templated
+///  multi-column list in the original's column order (DAG graph / Subject with
+///  its ref labels / Avatar / Author / Date / Commit ID). Uses a
+///  <see cref="ListBox"/> with a templated
 ///  multi-column row so no extra NuGet package (e.g. DataGrid) or theme
 ///  registration is required.
 ///
@@ -34,9 +35,17 @@ public sealed class RevisionGridView : UserControl
 {
     // Shared column widths so the header and every row line up. The three the user can
     // drag start at these values and are remembered from then on (see ColumnWidths).
-    private const double HashWidth = 90;
+    //
+    // The three draggable ones start at the original's own defaults: Author 130
+    // (AuthorNameColumnProvider), Date 130 (DateColumnProvider, the relative-date
+    // case), Commit ID 60 (CommitIdColumnProvider). The port started Author at 170
+    // and the hash at 90, which took ~70px away from the subject — the column the
+    // original lets fill the grid. The hash gets 64 rather than 60: the original
+    // shortens the id to whatever the width holds, this port always prints the
+    // 8-character short hash, which needs those extra pixels not to be trimmed.
+    private const double HashWidth = 64;
     private const double AvatarWidth = 28;
-    private const double AuthorWidth = 170;
+    private const double AuthorWidth = 130;
     private const double DateWidth = 130;
 
     // A dragged column may not disappear, and the subject may not be squeezed out of
@@ -58,8 +67,10 @@ public sealed class RevisionGridView : UserControl
     // Size of the identicon square drawn inside the avatar cell (centred).
     private const double AvatarSize = 18;
 
-    // Graph rendering metrics.
-    private const double LaneWidth = 14;
+    // Graph rendering metrics. 16 is the original's GraphRenderer.LaneWidth at 100%
+    // scaling; the port used 14, which packed the lanes tighter than the node dots
+    // they carry and made a busy graph look like a single ribbon.
+    private const double LaneWidth = 16;
 
     // Upper bound on the width of the graph column, in lanes. A sparse walk — most
     // visibly one produced by a revision filter, where each surviving commit tends
@@ -5100,7 +5111,9 @@ public sealed class RevisionGridView : UserControl
                 nodeColor: row.NodeColor,
                 relativeSegments: flags?.Segments,
                 relativeNode: flags?.Node ?? true,
-                nonRelativeBrush: flags is null ? null : B("App.TextDim"));
+                nonRelativeBrush: flags is null ? null : B("App.TextDim"),
+                squareNode: row.RefNames.Count > 0,
+                headNode: row.IsHead);
             Grid.SetColumn(graph, 0);
             grid.Children.Add(graph);
             view.TrackGraph(graph);
@@ -7106,17 +7119,25 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     private sealed class RevisionGraphControl : Control
     {
+        // The original's palette, entry for entry and in its order: AppColorDefaults
+        // GraphBranch1..7 (GraphBranch8 is Color.Empty there, i.e. unused, so the
+        // cycle is seven long — RevisionGraphLaneColor filters the empty ones out).
+        // The port had invented eight much darker, more saturated colours of its own,
+        // which is the first thing the eye notices next to a screenshot of the original.
         private static readonly Color[] LaneColors =
         {
-            Color.FromRgb(0x22, 0x8B, 0x22), // green
-            Color.FromRgb(0x1E, 0x90, 0xFF), // blue
-            Color.FromRgb(0xFF, 0x8C, 0x00), // orange
-            Color.FromRgb(0x93, 0x70, 0xDB), // purple
-            Color.FromRgb(0xDC, 0x14, 0x3C), // crimson
-            Color.FromRgb(0x00, 0x8B, 0x8B), // teal
-            Color.FromRgb(0xB8, 0x86, 0x0B), // goldenrod
-            Color.FromRgb(0xFF, 0x14, 0x93), // pink
+            Color.FromRgb(0xF0, 0x64, 0xA0), // pink
+            Color.FromRgb(0x78, 0xB4, 0xE6), // light blue
+            Color.FromRgb(0x24, 0xC2, 0x21), // green
+            Color.FromRgb(0xA0, 0x78, 0xF0), // violet
+            Color.FromRgb(0xDD, 0x32, 0x28), // red
+            Color.FromRgb(0x1A, 0xC6, 0xA6), // teal
+            Color.FromRgb(0xE7, 0xB0, 0x0F), // amber
         };
+
+        // GraphRenderer.LaneLineWidth / NodeDimension (2 and 10 at 100% scaling).
+        private const double LaneLineWidth = 2;
+        private const double NodeDimension = 10;
 
         private static readonly IBrush[] LaneBrushes =
             LaneColors.Select(c => (IBrush)new SolidColorBrush(c)).ToArray();
@@ -7126,6 +7147,8 @@ public sealed class RevisionGridView : UserControl
         private readonly int _nodeColor;
         private readonly double _laneWidth;
         private readonly bool _artificialNode;
+        private readonly bool _squareNode;
+        private readonly bool _headNode;
 
         // Non-null only while "draw non-relatives gray" is on: the flag of each
         // segment (parallel to _segments), the node's own flag, and the gray brush
@@ -7144,10 +7167,14 @@ public sealed class RevisionGridView : UserControl
             int nodeColor = -1,
             IReadOnlyList<bool>? relativeSegments = null,
             bool relativeNode = true,
-            IBrush? nonRelativeBrush = null)
+            IBrush? nonRelativeBrush = null,
+            bool squareNode = false,
+            bool headNode = false)
         {
             _segments = segments;
             _nodeLane = nodeLane;
+            _squareNode = squareNode;
+            _headNode = headNode;
 
             // The node's palette entry is its edge identity, not its column (lanes are
             // recycled between unrelated branches). -1 keeps the old column-keyed
@@ -7236,31 +7263,105 @@ public sealed class RevisionGridView : UserControl
                         continue;
                     }
 
-                    Pen pen = new(Brush(s.ColorLane, relative), 2);
-                    context.DrawLine(
-                        pen,
-                        new Point(X(s.FromLane), s.FromY * h),
-                        new Point(X(s.ToLane), s.ToY * h));
+                    Pen pen = new(Brush(s.ColorLane, relative), LaneLineWidth);
+                    Point from = new(X(s.DrawFromLane), s.FromY * h);
+                    Point to = new(X(s.DrawToLane), s.ToY * h);
+
+                    if (from.X == to.X)
+                    {
+                        context.DrawLine(pen, from, to);
+                        continue;
+                    }
+
+                    context.DrawGeometry(null, pen, Curve(from, to, s.FromY, s.ToY));
                 }
             }
 
             IBrush nodeBrush = Brush(_nodeColor, _relativeNode);
             double cx = X(_nodeLane);
             double cy = h / 2;
+            double half = NodeDimension / 2;
 
             if (_artificialNode)
             {
                 // Artificial rows (working directory / commit index) get a distinct
-                // node: a hollow square in the lane colour, echoing the special
-                // marker the original Windows grid uses for pending work.
-                const double half = 4.0;
-                Pen outline = new(nodeBrush, 2);
+                // node: a hollow square in the lane colour. The original tells them
+                // apart in the message column instead (its own icons and text), which
+                // this port does not draw, so the marker stays.
+                Pen outline = new(nodeBrush, LaneLineWidth);
                 context.DrawRectangle(null, outline, new Rect(cx - half, cy - half, half * 2, half * 2));
                 return;
             }
 
+            // Square node for a revision carrying refs, round otherwise, and a ring
+            // around HEAD — GraphRenderer.DrawItem: `square = Refs.Count > 0`,
+            // `hasOutline = ObjectId == headId`, outline drawn on the node rect
+            // inflated by 1 with a 2px pen in the window text colour.
             IPen? ring = _rowSelected ? new Pen(Brushes.White, 1.5) : null;
-            context.DrawEllipse(nodeBrush, ring, new Point(cx, cy), 4, 4);
+            if (_squareNode)
+            {
+                context.DrawRectangle(nodeBrush, ring, new Rect(cx - half, cy - half, half * 2, half * 2));
+            }
+            else
+            {
+                context.DrawEllipse(nodeBrush, ring, new Point(cx, cy), half, half);
+            }
+
+            if (!_headNode)
+            {
+                return;
+            }
+
+            // SystemColors.WindowText upstream: the plain foreground, resolved from the
+            // theme so the ring survives the dark palette.
+            Pen headPen = new(_rowSelected ? Brushes.White : B("App.Text"), LaneLineWidth);
+            double outer = half + 1;
+            if (_squareNode)
+            {
+                context.DrawRectangle(null, headPen, new Rect(cx - outer, cy - outer, outer * 2, outer * 2));
+            }
+            else
+            {
+                context.DrawEllipse(null, headPen, new Point(cx, cy), outer, outer);
+            }
+        }
+
+        /// <summary>
+        ///  A lane change, drawn the way the original draws it: the line leaves (or
+        ///  enters) the node vertically and eases into the straight diagonal that runs
+        ///  on to the next node.
+        ///
+        ///  <para>The original renders segments with diagonals by default
+        ///  (AppSettings.RenderGraphWithDiagonals), which is a short perpendicular stub
+        ///  at the node plus a Bézier easing into the diagonal (SegmentRenderer). Here
+        ///  the segment is half a row, and the straightening pass in RevisionService has
+        ///  already put its outer end on the straight node-to-node line — so the outer
+        ///  end's tangent IS the chord, and a single cubic with a vertical tangent at
+        ///  the node end reproduces the same shape.</para>
+        /// </summary>
+        private static Geometry Curve(Point from, Point to, double fromY, double toY)
+        {
+            // Which end sits on the node (the row centre, y = 0.5): the vertical one.
+            bool nodeAtStart = fromY >= 0.5 && toY > fromY;
+            Point node = nodeAtStart ? from : to;
+            Point edge = nodeAtStart ? to : from;
+
+            // A quarter of the shift on each side: enough to leave the node upright
+            // without flattening the diagonal before it reaches the row boundary.
+            Point nodeControl = new(node.X, node.Y + ((edge.Y - node.Y) / 2));
+            Point edgeControl = new(
+                edge.X - ((edge.X - node.X) / 4),
+                edge.Y - ((edge.Y - node.Y) / 4));
+
+            StreamGeometry geometry = new();
+            using (StreamGeometryContext ctx = geometry.Open())
+            {
+                ctx.BeginFigure(node, isFilled: false);
+                ctx.CubicBezierTo(nodeControl, edgeControl, edge);
+                ctx.EndFigure(isClosed: false);
+            }
+
+            return geometry;
         }
     }
 }
