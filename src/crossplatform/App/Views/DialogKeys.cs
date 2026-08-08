@@ -69,6 +69,43 @@ internal static class DialogKeys
     }
 
     /// <summary>
+    ///  Opens <paramref name="window"/> with the keyboard already on
+    ///  <paramref name="primary"/> — the button the dialog exists to press.
+    ///
+    ///  <para>Upstream gets this for free: a WinForms form has an <c>AcceptButton</c>,
+    ///  and its tab order starts on it. In Avalonia a freshly shown window focuses
+    ///  nothing, so a dialog opened from a toolbar button demanded a second trip to the
+    ///  mouse to press the button that was the whole point of opening it.</para>
+    ///
+    ///  <para>Focus, not activation: nothing is pressed until the user presses Space or
+    ///  Enter. It is therefore only for a dialog whose primary action is what the user
+    ///  just asked for (Push, Pull) — never for one that opens on a question, where the
+    ///  keyboard should start on the field being filled in or on nothing at all.</para>
+    ///
+    ///  <para>Also installs <see cref="EnsureFocusRoute"/>'s guarantee implicitly: with
+    ///  the button focused, the window has a focus route and Escape is routed.</para>
+    /// </summary>
+    public static void FocusOnOpen(Window window, Control primary)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(primary);
+
+        window.Opened += (_, _) =>
+        {
+            // A dialog that put the caret in a field of its own during Opened keeps it:
+            // this is the fallback for a window nothing has claimed, not an override.
+            if (window.FocusManager?.GetFocusedElement() is Visual focused
+                && ReferenceEquals(focused.GetVisualRoot(), window)
+                && focused is not Window)
+            {
+                return;
+            }
+
+            primary.Focus(NavigationMethod.Tab);
+        };
+    }
+
+    /// <summary>
     ///  Guarantees that key presses reaching <paramref name="window"/> from the window
     ///  manager are actually routed inside it, by giving the window itself focus when
     ///  nothing in it has any.

@@ -513,6 +513,9 @@ public sealed class PushDialog : Theming.ZoomWindow
         Content = body;
         DialogKeys.InstallEscapeClose(this);
 
+        // The keyboard starts on the button the dialog was opened to press.
+        DialogKeys.FocusOnOpen(this, _pushBtn);
+
         ApplyTranslations();
 
         // The dialog is short-lived, so in practice it is only ever translated at

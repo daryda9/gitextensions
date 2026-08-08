@@ -305,6 +305,9 @@ public sealed class PullDialog : Theming.ZoomWindow
         Content = body;
         DialogKeys.InstallEscapeClose(this);
 
+        // The keyboard starts on the button the dialog was opened to press.
+        DialogKeys.FocusOnOpen(this, _pullBtn);
+
         ApplyInitialAction(initialAction);
         ApplyTranslations();
 
