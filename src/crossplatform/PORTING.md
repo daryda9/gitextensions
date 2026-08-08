@@ -3377,6 +3377,33 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M133 (2026-08-08, `49841734d`) — la finestra aperta ha l'icona del prodotto
+
+> Dall'utente, con lo screenshot del dock: «quando cerco l'app dalla lista di app compare l'icona, ma
+> quando tengo aperta l'app, non compare l'icona ma solo l'ingranaggio».
+
+Due mancanze distinte, che insieme davano quel sintomo. Misurate con `xprop` sulla finestra vera,
+non dedotte:
+
+1. **`_NET_WM_ICON: no such atom on any window.`** Il file `.desktop` nomina un'icona, ma quella vale
+   solo per il *lanciatore*: a finestra aperta la shell chiede alla finestra stessa, tramite la
+   proprietà che ogni client X11 dovrebbe impostare. Il port non assegnava mai `Window.Icon`, quindi
+   la proprietà non c'era e il dock metteva il suo segnaposto — l'ingranaggio.
+2. **`WM_CLASS = "GitExtensions.Avalonia"`** e nessun `StartupWMClass` nel `.desktop`. È l'altro modo
+   con cui una shell lega una finestra a una voce installata; senza, la finestra aperta resta
+   un'estranea accanto al lanciatore invece di esserne la stessa cosa.
+
+Rimedio: `Theming/AppIcon` carica il logo 128px già linkato nelle risorse (`Assets/Icons/
+GitExtensions.png`, quello dell'About) e lo installa **come style sull'`Application`** —
+`Window.Icon` è una styled property, quindi una regola sola copre ogni finestra che il port apre,
+comprese quelle scritte domani, e non c'è nessun elenco da tenere aggiornato. Se l'asset non si
+carica non succede niente: un'icona mancante è un neo, non un motivo per non partire. Nel `.desktop`,
+`StartupWMClass=GitExtensions.Avalonia`.
+
+Verificato su Xvfb: `_NET_WM_ICON(CARDINAL) = Icon (128 x 128)` sulla finestra principale **e** sulla
+finestra Stash (che è la prova che lo style copre anche le finestre secondarie). Serve reinstallare
+il `.deb` perché la voce `.desktop` aggiornata arrivi a sistema.
+
 ## M130 (2026-08-08) — i pulsanti dello stash come quelli del commit
 
 > Dall'utente, con lo screenshot della finestra Stash: «rendi coerenti anche i pulsanti con i bordi
