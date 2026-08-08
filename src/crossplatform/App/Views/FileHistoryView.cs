@@ -14,10 +14,13 @@ namespace GitExtensions.Avalonia.Views;
 ///  A single file's commit history, shown in the REAL revision grid: a second
 ///  <see cref="RevisionGridView"/> instance loaded through
 ///  <see cref="RevisionGridView.LoadFileHistory"/>, i.e. the same walk narrowed to
-///  the file and following it across renames. The tab therefore gets the DAG graph,
+///  the file and following it across renames. The pane therefore gets the DAG graph,
 ///  the branch/tag decorations, the columns and their View menus, multi-selection,
 ///  the full row context menu, quick-search and the navigation hotkeys — all of
 ///  which the bare four-column list it replaced did not have.
+///
+///  <para>This is the TOP pane of <see cref="FileHistoryWindow"/>, upstream's
+///  <c>splitContainer1.Panel1</c>; the four viewers of Panel2 are the window's.</para>
 ///
 ///  <para>WHY A SECOND INSTANCE, not the shell's main grid. The main instance carries
 ///  repository-wide state that the file history would corrupt and cannot share: the
@@ -40,11 +43,13 @@ namespace GitExtensions.Avalonia.Views;
 ///  <see cref="FileHistoryService.GetFilePathByRevision"/>) and the revert /
 ///  cherry-pick pair, which keep their host-handler-else-do-it-here contract.</para>
 ///
-///  <para>Deliberately NOT ported here (upstream's four inner tabs Commit diff /
-///  Diff / View / Blame, the eleven "Blame options" toggles and open-with-difftool
-///  "selected &lt;-&gt; local"). Upstream's "Show author date" toggle is gone as a
-///  local switch: the grid's own Date menu does author/commit date (and relative
-///  dates) for every column set.</para>
+///  <para>Deliberately NOT ported here. The "Blame options" drop-down upstream keeps
+///  on this strip is inside <see cref="BlameView"/>'s own bar, next to the blame it
+///  reshapes, rather than duplicated on a toolbar that is three quarters of the time
+///  looking at a diff. Open-with-difftool "selected &lt;-&gt; local" has no place to
+///  come from here (the difftool plumbing is the diff pane's). Upstream's "Show author
+///  date" toggle is gone as a local switch: the grid's own Date menu does
+///  author/commit date (and relative dates) for every column set.</para>
 /// </summary>
 public sealed class FileHistoryView : UserControl
 {
@@ -63,15 +68,17 @@ public sealed class FileHistoryView : UserControl
     private readonly Button _fullHistoryButton;
     private readonly Button _followButton;
     private readonly Button _reloadButton;
+    private readonly Button _commandLogButton;
 
     // The git log switches (upstream: AppSettings.*InFileHistory, which upstream also
     // persists). Restored from view-prefs.json at construction and written back by
     // SetOptions, so the four switches survive a restart.
     //
-    // Loaded per instance rather than through a shared singleton: this view is
-    // instantiated twice (MainWindow's History tab and the standalone window
-    // CommitDialog opens), and each one reading the file at construction gives the
-    // newer instance the current state without any cross-instance plumbing.
+    // Loaded per instance rather than through a shared singleton: one of these is born
+    // with every FileHistoryWindow (the browse window's file tree, the diff pane and
+    // the commit dialog each open their own), and each one reading the file at
+    // construction gives the newer instance the current state without any
+    // cross-instance plumbing.
     private static readonly ViewPrefsService PrefsService = new();
 
     private FileHistoryOptions _options = LoadPersistedOptions();
@@ -93,10 +100,9 @@ public sealed class FileHistoryView : UserControl
     // first map was still being built must not overwrite it.
     private int _mapToken;
 
-    // Upstream's _fileNotFound marker, appended to the status line for the selected
-    // revision; guarded by a token so a stale background check cannot overwrite it.
-    private string _notFoundMarker = string.Empty;
-    private int _notFoundToken;
+    // The selected commit, kept only so the path line can be re-worded when the name
+    // map lands after the selection (the map is one git call behind the grid's walk).
+    private string _selectedHash = string.Empty;
 
     /// <summary>
     ///  Forwards the host's bisect-session probe to the inner grid, so this tab's row
@@ -148,6 +154,11 @@ public sealed class FileHistoryView : UserControl
 
     public FileHistoryView()
     {
+        // Collapsed until it has something to say — see SetStatus. It used to open
+        // showing the file path, which the grid's own status line right underneath
+        // already prints (with the repository and the commit count beside it), so the
+        // pane spent two lines saying one thing and upstream spends none: there the
+        // path is in the title bar, and this window has that too.
         _status = new TextBlock
         {
             Margin = new Thickness(8, 6, 8, 4),
@@ -155,7 +166,7 @@ public sealed class FileHistoryView : UserControl
             Background = B("App.Toolbar"),
             Padding = new Thickness(4, 4, 4, 4),
             TextTrimming = TextTrimming.CharacterEllipsis,
-            Text = T("No file loaded."),
+            IsVisible = false,
         };
 
         // The grid raises RevisionSelected only for real commits (never for the
@@ -163,7 +174,8 @@ public sealed class FileHistoryView : UserControl
         // contract is unchanged from the list this replaced.
         _grid.RevisionSelected += hash =>
         {
-            CheckFilePresence(hash);
+            _selectedHash = hash;
+            ShowStatus();
             RevisionSelected?.Invoke(hash);
         };
         _grid.RangeSelected += (older, newer) => RangeSelected?.Invoke(older, newer);
@@ -215,20 +227,38 @@ public sealed class FileHistoryView : UserControl
         };
         _reloadButton.Click += (_, _) => Reload();
 
+        // Upstream's last item on this strip (gitcommandLogToolStripMenuItem →
+        // FormGitCommandLog.ShowOrActivate): what git was actually run to produce the
+        // history in front of you. Icon only with a tooltip, as upstream — it is a
+        // diagnostic, and a caption would give it the weight of the three switches.
+        _commandLogButton = new Button
+        {
+            Background = B("App.Control"),
+            Foreground = B("App.Text"),
+            Padding = StyleDensity.BarButton,
+            Margin = new Thickness(6, 0, 0, 0),
+        };
+        _commandLogButton.Click += (_, _) => ShowCommandLog();
+
         // WrapPanel, not a fixed-width horizontal StackPanel: the Italian captions
         // are longer than the English ones (HANDOFF §3).
         WrapPanel toolbar = new()
         {
             Background = B("App.Toolbar"),
             Margin = new Thickness(8, 2, 8, 2),
-            Children = { _reloadButton, _followButton, _fullHistoryButton },
+            Children = { _reloadButton, _followButton, _fullHistoryButton, _commandLogButton },
         };
 
+        // Toolbar FIRST, path line under it: upstream docks its whole strip to the top
+        // of the window (ToolStripFilters, above splitContainer1) and has no path line
+        // at all — the path lives in the title bar. The port keeps the line, because a
+        // window that follows renames should say which name it is showing right now,
+        // but it belongs under the controls, not over them.
         DockPanel root = new() { Background = B("App.Window") };
-        DockPanel.SetDock(_status, Dock.Top);
         DockPanel.SetDock(toolbar, Dock.Top);
-        root.Children.Add(_status);
+        DockPanel.SetDock(_status, Dock.Top);
         root.Children.Add(toolbar);
+        root.Children.Add(_status);
         root.Children.Add(_grid);
 
         Content = root;
@@ -280,7 +310,7 @@ public sealed class FileHistoryView : UserControl
         }
         catch (Exception ex)
         {
-            _status.Text = F(T("Error: {0}"), ex.Message);
+            SetStatus(F(T("Error: {0}"), ex.Message));
         }
     }
 
@@ -412,7 +442,7 @@ public sealed class FileHistoryView : UserControl
             IStorageProvider? storage = TopLevel.GetTopLevel(this)?.StorageProvider;
             if (storage is null)
             {
-                _status.Text = T("No file picker is available on this display.");
+                SetStatus(T("No file picker is available on this display."));
                 return;
             }
 
@@ -431,11 +461,11 @@ public sealed class FileHistoryView : UserControl
             string? destination = target.TryGetLocalPath();
             if (destination is null)
             {
-                _status.Text = T("The chosen location is not a local file.");
+                SetStatus(T("The chosen location is not a local file."));
                 return;
             }
 
-            _status.Text = F(T("Saving {0}…"), destination);
+            SetStatus(F(T("Saving {0}…"), destination));
 
             await Task.Run(async () =>
             {
@@ -444,11 +474,11 @@ public sealed class FileHistoryView : UserControl
                 await File.WriteAllBytesAsync(destination, bytes).ConfigureAwait(false);
             });
 
-            _status.Text = F(T("Saved {0}"), destination);
+            SetStatus(F(T("Saved {0}"), destination));
         }
         catch (Exception ex)
         {
-            _status.Text = F(T("Error: {0}"), ex.Message);
+            SetStatus(F(T("Error: {0}"), ex.Message));
         }
     }
 
@@ -499,7 +529,7 @@ public sealed class FileHistoryView : UserControl
     private void RunLocally(string label, Func<string, (bool Success, string Output)> op)
     {
         string repoPath = _repoPath!;
-        _status.Text = F(T("{0}…"), label);
+        SetStatus(F(T("{0}…"), label));
 
         _ = Task.Run(() =>
         {
@@ -517,7 +547,7 @@ public sealed class FileHistoryView : UserControl
             {
                 if (result.success)
                 {
-                    _status.Text = F(T("{0}: done"), label);
+                    SetStatus(F(T("{0}: done"), label));
                     if (_filePath is not null)
                     {
                         ShowHistory(repoPath, _filePath);
@@ -526,7 +556,7 @@ public sealed class FileHistoryView : UserControl
                 else
                 {
                     string firstLine = result.output.Split('\n')[0].Trim();
-                    _status.Text = F(T("{0} stopped: {1}"), label, firstLine);
+                    SetStatus(F(T("{0} stopped: {1}"), label, firstLine));
                 }
             });
         });
@@ -540,66 +570,76 @@ public sealed class FileHistoryView : UserControl
     private void Retranslate()
     {
         ApplyTranslations();
-        _status.Text = _shownFile is null ? T("No file loaded.") : StatusLine();
+        ShowStatus();
     }
 
     private void ApplyTranslations()
     {
-        _fullHistoryButton.Content = T("FormFileHistory/ShowFullHistory.ToolTipText", "Show Full History") + "  ▾";
+        // Upstream's three buttons are image-only with a tooltip; the port keeps the
+        // caption (a bar of bare glyphs is unreadable at this size) and adds upstream's
+        // image in front of it, so the strip is recognisable from a screenshot of
+        // either build. The images are upstream's own: FileHistory on "Show Full
+        // History", ReloadRevisions on the load button, GitCommandLog on the last.
+        _fullHistoryButton.Content = IconText.Header(
+            "FileHistory",
+            T("FormFileHistory/ShowFullHistory.ToolTipText", "Show Full History") + "  ▾");
         _followButton.Content =
             T("FormFileHistory/followFileHistoryToolStripMenuItem.Text", "Detect and follow renames") + "  ▾";
+
         // Upstream's split button carries no caption, only the tooltip, so that is
         // the trans-unit the port's visible caption is keyed to.
-        _reloadButton.Content = T("FormFileHistory/toolStripSplitLoad.ToolTipText", "Load file history");
+        string load = T("FormFileHistory/toolStripSplitLoad.ToolTipText", "Load file history");
+        _reloadButton.Content = IconText.Header("ReloadRevisions", load);
+        ToolTip.SetTip(_reloadButton, load);
+
+        // The one button that stays icon-only, as upstream: it opens a diagnostic, and
+        // the caption is its tooltip. A missing asset degrades to the caption rather
+        // than to an unlabelled square.
+        string log = T("FormBrowse/gitcommandLogToolStripMenuItem.ToolTipText", "Git command log");
+        _commandLogButton.Content = (object?)IconLoader.Image("GitCommandLog") ?? log;
+        ToolTip.SetTip(_commandLogButton, log);
     }
 
-    // The tab's own line: WHICH file is shown (the grid's status line below counts
-    // the commits) plus, for the selected revision, upstream's "could not identify
-    // the file" marker. It is also the surface the Save as / revert messages use.
-    private string StatusLine() => (_shownFile ?? string.Empty) + _notFoundMarker;
-
-    // Upstream's _fileNotFound (" - Git could not identify the file {0}"), which it
-    // appends to the commit-info tab caption; the port has no tab there, so it goes on
-    // the status line of the selected revision. The blob probe is a git call: off the
-    // UI thread, and only the newest one is allowed to write.
-    private void CheckFilePresence(string hash)
+    // The line's ONE standing message: the name the file had in the selected revision,
+    // when --follow has walked past a rename and that name is no longer the one in the
+    // title. Upstream puts the same fact in brackets in its title bar; here it is also
+    // next to the grid that produced it, which is where the surprise happens. Empty
+    // when the selection is under today's name — the common case — so the line is
+    // gone and the pane reads like upstream's.
+    //
+    // Upstream's _fileNotFound marker is deliberately NOT repeated here: it belongs to
+    // the Commit tab's caption (FormFileHistory.UpdateSelectedFileViewers), which the
+    // window now has and fills from the one blob probe it already runs per selection.
+    // Asking the same question twice cost a second `git cat-file` on every arrow key.
+    private void ShowStatus()
     {
-        if (_repoPath is null)
+        string shown = _shownFile ?? string.Empty;
+        string historic = _selectedHash.Length > 0 ? PathFor(_selectedHash) : shown;
+
+        SetStatus(historic.Length > 0 && !string.Equals(historic, shown, StringComparison.Ordinal)
+            ? F(T("In this revision the file is named {0}"), historic)
+            : string.Empty);
+    }
+
+    // The single writer of the line, so that showing and hiding it can never come
+    // apart: an empty message means the line is not there at all, not a blank strip.
+    private void SetStatus(string text)
+    {
+        _status.Text = text;
+        _status.IsVisible = text.Length > 0;
+    }
+
+    // Upstream's FormGitCommandLog, opened from the same button. Non-modal, unlike
+    // MainWindow's: this window is itself a child the user is expected to keep next to
+    // the browse window, and a modal log over it would freeze both.
+    private void ShowCommandLog()
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
         {
             return;
         }
 
-        _notFoundMarker = string.Empty;
-        if (_shownFile is not null)
-        {
-            _status.Text = StatusLine();
-        }
-
-        string repo = _repoPath;
-        string path = PathFor(hash);
-        int token = ++_notFoundToken;
-
-        _ = Task.Run(() =>
-        {
-            bool exists = _service.FileExistsInRevision(repo, hash, path);
-            if (exists)
-            {
-                return;
-            }
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (token != _notFoundToken || _shownFile is null)
-                {
-                    return;
-                }
-
-                _notFoundMarker = string.Format(
-                    T("FormFileHistory/_fileNotFound.Text", " - Git could not identify the file {0}"),
-                    path.Length > 0 ? $"\"{path}\"" : T("(unknown)"));
-                _status.Text = StatusLine();
-            });
-        });
+        new CommandLogWindow().Show(owner);
     }
 
     // ------------------------------------------------------------------ loading
@@ -615,9 +655,8 @@ public sealed class FileHistoryView : UserControl
         _repoPath = repoPath;
         _filePath = filePath;
         _shownFile = filePath;
-        _notFoundMarker = string.Empty;
-        _notFoundToken++;
-        _status.Text = StatusLine();
+        _selectedHash = string.Empty;
+        ShowStatus();
 
         _grid.LoadFileHistory(repoPath, filePath, _options);
 
@@ -645,6 +684,10 @@ public sealed class FileHistoryView : UserControl
                 if (token == _mapToken)
                 {
                     _pathByHash = map;
+
+                    // The map lands one git call after the grid's first selection, so
+                    // the line was written before the historic name was knowable.
+                    ShowStatus();
                 }
             });
         });

@@ -1,6 +1,8 @@
 using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
@@ -130,7 +132,26 @@ public sealed class FileHistoryWindow : ZoomWindow
         _tabs.SelectedItem = showBlame ? _blameTab : _diffTab;
         _tabs.SelectionChanged += (_, _) => LoadSelectedTab();
 
-        Grid split = new() { RowDefinitions = new RowDefinitions("2*,4,3*") };
+        // Upstream's proportions, not even ones: splitContainer1 opens at
+        // SplitterDistance 101 of 419, i.e. a quarter to the grid and three quarters to
+        // the viewers (FormFileHistory.Designer.cs). That is the right bias — one file's
+        // log is a handful of commits, while what those commits DID to it needs the
+        // room — and the port opened at 40/60, which cost the diff two hundred pixels.
+        Grid split = new() { RowDefinitions = new RowDefinitions("1*,4,3*") };
+
+        // A floor under the top pane, which upstream does not need. Upstream's 101px
+        // are 101px of ROWS: its toolbar is docked to the form, above the splitter. The
+        // port's pane carries its own chrome inside the split — the switches strip, the
+        // grid's bar and the grid's status line, some 125px of it — so the same quarter
+        // of a 700px window would leave the list one row tall. 240 keeps roughly
+        // upstream's four or five rows at any window size, and the quarter takes over
+        // as soon as the window is tall enough to beat it.
+        //
+        // On the ROW, not on the pane: a star row hands its child the share it computed
+        // and never re-reads the child's own MinHeight, so a floor set there is not a
+        // floor at all — the control simply overflows and paints over the tabs below.
+        split.RowDefinitions[0].MinHeight = 240;
+
         GridSplitter splitter = new()
         {
             Height = 4,
@@ -147,6 +168,16 @@ public sealed class FileHistoryWindow : ZoomWindow
 
         DialogKeys.InstallEscapeClose(this);
 
+        // Ctrl+Tab / Ctrl+Shift+Tab walk the four tabs. WinForms gives upstream this
+        // for free — its TabControl handles the pair itself — and Avalonia's does not:
+        // it only moves between tabs with the arrow keys, and only while the tab strip
+        // has focus, which it never has once you are reading a diff.
+        //
+        // Tunnelling, deliberately: the key has to be claimed before it reaches the
+        // text editors in the tabs and before Avalonia's own focus navigation, which
+        // treats Tab as "move to the next control" whatever the modifiers are.
+        AddHandler(KeyDownEvent, OnTabCycleKey, RoutingStrategies.Tunnel);
+
         _history.RevisionSelected += OnRevisionSelected;
         _history.RangeSelected += OnRangeSelected;
 
@@ -157,6 +188,38 @@ public sealed class FileHistoryWindow : ZoomWindow
 
     private static TabItem Tab(string icon, string caption, Control content)
         => new() { Header = IconText.Header(icon, caption), Content = content };
+
+    private void OnTabCycleKey(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Tab || !e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            return;
+        }
+
+        CycleTab(e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? -1 : 1);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    ///  Moves the selection <paramref name="step"/> tabs on, wrapping round and
+    ///  stepping OVER the disabled ones — upstream detaches the tabs a revision has
+    ///  nothing to show in, so its own Ctrl+Tab can never land on one either.
+    /// </summary>
+    private void CycleTab(int step)
+    {
+        int count = _tabs.Items.Count;
+        int index = _tabs.SelectedIndex;
+
+        for (int i = 0; i < count; i++)
+        {
+            index = (((index + step) % count) + count) % count;
+            if (_tabs.Items[index] is TabItem { IsEnabled: true })
+            {
+                _tabs.SelectedIndex = index;
+                return;
+            }
+        }
+    }
 
     /// <summary>
     ///  <c>File History - &lt;path&gt; [(&lt;name in the selected revision&gt;)] - &lt;repository&gt;</c>,
