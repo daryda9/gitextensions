@@ -716,8 +716,7 @@ public static class ModernStyles
     ///  is the whole reason this template exists (see the class remarks): Fluent draws
     ///  its pipe OVER the label's cell, and at this app's density it lands on the text.
     /// </summary>
-    private static FuncControlTemplate<TabItem> TabTemplate(
-        SolidColorBrush barAtRest, CornerRadius corners, bool barAtBottom)
+    private static FuncControlTemplate<TabItem> TabTemplate()
         => new((tab, scope) =>
         {
             Border bar = new()
@@ -752,35 +751,40 @@ public static class ModernStyles
             header[!ContentPresenter.FontWeightProperty] = tab[!TemplatedControl.FontWeightProperty];
             header[!ContentPresenter.ForegroundProperty] = tab[!TemplatedControl.ForegroundProperty];
 
+            // Three rows and ONE bar: the marker's row is chosen by a style
+            // (ModernTabItem moves it to row 2), never by swapping the template.
+            // Swapping it crashed — a template swap re-parents the header's content
+            // while the old presenter still holds it, and Avalonia refuses:
+            // "The control StackPanel already has a visual parent". The empty end row
+            // is Auto, so it collapses to nothing.
             Grid layout = new()
             {
-                RowDefinitions = barAtBottom
-                    ? new RowDefinitions
-                    {
-                        new RowDefinition(new GridLength(1, GridUnitType.Star)),
-                        new RowDefinition(GridLength.Auto),
-                    }
-                    : new RowDefinitions
-                    {
-                        new RowDefinition(GridLength.Auto),
-                        new RowDefinition(new GridLength(1, GridUnitType.Star)),
-                    },
+                RowDefinitions = new RowDefinitions
+                {
+                    new RowDefinition(GridLength.Auto),
+                    new RowDefinition(new GridLength(1, GridUnitType.Star)),
+                    new RowDefinition(GridLength.Auto),
+                },
             };
-            Grid.SetRow(bar, barAtBottom ? 1 : 0);
-            Grid.SetRow(header, barAtBottom ? 0 : 1);
+            Grid.SetRow(bar, 0);
+            Grid.SetRow(header, 1);
             layout.Children.Add(bar);
             layout.Children.Add(header);
 
             Border root = new()
             {
                 Name = "PART_LayoutRoot",
-                CornerRadius = corners,
                 Child = layout,
             };
             root.RegisterInNameScope(scope);
             root[!Border.BackgroundProperty] = tab[!TemplatedControl.BackgroundProperty];
             root[!Border.BorderBrushProperty] = tab[!TemplatedControl.BorderBrushProperty];
             root[!Border.BorderThicknessProperty] = tab[!TemplatedControl.BorderThicknessProperty];
+
+            // Bound, not assigned: a local value here would beat the style that squares
+            // the corners for the modern look (the same trap the marker's colour fell
+            // into).
+            root[!Border.CornerRadiusProperty] = tab[!TemplatedControl.CornerRadiusProperty];
             return root;
         });
 
@@ -818,14 +822,19 @@ public static class ModernStyles
             return styles;
         }
 
-        // Same template, the marker on the other edge. Square corners: nothing is
-        // drawn for them to round.
+        // The SAME template as the classic look — only the marker's row moves, and the
+        // corners go square because nothing is drawn for them to round. Re-templating
+        // instead would crash on the style switch (see the note in TabTemplate).
         Style tab = new(x => x.OfType<TabItem>());
-        tab.Setters.Add(new Setter(
-            TemplatedControl.TemplateProperty,
-            TabTemplate(Faded(accent), default, barAtBottom: true)));
         tab.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(0)));
+        tab.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, default(CornerRadius)));
         styles.Add(tab);
+
+        // Row 2 = the bottom edge: the underline.
+        Style barRow = new(x => x.OfType<TabItem>()
+            .Template().OfType<Border>().Name("PART_SelectedBar"));
+        barRow.Setters.Add(new Setter(Grid.RowProperty, 2));
+        styles.Add(barRow);
 
         // No fill and no outline on the selected tab — the underline below is the
         // marker. Background must stay the invisible-at-rest colour rather than
@@ -886,7 +895,7 @@ public static class ModernStyles
         // corners stay square because the selected tab is meant to run INTO the body.
         CornerRadius topCorners = new(Metrics.Radius.Sm / 2, Metrics.Radius.Sm / 2, 0, 0);
 
-        FuncControlTemplate<TabItem> template = TabTemplate(barAtRest, topCorners, barAtBottom: false);
+        FuncControlTemplate<TabItem> template = TabTemplate();
 
 
         // ---- the control itself: template + the unselected resting state -----------
@@ -904,6 +913,7 @@ public static class ModernStyles
         tab.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, stripHoverAtRest));
         tab.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, hoverBorderAtRest));
         tab.Setters.Add(new Setter(TemplatedControl.BorderThicknessProperty, new Thickness(1, 1, 1, 0)));
+        tab.Setters.Add(new Setter(TemplatedControl.CornerRadiusProperty, topCorners));
         tab.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, textDim));
         styles.Add(tab);
 
