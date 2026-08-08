@@ -3260,6 +3260,64 @@ ha rinumerato le milestone: le M75/M76 di questa sessione sono diventate **M77/M
 **M79**. Tutti i commit di questa sessione sono sopravvissuti ai merge (verificati uno per uno) e la
 build resta a `Errori: 0` dopo l'unione.
 
+## M128 (2026-08-08, `7a33eb988`) — il menu nella barra del titolo, come VS Code
+
+> Dall'utente: «tutta la toolbar (start, repository, navigate…) deve essere nella barra di sopra, la
+> stessa dove ci sono le icone per chiudere e mettere in barra … se c'è poco spazio compaiono i "…"»,
+> poi «la modalità deve poter essere selezionata nelle impostazioni di appearance (di default ci deve
+> essere la modalità nuova)» e infine «non quindi in base allo stile modern o classic».
+
+Lavoro delegato a un subagent in worktree, integrato con cherry-pick.
+
+### Cosa dice X11 (sondato, non dedotto)
+Sonda dentro l'app vera, sotto una sessione **GNOME Shell (mutter)** su Xvfb:
+
+- `ExtendClientAreaToDecorationsHint = true` — con **ogni** valore di `ExtendClientAreaChromeHints` —
+  è un **no-op** sul backend X11 di Avalonia 11.3.14: `IsExtendedIntoWindowDecorations` resta `false`,
+  i margini restano a zero e mutter continua a disegnare la sua cornice da 37px. Non esiste una
+  "client area estesa" in cui infilare il menu.
+- `SystemDecorations.None` **è** onorato: la cornice sparisce del tutto (`BorderOnly` si comporta
+  identico sotto mutter).
+- È tutto-o-niente: niente cornice significa niente pulsanti di sistema, niente maniglia di
+  trascinamento e **niente bordo di ridimensionamento**.
+
+Quindi i pulsanti se li disegna l'app — minimizza, massimizza/ripristina (il glifo segue
+`WindowState`) e chiudi, con i riempimenti di hover della chrome e il rosso sulla chiusura — e
+`Views/ResizeGrips` restituisce gli otto bordi via `BeginResizeDrag` (`_NET_WM_MOVERESIZE`), nascosti
+mentre la finestra è massimizzata.
+
+### Cosa c'è
+`App/Views/TitleBar.cs`: menu · titolo · pulsanti finestra su una riga, con `BeginMoveDrag` sull'area
+vuota e doppio clic che massimizza. `App/Theming/WindowChrome.cs` tiene la modalità viva e la mappa
+(assente o ignota → **unificata**). L'opzione sta in **Impostazioni → Appearance** come combo
+«Title bar» («Menu in the title bar», default, / «Separate menu bar»), persistita in
+`UiState.TitleBar` accanto a `Theme` e `Style`, con anteprima dal vivo e ripristino su Annulla. Come
+chiesto, **non** dipende dallo stile: Modern e Classic prendono entrambi le due modalità, e la barra
+unificata pesca dalla palette, quindi in Classic esce con la superficie classica.
+
+**L'overflow è una misura.** La barra riserva i pulsanti più `min(larghezza del titolo, 220)` e passa
+il resto a `MainMenu.FitTo`, che misura il menu senza vincoli, tiene in cache la larghezza naturale di
+ogni voce, le percorre da sinistra contro il budget (riservando lo spazio per il «…») e rimanda il
+re-parenting fuori dalla passata di misura. Nessuna soglia scritta a mano.
+
+**Due bug veri trovati durante la verifica.** Il cambio di stile ri-templatizza le voci, quindi quelle
+parcheggiate nel «…» conservavano larghezze vecchie e restavano bloccate lì (Classic→Modern perdeva
+«Help»). E `InvalidateMeasure()` sul solo menu non arriva mai all'ospite: Avalonia rimisura con il
+vincolo precedente e la dimensione desiderata non cambia — va invalidata anche la misura dell'ospite.
+
+**Verificato** (screenshot, GNOME Shell/mutter su Xvfb): barra larga e a 800/480px con il «…»; il
+flyout del «…» che elenca Commands/GitHub/Plugins/Tools/Help nell'ordine; un menu aperto dalla barra;
+navigazione con le frecce fino al «…» e Alt+S che apre Start con le sottolineature dei tasti di
+accesso; spostamento della finestra col trascinamento (+100/+100 esatti), doppio clic che massimizza e
+ripristina, minimizza (→ `Iconic`), hover rosso su chiudi; ridimensionamento dal bordo destro, dal
+bordo alto e dall'angolo in basso a destra; Light↔Dark che segue la palette viva; la pagina Appearance
+con l'opzione; la modalità standard; e la barra unificata in **Classic** (`App.Toolbar` #333337, ink
+#DCDCDC). **Cambio a caldo**: Modern↔Classic e unificata↔standard rifanno la finestra dal vivo (mutter
+la incornicia e la scornicia al volo), anche dall'anteprima del dialogo — nessun riavvio, quindi il
+dialogo non porta avvisi.
+
+Build `Avvisi: 0 / Errori: 0`, harness navigation snapshot PASS.
+
 ## M127 (2026-08-08, `3b8ee7ec0`) — il pulsante della shell apre un terminale che sopravvive
 
 > Dall'utente: «ho notato che il tasto bash, almeno in linux non fa niente».
