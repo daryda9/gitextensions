@@ -3377,6 +3377,55 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M135 (2026-08-09, `a75850cd4`, `49c235a3f`, `36fb0539a`) — il diff non resta appeso alla repo precedente, e lo spinner è uno solo
+
+> Dall'utente: «quando cambia tab (quindi repo o submodules) se ho un commit selezionato e aperta la
+> tab di "diff", quest'ultima non cambia se ho selezionato un commit su una tab e non sull'altra,
+> inoltre rendi univoco l'animazione di loading per tutti i riquadri».
+
+### Il diff appeso alla repo precedente
+
+I riquadri sotto la griglia descrivono **un commit**, e quel commit apparteneva alla repository che
+si stava lasciando. Non era una questione di dati vecchi: era una risposta **sbagliata**. E niente
+l'avrebbe corretta da sé — i campi che tengono il conto (`_diffLoadedFor`, `_detailLoadedFor`, …)
+dicevano ancora «aggiornato per quell'hash», e una repository la cui griglia arriva **senza
+selezione** non alza mai l'evento che li ricaricherebbe.
+
+`MainWindow.ResetBottomPanes`, chiamato all'inizio di `LoadRepository`: azzera i campi di
+tracciamento e svuota i quattro riquadri che parlano di un commit. Sono stati aggiunti i due
+`Clear()` pubblici che mancavano (`DiffView.Clear`, `CommitDetailView.ClearCommit`; albero dei file e
+GPG ce l'avevano già). Console, Output e Blame restano intatti di proposito: i primi due sono il
+registro di quello che l'utente ha fatto, e Blame si apre esplicitamente su un file invece di seguire
+la selezione della griglia.
+
+Verificato a schermo: commit selezionato con diff a video → si passa a un'altra scheda e il pannello
+torna a «No commit selected.» con lista file e patch vuote → si torna alla prima scheda e riappaiono
+selezione **e** diff.
+
+### Un solo modo di dire «sto caricando»
+
+`BusyOverlay` (M134) era su due riquadri; ogni altro annunciava l'attesa con una frase propria
+(«Loading commit …», «Loading diff…», «Loading files at …», «Loading remotes…»), cioè sei vocabolari
+per una cosa sola. Ora lo stesso velo e lo stesso arco rotante stanno su: dettaglio del commit, diff
+(due veli indipendenti — lista dei file e testo della patch), GPG, albero dei file, contenuto file,
+blame, pannello stash (tre veli: elenco stash, file, diff) e pannello dei remoti.
+
+Regole tenute ferme in tutti i casi:
+
+- si vela **solo** ciò che viene sostituito: barre di opzioni, filtri e splitter restano vivi dove
+  hanno ancora senso;
+- il testo di stato sopravvive **quando dice qualcosa che lo spinner non può dire** — il nome del
+  file, la revisione, l'errore, la narrazione di un fetch con retry delle credenziali. Sparisce dove
+  era solo «sto aspettando»;
+- ogni via d'uscita nasconde il velo, errore e annullamento compresi: un riquadro che gira per sempre
+  è peggio di nessuno spinner;
+- il GPG è l'unico che continua a **svuotare** il riquadro all'inizio: lasciare una firma «valida»
+  visibile durante i 250 ms silenziosi dell'overlay sarebbe un'affermazione di sicurezza sul commit
+  sbagliato.
+
+Verifica: build a zero avvisi, e con il ritardo azzerato in via temporanea nessun riquadro resta
+appeso con lo spinner acceso dopo i caricamenti.
+
 ## M134 (2026-08-09, `a073cd787`) — la griglia e l'albero dicono quando stanno ricaricando
 
 > Dall'utente: «in fase di caricamento della lista commit e del tree relativo […] (quando switchiamo
