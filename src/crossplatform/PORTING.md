@@ -3377,6 +3377,42 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M134 (2026-08-09, `a073cd787`) — la griglia e l'albero dicono quando stanno ricaricando
+
+> Dall'utente: «in fase di caricamento della lista commit e del tree relativo […] (quando switchiamo
+> branch, worktree ecc) e quando cambiamo progetto, mostra dei loading spinner nelle varie finestre
+> fin quando non si conclude il caricamento dei dati aggiornati».
+
+Nuovo `Views/BusyOverlay`: velo traslucido sul pannello, arco rotante in `App.Accent`, didascalia
+sotto, e — la parte che conta — **un ritardo prima di comparire**, 250 ms di default. Quasi tutti i
+ricaricamenti finiscono ben prima: uno spinner che appare e sparisce in 80 ms non è un feedback, è un
+tremolio, e si legge come un difetto. `Show()` arma un timer, `Hide()` prima che scatti non dipinge
+mai niente. L'animazione gira solo mentre il velo è visibile.
+
+Il contenuto vecchio resta leggibile sotto il velo invece di sparire: l'utente lo stava guardando un
+istante prima. I clic vengono però assorbiti — sotto c'è roba che sta per cambiare posizione, e
+lasciar passare un clic vorrebbe dire selezionare una riga diversa da quella mirata.
+
+Dove:
+
+- **griglia dei commit** — solo sopra la lista, non su tutta la vista: casella di ricerca, ambito e
+  riga di stato restano usabili, altrimenti un ricaricamento sembrerebbe un'attesa modale. E solo
+  sui **restart**: un append è l'utente che scorre nella storia più vecchia, le righe che sta
+  leggendo non si muovono, e velarle per annunciare lavoro sotto la piega sarebbe una bugia;
+- **albero di sinistra** — tutto il pannello, barra compresa: lì nessun pulsante è utilizzabile
+  mentre si ricostruisce l'albero su cui agiscono. Nascosto **solo** quando una passata dipinge
+  davvero: le due uscite anticipate passano il testimone a una passata che sta partendo in quel
+  momento, e spegnere il velo in mezzo lo farebbe lampeggiare e ripartire col suo ritardo — con una
+  fila di passate superate non si vedrebbe mai niente.
+
+Copre da sé i tre casi chiesti: cambio branch e worktree passano da `RefreshAll` (griglia + albero),
+il cambio di progetto da `LoadRepository`, e la finestra File History riusa la stessa griglia.
+
+**Verifica.** Su Xvfb: con la pagina della griglia portata a 50000 commit (18398 righe reali) un F5
+mostra il velo e lo spinner sulla lista per tutta la durata del walk. Per l'albero, il cui giro qui
+sta sotto la soglia, verifica a `Delay = 0` in via temporanea — velo e spinner al posto giusto — poi
+il ritardo è stato rimesso. Build `Avvisi: 0 / Errori: 0`.
+
 ## M133 (2026-08-08, `49841734d`) — la finestra aperta ha l'icona del prodotto
 
 > Dall'utente, con lo screenshot del dock: «quando cerco l'app dalla lista di app compare l'icona, ma
