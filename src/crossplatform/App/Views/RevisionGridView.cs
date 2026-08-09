@@ -171,6 +171,11 @@ public sealed class RevisionGridView : UserControl
     // _list's own key/text handlers (not _search's), it never competes with the
     // filter box for typed characters.
     private readonly Border _quickSearchOverlay;
+
+    // The spinner drawn over the list while a restart of the walk is in flight. Its own
+    // delay keeps it off the screen for the reloads that finish in a blink, which is
+    // most of them (see Views/BusyOverlay).
+    private readonly BusyOverlay _busy = new();
     private readonly TextBlock _quickSearchLabel;
     private readonly DispatcherTimer _quickSearchTimer;
     private string _quickSearch = string.Empty;
@@ -983,6 +988,11 @@ public sealed class RevisionGridView : UserControl
         listHost.Children.Add(_list);
         listHost.Children.Add(_quickSearchOverlay);
 
+        // Over the LIST only, not the whole view: the search box, the scope buttons and
+        // the status line stay legible and usable while the walk runs — covering them
+        // would make a reload feel like a modal wait, which it is not.
+        listHost.Children.Add(_busy);
+
         DockPanel root = new() { Background = B("App.Window") };
         DockPanel.SetDock(searchBar, Dock.Top);
         DockPanel.SetDock(_status, Dock.Top);
@@ -1651,6 +1661,16 @@ public sealed class RevisionGridView : UserControl
             _status.Text = T("RevisionGridControl/_strLoading.Text", "Loading…");
         }
 
+        if (restart)
+        {
+            // Only a RESTART is worth a spinner. An append is the user scrolling into
+            // older history: the rows they are reading stay where they are, and veiling
+            // them to announce work happening below the fold would be a lie about what
+            // is going on. The overlay's own delay then decides whether a restart is slow
+            // enough to be worth saying anything at all.
+            _busy.Show(T("RevisionGridControl/_strLoading.Text", "Loading…"));
+        }
+
         _ = Task.Run(() =>
         {
             try
@@ -1706,6 +1726,7 @@ public sealed class RevisionGridView : UserControl
                     }
 
                     _loadingPage = false;
+                    _busy.Hide();
                     _loaded = merged;
                     _hasMore = hasMore;
 
@@ -1753,6 +1774,7 @@ public sealed class RevisionGridView : UserControl
                     }
 
                     _loadingPage = false;
+                    _busy.Hide();
                     _hasMore = false;
                     _status.Text = string.Format(T("Error: {0}"), ex.Message);
                 });

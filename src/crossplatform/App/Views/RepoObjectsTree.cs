@@ -137,6 +137,11 @@ public sealed class RepoObjectsTree : UserControl
     // Guards NotifyBusy against stacking one refusal modal on top of another.
     private bool _busyNoticeOpen;
 
+    // The spinner over this pane while a reload pass runs. Named for what it draws, not
+    // for what it guards: _busy above is the "an operation is running" flag of the
+    // context-menu commands, and the two mean different things.
+    private readonly BusyOverlay _loadingOverlay = new();
+
     // --- Session-local ref ordering state --------------------------------
     // All sorting/reordering below is view-only: it reorders the displayed
     // child nodes for the current session and never touches git. The last
@@ -374,7 +379,11 @@ public sealed class RepoObjectsTree : UserControl
         layout.Children.Add(_tree);
 
         Background = Brush("App.Panel", Brushes.Transparent);
-        Content = layout;
+
+        // The whole panel, toolbar included: unlike the revision grid, nothing in this
+        // pane can be used while its own reload runs — the buttons act on the very tree
+        // that is being rebuilt.
+        Content = new Panel { Children = { layout, _loadingOverlay } };
 
         TranslationService.LanguageChanged += OnLanguageChanged;
     }
@@ -736,6 +745,12 @@ public sealed class RepoObjectsTree : UserControl
     // thread) nor leave the older result on screen.
     private void StartRefresh(string repo, int epoch)
     {
+        // Armed on every pass, including the one a superseded pass starts in its place:
+        // what the user is waiting for is a tree that matches the repository, and until
+        // some pass paints one they are still waiting. The overlay's delay means the
+        // reloads that finish quickly never show anything.
+        _loadingOverlay.Show(T("RevisionGridControl/_strLoading.Text", "Loading…"));
+
         Task<RepositoryNavigationSnapshot>? navigationForPass = _navigationSnapshotTask;
         _ = Task.Run(async () =>
         {
@@ -828,6 +843,12 @@ public sealed class RepoObjectsTree : UserControl
                     // tree; either way this stale snapshot is never painted.
                     return;
                 }
+
+                // Here, and not a line earlier: the branches above hand over to a pass
+                // that is starting right now, and hiding the spinner between the two would
+                // blink the veil off and straight back on — and restart its delay, so a
+                // string of superseded passes would never show anything at all.
+                _loadingOverlay.Hide();
 
                 if (snapshot is not null)
                 {
