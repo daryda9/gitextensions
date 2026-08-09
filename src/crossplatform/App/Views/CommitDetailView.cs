@@ -1076,6 +1076,21 @@ public sealed class CommitDetailView : UserControl
         return result;
     }
 
+    /// <summary>
+    ///  Empties the pane back to "No commit selected." — the state it is born in.
+    ///  Used when the window changes REPOSITORY: the commit on screen belongs to the
+    ///  repository being left, and a new one with no selection yet would never overwrite
+    ///  it. (The private <c>Clear</c> below empties the fields; this also cancels the
+    ///  load in flight and resets the status line, which a reload would have done.)
+    /// </summary>
+    public void ClearCommit()
+    {
+        _cts?.Cancel();
+        Clear();
+        _repoPath = string.Empty;
+        _status.Text = T("No commit selected.");
+    }
+
     private void Clear()
     {
         _rendered = null;

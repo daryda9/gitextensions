@@ -4380,6 +4380,15 @@ public sealed class MainWindow : Theming.ZoomWindow
     // that switching tabs can reuse it without going back through the strip.
     private void LoadRepository(string repoPath)
     {
+        // The panes below the grid describe a COMMIT, and the commit they are describing
+        // belongs to the repository being left. Emptying them is not a refresh: it is the
+        // difference between "stale" and "wrong". And nothing would correct them on its
+        // own — the tracking fields still said the panes were up to date for that hash,
+        // and a repository whose grid lands with no selection never raises the event that
+        // would reload them. So switching tabs used to leave the previous repository's
+        // diff sitting under the new repository's history.
+        ResetBottomPanes();
+
         _repoPath = repoPath;
         int epoch = ++_repositoryEpoch;
         BeginNavigationLoad();
@@ -4398,6 +4407,29 @@ public sealed class MainWindow : Theming.ZoomWindow
         _ = RecordRecentAsync(repoPath);
         _ = PopulateRecentAsync();
         UpdateMenuRepositoryState();
+    }
+
+    // Empties every pane that describes a single commit, and forgets what they were
+    // showing, so the next selection in the new repository is always loaded afresh.
+    // The Console, Output and Blame panes are deliberately left alone: the first two are
+    // logs of what the user did (and the console is re-pointed at the new repository by
+    // OpenRepository itself), and blame is opened explicitly on a file rather than
+    // following the grid's selection.
+    private void ResetBottomPanes()
+    {
+        _lastSelectedHash = null;
+        _artificialRowSelected = false;
+        _artificialHash = null;
+        _diffShowsRange = false;
+        _detailLoadedFor = null;
+        _diffLoadedFor = null;
+        _fileTreeLoadedFor = null;
+        _gpgLoadedFor = null;
+
+        _detail.ClearCommit();
+        _diff.Clear();
+        _fileTree.Clear();
+        _gpg.Clear();
     }
 
     // ---- repository tabs ---------------------------------------------------------

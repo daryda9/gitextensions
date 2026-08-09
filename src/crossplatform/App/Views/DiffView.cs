@@ -1046,6 +1046,25 @@ public sealed class DiffView : UserControl
     ///  <paramref name="baseHash"/>..<paramref name="otherHash"/>
     ///  (i.e. <c>git diff &lt;base&gt; &lt;other&gt;</c>).
     /// </summary>
+    /// <summary>
+    ///  Empties the pane: no file list, no patch, and the "No commit selected." line the
+    ///  view is born with.
+    ///
+    ///  <para>Called when the window changes REPOSITORY (a tab switch), where leaving the
+    ///  previous repository's diff on screen is not staleness but a wrong answer: the
+    ///  commit it describes is not in the repository now being shown, and if the new one
+    ///  has no selection yet nothing would ever overwrite it.</para>
+    /// </summary>
+    public void Clear()
+    {
+        _diffCts?.Cancel();
+        _files.Clear();
+        ShowPlaceholder(string.Empty);
+        _currentDiffText = string.Empty;
+        _hasCommit = false;
+        _status.Text = T("No commit selected.");
+    }
+
     public void ShowRange(string repoPath, string baseHash, string otherHash)
         => ShowRange(repoPath, baseHash, otherHash, preselectPath: null);
 
