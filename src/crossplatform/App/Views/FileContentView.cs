@@ -62,6 +62,7 @@ public sealed class FileContentView : UserControl
     private readonly TextBlock _gutter;
     private readonly ScrollViewer _gutterScroll;
     private readonly Border _gutterBorder;
+    private readonly BusyOverlay _busy = new();
 
     // Last successful load, kept so a language switch can re-word the status line
     // without going back to git.
@@ -155,6 +156,12 @@ public sealed class FileContentView : UserControl
         body.Children.Add(_gutterBorder);
         body.Children.Add(_contentScroll);
 
+        // Over the text AND its gutter — the two are one reading surface and the
+        // numbers are as stale as the lines they count — but not over the status bar,
+        // which is where the name of the file being read is written.
+        body.Children.Add(_busy);
+        Grid.SetColumnSpan(_busy, 2);
+
         Border statusBar = new()
         {
             Background = Brush("App.Toolbar", Brushes.DimGray),
@@ -192,7 +199,14 @@ public sealed class FileContentView : UserControl
     public void ShowFile(string repoPath, string filePath, string commitHash)
     {
         ResetContent();
+
+        // The status line KEEPS its "Loading {0}…": it names the file, which the
+        // spinner cannot, and this pane has no other header — with the line replaced
+        // by a bare spinner the user could not tell which of two files they
+        // double-clicked is on its way. The overlay adds what the sentence never
+        // had: the fact that something is still happening after the first second.
         _status.Text = F(T("Loading {0}…"), filePath);
+        _busy.Show();
 
         // Supersede whatever is in flight. ShowFile only ever runs on the UI thread,
         // so swapping the field needs no locking.
@@ -244,6 +258,12 @@ public sealed class FileContentView : UserControl
                             return;
                         }
 
+                        // Inside the staleness guard, never outside it: when this load
+                        // has been superseded the overlay on screen belongs to the
+                        // NEWER request, and hiding it here would strand that one
+                        // spinnerless for as long as it still runs.
+                        _busy.Hide();
+
                         _content.Text = binary
                             ? F(T("(binary file — {0} byte(s))"), bytes.Length)
                             : text;
@@ -272,6 +292,7 @@ public sealed class FileContentView : UserControl
                     {
                         if (ReferenceEquals(_loadCts, cts) && !token.IsCancellationRequested)
                         {
+                            _busy.Hide();
                             ResetContent();
                             _status.Text = F(T("Error: {0}"), message);
                         }
@@ -297,6 +318,11 @@ public sealed class FileContentView : UserControl
         {
             // See ShowFile: cancelling a spent source is not an error worth raising.
         }
+
+        // The cancelled load ends in its OperationCanceledException arm, which
+        // deliberately touches nothing — so the only place left to take the veil down
+        // is here, and without it an emptied pane would spin forever.
+        _busy.Hide();
 
         ResetContent();
         _shownFile = null;

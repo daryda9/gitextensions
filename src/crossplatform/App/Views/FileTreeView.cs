@@ -89,6 +89,14 @@ public sealed class FileTreeView : UserControl
     private readonly TextBlock _status;
     private readonly ExternalToolService _tools = new();
 
+    // The tab is two panes that wait on git separately — the tree of a revision, and
+    // the blob of whichever file is selected in it — so each gets its own overlay.
+    // Selecting a file while the tree is still filling is impossible (there is
+    // nothing to click yet), but the reverse is routine, and one shared overlay would
+    // then veil a tree the user is actively picking through.
+    private readonly BusyOverlay _treeBusy = new();
+    private readonly BusyOverlay _contentBusy = new();
+
     // The File-tree tab is always a path tree: its grouping is not the session
     // choice the diff pane and the commit dialog share, so it gets its own state.
     private readonly FileStatusListOptions _treeOptions = new()
@@ -227,10 +235,17 @@ public sealed class FileTreeView : UserControl
             Child = _status,
         };
 
+        // Over the scrolled text only. The status bar above it is docked outside this
+        // panel on purpose: it carries the path and the revision of the file being
+        // read, and an error when the read fails.
+        Panel contentHost = new();
+        contentHost.Children.Add(_contentScroll);
+        contentHost.Children.Add(_contentBusy);
+
         DockPanel right = new() { Background = B("App.Panel") };
         DockPanel.SetDock(statusBar, Dock.Top);
         right.Children.Add(statusBar);
-        right.Children.Add(_contentScroll);
+        right.Children.Add(contentHost);
 
         GridSplitter splitter = new()
         {
@@ -244,10 +259,17 @@ public sealed class FileTreeView : UserControl
             ColumnDefinitions = new ColumnDefinitions("300,Auto,*"),
             Background = B("App.Window"),
         };
-        Grid.SetColumn(_files, 0);
+        // The tree column, splitter excluded: dragging the splitter is a layout
+        // gesture that stays valid while git is walking the tree, and veiling the
+        // grip would make the pane feel frozen rather than busy.
+        Panel treeHost = new();
+        treeHost.Children.Add(_files);
+        treeHost.Children.Add(_treeBusy);
+
+        Grid.SetColumn(treeHost, 0);
         Grid.SetColumn(splitter, 1);
         Grid.SetColumn(right, 2);
-        root.Children.Add(_files);
+        root.Children.Add(treeHost);
         root.Children.Add(splitter);
         root.Children.Add(right);
 
@@ -397,7 +419,15 @@ public sealed class FileTreeView : UserControl
         ClearContent();
 
         _files.Clear();
+
+        // "Loading files at {0}…" stays. The status bar is this tab's only header,
+        // and the sentence names the revision being listed — a short hash, or
+        // "Working directory" / "Commit index" for the artificial rows — which the
+        // spinner cannot; drop it and the line would still read as the PREVIOUS
+        // commit's summary while a different tree fills in beside it. UpdateStatus
+        // replaces it with the count as soon as the rows land.
         _status.Text = F(T("Loading files at {0}…"), _shortHash);
+        _treeBusy.Show();
 
         _ = Task.Run(() =>
         {
@@ -419,6 +449,11 @@ public sealed class FileTreeView : UserControl
                 {
                     return;
                 }
+
+                // Inside the guard and before the error branch: a superseded load must
+                // leave the newer one's spinner alone, and a FAILED load has finished
+                // waiting just as much as a successful one has.
+                _treeBusy.Hide();
 
                 _loadError = error;
                 if (error is { Length: > 0 })
@@ -449,6 +484,13 @@ public sealed class FileTreeView : UserControl
         _contentPath = null;
         _files.Clear();
         ClearContent();
+
+        // Both, unconditionally: an emptied tab has no load left to report on, and a
+        // tree load still in flight will find _commitHash null and take its staleness
+        // exit without ever reaching a Hide of its own.
+        _treeBusy.Hide();
+        _contentBusy.Hide();
+
         UpdateStatus();
     }
 
@@ -459,6 +501,10 @@ public sealed class FileTreeView : UserControl
         _contentPath = row?.Name;
         if (row is null)
         {
+            // Deselection: there is no file to wait for any more, so whatever was
+            // requested for the previous one is withdrawn here rather than left to a
+            // continuation that may never come back.
+            _contentBusy.Hide();
             ClearContent();
             UpdateStatus();
             return;
@@ -523,7 +569,12 @@ public sealed class FileTreeView : UserControl
         _contentCts = new CancellationTokenSource();
         CancellationToken token = _contentCts.Token;
 
+        // No text is touched here at all: UpdateStatus already re-states the pane as
+        // "<path> @ <hash>", which is what the user asked to see, and the viewer keeps
+        // the previous file under the veil instead of blinking to empty. The spinner
+        // is the whole of the "still reading" signalling in this pane.
         UpdateStatus();
+        _contentBusy.Show();
 
         _ = Task.Run(async () =>
         {
@@ -550,6 +601,7 @@ public sealed class FileTreeView : UserControl
                         return;
                     }
 
+                    _contentBusy.Hide();
                     RenderContent(text, path, highlight: !binary);
                     _contentScroll.ScrollToHome();
                 });
@@ -564,6 +616,9 @@ public sealed class FileTreeView : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
+                        // Only the still-current load hides: a cancelled one was
+                        // superseded, and the request on screen is the successor's.
+                        _contentBusy.Hide();
                         ClearContent();
                         _content.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                     }

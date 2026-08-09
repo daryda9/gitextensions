@@ -83,6 +83,12 @@ public sealed class BlameView : UserControl
     private readonly TextBlock _status;
     private readonly Border _headerHost;
 
+    // Over the blamed lines only. The commit-details panel does its own loading for
+    // whatever revision it was pointed at, and the find bar and the column header are
+    // chrome that stays true across a re-blame; dimming them would announce a wait
+    // that does not concern them.
+    private readonly BusyOverlay _busy = new();
+
     // The commit-details panel: CommitDetailView is reused as-is (its public
     // surface — ShowCommit + CommitNavigated — is all this needs), exactly as
     // MainWindow drives it.
@@ -423,13 +429,17 @@ public sealed class BlameView : UserControl
         Grid.SetRow(splitter, 2);
         Grid.SetRow(_findBar, 3);
         Grid.SetRow(_headerHost, 4);
-        Grid.SetRow(scroll, 5);
+        Panel linesHost = new();
+        linesHost.Children.Add(scroll);
+        linesHost.Children.Add(_busy);
+
+        Grid.SetRow(linesHost, 5);
         root.Children.Add(topBar);
         root.Children.Add(_detail);
         root.Children.Add(splitter);
         root.Children.Add(_findBar);
         root.Children.Add(_headerHost);
-        root.Children.Add(scroll);
+        root.Children.Add(linesHost);
 
         Content = root;
 
@@ -546,7 +556,13 @@ public sealed class BlameView : UserControl
         _selectedParentOf = null;
         _highlightedCommit = null;
         _hoverCommit = null;
+        // "Blaming {0}…" stays: it names the file, and a blame is the one read in this
+        // app that is routinely slow enough for the user to look away and come back
+        // wondering what the pane is showing. The overlay carries the "still going"
+        // half of that message, which a static line cannot — it looks identical
+        // whether git is working or has silently stopped.
         _status.Text = string.Format(T("Blaming {0}…"), filePath);
+        _busy.Show();
 
         // Supersede whatever was in flight. ShowBlame only ever runs on the UI
         // thread, so swapping the field needs no locking.
@@ -584,6 +600,10 @@ public sealed class BlameView : UserControl
                     {
                         return;
                     }
+
+                    // Behind the same guard as the status line, for the same reason: a
+                    // superseded blame must not take down the successor's spinner.
+                    _busy.Hide();
 
                     _bandStarts = ComputeBandStarts(result.Lines);
                     _rows = result.Lines;
@@ -625,6 +645,10 @@ public sealed class BlameView : UserControl
                 {
                     if (ReferenceEquals(_blameCts, cts) && !token.IsCancellationRequested)
                     {
+                        // A blame that failed — an unreadable path, a bad revision —
+                        // has stopped waiting; the error on the status line is the
+                        // outcome, and the spinner must not outlive it.
+                        _busy.Hide();
                         _status.Text = string.Format(T("Error: {0}"), ex.Message);
                     }
                 });

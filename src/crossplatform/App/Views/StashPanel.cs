@@ -75,6 +75,17 @@ public sealed class StashPanel : UserControl
     private readonly TextBlock _indexHeader;
     private readonly TextBlock _workTreeHeader;
 
+    // Three panes, three git reads, three overlays, and deliberately no coordination
+    // between them: picking a stash reloads the file lists, picking a file reloads the
+    // diff, and the stash list itself is reloaded on its own schedule (a repository
+    // switch, a stash created or dropped). One shared overlay would let the slowest of
+    // the three decide when the other two are allowed to look finished, and would veil
+    // the stash list — the thing the user is clicking through — every time a diff is
+    // fetched for a row they just selected.
+    private readonly BusyOverlay _listBusy = new();
+    private readonly BusyOverlay _filesBusy = new();
+    private readonly BusyOverlay _diffBusy = new();
+
     private string? _repoPath;
     private long _repositoryGeneration;
     private long _loadEpoch;
@@ -207,11 +218,18 @@ public sealed class StashPanel : UserControl
             RowDefinitions = new RowDefinitions("Auto,*,Auto"),
             Margin = new Thickness(8, 4, 8, 4),
         };
+        // The rows only: the Apply/Pop/Drop buttons under them are already disabled by
+        // SetBusy while a mutation runs, and greying them a second time under a scrim
+        // would say the same thing twice.
+        Panel stashListHost = new();
+        stashListHost.Children.Add(_stashList);
+        stashListHost.Children.Add(_listBusy);
+
         Grid.SetRow(_listTitle, 0);
-        Grid.SetRow(_stashList, 1);
+        Grid.SetRow(stashListHost, 1);
         Grid.SetRow(opButtons, 2);
         listPanel.Children.Add(_listTitle);
-        listPanel.Children.Add(_stashList);
+        listPanel.Children.Add(stashListHost);
         listPanel.Children.Add(opButtons);
 
         WrapPanel saveButtons = new() { Orientation = Orientation.Horizontal };
@@ -298,17 +316,28 @@ public sealed class StashPanel : UserControl
                 new ColumnDefinition(GridLength.Star) { MinWidth = 120 },
             },
         };
+        // Group headers included, unlike the other two panes: "Index" / "Workspace"
+        // label the very lists being replaced, and in stash mode they are hidden
+        // altogether — there is nothing under here the user can act on while it loads.
+        Panel filesHost = new();
+        filesHost.Children.Add(_filesGrid);
+        filesHost.Children.Add(_filesBusy);
+
+        Panel diffHost = new();
+        diffHost.Children.Add(diffScroll);
+        diffHost.Children.Add(_diffBusy);
+
         Grid.SetColumn(listPanel, 0);
 
-        Grid.SetColumn(_filesGrid, 2);
+        Grid.SetColumn(filesHost, 2);
 
-        Grid.SetColumn(diffScroll, 4);
+        Grid.SetColumn(diffHost, 4);
 
         split.Children.Add(listPanel);
         split.Children.Add(Splitter(1));
-        split.Children.Add(_filesGrid);
+        split.Children.Add(filesHost);
         split.Children.Add(Splitter(3));
-        split.Children.Add(diffScroll);
+        split.Children.Add(diffHost);
 
         DockPanel root = new();
         DockPanel.SetDock(_status, Dock.Bottom);
@@ -444,6 +473,11 @@ public sealed class StashPanel : UserControl
 
     private void ShowDiffPlaceholder()
     {
+        // Every "there is no diff to show" exit comes through here, including the one
+        // a repository switch takes after cancelling the read in flight — so this is
+        // where a request whose continuation will never run gets withdrawn.
+        _diffBusy.Hide();
+
         _diff.Inlines?.Clear();
         _diff.Text = T("Select a file to view its diff.");
     }
@@ -496,7 +530,12 @@ public sealed class StashPanel : UserControl
         long generation = _repositoryGeneration;
         long loadEpoch = ++_loadEpoch;
 
-        _status.Text = T("FormBrowse/_loading.Text", "Loading…");
+        // The bare "Loading…" is gone. It carried nothing — not what was loading, not
+        // where — and it sat on the panel's single shared status line, so it also wiped
+        // whatever the last operation had reported there ("Dropped stash@{0}"). The
+        // spinner says the same thing over the list that is actually filling, and the
+        // status line keeps the last real sentence until this load has one of its own.
+        _listBusy.Show();
         RunRepositoryRead(
             repo,
             generation,
@@ -901,6 +940,11 @@ public sealed class StashPanel : UserControl
             return;
         }
 
+        // Only now, past the two "there is nothing to ask git" exits above: a spinner
+        // over a pane that is about to be emptied without a single process being
+        // started would be a wait the user is not actually having.
+        _filesBusy.Show();
+
         _ = Task.Run(() =>
         {
             try
@@ -948,6 +992,14 @@ public sealed class StashPanel : UserControl
 
     private void SetFileRows(IReadOnlyList<DiffFileRow> first, IReadOnlyList<DiffFileRow> second)
     {
+        // The one place the middle pane's content is ever assigned — by the load that
+        // succeeded, by the one that failed, by the two early exits that have nothing
+        // to ask git, and by a repository switch that cancels whatever was in flight.
+        // Hiding here therefore closes every path out of ReloadFiles at once, which is
+        // exactly what a cancellable load needs: the cancelled continuation returns
+        // without touching the view, so it can never be the thing that hides.
+        _filesBusy.Hide();
+
         // Each SetFiles selects its list's first row, so without this guard the
         // two lists would end up both selected and would each load a diff.
         _syncingFileSelection = true;
@@ -1064,8 +1116,13 @@ public sealed class StashPanel : UserControl
             return;
         }
 
-        _diff.Inlines?.Clear();
-        _diff.Text = T("FormBrowse/_loading.Text", "Loading diff…");
+        // "Loading diff…" is gone, and this is the call site where dropping the text
+        // gains the most: the word was written INTO the diff pane, so every file the
+        // user clicked blanked the patch they were reading and replaced it with one
+        // line of nothing. The overlay leaves the previous patch under the scrim —
+        // dimmed, still scrolled where they left it — and the pane no longer flashes
+        // white between two files that both come back in 40 ms.
+        _diffBusy.Show();
 
         if (IsWorkingDirSelected)
         {
@@ -1088,7 +1145,13 @@ public sealed class StashPanel : UserControl
         if (SelectedStash() is { } stash)
         {
             _ = LoadStashFileDiffAsync(repo, stash, selection.Row, token);
+            return;
         }
+
+        // A file row with neither a stash nor the working directory behind it: the
+        // lists are mid-rebuild and no read will be started, so the request just made
+        // has to be withdrawn here or the pane spins on a load that never began.
+        _diffBusy.Hide();
     }
 
     // A stash's per-file patch is a plain two-revision diff, so it goes through
@@ -1126,6 +1189,7 @@ public sealed class StashPanel : UserControl
     {
         if (!token.IsCancellationRequested)
         {
+            _diffBusy.Hide();
             RenderDiff(string.IsNullOrEmpty(text)
                 ? F("({0})", T("FileStatusList/NoFiles.Text", "no changes"))
                 : text);
@@ -1136,6 +1200,10 @@ public sealed class StashPanel : UserControl
     {
         if (!token.IsCancellationRequested)
         {
+            // The error takes the pane, so the wait is over even though nothing was
+            // rendered. Cancelled reads skip this arm and leave the veil to whichever
+            // request superseded them.
+            _diffBusy.Hide();
             _diff.Inlines?.Clear();
             _diff.Text = F("{0}: {1}", ErrorWord(), ex.Message);
         }
@@ -1320,6 +1388,12 @@ public sealed class StashPanel : UserControl
 
     // Runs a git operation off the UI thread and marshals the result (or error)
     // back onto it, disabling the action buttons while busy.
+    //
+    // The stash-list overlay is taken down here rather than at the call site because
+    // the two exits — result and error — are both inside this helper, and both are
+    // behind the epoch guard: a read that a newer one has already superseded must
+    // leave the successor's spinner up. RefreshStashes is this helper's only caller,
+    // so "the load this hides" is unambiguous.
     private void RunRepositoryRead<T>(
         string repo,
         long generation,
@@ -1336,6 +1410,7 @@ public sealed class StashPanel : UserControl
                 {
                     if (IsCurrentRepository(repo, generation) && loadEpoch == _loadEpoch)
                     {
+                        _listBusy.Hide();
                         onResult(result);
                     }
                 });
@@ -1346,6 +1421,7 @@ public sealed class StashPanel : UserControl
                 {
                     if (IsCurrentRepository(repo, generation) && loadEpoch == _loadEpoch)
                     {
+                        _listBusy.Hide();
                         _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
                     }
                 });

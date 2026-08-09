@@ -30,6 +30,13 @@ public sealed class RemotePanel : UserControl
     private readonly TextBlock _status;
     private readonly TextBox _output;
 
+    // Two waits that have nothing to do with each other, so two overlays: listing
+    // the remotes replaces the LIST, a fetch/pull/push replaces the OUTPUT. A single
+    // overlay stretched over the panel would veil the remote list while a push runs,
+    // which says "these rows are stale" about data the push never touches.
+    private readonly BusyOverlay _listBusy = new();
+    private readonly BusyOverlay _outputBusy = new();
+
     private string? _repoPath;
     private string _currentBranch = string.Empty;
     private bool _busy;
@@ -98,11 +105,18 @@ public sealed class RemotePanel : UserControl
             RowDefinitions = new RowDefinitions("Auto,*,Auto"),
             Margin = new Thickness(8, 8, 8, 4),
         };
+        // The list only: the title above it and the option checkboxes below stay
+        // legible while git is asked for the remotes, because nothing about them is
+        // being reloaded. (The action buttons are disabled by SetBusy anyway.)
+        Panel listHost = new();
+        listHost.Children.Add(_remotesList);
+        listHost.Children.Add(_listBusy);
+
         Grid.SetRow(listTitle, 0);
-        Grid.SetRow(_remotesList, 1);
+        Grid.SetRow(listHost, 1);
         Grid.SetRow(controls, 2);
         top.Children.Add(listTitle);
-        top.Children.Add(_remotesList);
+        top.Children.Add(listHost);
         top.Children.Add(controls);
 
         _output = new TextBox
@@ -111,7 +125,6 @@ public sealed class RemotePanel : UserControl
             AcceptsReturn = true,
             TextWrapping = TextWrapping.NoWrap,
             FontFamily = new FontFamily("monospace,Consolas,Menlo"),
-            Margin = new Thickness(8, 4, 8, 4),
             MinHeight = 140,
         };
 
@@ -133,10 +146,16 @@ public sealed class RemotePanel : UserControl
             FontWeight = FontWeight.Bold,
             Margin = new Thickness(10, 4, 0, 0),
         };
+        // The output box's margin moved here so the veil stops at the box's edge
+        // instead of painting the gutter around it.
+        Panel outputHost = new() { Margin = new Thickness(8, 4, 8, 4) };
+        outputHost.Children.Add(_output);
+        outputHost.Children.Add(_outputBusy);
+
         Grid.SetRow(outTitle, 0);
-        Grid.SetRow(_output, 1);
+        Grid.SetRow(outputHost, 1);
         outputArea.Children.Add(outTitle);
-        outputArea.Children.Add(_output);
+        outputArea.Children.Add(outputHost);
 
         DockPanel root = new();
         DockPanel.SetDock(_status, Dock.Bottom);
@@ -166,7 +185,12 @@ public sealed class RemotePanel : UserControl
             return;
         }
 
-        _status.Text = "Loading remotes…";
+        // "Loading remotes…" is gone: it said nothing the spinner over the list does
+        // not say, and it said it in the one place that also reports the OUTCOME of
+        // the previous load ("3 remote(s). Current branch: …"). The status line keeps
+        // that sentence until the new one lands, which is more useful than a word the
+        // user has to read to learn nothing.
+        _listBusy.Show();
         SetBusy(true);
         _ = LoadRemotesAsync(repo);
     }
@@ -196,6 +220,10 @@ public sealed class RemotePanel : UserControl
         }
         finally
         {
+            // In the finally, not after the try: an error leaves the list showing the
+            // remotes it had, and a pane left spinning over them would claim a load is
+            // still coming when the status line already says it failed.
+            _listBusy.Hide();
             SetBusy(false);
         }
     }
@@ -252,8 +280,16 @@ public sealed class RemotePanel : UserControl
         }
 
         SetBusy(true);
+
+        // The status line KEEPS its narration here: "Fetch…" then "(retrying with
+        // credentials)…" then the verdict is a story about a specific operation, and
+        // it is the only place the retry is ever mentioned. The overlay only covers
+        // the box the transcript will land in — and it is the one wait in this app
+        // that regularly outlives the 250 ms delay, so it is also the one the user
+        // will actually see.
         _status.Text = label + "…";
         _output.Text = string.Empty;
+        _outputBusy.Show();
 
         try
         {
@@ -291,6 +327,9 @@ public sealed class RemotePanel : UserControl
         }
         finally
         {
+            // Covers the throw and the credentials prompt being dismissed, both of
+            // which reach here without ever assigning _output.Text.
+            _outputBusy.Hide();
             SetBusy(false);
         }
     }
