@@ -60,6 +60,11 @@ public sealed class GpgView : UserControl
     private readonly TextBox _tagText;
     private readonly Border _tagRow;
 
+    // Over both rows at once, because the pane IS the two rows: there is no toolbar here
+    // and nothing to keep usable, and the tag row's very visibility is part of the answer
+    // being recomputed (see SetTagRowVisible).
+    private readonly BusyOverlay _busy = new();
+
     // What the pane currently states without git having said it (no commit
     // selected, artificial revision), so a language switch can re-state it.
     private string? _placeholder;
@@ -100,7 +105,7 @@ public sealed class GpgView : UserControl
         _rows.Children.Add(commitRow);
         _rows.Children.Add(_tagRow);
 
-        Content = _rows;
+        Content = new Panel { Children = { _rows, _busy } };
         Background = B("App.Window");
         ClipToBounds = true;
 
@@ -160,6 +165,10 @@ public sealed class GpgView : UserControl
     private static string F(string format, params object?[] args)
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
+    // Shared with the revision grid, the left tree and the other detail panes: one spinner
+    // and one word for every wait in the window, instead of a private sentence per pane.
+    private static string LoadingCaption() => T("RevisionGridControl/_strLoading.Text", "Loading…");
+
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
     {
         if (_placeholder is not null)
@@ -196,11 +205,19 @@ public sealed class GpgView : UserControl
 
         _artificial = null;
         _placeholder = null;
-        _commitText.Text = F(T("Verifying signature of {0}…"),
-            commitHash.Length > 8 ? commitHash[..8] : commitHash);
+
+        // "Verifying signature of <hash>…" is gone: it was the wait spelled out, and the
+        // spinner now says that. The BLANKING it came with stays, and here it matters more
+        // than in any other pane — BusyOverlay's rule that stale content may be left dimmed
+        // underneath is right for rows and patches, but this pane's content is a security
+        // claim about a specific object. A green "good signature" left showing for the
+        // 250 ms before the veil arrives would be a claim about the wrong commit, so the
+        // verdict, both icons and the tag row go before the first git command runs.
+        _commitText.Text = string.Empty;
         _commitIcon.IsVisible = false;
         _tagIcon.IsVisible = false;
         SetTagRowVisible(false);
+        _busy.Show(LoadingCaption());
 
         _ = Task.Run(async () =>
         {
@@ -238,11 +255,18 @@ public sealed class GpgView : UserControl
 
             Dispatcher.UIThread.Post(() =>
             {
-                // A newer selection already superseded this verification.
+                // A newer selection already superseded this verification. The overlay is
+                // deliberately left up: whatever superseded it either started its own
+                // verification (which re-showed the same spinner) or wrote a placeholder
+                // through ShowPlaceholder, which takes it down. Hiding it from here would
+                // clear the spinner of a load that is still running.
                 if (!string.Equals(_commitHash, commitHash, StringComparison.Ordinal))
                 {
                     return;
                 }
+
+                // Verified or failed, the wait is over on both branches below.
+                _busy.Hide();
 
                 if (error is { Length: > 0 })
                 {
@@ -288,6 +312,13 @@ public sealed class GpgView : UserControl
 
     private void ShowPlaceholder(bool noCommit)
     {
+        // The single choke point for every "there is nothing to verify" answer — the
+        // artificial rows, Clear(), and the artificial-hash branch of ShowCommit — which
+        // is precisely why the spinner is taken down here rather than at each of them: a
+        // verification in flight for the previously selected commit will bail out on the
+        // hash check and never touch the pane again, so this is the last hand on it.
+        _busy.Hide();
+
         _placeholder = noCommit
             ? T("No commit selected.")
             : _artificial is { } which

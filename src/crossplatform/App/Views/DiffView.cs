@@ -73,6 +73,15 @@ public sealed class DiffView : UserControl
 
     private readonly FileStatusListView _files;
     private readonly TextEditor _editor;
+
+    // TWO spinners, because this view runs two loads that are not one wait: the
+    // changed-file list (a new selection in the grid, the refresh button) and the patch
+    // of the selected file (a click in the list, any toolbar toggle that maps onto a git
+    // argument). A single shared overlay would either veil the pane nobody is waiting
+    // for, or come down on the first of the two to land while the other is still
+    // running — and a spinner that lies about which pane is stale is worse than none.
+    private readonly BusyOverlay _filesBusy = new();
+    private readonly BusyOverlay _patchBusy = new();
     private readonly DiffLineColorizer _colorizer = new();
     private readonly DiffSearchColorizer _searchColorizer = new();
     private readonly TextBlock _status;
@@ -522,12 +531,22 @@ public sealed class DiffView : UserControl
             ApplySearchTerm(_findBox.Text ?? string.Empty);
         };
 
+        // Over the PATCH only, not over the pane: the option strip above it is exactly
+        // what the user reaches for when a diff is not the one they wanted (-w, -b,
+        // --word-diff, the encoding, ± context), and every one of those buttons re-runs
+        // this very load. Veiling them would make the slow load the one moment its own
+        // controls are out of reach. The find bar stays live for the same reason — the
+        // term survives the reload and re-highlights when the new patch lands.
+        Panel patchHost = new();
+        patchHost.Children.Add(_editor);
+        patchHost.Children.Add(_patchBusy);
+
         DockPanel diffPane = new();
         DockPanel.SetDock(toolbarBar, Dock.Top);
         DockPanel.SetDock(_findBar, Dock.Top);
         diffPane.Children.Add(toolbarBar);
         diffPane.Children.Add(_findBar);
-        diffPane.Children.Add(_editor);
+        diffPane.Children.Add(patchHost);
 
         _status = new TextBlock
         {
@@ -553,7 +572,17 @@ public sealed class DiffView : UserControl
             },
         };
 
-        Grid.SetColumn(_files, 0);
+        // The list's overlay covers the shared control WHOLE, toolbar and filter box
+        // included — unlike the patch's, which spares its strip. Two reasons: the list
+        // host lives inside FileStatusListView, which three other views share and which
+        // this view must not reshape for its own spinner; and nothing on that strip acts
+        // on anything except the rows that are being replaced — refresh would re-run the
+        // load already in flight, and the grouping toggles would regroup rows about to be
+        // thrown away. There is no live control under this veil to be sorry about.
+        Panel filesHost = new();
+        filesHost.Children.Add(_files);
+        filesHost.Children.Add(_filesBusy);
+        Grid.SetColumn(filesHost, 0);
 
         GridSplitter splitter = new()
         {
@@ -565,7 +594,7 @@ public sealed class DiffView : UserControl
 
         Grid.SetColumn(diffPane, 2);
 
-        split.Children.Add(_files);
+        split.Children.Add(filesHost);
         split.Children.Add(splitter);
         split.Children.Add(diffPane);
 
@@ -1058,6 +1087,15 @@ public sealed class DiffView : UserControl
     public void Clear()
     {
         _diffCts?.Cancel();
+
+        // Both spinners come down here, and this is the ONE place that has to do it by
+        // hand: a cancelled patch load returns off the UI thread without touching the
+        // pane (that is what the token check below the await is for), so the overlay it
+        // put up has no other owner left. A repo switch also abandons the file-list load
+        // in flight, whose result Clear has just made meaningless.
+        _filesBusy.Hide();
+        _patchBusy.Hide();
+
         _files.Clear();
         ShowPlaceholder(string.Empty);
         _currentDiffText = string.Empty;
@@ -1180,6 +1218,12 @@ public sealed class DiffView : UserControl
 
     private static string LoadingFilesFormat() => T("Loading changed files for {0}…");
 
+    // The one word every pane of this app now waits with — the same string the revision
+    // grid and the left tree hand to their own BusyOverlay. The spinner says "wait", the
+    // status line says what for; splitting the two that way is what stops each pane from
+    // inventing its own vocabulary for the same idea.
+    private static string LoadingCaption() => T("RevisionGridControl/_strLoading.Text", "Loading…");
+
     // Shared changed-file-list loader: clears the panes, loads the file rows off
     // the UI thread, then hands them to the list, which selects the first row and
     // reports it back through SelectedFileChanged (which dispatches on _mode).
@@ -1204,8 +1248,18 @@ public sealed class DiffView : UserControl
         _files.Clear();
         ShowPlaceholder(string.Empty);
         _currentDiffText = string.Empty;
+
+        // The patch pane has just been emptied, so whatever patch load was in flight is
+        // no longer the one on screen and its spinner would be veiling a blank editor.
+        _patchBusy.Hide();
+
+        // loadingText is KEPT, unlike the patch pane's "Loading diff…" below: it names
+        // the comparison being read (a hash, a range, "Working directory"), which the
+        // spinner cannot, and this status line is shared by both panes — it is the only
+        // place that can say WHICH of the two the wait belongs to.
         _status.Text = loadingText;
         _hasCommit = true;
+        _filesBusy.Show(LoadingCaption());
 
         _ = Task.Run(() =>
         {
@@ -1219,6 +1273,10 @@ public sealed class DiffView : UserControl
 
                 Dispatcher.UIThread.Post(() =>
                 {
+                    // Before the rows go in, not after: Preselect drives a selection that
+                    // starts the PATCH load, and that load's own spinner must not go up
+                    // behind a veil this one has not taken down yet.
+                    _filesBusy.Hide();
                     _files.SetFiles(rows, summary);
                     Preselect(wanted);
                     _status.Text = statusFor(rows.Count);
@@ -1226,7 +1284,11 @@ public sealed class DiffView : UserControl
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => _status.Text = F("{0}: {1}", ErrorWord(), ex.Message));
+                Dispatcher.UIThread.Post(() =>
+                {
+                    _filesBusy.Hide();
+                    _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                });
             }
         });
     }
@@ -2014,7 +2076,14 @@ public sealed class DiffView : UserControl
         // The language of the patch content, for the syntax highlighter.
         _diffPath = row.Name;
 
-        ShowPlaceholder(T("FormBrowse/_loading.Text", "Loading diff…"));
+        // The old "Loading diff…" line is gone rather than kept: it was a sentence typed
+        // into the editor's document, i.e. the wait dressed up as content, and it said
+        // nothing the spinner does not say better — no file name, no error, nothing the
+        // status line below is not already carrying. What survives is the EMPTYING: the
+        // patch on screen belongs to the previously selected file and is a wrong answer,
+        // not merely a stale one, so it goes even though the overlay would have dimmed it.
+        ShowPlaceholder(string.Empty);
+        _patchBusy.Show(LoadingCaption());
 
         _ = Task.Run(async () =>
         {
@@ -2030,8 +2099,14 @@ public sealed class DiffView : UserControl
 
                 Dispatcher.UIThread.Post(() =>
                 {
+                    // Guarded by the token on every exit path, this one included: a
+                    // superseded load must NOT hide the overlay, because the load that
+                    // superseded it has already asked for the same one and is still
+                    // running behind it. Whoever cancels is who takes it down (Clear,
+                    // LoadFileList) or who re-shows it (the next LoadSelectedFileDiff).
                     if (!token.IsCancellationRequested)
                     {
+                        _patchBusy.Hide();
                         RenderDiff(text);
 
                         // Show the command that produced the patch, so the effect of
@@ -2050,6 +2125,9 @@ public sealed class DiffView : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
+                        // A failed load is still a finished one: the message replaces
+                        // the wait, it does not sit under it.
+                        _patchBusy.Hide();
                         ShowPlaceholder(F("{0}: {1}", ErrorWord(), ex.Message));
                     }
                 });

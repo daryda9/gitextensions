@@ -41,6 +41,11 @@ public sealed class CommitDetailView : UserControl
 
     private static string T(string english) => TranslationService.T(english);
 
+    // The word every pane of this app waits with, taken from the revision grid rather
+    // than invented here: the point of giving each pane the same spinner was to stop each
+    // one having its own name for the same wait.
+    private static string LoadingCaption() => T("RevisionGridControl/_strLoading.Text", "Loading…");
+
     private readonly CommitDetailService _service = new();
     private readonly CommitInfoExtrasService _extrasService = new();
     private readonly CommitInfoSettingsService _settingsService = new();
@@ -54,6 +59,14 @@ public sealed class CommitDetailView : UserControl
     private bool _savingOwnToggle;
 
     private readonly TextBlock _status;
+
+    // Over the WHOLE pane, unlike the diff view's two: there is nothing on this panel a
+    // user can act on while it loads. Every control in it — the subject line, the avatar,
+    // the detail rows, the message — is a rendering of the commit being replaced, and its
+    // only interactive parts (the hash links, the context menu) would act on the commit
+    // that is on its way out.
+    private readonly BusyOverlay _busy = new();
+
     private readonly Border _avatarHost;
     private readonly StackPanel _details;
     private readonly SelectableTextBlock _message;
@@ -213,7 +226,7 @@ public sealed class CommitDetailView : UserControl
         root.Children.Add(separator);
         root.Children.Add(messageScroll);
 
-        Content = root;
+        Content = new Panel { Children = { root, _busy } };
 
         // --- context menu (upstream: commitInfoContextMenuStrip) ---
         _copyLinkItem = Item(T("CommitInfo/copyLinkToolStripMenuItem.Text", "Copy link"), CopyLink);
@@ -657,7 +670,15 @@ public sealed class CommitDetailView : UserControl
         Clear();
         _repoPath = repoPath;
         _artificial = null;
-        _status.Text = string.Format(T("Loading commit {0}…"), commitHash);
+
+        // "Loading commit <hash>…" is gone from the status line. It was pure waiting
+        // signalling — the hash in it is the row the user has just clicked in the grid,
+        // which the grid is still showing selected — and Clear() has already emptied
+        // everything the line sits above, so leaving a sentence there would have been the
+        // only thing left on an otherwise blank panel. The line goes blank and comes back
+        // as the subject, which is the one thing it is for.
+        _status.Text = string.Empty;
+        _busy.Show(LoadingCaption());
 
         bool wantRemote = _settings.ShowContainedInBranchesRemote
             || _settings.ShowContainedInBranchesRemoteIfNoLocal;
@@ -687,13 +708,22 @@ public sealed class CommitDetailView : UserControl
 
                 Dispatcher.UIThread.Post(() =>
                 {
+                    // A cancelled load leaves the overlay alone on purpose: it was
+                    // superseded, and the load that superseded it has already asked for
+                    // the same spinner. The three callers that cancel this token are the
+                    // ones that take it down — ShowCommit re-shows it, ShowArtificial and
+                    // ClearCommit hide it — so no exit path leaves the pane spinning.
                     if (token.IsCancellationRequested)
                     {
                         return;
                     }
 
+                    _busy.Hide();
+
                     if (detail is null)
                     {
+                        // Kept: "not found" is an answer about THIS hash, which is
+                        // exactly what a spinner cannot say.
                         _status.Text = string.Format(T("Commit not found: {0}"), commitHash);
                         return;
                     }
@@ -712,6 +742,10 @@ public sealed class CommitDetailView : UserControl
                 {
                     if (!token.IsCancellationRequested)
                     {
+                        // A failure ends the wait as surely as a result does; the git
+                        // message stays, because it is the only thing that explains the
+                        // empty panel behind it.
+                        _busy.Hide();
                         _status.Text = string.Format(T("Error: {0}"), ex.Message);
                     }
                 });
@@ -744,6 +778,10 @@ public sealed class CommitDetailView : UserControl
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
+
+        // The load just cancelled will return without touching the panel, so its spinner
+        // has no owner left; this placeholder is the answer that replaces it.
+        _busy.Hide();
 
         Clear();
         _repoPath = repoPath;
@@ -1086,6 +1124,11 @@ public sealed class CommitDetailView : UserControl
     public void ClearCommit()
     {
         _cts?.Cancel();
+
+        // Same reason as in ShowArtificial: nobody else will take the spinner down for a
+        // load that has been told to stop reporting.
+        _busy.Hide();
+
         Clear();
         _repoPath = string.Empty;
         _status.Text = T("No commit selected.");
