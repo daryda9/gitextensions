@@ -150,6 +150,29 @@ public static class DiffService
         ObjectId commitId = ObjectId.Parse(commitHash);
         ObjectId parentId = GetFirstParent(module, commitId);
 
+        // A ROOT commit is listed from its own tree, every entry marked as added —
+        // which is what upstream does (FileStatusDiffCalculator.CalculateDiffs, the
+        // "no ParentIds" branch: GetTreeFiles + IsNew = true).
+        //
+        // It cannot go through the diff below. A zero first id does NOT mean "the
+        // empty tree" to the core, whatever the comment on GetFirstParent used to
+        // claim: the argument is simply omitted, so git receives `git diff <commit>`
+        // and reads it as WORKTREE vs commit. The root commit of a repository with a
+        // dirty working tree therefore listed the files the worktree happens to
+        // differ in — one file, marked Modified — instead of the files the commit
+        // introduced. Measured on a four-file root commit: it listed one.
+        if (parentId.IsZero)
+        {
+            IReadOnlyList<GitItemStatus> tree = module.GetTreeFiles(commitId, full: true);
+            List<DiffFileRow> added = new(tree.Count);
+            foreach (GitItemStatus item in tree)
+            {
+                added.Add(new DiffFileRow(item.Name, OldName: null, DiffChangeKind.Added, IsTracked: true));
+            }
+
+            return added;
+        }
+
         IReadOnlyList<GitItemStatus> changes = module.GetDiffFilesWithSubmodulesStatus(
             firstId: parentId,
             secondId: commitId,
@@ -819,8 +842,11 @@ public static class DiffService
     {
         IReadOnlyList<ObjectId> parents = module.GetParents(commitId);
 
-        // Root commit (no parents): a zero ObjectId is treated by the core as
-        // "no revision", which diffs the commit against the empty tree.
+        // Root commit (no parents): a zero ObjectId, which every caller has to
+        // recognise. It does NOT stand for the empty tree — the core omits the
+        // argument, so git gets `git diff <commit>` and answers about the WORKTREE.
+        // GetChangedFiles lists the tree instead; the patch path is unaffected
+        // because `git show`-style single-file diffs already handle a root commit.
         return parents.Count > 0 ? parents[0] : default;
     }
 
