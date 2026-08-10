@@ -3377,6 +3377,92 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M148 (2026-08-10, `b83238a74`) — cercare nei file del commit con `git grep`, dalla lista dei file
+
+Era **l'unico residuo vero** della vecchia nota P2, e non era chrome: è una funzione a sé. Port di
+«Find in commit files using git-grep» (`FileStatusList.Toolbar.cs` + `FileStatusDiffCalculator.GetGrepItemStatuses`).
+
+Il motore **non è riscritto**: `IGitModule.GetGrepFilesStatus` è già linkato, quindi niente parsing di
+`git grep` a mano. Nuovo `Services/GitGrepService` con `GitGrepQuery`, ricerca e righe di match; porta
+il prefisso `"grep: "` dell'intestazione, che è come upstream riconosce il gruppo
+(`IsGrepItemStatuses`).
+
+- Pulsante split sulla toolbar della lista file: il corpo apre/chiude una **casella inline** sopra la
+  riga del filtro, la freccia offre **Match case** e **Match whole word**.
+- I risultati sono **una sezione in più** della lista, accanto ai gruppi del diff, riusando le N
+  sezioni di M143 — non una seconda strada. Sezioni dell'host e sezione di ricerca sono tenute
+  separate, così un ricaricamento del diff **non** butta via la ricerca (upstream separa allo stesso
+  modo `refreshDiff` e `refreshGrep`).
+- Cliccando un risultato il pannello mostra le **righe che corrispondono**, non una patch.
+- Stato aperto/chiuso e le due opzioni sono persistiti in `view-prefs.json` (`FindInFilesPrefs`) e
+  **non** in `UiState`, per la ragione già registrata: l'host riserializza `UiState` alla chiusura e
+  cancellerebbe le scritture altrui.
+- Il lavoro git sta su thread di background con un `CancellationTokenSource` **suo**, distinto da
+  quello della patch: digitando si rilancia e la ricerca superata viene annullata, non attesa.
+
+`applyAppSettings: true`, ma con una precisazione dichiarata in commento: `GetGrepFilesStatus` accetta
+solo il pattern, quindi le due opzioni vengono spinte in `AppSettings.GitGrepIgnoreCase` /
+`MatchWholeWord` (e `GitGrepUserArguments` azzerata) subito prima della chiamata, sotto lock —
+`view-prefs.json` resta la fonte di verità, AppSettings è solo il mezzo di trasporto.
+
+**Non portati, con motivo**: il dialogo separato `FormFindInCommitFilesGitGrep` e con esso la scelta
+input-box/dialogo (`tsmiFindUsingDialog` / `tsmiFindUsingInputBox`) — esiste solo la casella inline,
+quindi la scelta non avrebbe fra cosa scegliere; `tsmiFindUsingOptions` (argomenti liberi extra per
+`git grep`, `GitGrepUserArguments`) — è un campo di impostazioni più che un controllo di ricerca, e un
+valore rimasto dalla build Windows cambierebbe in silenzio ogni ricerca, quindi il port lo azzera. Il
+**testo** cercato non è persistito fra le sessioni: nemmeno upstream lo fa.
+
+Verificato a schermo su un repo con «sentinel» in tre file e «sentinelish» in un quarto: la sezione
+`(3) grep: sentinel …` compare accanto a `(1) Diff with A …`; cliccando `dir2/c.txt` il pannello mostra
+`1:13:HELLO world sentinel` e la riga di stato dice `dir2/c.txt — sentinel`; **whole word** porta i
+risultati da 3 a 2 lasciando fuori `d.md`; **match case** su `hello` lascia il solo file minuscolo;
+cambiando commit la ricerca si rilancia su quella revisione e chiudendo la casella la sezione sparisce.
+
+**Difetto preesistente trovato per strada e NON toccato**: il diff di un **commit radice** elenca un
+file solo invece di tutti quelli aggiunti. Verificato contro un revert temporaneo del commit: la
+baseline si comporta identica, quindi è un difetto di `DiffService.GetChangedFiles`/`GetFirstParent`
+col primo parent nullo, indipendente da questo lavoro.
+
+## M147 (2026-08-10, `6483ba09f`) — le due view morte hanno una casa
+
+`BranchTagPanel` e `RemotePanel` compilavano, erano tradotte, e **nessuno le istanziava**. Su decisione
+dell'utente vanno **cablate, non cancellate**. Il problema di progetto era reale: entrambe si
+sovrappongono a superfici che il port ha già, e metterle dove duplicano un comando esistente avrebbe
+peggiorato l'interfaccia. Collocazione scelta e argomentata in commento:
+
+- **`RemotePanel` → Repository → «Remote operations…»**, subito sotto «Remote repositories…»: è
+  l'adiacenza a rendere leggibile la coppia. `RemotesDialog` è **configurazione** (quali remoti, URL
+  fetch/push, default pull) e non lancia nessun trasferimento; questa finestra non tocca la
+  configurazione e fa solo **azioni con trascrizione dal vivo**. Rispetto a `PullDialog`/`PushDialog`
+  la differenza è reale: quelli compongono *un* comando da molte opzioni e si chiudono col processo,
+  qui il pannello di output **resta** attraverso più operazioni — che è ciò che serve quando la domanda
+  è «questo remoto risponde, e cosa dice».
+- **`BranchTagPanel` → Commands → «Branches and tags…»**, ultima voce del blocco branch/tag: «New
+  branch…» e «New tag…» **creano** un ref e si tolgono di mezzo, questo è il banco di lavoro sui ref
+  che **esistono già** (checkout, merge, rebase, delete) senza perdere la selezione fra un passo e
+  l'altro, cosa che oggi costa albero più tre dialoghi. Non reimplementa nulla: apre
+  `CheckoutBranchDialog`, `CreateBranchDialog`, `CreateTagDialog`, `MergeDialog`, quindi non nasce una
+  seconda implementazione che possa divergere.
+
+Nuovi `Views/RemoteOperationsWindow` e `Views/BranchTagWindow`, entrambi **modali** come `StashWindow`
+e `ReflogWindow` — il che risolve anche il cambio repository sotto il pannello, con in più la cintura
+di `MainWindow.LoadRepository` che chiude la finestra se la repo cambia (non è teorico: il ricevitore
+X11 nativo del drag&drop scavalca il disabling modale di Avalonia). Scelta dichiarata: **si chiude**,
+non insegue. `OperationCompleted` → `RefreshAll()` alla chiusura, la stessa strada di
+`ShowStashDialogAsync`.
+
+Nessun id upstream copre «Remote operations» né «Branches and tags»: literal senza inventare id, e i
+puntini incollati **dopo** la lookup (nessuna trans-unit li porta).
+
+Verificato a schermo con operazioni vere: checkout di un branch dal pannello → process dialog
+«Switched to branch», e titolo, toolbar, albero e status bar dell'host già aggiornati alla chiusura;
+fetch dal pannello remoti contro un remote locale → «Fetch succeeded.». Senza repository valida
+entrambe le voci sono irraggiungibili.
+
+**Da sapere**: il subagent non è riuscito a isolare `XDG_CONFIG_HOME` e ha scritto nella config reale
+dell'utente (`/tmp/m147repo` fra i repository recenti). Ripulito a mano da `GitExtensions.settings` e
+dal suo backup; `ui-state.json` non era stato toccato.
+
 ## M146 (2026-08-10, `174146b3d`) — l'overflow del menu non si svuota e non ammazza la finestra
 
 Crash segnalato dall'utente all'avvio normale (`./run.sh`), passando col puntatore su una voce di
