@@ -3377,7 +3377,7 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
-## M135 (2026-08-09, `a75850cd4`, `49c235a3f`, `36fb0539a`) — il diff non resta appeso alla repo precedente, e lo spinner è uno solo
+## M135 (2026-08-09, `a75850cd4`, `e8b04aa68`, `36fb0539a`) — il diff non resta appeso alla repo precedente, e lo spinner è uno solo
 
 > Dall'utente: «quando cambia tab (quindi repo o submodules) se ho un commit selezionato e aperta la
 > tab di "diff", quest'ultima non cambia se ho selezionato un commit su una tab e non sull'altra,
@@ -3489,7 +3489,7 @@ Verificato su Xvfb: `_NET_WM_ICON(CARDINAL) = Icon (128 x 128)` sulla finestra p
 finestra Stash (che è la prova che lo style copre anche le finestre secondarie). Serve reinstallare
 il `.deb` perché la voce `.desktop` aggiornata arrivi a sistema.
 
-## M130 (2026-08-08) — i pulsanti dello stash come quelli del commit
+## M130 (2026-08-08, `8c30911c7`) — i pulsanti dello stash come quelli del commit
 
 > Dall'utente, con lo screenshot della finestra Stash: «rendi coerenti anche i pulsanti con i bordi
 > bianchi della finestra di stash con quelli della finestra di commit».
