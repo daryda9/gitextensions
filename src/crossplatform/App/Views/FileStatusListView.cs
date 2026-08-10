@@ -290,7 +290,6 @@ public sealed class FileStatusListView : UserControl
 
         SyncGroupButtons();
         ApplyTranslations();
-        TranslationService.LanguageChanged += OnLanguageChanged;
     }
 
     // ------------------------------------------------------------ public surface
@@ -506,6 +505,42 @@ public sealed class FileStatusListView : UserControl
     private static string F(string format, params object?[] args)
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
+    // The subscription follows the visual tree rather than being taken once in the
+    // constructor: this control is created per pane and thrown away with it (a closed
+    // tab, a rebuilt layout, a repository switch), and a list left hanging off the
+    // static LanguageChanged event keeps its rows, its toolbar and its host alive for
+    // the lifetime of the process.
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        TranslationService.LanguageChanged += OnLanguageChanged;
+
+        // A language switch that happened while this list was detached raised no event
+        // here, so the state is re-stated on the way back in — that is what makes
+        // unsubscribing on detach safe rather than lossy.
+        Relabel();
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        TranslationService.LanguageChanged -= OnLanguageChanged;
+    }
+
+    // The group headers carry translated words (the status names) and the counts, so
+    // they have to be rebuilt rather than re-labelled.
+    private void Relabel()
+    {
+        ApplyTranslations();
+        Rebuild();
+    }
+
+    // The rich per-row context menu is not built here: the hosts attach their own to
+    // List (FileTreeView, DiffView, the commit dialog), and each of them translates
+    // its items itself. The one menu this control owns is the group-by flyout, which
+    // is rebuilt from scratch on every open by ShowGroupMenu — so its items only have
+    // to go through T() at build time, and there is nothing for ApplyTranslations to
+    // re-label.
     private void ApplyTranslations()
     {
         ToolTip.SetTip(_collapseGroupsButton, T(
@@ -526,14 +561,7 @@ public sealed class FileStatusListView : UserControl
         UpdateFilterFeedback();
     }
 
-    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
-    {
-        ApplyTranslations();
-
-        // The group headers carry translated words (the status names, the counts),
-        // so they have to be rebuilt rather than re-labelled.
-        Rebuild();
-    });
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(Relabel);
 
     // --------------------------------------------------------------- rows
 
