@@ -3,6 +3,8 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using GitExtensions.Avalonia.Services;
 using GitExtensions.Extensibility.Plugins;
 using GitExtensions.Extensibility.Settings;
 
@@ -28,6 +30,16 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
     // Per-setting save closures, populated as each control is built.
     private readonly List<Action> _savers = [];
 
+    // Promoted from locals for ApplyTranslations. The "no settings" note is optional:
+    // it only exists for a plugin that exposes nothing editable.
+    private readonly Button _save;
+    private readonly Button _cancel;
+    private readonly TextBlock? _noSettings;
+
+    // Every Browse button built by WithBrowse, so a language change re-captions them
+    // all — there is one per path-shaped setting, not just one per window.
+    private readonly List<Button> _browseButtons = [];
+
     private bool _saved;
 
     public PluginSettingsWindow(IGitPlugin plugin, SettingsSource source)
@@ -40,7 +52,6 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
         IBrush text = Resource("App.Text", "#DCDCDC");
         IBrush dim = Resource("App.TextDim", "#9B9B9B");
 
-        Title = $"{plugin.Name} — settings";
         Width = 560;
         Height = 460;
         CanResize = true;
@@ -79,12 +90,12 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
 
         if (rendered == 0)
         {
-            fields.Children.Add(new TextBlock
+            _noSettings = new TextBlock
             {
-                Text = "This plugin exposes no editable settings.",
                 Foreground = dim,
                 FontStyle = FontStyle.Italic,
-            });
+            };
+            fields.Children.Add(_noSettings);
         }
 
         ScrollViewer scroller = new()
@@ -93,10 +104,10 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
             HorizontalScrollBarVisibility = global::Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
         };
 
-        Button save = new() { Content = "Save", IsDefault = true, MinWidth = 84 };
-        Button cancel = new() { Content = "Cancel", IsCancel = true, MinWidth = 84, Margin = new Thickness(8, 0, 0, 0) };
-        save.Click += (_, _) => { Persist(); _saved = true; Close(); };
-        cancel.Click += (_, _) => Close();
+        _save = new Button { IsDefault = true, MinWidth = 84 };
+        _cancel = new Button { IsCancel = true, MinWidth = 84, Margin = new Thickness(8, 0, 0, 0) };
+        _save.Click += (_, _) => { Persist(); _saved = true; Close(); };
+        _cancel.Click += (_, _) => Close();
 
         Border buttonBar = new()
         {
@@ -108,7 +119,7 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(16, 10, 16, 12),
-                Children = { save, cancel },
+                Children = { _save, _cancel },
             },
         };
 
@@ -118,6 +129,10 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
         root.Children.Add(scroller);
         Content = root;
         DialogKeys.InstallEscapeClose(this);
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
     }
 
     /// <summary>True if the user pressed Save (values were written to the source).</summary>
@@ -194,7 +209,8 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
     // A file-picker Browse button attached to the right of a path TextBox.
     private Control WithBrowse(TextBox tb)
     {
-        Button browse = new() { Content = "Browse…", MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        Button browse = new() { MinWidth = 90, Margin = new Thickness(8, 0, 0, 0) };
+        _browseButtons.Add(browse);
         // A cancelled or failed file picker must not crash the dialog: Async.Run is
         // what turns a throw from the storage provider into a logged line.
         browse.Click += (_, _) => Async.Run(
@@ -207,7 +223,7 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
                 }
 
                 IReadOnlyList<IStorageFile> files = await top.StorageProvider.OpenFilePickerAsync(
-                    new FilePickerOpenOptions { AllowMultiple = false, Title = "Choose a file" });
+                    new FilePickerOpenOptions { AllowMultiple = false, Title = T("Choose a file") });
                 if (files.Count > 0 && files[0].TryGetLocalPath() is { Length: > 0 } path)
                 {
                     tb.Text = path;
@@ -237,6 +253,38 @@ public sealed class PluginSettingsWindow : Theming.ZoomWindow
             }
         }
     }
+
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        // The plugin's own name and description, and every setting caption, come from
+        // the plugin assembly: they are its strings, not Git Extensions', and there is
+        // no catalogue entry that could translate them. Only the frame is ours.
+        Title = TranslationService.TFormat(
+            null, "{0} — {1}", _plugin.Name, T("FormSettings/$this.Text", "settings"));
+
+        _save.Content = T("FormGitAttributes/Save.Text", "Save");
+        _cancel.Content = T("TranslatedStrings/_cancelText.Text", "Cancel");
+
+        foreach (Button browse in _browseButtons)
+        {
+            browse.Content = T("FormFilePrompt/btnBrowse.Text", "Browse…");
+        }
+
+        if (_noSettings is not null)
+        {
+            // Upstream says the same thing in PluginSettingsPage/labelNoSettings.
+            _noSettings.Text = T(
+                "PluginSettingsPage/labelNoSettings.Text", "This plugin exposes no editable settings.");
+        }
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     // A caption above its editor control.
     private static Control Labelled(string caption, Control editor, IBrush dim)
