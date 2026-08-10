@@ -25,6 +25,10 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
     private readonly string _repoPath;
     private readonly ListBox _list;
     private readonly Button _update;
+    private readonly Button _updateAll;
+    private readonly Button _syncAll;
+    private readonly Button _initAll;
+    private readonly Button _close;
     private readonly TextBox _output;
     private readonly TextBlock _status;
 
@@ -40,7 +44,6 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
     {
         _repoPath = repoPath;
 
-        Title = "Submodules";
         Width = 640;
         Height = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -54,22 +57,21 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
         _list.SelectionChanged += (_, _) => UpdateButtons();
         _list.DoubleTapped += (_, _) => DoUpdateSelected();
 
-        _update = MakeButton("Update");
-        Button updateAll = MakeButton("Update all");
-        Button syncAll = MakeButton("Synchronize all");
+        _update = MakeButton();
+        _updateAll = MakeButton();
+        _syncAll = MakeButton();
         // "Init all" runs a real `git submodule init` — it registers the submodules
         // from .gitmodules into .git/config WITHOUT cloning or checking anything
         // out. It used to call UpdateAll, making it a mislabelled duplicate of
         // "Update all" that quietly did far more than initialise.
-        Button initAll = MakeButton("Init all");
-        ToolTip.SetTip(initAll, "git submodule init — registers the submodules in .git/config; does not fetch or check out.");
-        Button close = MakeButton("Close");
+        _initAll = MakeButton();
+        _close = MakeButton();
 
         _update.Click += (_, _) => DoUpdateSelected();
-        updateAll.Click += (_, _) => Run("Update all", () => _service.UpdateAll(_repoPath));
-        syncAll.Click += (_, _) => Run("Synchronize all", () => _service.SynchronizeAll(_repoPath));
-        initAll.Click += (_, _) => Run("Init all", () => _service.InitAll(_repoPath));
-        close.Click += (_, _) => Close();
+        _updateAll.Click += (_, _) => Run(T("Update all"), () => _service.UpdateAll(_repoPath));
+        _syncAll.Click += (_, _) => Run(T("Synchronize all"), () => _service.SynchronizeAll(_repoPath));
+        _initAll.Click += (_, _) => Run(T("Init all"), () => _service.InitAll(_repoPath));
+        _close.Click += (_, _) => Close();
 
         // Escape = Close (upstream's CancelButton). Bubbling, so inner popups keep
         // their own Escape; Close() does not touch <see cref="Changed"/>.
@@ -86,15 +88,18 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
         {
             Orientation = Orientation.Vertical,
             Spacing = 6,
-            Width = 140,
+
+            // MinWidth, not Width: "Synchronize all" becomes "Sincronizza tutto" and a
+            // hard width would clip it rather than grow this Auto-sized column.
+            MinWidth = 140,
             Margin = new Thickness(10, 0, 0, 0),
         };
         buttons.Children.Add(_update);
-        buttons.Children.Add(updateAll);
-        buttons.Children.Add(syncAll);
-        buttons.Children.Add(initAll);
+        buttons.Children.Add(_updateAll);
+        buttons.Children.Add(_syncAll);
+        buttons.Children.Add(_initAll);
         buttons.Children.Add(new Border { Height = 8 });
-        buttons.Children.Add(close);
+        buttons.Children.Add(_close);
 
         Grid top = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         Grid.SetColumn(_list, 0);
@@ -140,9 +145,44 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
         Content = body;
         DialogKeys.EnsureFocusRoute(this);
 
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
+
         Opened += (_, _) => ReloadList();
         UpdateButtons();
     }
+
+    // --- Translations -----------------------------------------------------
+
+    // ReloadList as well as ApplyTranslations: each row's "(out of date)" suffix comes
+    // from SubmoduleItem.ToString, which the ListBox re-runs only on a new collection.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        ApplyTranslations();
+        ReloadList();
+    });
+
+    private void ApplyTranslations()
+    {
+        Title = T("FormSubmodules/$this.Text", "Submodules");
+
+        _update.Content = T("FormSubmodules/UpdateSubmodule.Text", "Update");
+
+        // No upstream id for the three "… all" variants: FormSubmodules acts on the
+        // selected submodule only, so these are the port's own buttons and the
+        // by-source overload is all that is available for them.
+        _updateAll.Content = T("Update all");
+        _syncAll.Content = T("Synchronize all");
+        _initAll.Content = T("Init all");
+        ToolTip.SetTip(_initAll, T(
+            "git submodule init — registers the submodules in .git/config; does not fetch or check out."));
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     private SubmoduleItem? Selected => _list.SelectedItem as SubmoduleItem;
 
@@ -155,7 +195,9 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
             return;
         }
 
-        Run($"Update '{item.Row.Path}'", () => _service.Update(_repoPath, item.Row.Path));
+        Run(
+            TranslationService.TFormat(null, "Update '{0}'", item.Row.Path),
+            () => _service.Update(_repoPath, item.Row.Path));
     }
 
     private void ReloadList()
@@ -203,7 +245,7 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
         }
 
         _busy = true;
-        _status.Text = $"{label}…";
+        _status.Text = TranslationService.TFormat(null, "{0}…", label);
         UpdateButtons();
         _ = Task.Run(() =>
         {
@@ -225,15 +267,18 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
                     Changed = true;
                 }
 
-                _status.Text = $"{label}: {(result.Success ? "OK" : "failed")}";
+                _status.Text = result.Success
+                    ? TranslationService.TFormat(null, "{0}: OK", label)
+                    : TranslationService.TFormat(null, "{0}: failed", label);
                 _output.Text = result.Output;
                 ReloadList();
             });
         });
     }
 
-    private static Button MakeButton(string text)
-        => new() { Content = text, HorizontalAlignment = HorizontalAlignment.Stretch };
+    // No caption here: ApplyTranslations owns every button label in this dialog.
+    private static Button MakeButton()
+        => new() { HorizontalAlignment = HorizontalAlignment.Stretch };
 
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;
@@ -244,9 +289,9 @@ public sealed class SubmodulesDialog : Theming.ZoomWindow
     {
         public override string ToString() => Row.Status switch
         {
-            SubmoduleState.NotInitialized => $"{Row.Display}  (not initialized)",
-            SubmoduleState.OutOfDate => $"{Row.Display}  (out of date)",
-            SubmoduleState.Initialized => $"{Row.Display}  (up to date)",
+            SubmoduleState.NotInitialized => Row.Display + "  " + TranslationService.T("(not initialized)"),
+            SubmoduleState.OutOfDate => Row.Display + "  " + TranslationService.T("(out of date)"),
+            SubmoduleState.Initialized => Row.Display + "  " + TranslationService.T("(up to date)"),
             _ => Row.Display,
         };
     }
