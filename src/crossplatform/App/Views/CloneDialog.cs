@@ -52,7 +52,9 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class CloneDialog : Theming.ZoomWindow
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     /// <summary>Branch entry meaning "let git check out whatever the remote's HEAD points at".</summary>
     private static readonly string DefaultBranchItem = TranslationService.T(

@@ -126,7 +126,7 @@ public sealed class BisectDialog : Theming.ZoomWindow
                 IsReadOnly = true,
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.NoWrap,
-                FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+                FontFamily = Theming.AppFonts.Monospace,
                 FontSize = 12,
                 MinHeight = 120,
                 Text = string.Empty,

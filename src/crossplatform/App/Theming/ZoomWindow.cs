@@ -41,5 +41,19 @@ public class ZoomWindow : Window
     public ZoomWindow()
     {
         UiScaling.Install(this);
+
+        // The interface font (AppSettings.Font), applied per window: FontFamily and
+        // FontSize inherit down the visual tree, so one assignment here reaches every
+        // control in the window without a style per control type. Left alone when
+        // unset, so the system font keeps deciding.
+        if (AppFonts.Ui is { } family)
+        {
+            FontFamily = family;
+        }
+
+        if (AppFonts.UiSize > 0)
+        {
+            FontSize = AppFonts.UiSize;
+        }
     }
 }

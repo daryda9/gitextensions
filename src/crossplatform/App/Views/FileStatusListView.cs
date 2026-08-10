@@ -66,7 +66,9 @@ public sealed class FileStatusListOptions
 /// </summary>
 public sealed class FileStatusListView : UserControl
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     // File-status glyph colours: modified=accent, added=green, deleted=red.
     private static readonly IBrush ModifiedGlyph = new SolidColorBrush(Color.FromRgb(0x4A, 0x9E, 0xD6));

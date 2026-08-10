@@ -166,7 +166,7 @@ public sealed class CheckoutBranchForm : Theming.ZoomWindow
         _resetBranchName = new TextBlock
         {
             Foreground = dim,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+            FontFamily = Theming.AppFonts.Monospace,
             Margin = new Thickness(22, 2, 0, 0),
         };
 

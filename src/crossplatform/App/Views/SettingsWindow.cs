@@ -170,6 +170,18 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly CheckBox _rebaseAutoStash;
     private readonly ComboBox _recursiveSubmodules;
 
+    // ---- Dashboard / paths page: four more.
+    private readonly TextBox _recentHistorySize;
+    private readonly CheckBox _sortRecentRepos;
+    private readonly ComboBox _shorteningStrategy;
+    private readonly ComboBox _truncatePathMethod;
+
+    // ---- Fonts, on the Appearance page: the last two.
+    private readonly ComboBox _uiFont;
+    private readonly TextBox _uiFontSize;
+    private readonly ComboBox _monospaceFont;
+    private readonly TextBox _monospaceFontSize;
+
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
     // CommitInfoChoices.
     private readonly CheckBox[] _commitInfoChecks;
@@ -360,6 +372,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string GraphText = "Revision graph";
     private const string StashKey = "FormStash/$this.Text";
     private const string StashText = "Stash and checkout";
+    private const string DashboardKey = "Dashboard/$this.Text";
+    private const string DashboardText = "Dashboard and paths";
 
     // The three answers of the two auto-pop drop-downs, in AskAlwaysNever order.
     private static readonly (string Key, string Label)[] AskChoices =
@@ -625,6 +639,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         // No upstream trans-unit: upstream ships coloured bitmaps and has nothing to
         // toggle, so the caption is a literal like "Style" and "UI size".
+        // ---- Fonts. The lists are the families the font manager actually reports, with
+        // an empty first entry meaning "let the app choose" — which for the monospaced
+        // one is a real search, not a guess (see AppFonts).
+        _uiFont = FontCombo();
+        _monospaceFont = FontCombo();
+        _uiFontSize = NumberBox();
+        _monospaceFontSize = NumberBox();
+
         _coloredIcons = new CheckBox { Content = "Colour the icons" };
         _coloredIcons.IsCheckedChanged += (_, _) => PreviewIconColors();
 
@@ -689,7 +711,28 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "one repository at a time, as it worked before. The open tabs are "
                     + "remembered across restarts either way, and the choice is applied "
                     + "immediately, no restart."),
-            coloredIconsField);
+            coloredIconsField,
+            Field(
+                "AppearanceFontsSettingsPage/lblFont.Text",
+                "Interface font",
+                _uiFont,
+                dim,
+                "Applied to windows opened from now on. Leave it empty for the system "
+                    + "font."),
+            Field(null, "Interface font size", _uiFontSize, dim, "0 keeps the theme's own size."),
+            Field(
+                "AppearanceFontsSettingsPage/lblMonospaceFont.Text",
+                "Fixed-width font",
+                _monospaceFont,
+                dim,
+                "Used by the diff, the commit message editor, the console and the blame "
+                    + "gutter. Empty picks the first fixed-width family installed — the "
+                    + "port used to ask for \"monospace\", which is an fontconfig alias "
+                    + "and not a family name, so none of those surfaces was actually "
+                    + "fixed-width."),
+            Field(null, "Fixed-width font size", _monospaceFontSize, dim,
+                "0 keeps each surface's own size (the diff pane's zoom buttons still "
+                    + "apply on top)."));
 
         // ---- Commit page: the message editor's seven settings. Numbers are plain text
         // boxes and not spinners: every one of them means "0 = off", and a spinner's
@@ -920,6 +963,52 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "submodule first; \"None\" says nothing about it. This is the "
                     + "starting value of the same drop-down in the Push dialog."));
 
+        // ---- Dashboard / paths page.
+        _recentHistorySize = NumberBox();
+        _sortRecentRepos = new CheckBox();
+        Localize(
+            _sortRecentRepos,
+            "AppearanceSettingsPage/chkSortRecentRepos.Text",
+            "List the recent repositories alphabetically instead of by last use");
+
+        _shorteningStrategy = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        foreach (string label in new[] { "Full path", "Repository folder only", "Middle elided" })
+        {
+            _shorteningStrategy.Items.Add(new ComboBoxItem { Content = label });
+        }
+
+        _truncatePathMethod = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        foreach (string label in new[] { "Full path", "Trim the start", "File name only" })
+        {
+            _truncatePathMethod.Items.Add(new ComboBoxItem { Content = label });
+        }
+
+        Panel dashboardPanel = CategoryPanel(
+            DashboardKey, DashboardText,
+            null, "The list of recent repositories, and how a path is shortened when it "
+                + "does not fit.",
+            text,
+            dim,
+            Field(
+                "AppearanceSettingsPage/lblRecentRepositoriesHistorySize.Text",
+                "Repositories kept in the recent list",
+                _recentHistorySize,
+                dim,
+                "Older entries drop off when the list is next written. This is the same "
+                    + "number the rest of Git Extensions uses, so it is stored with the "
+                    + "history itself rather than with these settings."),
+            _sortRecentRepos,
+            Field(null, "Path shown under a recent repository", _shorteningStrategy, dim),
+            Field(
+                "AppearanceSettingsPage/lblTruncateLongFilenames.Text",
+                "Path shown in the changed-file list",
+                _truncatePathMethod,
+                dim,
+                "Only applies where the whole path is shown; inside a folder group the "
+                    + "directory is already in the header. Upstream's fourth choice, "
+                    + "\"Compact\", is a Windows API and is not offered here — its own "
+                    + "code falls back to the full path off Windows."));
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -934,6 +1023,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(diffPanel);
         _pages.Add(graphPanel);
         _pages.Add(stashPanel);
+        _pages.Add(dashboardPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -977,6 +1067,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(DiffViewerKey, DiffViewerText));
         categories.Items.Add(CategoryItem(GraphKey, GraphText));
         categories.Items.Add(CategoryItem(StashKey, StashText));
+        categories.Items.Add(CategoryItem(DashboardKey, DashboardText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -1220,10 +1311,25 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         _untrackedManualStash.IsChecked = prefs.IncludeUntrackedFilesInManualStash;
         _untrackedAutoStash.IsChecked = prefs.IncludeUntrackedFilesInAutoStash;
-        _popAfterCheckout.SelectedIndex = AskIndex(prefs.AutoPopStashAfterCheckout);
-        _popAfterPull.SelectedIndex = AskIndex(prefs.AutoPopStashAfterPull);
+        _popAfterCheckout.SelectedIndex = TokenIndex(SettingsService.AskAlwaysNever, prefs.AutoPopStashAfterCheckout);
+        _popAfterPull.SelectedIndex = TokenIndex(SettingsService.AskAlwaysNever, prefs.AutoPopStashAfterPull);
         _rebaseAutoStash.IsChecked = prefs.RebaseAutoStash;
         _recursiveSubmodules.SelectedIndex = prefs.RecursiveSubmodules;
+
+        // The size comes from the CORE setting, which is the one that trims the list;
+        // app-settings.json only carries what the dialog last wrote.
+        _recentHistorySize.Text =
+            GitCommands.AppSettings.RecentRepositoriesHistorySize.ToString(CultureInfo.InvariantCulture);
+        _sortRecentRepos.IsChecked = prefs.SortRecentRepos;
+        _shorteningStrategy.SelectedIndex = TokenIndex(
+            SettingsService.ShorteningStrategies, prefs.ShorteningRecentRepoPathStrategy);
+        _truncatePathMethod.SelectedIndex = TokenIndex(
+            SettingsService.TruncateMethods, prefs.TruncatePathMethod);
+
+        SelectFont(_uiFont, prefs.UiFontFamily);
+        SelectFont(_monospaceFont, prefs.MonospaceFontFamily);
+        _uiFontSize.Text = prefs.UiFontSize.ToString(CultureInfo.InvariantCulture);
+        _monospaceFontSize.Text = prefs.MonospaceFontSize.ToString(CultureInfo.InvariantCulture);
 
         // Commit-info toggles: likewise their own file.
         CommitInfoSettings commitInfo = _commitInfoService.Load();
@@ -1519,6 +1625,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         string popAfterPull = SettingsService.AskAlwaysNever[Math.Max(0, _popAfterPull.SelectedIndex)];
         bool rebaseAutoStash = _rebaseAutoStash.IsChecked == true;
         int recursiveSubmodules = Math.Max(0, _recursiveSubmodules.SelectedIndex);
+        int historySize = Number(_recentHistorySize, 30, 500);
+        bool sortRecent = _sortRecentRepos.IsChecked == true;
+        string shortening = SettingsService.ShorteningStrategies[Math.Max(0, _shorteningStrategy.SelectedIndex)];
+        string truncate = SettingsService.TruncateMethods[Math.Max(0, _truncatePathMethod.SelectedIndex)];
+        string uiFont = SelectedFont(_uiFont);
+        string monospaceFont = SelectedFont(_monospaceFont);
+        int uiFontSize = Number(_uiFontSize, 0, 40);
+        int monospaceFontSize = Number(_monospaceFontSize, 0, 40);
         _ = Task.Run(() =>
         {
             SettingsService settings = new();
@@ -1551,7 +1665,24 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.AutoPopStashAfterPull = popAfterPull;
             prefs.RebaseAutoStash = rebaseAutoStash;
             prefs.RecursiveSubmodules = recursiveSubmodules;
+            prefs.RecentRepositoriesHistorySize = historySize;
+            prefs.SortRecentRepos = sortRecent;
+            prefs.ShorteningRecentRepoPathStrategy = shortening;
+            prefs.TruncatePathMethod = truncate;
+            prefs.UiFontFamily = uiFont;
+            prefs.MonospaceFontFamily = monospaceFont;
+            prefs.UiFontSize = uiFontSize;
+            prefs.MonospaceFontSize = monospaceFontSize;
             settings.Save(prefs);
+
+            // Drop the resolved families so the next window built asks again. Windows
+            // already open keep theirs: re-flowing every layout under the pointer is
+            // worse than a font that arrives with the next dialog.
+            Dispatcher.UIThread.Post(Theming.AppFonts.Reload);
+
+            // Written to the core too, because the core is what enforces it when it
+            // saves the history (LocalRepositoryManager.AdjustHistorySize).
+            GitCommands.AppSettings.RecentRepositoriesHistorySize = Math.Max(1, historySize);
 
             _commitInfoService.Save(new CommitInfoSettings
             {
@@ -1865,13 +1996,48 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // these captions are half again as long as the English.
     // A small left-aligned box for a whole number. Narrow on purpose: the width tells
     // the user a count is expected, which no watermark would.
-    // Where a stored Ask/Always/Never token sits in the list; 0 (= Ask) for anything
-    // unrecognised, which is also what SettingsService.Sanitize would have written back.
-    private static int AskIndex(string token)
+    // A drop-down of the installed families, with an empty first entry for "let the app
+    // choose". Built from the font manager, so it can only offer fonts that resolve.
+    private static ComboBox FontCombo()
     {
-        for (int i = 0; i < SettingsService.AskAlwaysNever.Count; i++)
+        ComboBox combo = new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        combo.Items.Add(new ComboBoxItem { Content = string.Empty });
+        foreach (string family in Theming.AppFonts.InstalledFamilies())
         {
-            if (string.Equals(SettingsService.AskAlwaysNever[i], token, StringComparison.Ordinal))
+            combo.Items.Add(new ComboBoxItem { Content = family });
+        }
+
+        return combo;
+    }
+
+    // Puts the selection on <paramref name="family"/>, or on the empty entry when it is
+    // not installed — an uninstalled name in the file is not worth showing as if it
+    // were in force, since AppFonts ignores it too.
+    private static void SelectFont(ComboBox combo, string family)
+    {
+        for (int i = 0; i < combo.Items.Count; i++)
+        {
+            if (combo.Items[i] is ComboBoxItem item
+                && string.Equals(item.Content as string, family, StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedIndex = i;
+                return;
+            }
+        }
+
+        combo.SelectedIndex = 0;
+    }
+
+    private static string SelectedFont(ComboBox combo)
+        => (combo.SelectedItem as ComboBoxItem)?.Content as string ?? string.Empty;
+
+    // Where a stored token sits in its list; 0 for anything unrecognised, which is what
+    // SettingsService.Sanitize would have written back anyway.
+    private static int TokenIndex(IReadOnlyList<string> tokens, string token)
+    {
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            if (string.Equals(tokens[i], token, StringComparison.Ordinal))
             {
                 return i;
             }

@@ -52,8 +52,8 @@ public sealed class BranchTagPanel : UserControl
 
     public BranchTagPanel()
     {
-        _branchList = new ListBox { FontFamily = new FontFamily("monospace,Consolas,Menlo") };
-        _tagList = new ListBox { FontFamily = new FontFamily("monospace,Consolas,Menlo") };
+        _branchList = new ListBox { FontFamily = Theming.AppFonts.Monospace };
+        _tagList = new ListBox { FontFamily = Theming.AppFonts.Monospace };
         _branchList.SelectionChanged += (_, _) => { if (_branchList.SelectedItem is not null) { _tagList.SelectedItem = null; } };
         _tagList.SelectionChanged += (_, _) => { if (_tagList.SelectedItem is not null) { _branchList.SelectedItem = null; } };
         _branchList.DoubleTapped += (_, _) => DoCheckout();

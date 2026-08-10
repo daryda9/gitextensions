@@ -962,7 +962,11 @@ public sealed class RevisionGridView : UserControl
 
         // Idle timeout: a pause in typing dismisses the quick-search buffer, so a
         // later keystroke starts fresh (matching the original grid's behaviour).
-        _quickSearchTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        // Upstream's RevisionGridQuickSearchTimeout (4 s by default); the port had 3.
+        _quickSearchTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(new SettingsService().Load().RevisionGridQuickSearchTimeout),
+        };
         _quickSearchTimer.Tick += (_, _) => EndQuickSearch();
 
         // Printable characters typed while the list is focused feed the buffer.
@@ -1051,6 +1055,7 @@ public sealed class RevisionGridView : UserControl
     private void ReadGridPreferences()
     {
         _gridPrefs = new SettingsService().Load();
+        _quickSearchTimer.Interval = TimeSpan.FromMilliseconds(_gridPrefs.RevisionGridQuickSearchTimeout);
 
         // Pushed onto the graph control rather than read by it: the lane palette is
         // static, and a per-cell settings read would cost one file check per row.
@@ -7013,7 +7018,7 @@ public sealed class RevisionGridView : UserControl
 
         if (monospace)
         {
-            block.FontFamily = new FontFamily("monospace,Consolas,Menlo");
+            block.FontFamily = Theming.AppFonts.Monospace;
         }
 
         // Air between a column divider and the text that starts right after it. Only the

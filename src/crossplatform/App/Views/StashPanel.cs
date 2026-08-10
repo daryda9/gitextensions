@@ -37,7 +37,9 @@ public sealed class StashPanel : UserControl
 {
     private readonly StashOpsService _service = new();
 
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
     // Diff line colours, from the same theme keys DiffView reads. They used to

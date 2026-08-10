@@ -37,7 +37,9 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class OutputView : UserControl
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     private readonly ListBox _items;
     private readonly TextBox _detail;
@@ -312,7 +314,9 @@ public sealed class OutputView : UserControl
                 ? CultureInfo.CurrentCulture.TextInfo.ListSeparator
                 : "\t";
 
-            string[] lines = CommandLog.Commands.Select(entry => entry.FullLine(separator)).ToArray();
+            // Saving writes exactly what the view shows, depth included: a file that
+            // silently held more than the tab did would be a different document.
+            string[] lines = TakeLast(CommandLog.Commands).Select(entry => entry.FullLine(separator)).ToArray();
             await Task.Run(() => File.WriteAllLinesAsync(destination, lines));
 
             _status.Text = F(T("Saved {0}"), destination);
@@ -394,6 +398,18 @@ public sealed class OutputView : UserControl
 
     private static string T(string? key, string english) => TranslationService.T(key, english);
 
+    /// <summary>
+    ///  The last <see cref="AppPreferences.OutputHistoryDepth"/> entries of the log, in
+    ///  order. Read per refresh: the setting can change while the tab is open, and the
+    ///  refresh is already throttled to at most one every 300 ms.
+    /// </summary>
+    internal static List<CommandLogEntry> TakeLast(IEnumerable<CommandLogEntry> entries)
+    {
+        int depth = new SettingsService().Load().OutputHistoryDepth;
+        List<CommandLogEntry> all = entries.ToList();
+        return all.Count <= depth ? all : all.GetRange(all.Count - depth, depth);
+    }
+
     private static string F(string format, params object?[] args)
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
@@ -436,7 +452,9 @@ public sealed class OutputView : UserControl
         List<CommandLogEntry> entries;
         try
         {
-            entries = CommandLog.Commands.ToList();
+            // Newest LAST, so the tail is what the depth keeps — the same end the view
+            // scrolls to and the same end upstream's OutputHistoryModel retains.
+            entries = TakeLast(CommandLog.Commands);
         }
         catch (Exception ex)
         {

@@ -294,7 +294,24 @@ public static class DiffFileListBuilder
     /// <summary>The row's text: its full path, or just the file name inside a tree.</summary>
     public static string DisplayName(DiffFileRow row, bool fullPath)
     {
+        // Upstream's TruncatePathMethod (PathFormatter.cs:32): FileNameOnly drops the
+        // directories entirely, TrimStart keeps the tail. Both only apply where the
+        // full path would otherwise be shown — inside a path GROUP the directory is
+        // already in the header, and shortening the leaf again would say nothing.
+        string method = fullPath
+            ? new SettingsService().Load().TruncatePathMethod
+            : "None";
+
+        if (string.Equals(method, "FileNameOnly", StringComparison.Ordinal))
+        {
+            fullPath = false;
+        }
+
         string name = fullPath ? row.Name : FileName(row.Name);
+        if (string.Equals(method, "TrimStart", StringComparison.Ordinal))
+        {
+            name = TrimStartPath(name);
+        }
 
         if (row.OldName is null || row.OldName == row.Name)
         {
@@ -305,6 +322,20 @@ public static class DiffFileListBuilder
         string old = fullPath ? row.OldName : FileName(row.OldName);
         return old + " -> " + name;
     }
+
+    // Keeps the last TrimStartSegments segments of a long path and marks the cut with
+    // an ellipsis. Upstream trims to the width of the column; there is no column width
+    // to consult here (the list is a wrapping TextBlock), so the cut is by segment,
+    // which at least never lands mid-name.
+    private static string TrimStartPath(string path)
+    {
+        string[] parts = path.Split('/');
+        return parts.Length <= TrimStartSegments
+            ? path
+            : "…/" + string.Join('/', parts[^TrimStartSegments..]);
+    }
+
+    private const int TrimStartSegments = 2;
 
     // ---- path tree ----
 

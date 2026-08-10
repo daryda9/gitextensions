@@ -55,7 +55,7 @@ public sealed class RemotePanel : UserControl
         _remotesList = new ListBox
         {
             SelectionMode = SelectionMode.Single,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+            FontFamily = Theming.AppFonts.Monospace,
         };
         _remotesList.SelectionChanged += (_, _) => UpdateButtons();
 
@@ -121,7 +121,7 @@ public sealed class RemotePanel : UserControl
             IsReadOnly = true,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.NoWrap,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+            FontFamily = Theming.AppFonts.Monospace,
             MinHeight = 140,
         };
 

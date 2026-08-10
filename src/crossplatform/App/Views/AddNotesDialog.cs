@@ -56,7 +56,7 @@ public sealed class AddNotesDialog : Theming.ZoomWindow
             AcceptsReturn = true,
             AcceptsTab = false,
             TextWrapping = TextWrapping.Wrap,
-            FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+            FontFamily = Theming.AppFonts.Monospace,
             Background = Brush("App.Control", Brushes.Black),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             Text = existingNote,

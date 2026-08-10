@@ -51,7 +51,9 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class CleanupDialog : Theming.ZoomWindow
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     private readonly string _repoPath;
 

@@ -4559,7 +4559,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
     // ---------- ui helpers ----------
 
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     // The pitch the diff panel and its gutter BOTH lay out at. It has to be stated:
     // the two controls compute different default line heights for the same font.

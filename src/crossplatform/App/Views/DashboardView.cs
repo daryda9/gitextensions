@@ -265,7 +265,17 @@ public sealed class DashboardView : UserControl
             .OrderBy(e => e.Category is { Length: > 0 } ? 1 : 0)
             .ThenBy(e => e.Category ?? string.Empty, StringComparer.CurrentCulture));
 
-        foreach (string path in recent ?? [])
+        // SortRecentRepos: alphabetically by the folder name the row leads with, not by
+        // the whole path — sorting by path would group by parent directory, which is
+        // not what someone looking for a repository by name is scanning for.
+        AppPreferences prefs = new SettingsService().Load();
+        IEnumerable<string> ordered = recent ?? [];
+        if (prefs.SortRecentRepos)
+        {
+            ordered = ordered.OrderBy(FolderName, StringComparer.CurrentCultureIgnoreCase);
+        }
+
+        foreach (string path in ordered)
         {
             if (!string.IsNullOrWhiteSpace(path) && seen.Add(path))
             {
@@ -375,6 +385,40 @@ public sealed class DashboardView : UserControl
         Margin = new Thickness(0, 10, 0, 4),
     };
 
+    /// <summary>
+    ///  The second line of a row, shortened per
+    ///  <see cref="AppPreferences.ShorteningRecentRepoPathStrategy"/>: the whole path,
+    ///  the repository folder alone (upstream's MostSignDir), or the middle elided
+    ///  (MiddleDots). The home prefix is collapsed to ~ in every case, as before.
+    ///
+    ///  <para>Read per row rather than cached: the list is rebuilt whenever it changes,
+    ///  and a dashboard has tens of rows, not thousands.</para>
+    /// </summary>
+    private static string ShortenPath(string path)
+    {
+        string display = PathDisplay.CollapseHome(path);
+        return new SettingsService().Load().ShorteningRecentRepoPathStrategy switch
+        {
+            "MostSignDir" => FolderName(path),
+            "MiddleDots" => MiddleDots(display),
+            _ => display,
+        };
+    }
+
+    // Keeps the first and the last two segments and elides what is between them. Short
+    // paths are returned untouched: eliding two segments to insert an ellipsis of the
+    // same width would be a net loss.
+    private static string MiddleDots(string display)
+    {
+        string[] parts = display.Split('/');
+        if (parts.Length <= 4)
+        {
+            return display;
+        }
+
+        return string.Join('/', parts[0], "…", parts[^2], parts[^1]);
+    }
+
     private Control Row(RepoEntry entry)
     {
         StackPanel outer = new() { Spacing = 0 };
@@ -415,7 +459,7 @@ public sealed class DashboardView : UserControl
         };
         TextBlock path = new()
         {
-            Text = entry.Exists ? entry.Path : string.Format(T("{0} (missing)"), entry.Path),
+            Text = entry.Exists ? ShortenPath(entry.Path) : string.Format(T("{0} (missing)"), ShortenPath(entry.Path)),
             Foreground = B("App.TextDim"),
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,

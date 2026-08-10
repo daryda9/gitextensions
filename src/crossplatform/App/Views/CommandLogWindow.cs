@@ -156,7 +156,9 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
         List<string> lines;
         try
         {
-            lines = CommandLog.Commands.Select(c => c.ColumnLine).ToList();
+            // Same depth as the Output tab, through the same helper: two views of one
+            // log that disagreed about how much of it exists would be worse than either.
+            lines = OutputView.TakeLast(CommandLog.Commands).Select(c => c.ColumnLine).ToList();
         }
         catch (Exception ex)
         {

@@ -275,6 +275,77 @@ public sealed class AppPreferences
     ///  submodule commit is not pushed), 2 = <c>=on-demand</c> (push them first).
     /// </summary>
     public int RecursiveSubmodules { get; set; } = 1;
+
+    /// <summary>
+    ///  How many repositories the recent list keeps
+    ///  (<c>AppSettings.RecentRepositoriesHistorySize</c>, default 30). Written
+    ///  straight into the core setting, because the core is what trims the list when
+    ///  it saves it (<c>LocalRepositoryManager.AdjustHistorySize</c>) — a copy here
+    ///  would be a second, disagreeing answer.
+    /// </summary>
+    public int RecentRepositoriesHistorySize { get; set; } = 30;
+
+    /// <summary>
+    ///  List the recent repositories in alphabetical order instead of
+    ///  most-recent-first (<c>AppSettings.SortRecentRepos</c>, default off).
+    /// </summary>
+    public bool SortRecentRepos { get; set; }
+
+    /// <summary>
+    ///  How a long path is shortened in the recent list, by the NAME of
+    ///  <c>ShorteningRecentRepoPathStrategy</c>: "None", "MostSignDir" (the repository
+    ///  folder alone) or "MiddleDots" (the middle elided).
+    /// </summary>
+    public string ShorteningRecentRepoPathStrategy { get; set; } = "None";
+
+    /// <summary>
+    ///  How a path is shown in the changed-file list, by the name of
+    ///  <c>TruncatePathMethod</c>: "None", "TrimStart" or "FileNameOnly".
+    ///
+    ///  <para>Upstream's fourth value, <c>Compact</c>, is not offered: it calls the
+    ///  Win32 path-compacting API and its own code falls back to <c>None</c> off
+    ///  Windows (<c>PathFormatter.cs:39</c>). Offering a choice that does nothing here
+    ///  would be a fake button, which is the thing this round exists to remove.</para>
+    /// </summary>
+    public string TruncatePathMethod { get; set; } = "None";
+
+    /// <summary>
+    ///  How many commands the Output tab and the command-log window show, newest last
+    ///  (<c>AppSettings.OutputHistoryDepth</c>, default 20).
+    ///
+    ///  <para>A DISPLAY depth, not a storage one: what is recorded is the core's
+    ///  process-global <c>CommandLog</c>, whose own 500-entry cap belongs to the core
+    ///  and is none of the port's business. Upstream's number does the same job for its
+    ///  <c>OutputHistoryModel</c>.</para>
+    /// </summary>
+    public int OutputHistoryDepth { get; set; } = 20;
+
+    /// <summary>
+    ///  How long the revision grid's type-to-search keeps collecting keystrokes before
+    ///  it forgets them, in milliseconds
+    ///  (<c>AppSettings.RevisionGridQuickSearchTimeout</c>, default 4000). The port used
+    ///  a hard-coded 3000.
+    /// </summary>
+    public int RevisionGridQuickSearchTimeout { get; set; } = 4000;
+
+    /// <summary>
+    ///  The fixed-width family for the diff, the commit editor, the console and the
+    ///  blame gutter (<c>AppSettings.MonospaceFont</c>). Empty means "find one", which
+    ///  is what <see cref="Theming.AppFonts"/> does — and had to start doing, because
+    ///  the family the port asked for did not exist on this platform.
+    /// </summary>
+    public string MonospaceFontFamily { get; set; } = string.Empty;
+
+    /// <summary>Point size for those surfaces; 0 leaves each one's own size alone.</summary>
+    public double MonospaceFontSize { get; set; }
+
+    /// <summary>
+    ///  The interface family (<c>AppSettings.Font</c>). Empty = the system default.
+    /// </summary>
+    public string UiFontFamily { get; set; } = string.Empty;
+
+    /// <summary>Interface point size; 0 = the theme's own.</summary>
+    public double UiFontSize { get; set; }
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
@@ -289,6 +360,14 @@ public sealed class SettingsService
     ///  (upstream's null), always, never. Ordered for display.
     /// </summary>
     public static readonly IReadOnlyList<string> AskAlwaysNever = new[] { "Ask", "Always", "Never" };
+
+    /// <summary>Names of <c>ShorteningRecentRepoPathStrategy</c>, in display order.</summary>
+    public static readonly IReadOnlyList<string> ShorteningStrategies =
+        new[] { "None", "MostSignDir", "MiddleDots" };
+
+    /// <summary>Names of <c>TruncatePathMethod</c> the port can honour; see the property.</summary>
+    public static readonly IReadOnlyList<string> TruncateMethods =
+        new[] { "None", "TrimStart", "FileNameOnly" };
 
     /// <summary>Allowed local-changes tokens (names of <c>LocalChangesAction</c>).</summary>
     public static readonly IReadOnlyList<string> CheckoutLocalChangesActions =
@@ -389,6 +468,29 @@ public sealed class SettingsService
         // the diagonals flag is for; 1 is the smallest value that still means something.
         s.StraightenGraphSegmentsLimit = Math.Clamp(s.StraightenGraphSegmentsLimit, 1, 10_000);
         s.RecursiveSubmodules = Math.Clamp(s.RecursiveSubmodules, 0, 2);
+
+        // Upstream's own floor is 1: a size of 0 would empty the list on every save.
+        s.RecentRepositoriesHistorySize = Math.Clamp(s.RecentRepositoriesHistorySize, 1, 500);
+        s.OutputHistoryDepth = Math.Clamp(s.OutputHistoryDepth, 1, 500);
+
+        // Floored at half a second: below that the second keystroke of a two-letter
+        // search would already be a new search.
+        s.RevisionGridQuickSearchTimeout = Math.Clamp(s.RevisionGridQuickSearchTimeout, 500, 30_000);
+
+        // 0 keeps its meaning of "unset"; anything else is held between sizes that can
+        // still be read and still fit a dialog.
+        s.MonospaceFontSize = s.MonospaceFontSize <= 0 ? 0 : Math.Clamp(s.MonospaceFontSize, 6, 40);
+        s.UiFontSize = s.UiFontSize <= 0 ? 0 : Math.Clamp(s.UiFontSize, 6, 40);
+
+        if (!ShorteningStrategies.Contains(s.ShorteningRecentRepoPathStrategy))
+        {
+            s.ShorteningRecentRepoPathStrategy = "None";
+        }
+
+        if (!TruncateMethods.Contains(s.TruncatePathMethod))
+        {
+            s.TruncatePathMethod = "None";
+        }
 
         if (!AskAlwaysNever.Contains(s.AutoPopStashAfterCheckout))
         {

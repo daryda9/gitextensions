@@ -17,7 +17,9 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class PatchViewerWindow : Theming.ZoomWindow
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     // Same line colours as DiffView so the patch reads identically — now from the
     // shared theme keys rather than duplicated dark-palette literals, which measured
@@ -155,7 +157,9 @@ public sealed class PatchViewerWindow : Theming.ZoomWindow
 /// </summary>
 public sealed class PatchOutputWindow : Theming.ZoomWindow
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     // As in PatchViewerWindow: the title is the caller's and the body is git's own
     // output, so "Close" is the only string this window owns.

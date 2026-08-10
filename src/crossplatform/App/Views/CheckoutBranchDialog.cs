@@ -369,7 +369,7 @@ public sealed class CreateBranchDialog : Theming.ZoomWindow
                 {
                     Text = startPointDisplay,
                     Foreground = text,
-                    FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+                    FontFamily = Theming.AppFonts.Monospace,
                     Margin = new Thickness(0, 2, 0, 12),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                 },
@@ -597,7 +597,7 @@ public sealed class CreateTagDialog : Theming.ZoomWindow
                 {
                     Text = commitDisplay,
                     Foreground = text,
-                    FontFamily = new FontFamily("monospace,Consolas,Menlo"),
+                    FontFamily = Theming.AppFonts.Monospace,
                     Margin = new Thickness(0, 2, 0, 12),
                     TextTrimming = TextTrimming.CharacterEllipsis,
                 },

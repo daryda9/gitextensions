@@ -48,7 +48,9 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class DiffView : UserControl
 {
-    private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
+    // A property, not a field: a static field initialiser can run before the font
+    // manager exists, which would cache the fallback for the life of the process.
+    private static FontFamily Monospace => Theming.AppFonts.Monospace;
 
     private static IBrush B(string key) => (IBrush)Application.Current!.Resources[key]!;
 
@@ -694,6 +696,15 @@ public sealed class DiffView : UserControl
     {
         AppPreferences prefs = new SettingsService().Load();
         _viewerPrefs = prefs;
+
+        // The monospace size, when set, wins over the pane's own zoom default — but not
+        // over a zoom the user applied since: _options.FontSize is what the +/- buttons
+        // write, and it starts from this.
+        if (prefs.MonospaceFontSize > 0 && _options.FontSize == DiffDisplayOptions.DefaultFontSize)
+        {
+            _options.FontSize = prefs.MonospaceFontSize;
+            _editor.FontSize = prefs.MonospaceFontSize;
+        }
 
         // AvaloniaEdit takes a LIST of ruler columns; upstream has one position, and 0
         // means none — which is expressed by showing no ruler at all rather than by a
