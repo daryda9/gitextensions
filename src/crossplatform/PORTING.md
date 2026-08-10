@@ -3377,6 +3377,27 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M149 (2026-08-10, `bfaee4643`) — il commit radice elenca i file che ha introdotto
+
+Difetto trovato di striscio durante M148 e verificato contro la baseline: il diff di un **commit
+radice** elencava **un file solo**, per giunta marcato *Modified*, invece di tutti quelli che il commit
+aggiunge.
+
+Un primo `ObjectId` a zero **non** significa «albero vuoto» per il core, checché ne dicesse il commento
+su `GetFirstParent`: l'argomento viene semplicemente omesso, quindi git riceve `git diff <commit>` e lo
+legge come **worktree contro commit**. In un repository con l'albero di lavoro sporco il commit radice
+elencava quindi i file in cui il worktree per caso differisce. Misurato su un commit radice da quattro
+file: ne elencava uno — l'unico che un commit successivo aveva toccato.
+
+Ora i commit radice si elencano **dal proprio albero**, ogni voce marcata come aggiunta, che è quel che
+fa upstream (`FileStatusDiffCalculator.CalculateDiffs`, ramo senza `ParentIds`: `GetTreeFiles` +
+`IsNew = true`). Il percorso della **patch** non aveva il problema — un diff a file singolo in stile
+`git show` gestisce già un commit radice — quindi è cambiata solo la lista, e il commento che
+sviava è corretto sul posto.
+
+Verificato a schermo: prima `M b.txt` da solo, dopo `A a.txt` / `A b.txt` / `A d.md` / `A dir2/c.txt`
+con la patch giusta; un commit ordinario resta invariato (`(1) Diff with A 773d8a53: first`, `M b.txt`).
+
 ## M148 (2026-08-10, `b83238a74`) — cercare nei file del commit con `git grep`, dalla lista dei file
 
 Era **l'unico residuo vero** della vecchia nota P2, e non era chrome: è una funzione a sé. Port di
