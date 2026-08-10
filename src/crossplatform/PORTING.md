@@ -3377,6 +3377,45 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M156 (2026-08-11, `e6e1d669d`) — script utente, con gli hook Before/After che gli danno i denti
+
+L'ultima lacuna funzionale grossa del port. Upstream ha un intero `GitUI.ScriptsEngine`
+(`ScriptsManager` + `ScriptOptionsParser` + `ScriptRunner`); il port non aveva niente.
+
+**Dove vivono**: `scripts.json` accanto agli altri file di configurazione — non nel blob XML di
+impostazioni del core, che questo port non scrive, e in un formato che l'utente può leggere e
+correggere a mano (conta, per una funzione il cui scopo è eseguire comandi suoi).
+
+**Dodici eventi, agganciati a funnel veri**: `Before/AfterCommit` nel dialogo di commit,
+`Before/AfterPush` nel push, `Before/After` Pull **e** Fetch nel dialogo di pull (scelti da ciò che
+il dialogo sta davvero facendo: «fetch only» è un fetch), `Before/AfterCheckout` in
+`RefProcessRunner`, `Before/AfterMerge` nel dialogo di merge. Più i due *piazzamenti* di upstream:
+`ShowInUserMenuBar` → menu Tools, `AddToRevisionGridContextMenu` → «Other actions» della griglia.
+
+**Uno script `Before…` che fallisce FERMA l'operazione**, come `RunEventScripts` di upstream: un
+controllo che non può porre il veto è una riga di log. Gli `After…` vengono riportati e ignorati —
+quello che sorvegliano è già successo — e nessuno di loro parte su un'operazione fallita, su un
+merge in conflitto, o (per `AfterPull`) prima che la stash chiesta dall'utente sia tornata al posto
+suo.
+
+**Nessuno script passa da una shell.** `Command` è l'eseguibile e gli argomenti sono una lista:
+un branch o una repository che si chiama con uno spazio, un apice o un punto e virgola non può
+trasformarsi in comandi in più. Upstream costruisce una stringa di comando; qui vorrebbe dire dare
+alla shell come si chiama un ref. Chi vuole una pipeline nomina la sua shell (`bash`, `-c`, …).
+
+**Sedici segnaposti**, quelli che il port può riempire onestamente. Uno sconosciuto viene **lasciato
+stare**, non svuotato: `{foo}` nell'output si debugga, un argomento sparito in silenzio no.
+Dichiarati non portati, nel codice: `IsPowerShell` (shell Windows), il selettore di icona,
+l'hotkey per script, e i prompt `{UserInput}`/`{UserFiles}`.
+
+Un duplicato nasce **disabilitato**: duplicare un hook pre-commit e vederlo scattare al commit dopo,
+prima di averlo modificato, è l'unico esito che nessuno vuole.
+
+**Verificato su Xvfb**: «Say hello» parte dal menu Tools coi segnaposti espansi (`hello from repoA on
+master`); lo stesso script compare ed esegue da «Other actions» della griglia; e uno script
+`BeforeCommit` che esce con errore lascia il log intatto, con «Commit cancelled by a user script.»
+sulla riga di stato.
+
 ## M151–M155 (2026-08-10, `60e1131c2`, `0fbac5dbe`, `16a3d1de0`, `020186374`, `809c859b8`) — le ~35 impostazioni senza consumatore, cablate davvero
 
 Lo SKIP dichiarato diceva: «~35 impostazioni upstream sarebbero **pulsanti finti** se portate così
