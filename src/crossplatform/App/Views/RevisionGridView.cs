@@ -911,7 +911,7 @@ public sealed class RevisionGridView : UserControl
             else if (_list.SelectedItem is RevisionRow row && !IsArtificial(row))
             {
                 _announcedRange = null;
-                RevisionSelected?.Invoke(row.Hash);
+                AnnounceRevision(row.Hash);
             }
             else
             {
@@ -4742,9 +4742,31 @@ public sealed class RevisionGridView : UserControl
     ///  arrives to find nothing pending.
     /// </remarks>
     public void SelectCommitWhenLoaded(string? hash)
-        => _pendingSelection = string.IsNullOrWhiteSpace(hash) ? null : hash.Trim();
+    {
+        _pendingSelection = string.IsNullOrWhiteSpace(hash) ? null : hash.Trim();
+
+        // Asking for a commit is also saying "deliver it": the host that calls this has
+        // just reset its panes, so whatever was announced before no longer counts.
+        // Without this a duplicated tab could never repaint — it inherits the commit
+        // that is ALREADY selected and already announced, so neither the widget nor the
+        // check in ApplyPendingSelection would have anything to report.
+        _announcedHash = null;
+    }
 
     private string? _pendingSelection;
+
+    /// <summary>The revision last handed to the host, so a restored selection can tell
+    /// whether the host already knows about it.</summary>
+    private string? _announcedHash;
+
+    // The single funnel for RevisionSelected: every announcement records what was
+    // announced, which is what lets ApplyPendingSelection below decide whether the
+    // host still needs telling.
+    private void AnnounceRevision(string hash)
+    {
+        _announcedHash = hash;
+        RevisionSelected?.Invoke(hash);
+    }
 
     private void ApplyPendingSelection()
     {
@@ -4755,9 +4777,30 @@ public sealed class RevisionGridView : UserControl
 
         _pendingSelection = null;
         int index = FindIndex(_rows, hash);
-        if (index >= 0)
+        if (index < 0)
         {
-            SelectIndex(index);
+            return;
+        }
+
+        SelectIndex(index);
+
+        // Selecting is not the same as ANNOUNCING, and a restored selection routinely
+        // does the first without the second: the widget raises SelectionChanged only
+        // when the index actually changes, and the rebind that precedes this puts the
+        // old selection back from inside SetListItems, where the _rebinding guard
+        // deliberately swallows it. Either way the row ends up highlighted while the
+        // host was never told — and the host has just CLEARED the bottom panes
+        // (MainWindow.ResetBottomPanes), so they stay empty under a selected row.
+        // That is what "No commit selected." after switching repository tabs was, and
+        // it was at its most obvious on a duplicated tab, where the inherited commit
+        // is the one already selected and so cannot possibly raise the event.
+        //
+        // Announced here rather than on every rebind: only a PENDING selection — a
+        // host asking for a specific commit — passes through, so a watcher-driven
+        // refresh that re-selects the same row still costs nothing.
+        if (!string.Equals(_announcedHash, hash, StringComparison.Ordinal))
+        {
+            AnnounceRevision(hash);
         }
     }
 
