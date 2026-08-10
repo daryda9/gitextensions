@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
@@ -29,6 +30,8 @@ public sealed class RemotePanel : UserControl
     private readonly Button _pushButton;
     private readonly TextBlock _status;
     private readonly TextBox _output;
+    private readonly TextBlock _listTitle;
+    private readonly TextBlock _outputTitle;
 
     // Two waits that have nothing to do with each other, so two overlays: listing
     // the remotes replaces the LIST, a fetch/pull/push replaces the OUTPUT. A single
@@ -56,21 +59,16 @@ public sealed class RemotePanel : UserControl
         };
         _remotesList.SelectionChanged += (_, _) => UpdateButtons();
 
-        _rebaseCheck = new CheckBox { Content = "Rebase on pull", Margin = new Thickness(0, 0, 12, 0) };
-        _forceCheck = new CheckBox
-        {
-            Content = "Force (with lease)",
-            Margin = new Thickness(0, 0, 12, 0),
-            [ToolTip.TipProperty] = "Safe force push (--force-with-lease): rejected if the remote branch advanced since your last fetch, so it won't overwrite others' work.",
-        };
+        _rebaseCheck = new CheckBox { Margin = new Thickness(0, 0, 12, 0) };
+        _forceCheck = new CheckBox { Margin = new Thickness(0, 0, 12, 0) };
 
-        _fetchButton = new Button { Content = "Fetch", MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
+        _fetchButton = new Button { MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
         _fetchButton.Click += (_, _) => _ = DoFetchAsync();
 
-        _pullButton = new Button { Content = "Pull", MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
+        _pullButton = new Button { MinWidth = 80, Margin = new Thickness(0, 0, 6, 0) };
         _pullButton.Click += (_, _) => _ = DoPullAsync();
 
-        _pushButton = new Button { Content = "Push", MinWidth = 80 };
+        _pushButton = new Button { MinWidth = 80 };
         _pushButton.Click += (_, _) => _ = DoPushAsync();
 
         StackPanel options = new()
@@ -93,9 +91,8 @@ public sealed class RemotePanel : UserControl
         controls.Children.Add(options);
         controls.Children.Add(actions);
 
-        TextBlock listTitle = new()
+        _listTitle = new TextBlock
         {
-            Text = "Remotes",
             FontWeight = FontWeight.Bold,
             Margin = new Thickness(0, 0, 0, 2),
         };
@@ -112,10 +109,10 @@ public sealed class RemotePanel : UserControl
         listHost.Children.Add(_remotesList);
         listHost.Children.Add(_listBusy);
 
-        Grid.SetRow(listTitle, 0);
+        Grid.SetRow(_listTitle, 0);
         Grid.SetRow(listHost, 1);
         Grid.SetRow(controls, 2);
-        top.Children.Add(listTitle);
+        top.Children.Add(_listTitle);
         top.Children.Add(listHost);
         top.Children.Add(controls);
 
@@ -132,7 +129,6 @@ public sealed class RemotePanel : UserControl
         {
             Margin = new Thickness(10, 2, 10, 6),
             Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
-            Text = "No repository loaded.",
             TextWrapping = TextWrapping.Wrap,
         };
 
@@ -140,9 +136,8 @@ public sealed class RemotePanel : UserControl
         {
             RowDefinitions = new RowDefinitions("Auto,*"),
         };
-        TextBlock outTitle = new()
+        _outputTitle = new TextBlock
         {
-            Text = "Output",
             FontWeight = FontWeight.Bold,
             Margin = new Thickness(10, 4, 0, 0),
         };
@@ -152,9 +147,9 @@ public sealed class RemotePanel : UserControl
         outputHost.Children.Add(_output);
         outputHost.Children.Add(_outputBusy);
 
-        Grid.SetRow(outTitle, 0);
+        Grid.SetRow(_outputTitle, 0);
         Grid.SetRow(outputHost, 1);
-        outputArea.Children.Add(outTitle);
+        outputArea.Children.Add(_outputTitle);
         outputArea.Children.Add(outputHost);
 
         DockPanel root = new();
@@ -165,8 +160,60 @@ public sealed class RemotePanel : UserControl
         root.Children.Add(outputArea);
 
         Content = root;
+        ApplyTranslations();
         UpdateButtons();
     }
+
+    // --- Translations -----------------------------------------------------
+
+    // A UserControl outlives no window of its own, so the subscription is tied to the
+    // visual tree instead of to a Closed event: subscribing in the constructor and
+    // never unsubscribing would keep this panel — and the whole shell branch under it
+    // — alive through the static LanguageChanged for the life of the process.
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        ApplyTranslations();
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        TranslationService.LanguageChanged -= OnLanguageChanged;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        _listTitle.Text = T("TranslatedStrings/_remotesText.Text", "Remotes");
+        _outputTitle.Text = T("FormBrowse/_outputHistoryTabCaption.Text", "Output");
+
+        // Upstream has no "rebase on pull" check box: the choice lives in FormPull as a
+        // radio with a paragraph-long caption, and in FormPush as the "Pull with rebase"
+        // button. The button's id is the one whose wording fits a check box.
+        _rebaseCheck.Content = T("FormPush/_pullRebaseButton.Text", "Rebase on pull");
+        _forceCheck.Content = T("FormPush/ckForceWithLease.Text", "Force (with lease)");
+        ToolTip.SetTip(_forceCheck, T("FormPush/_forceWithLeaseTooltips.Text",
+            "Safe force push (--force-with-lease): rejected if the remote branch advanced since your last fetch, so it won't overwrite others' work."));
+
+        _fetchButton.Content = T("FormPull/_buttonFetch.Text", "Fetch");
+        _pullButton.Content = T("FormPull/_buttonPull.Text", "Pull");
+        _pushButton.Content = T("TranslatedStrings/_buttonPush.Text", "Push");
+
+        // Only the "no repository" sentence is re-stated: every other status line
+        // reports the outcome of a git run that already happened, and re-wording it
+        // after the fact would put a fresh-looking message on stale news.
+        if (_repoPath is not { Length: > 0 })
+        {
+            _status.Text = T("No repository loaded.");
+        }
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     /// <summary>
     ///  Points the panel at <paramref name="repoPath"/> and loads its remotes.
@@ -181,7 +228,7 @@ public sealed class RemotePanel : UserControl
     {
         if (_repoPath is not { Length: > 0 } repo)
         {
-            _status.Text = "No repository loaded.";
+            _status.Text = T("No repository loaded.");
             return;
         }
 
@@ -209,14 +256,22 @@ public sealed class RemotePanel : UserControl
                 _remotesList.SelectedItem = remotes.FirstOrDefault(r => r.Name == "origin") ?? remotes[0];
             }
 
+            // "detached HEAD" stays as git prints it — it is the state's name in git's
+            // own vocabulary, not prose about it, and every Italian git user reads it.
             string branchText = string.IsNullOrEmpty(branch) ? "detached HEAD" : branch;
             _status.Text = remotes.Count == 0
-                ? "No remotes configured."
-                : $"{remotes.Count} remote(s). Current branch: {branchText}.";
+                ? T("No remotes configured.")
+
+                // One format for any count: Italian would need "1 remoto"/"2 remoti",
+                // which the "(s)" shape cannot express either. Keeping the English
+                // parenthesised plural means a translator can drop the whole idea and
+                // write a count-agnostic sentence.
+                : TranslationService.TFormat(
+                    null, "{0} remote(s). Current branch: {1}.", remotes.Count, branchText);
         }
         catch (Exception ex)
         {
-            _status.Text = "Error: " + ex.Message;
+            _status.Text = T("TranslatedStrings/_error.Text", "Error") + ": " + ex.Message;
         }
         finally
         {
@@ -236,7 +291,7 @@ public sealed class RemotePanel : UserControl
             return Task.CompletedTask;
         }
 
-        return RunOpAsync("Fetch", creds => _service.Fetch(repo, remote.Name, creds));
+        return RunOpAsync(T("FormPull/_buttonFetch.Text", "Fetch"), creds => _service.Fetch(repo, remote.Name, creds));
     }
 
     private Task DoPullAsync()
@@ -248,7 +303,7 @@ public sealed class RemotePanel : UserControl
         }
 
         bool rebase = _rebaseCheck.IsChecked == true;
-        return RunOpAsync("Pull", creds => _service.Pull(repo, remote.Name, rebase, creds));
+        return RunOpAsync(T("FormPull/_buttonPull.Text", "Pull"), creds => _service.Pull(repo, remote.Name, rebase, creds));
     }
 
     private Task DoPushAsync()
@@ -261,13 +316,15 @@ public sealed class RemotePanel : UserControl
 
         if (string.IsNullOrEmpty(_currentBranch))
         {
-            _status.Text = "Cannot push: detached HEAD.";
+            _status.Text = T("Cannot push: detached HEAD.");
             return Task.CompletedTask;
         }
 
         bool force = _forceCheck.IsChecked == true;
         string branch = _currentBranch;
-        return RunOpAsync("Push", creds => _service.Push(repo, remote.Name, branch, force, creds));
+        return RunOpAsync(
+            T("TranslatedStrings/_buttonPush.Text", "Push"),
+            creds => _service.Push(repo, remote.Name, branch, force, creds));
     }
 
     // Runs a remote operation off the UI thread; on an authentication failure it
@@ -300,7 +357,8 @@ public sealed class RemotePanel : UserControl
                 GitCredentials? creds = await PromptCredentialsAsync();
                 if (creds is not null)
                 {
-                    _status.Text = $"{label} (retrying with credentials)…";
+                    _status.Text = TranslationService.TFormat(
+                        null, "{0} (retrying with credentials)…", label);
                     result = await Task.Run(() => op(creds));
                 }
             }
@@ -309,21 +367,22 @@ public sealed class RemotePanel : UserControl
 
             if (result.Success)
             {
-                _status.Text = $"{label} succeeded.";
+                _status.Text = TranslationService.TFormat(null, "{0} succeeded.", label);
                 OperationCompleted?.Invoke();
             }
             else if (result.AuthFailed)
             {
-                _status.Text = $"{label} failed: authentication required.";
+                _status.Text = TranslationService.TFormat(
+                    null, "{0} failed: authentication required.", label);
             }
             else
             {
-                _status.Text = $"{label} failed.";
+                _status.Text = TranslationService.TFormat(null, "{0} failed.", label);
             }
         }
         catch (Exception ex)
         {
-            _status.Text = "Error: " + ex.Message;
+            _status.Text = T("TranslatedStrings/_error.Text", "Error") + ": " + ex.Message;
         }
         finally
         {
