@@ -191,13 +191,19 @@ public sealed class UiState
     public List<RepoTabState> OpenRepoTabs { get; set; } = [];
 
     /// <summary>
-    ///  Path of the tab that was in front, or null for "the first one".
+    ///  <see cref="RepoTabState.Id"/> of the tab that was in front, or null for "the
+    ///  first one".
     ///
-    ///  <para>A path rather than an index: the sanitiser drops blank and duplicate
-    ///  entries from <see cref="OpenRepoTabs"/>, so an index saved beside them would
-    ///  quietly point at a different repository after any such repair. It is validated
-    ///  against the surviving list for the same reason — an active path that names no
-    ///  open tab is dropped rather than left to select nothing.</para>
+    ///  <para>An id rather than an index: the sanitiser drops entries from
+    ///  <see cref="OpenRepoTabs"/>, so an index saved beside them would quietly point at a
+    ///  different tab after any such repair. And an id rather than the PATH it used to
+    ///  hold, because the strip can now show one repository in several tabs, where a path
+    ///  names all of them and therefore none. It is validated against the surviving list
+    ///  either way — an active id that names no open tab is dropped rather than left to
+    ///  select nothing.</para>
+    ///
+    ///  <para>A file written before tabs had ids holds a path here; the sanitiser
+    ///  recognises that shape and translates it (see <see cref="RepoTabState.Id"/>).</para>
     /// </summary>
     public string? ActiveRepoTab { get; set; }
 
@@ -357,9 +363,24 @@ public sealed class UiState
 public sealed class RepoTabState
 {
     /// <summary>
-    ///  Full path of the repository or submodule working directory. The identity of the
-    ///  tab: the sanitiser de-duplicates on it and <see cref="UiState.ActiveRepoTab"/>
-    ///  names a tab by it. Never null — an entry whose path is blank is dropped.
+    ///  The tab's identity, opaque and unique within <see cref="UiState.OpenRepoTabs"/>:
+    ///  what <see cref="UiState.ActiveRepoTab"/> names, and what the strip restores into
+    ///  <c>RepoTabEntry.Id</c> so a running session and a saved one agree on which tab is
+    ///  which. The path cannot serve, now that one repository may be open in several tabs.
+    ///
+    ///  <para><b>Migration.</b> A file written before this field existed has it blank, and
+    ///  the sanitiser fills it in with a fresh id on load — no tab is ever lost for want
+    ///  of an id. <see cref="UiState.ActiveRepoTab"/> in such a file holds a PATH, which
+    ///  the sanitiser recognises (it matches no id, but it matches a tab's path) and
+    ///  rewrites to that tab's new id. The next save is in the new shape, and the repair
+    ///  costs nothing on files that already have ids.</para>
+    /// </summary>
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>
+    ///  Full path of the repository or submodule working directory. An attribute of the
+    ///  tab, no longer its identity — see <see cref="Id"/>. Never null: an entry whose
+    ///  path is blank is dropped, since there is no repository to open.
     /// </summary>
     public string Path { get; set; } = string.Empty;
 
@@ -508,12 +529,16 @@ public sealed class UiStateService
     ///  must not be able to launch a hundred git processes before the window is even
     ///  visible. Thirty is far past any real strip and still bounded.</para>
     ///
-    ///  <para>De-duplication is first-wins and ignores a trailing separator, because the
-    ///  same repository reached through the tree and through the recent list can be
-    ///  written once with and once without it; two tabs over one working directory would
-    ///  then fight over the same watcher. It is deliberately NOT a full path
-    ///  canonicalisation (no symlink resolution, no case folding): that touches the disk,
-    ///  and this runs on every save.</para>
+    ///  <para><b>What is de-duplicated changed with duplicate tabs.</b> Two tabs on one
+    ///  working directory are now something the user can ask for, so the path is no longer
+    ///  a key — the <see cref="RepoTabState.Id"/> is, and a repeated id is a corrupt or
+    ///  hand-copied entry that would make two tabs answer to one name. Entries with NO id
+    ///  are still de-duplicated by path: they come from a version that could not express
+    ///  "the same repository twice", so a repetition there is the old repair case (the
+    ///  same directory written once with and once without a trailing separator by two
+    ///  different doors) and not an intention. The path comparison stays deliberately
+    ///  shallow (no symlink resolution, no case folding): it touches no disk, and this
+    ///  runs on every save.</para>
     /// </summary>
     private static void SanitizeRepoTabs(UiState s)
     {
@@ -521,7 +546,8 @@ public sealed class UiStateService
         // the first tab click: no tabs is a valid strip.
         List<RepoTabState> tabs = s.OpenRepoTabs ?? [];
         List<RepoTabState> kept = [];
-        HashSet<string> seen = new(StringComparer.Ordinal);
+        HashSet<string> ids = new(StringComparer.Ordinal);
+        HashSet<string> legacyPaths = new(StringComparer.Ordinal);
         foreach (RepoTabState tab in tabs)
         {
             if (tab is null || string.IsNullOrWhiteSpace(tab.Path))
@@ -530,9 +556,23 @@ public sealed class UiStateService
             }
 
             tab.Path = tab.Path.Trim();
-            if (!seen.Add(TabKey(tab.Path)))
+            bool legacy = string.IsNullOrWhiteSpace(tab.Id);
+            if (legacy && !legacyPaths.Add(TabKey(tab.Path)))
             {
                 continue;
+            }
+
+            // A missing id is the pre-duplicate file shape; a repeated one is damage. Both
+            // are answered the same way, because a tab with no usable identity is still a
+            // repository the user had open and losing it would be the worse failure.
+            if (legacy || !ids.Add(tab.Id.Trim()))
+            {
+                tab.Id = Guid.NewGuid().ToString("N");
+                ids.Add(tab.Id);
+            }
+            else
+            {
+                tab.Id = tab.Id.Trim();
             }
 
             kept.Add(tab);
@@ -545,11 +585,18 @@ public sealed class UiStateService
         s.OpenRepoTabs = kept;
 
         string? active = string.IsNullOrWhiteSpace(s.ActiveRepoTab) ? null : s.ActiveRepoTab.Trim();
+        if (active is not null && !ids.Contains(active))
+        {
+            // Not an id: either the PATH an older file wrote here — translated to the id of
+            // the first tab standing for it, which in such a file is the only one — or a
+            // stale name from a tab that has since been dropped as a duplicate, cut by the
+            // cap, or never listed at all. The latter becomes null, which the strip reads
+            // as "the first tab"; left alone it would select nothing and show an
+            // empty window.
+            active = kept.Find(t => string.Equals(TabKey(t.Path), TabKey(active), StringComparison.Ordinal))?.Id;
+        }
 
-        // An active path that no longer names a tab — dropped as a duplicate, cut by the
-        // cap, or never in the list at all — becomes null, which the strip reads as "the
-        // first tab". Left as it was it would select nothing and show an empty window.
-        s.ActiveRepoTab = active is not null && seen.Contains(TabKey(active)) ? active : null;
+        s.ActiveRepoTab = active;
     }
 
     /// <summary>How many tabs one strip may be restored with (see

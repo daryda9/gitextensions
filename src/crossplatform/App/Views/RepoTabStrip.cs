@@ -11,20 +11,38 @@ using GitExtensions.Avalonia.Theming;
 namespace GitExtensions.Avalonia.Views;
 
 /// <summary>
-///  One open repository in the strip: its path, whether the user has committed to
-///  keeping it, and the slots <see cref="MainWindow"/> uses to remember where the
+///  One open tab in the strip: the repository it shows, whether the user has committed
+///  to keeping it, and the slots <see cref="MainWindow"/> uses to remember where the
 ///  user was inside it.
 /// </summary>
 /// <remarks>
-///  <para><see cref="Path"/> is <c>init</c>-only on purpose: the strip identifies a
-///  tab BY its path, so a tab that could be repointed at another repository would
-///  quietly invalidate <see cref="SelectedCommit"/> and <see cref="BottomTab"/>
-///  without anyone noticing. Re-using the preview slot for a different repository
-///  therefore replaces the entry rather than mutating it, which drops the stale
-///  per-tab state as a side effect of the only operation that should drop it.</para>
+///  <para><b>A tab is not a repository.</b> Several tabs may stand for the SAME working
+///  directory — VS Code opens the same file twice, a browser the same page twice — so a
+///  user can keep two points of view on one repository (two commits, two bottom panes)
+///  without losing either. <see cref="Id"/>, not <see cref="Path"/>, is therefore what
+///  identifies a tab: every operation of the strip takes an entry or an id, and the path
+///  is demoted to an attribute of the tab.</para>
+///
+///  <para><see cref="Path"/> stays <c>init</c>-only on purpose: a tab that could be
+///  repointed at another repository would quietly invalidate <see cref="SelectedCommit"/>
+///  and <see cref="BottomTab"/> without anyone noticing. Re-using the preview slot for a
+///  different repository therefore replaces the entry rather than mutating it, which
+///  drops the stale per-tab state as a side effect of the only operation that should
+///  drop it.</para>
 /// </remarks>
 public sealed class RepoTabEntry
 {
+    /// <summary>
+    ///  The tab's own identity, independent of the repository behind it.
+    ///
+    ///  <para>A random GUID rather than a counter: the id is written to
+    ///  <c>ui-state.json</c> and read back, so it has to survive a restart, and it has to
+    ///  stay unique against tabs restored from that file while new ones are being opened.
+    ///  A counter would restart at zero every launch and collide with them. It is opaque
+    ///  and never shown — the strip only ever compares it.</para>
+    /// </summary>
+    public string Id { get; init; } = Guid.NewGuid().ToString("N");
+
     /// <summary>Absolute path of the repository this tab stands for.</summary>
     public string Path { get; init; } = "";
 
@@ -156,6 +174,18 @@ public sealed class RepoTabStrip : UserControl
     public event Action? Changed;
 
     /// <summary>
+    ///  Raised on the tab about to be duplicated, BEFORE the copy is taken.
+    ///
+    ///  <para>The strip only ever sees the per-tab state the host has already written
+    ///  into the entry, and the host writes it when a tab is LEFT. For the tab that is
+    ///  on screen that state is therefore stale by exactly the work the user did since
+    ///  arriving — which is all of it, and precisely what they expect the duplicate to
+    ///  inherit. So the copy asks first: the host flushes the live view state into the
+    ///  source, and only then is it cloned.</para>
+    /// </summary>
+    public event Action<RepoTabEntry>? Duplicating;
+
+    /// <summary>
     ///  Opens a repository, or re-activates it when it is already open.
     ///
     ///  <para>Already open: activated, and additionally pinned when <paramref name="pinned"/>
@@ -163,18 +193,26 @@ public sealed class RepoTabStrip : UserControl
     ///  the user was looking at, which is where they were looking. Not open and unpinned:
     ///  the preview slot, re-used if one exists (same position, new entry, per-tab state
     ///  gone with the old one) and appended otherwise.</para>
+    ///
+    ///  <para><b>Opening stays one tab per repository even though the strip now allows
+    ///  several.</b> Every door into a repository comes through here — the picker, a
+    ///  clone, a drop, the tree — and none of them means "and again, separately"; a
+    ///  second tab is worth having only when the user asks for it in as many words, which
+    ///  is what <see cref="Duplicate"/> and its menu entry are for.</para>
     /// </summary>
     /// <returns>The entry now standing for <paramref name="path"/>.</returns>
     public RepoTabEntry Open(string path, bool pinned)
     {
-        RepoTabEntry? existing = Find(path);
+        // The active tab wins the "already open" lookup when it matches, so re-opening the
+        // repository you are looking at never jumps to an older duplicate of it.
+        RepoTabEntry? existing = _active is not null && SamePath(_active.Path, path) ? _active : Find(path);
         if (existing is not null)
         {
             // Re-opening deliberately is one of the ways to claim a preview tab.
             if (pinned && !existing.Pinned)
             {
                 existing.Pinned = true;
-                Refresh(existing);
+                Sync();
             }
 
             SetActive(existing);
@@ -208,10 +246,10 @@ public sealed class RepoTabStrip : UserControl
         return entry;
     }
 
-    /// <summary>Activates the tab for <paramref name="path"/>; a no-op when it is not open.</summary>
-    public void Activate(string path)
+    /// <summary>Activates <paramref name="entry"/>; a no-op when it is not in the strip.</summary>
+    public void Activate(RepoTabEntry entry)
     {
-        if (Find(path) is not { } entry)
+        if (!_tabs.Contains(entry))
         {
             return;
         }
@@ -221,18 +259,60 @@ public sealed class RepoTabStrip : UserControl
     }
 
     /// <summary>
-    ///  Closes the tab for <paramref name="path"/>. Closing the active one hands over to
-    ///  the right-hand neighbour, else the left-hand one, else raises <see cref="Emptied"/> —
+    ///  Opens a second tab on <paramref name="source"/>'s repository, right beside it, and
+    ///  activates it. The copy inherits the source's selected commit and bottom pane and
+    ///  is independent from that moment on: the two entries are separate objects, and the
+    ///  host writes each tab's state into the tab it is leaving.
+    ///
+    ///  <para>The copy is born PINNED whatever the source was. A duplicate is asked for
+    ///  by name, and a preview slot is the one tab the next ordinary open silently takes
+    ///  over — the strip must not hand the user a second view and then delete it on the
+    ///  next single click in the tree.</para>
+    ///
+    ///  <para>No keyboard shortcut is bound to this on purpose. Ctrl+PageUp/Down are the
+    ///  only chords the strip claims, and everything else in this window's reach is
+    ///  already an upstream command; a duplicate is rare enough to live in the menu the
+    ///  right button opens, where it is also discoverable.</para>
+    /// </summary>
+    /// <returns>The new entry, or <paramref name="source"/> when it is not in the strip.</returns>
+    public RepoTabEntry Duplicate(RepoTabEntry source)
+    {
+        int at = _tabs.IndexOf(source);
+        if (at < 0)
+        {
+            return source;
+        }
+
+        // Before the copy, not after: see Duplicating.
+        Duplicating?.Invoke(source);
+
+        RepoTabEntry copy = new()
+        {
+            Path = source.Path,
+            Pinned = true,
+            SelectedCommit = source.SelectedCommit,
+            BottomTab = source.BottomTab,
+        };
+
+        Insert(at + 1, copy);
+        SetActive(copy);
+        Changed?.Invoke();
+        return copy;
+    }
+
+    /// <summary>
+    ///  Closes <paramref name="entry"/>. Closing the active one hands over to the
+    ///  right-hand neighbour, else the left-hand one, else raises <see cref="Emptied"/> —
     ///  the right first, because that is the tab that visually takes the closed one's place.
     /// </summary>
-    public void Close(string path)
+    public void Close(RepoTabEntry entry)
     {
-        if (Find(path) is not { } entry)
+        int index = _tabs.IndexOf(entry);
+        if (index < 0)
         {
             return;
         }
 
-        int index = _tabs.IndexOf(entry);
         bool wasActive = ReferenceEquals(entry, _active);
         Drop(entry);
         _tabs.RemoveAt(index);
@@ -258,16 +338,16 @@ public sealed class RepoTabStrip : UserControl
         Changed?.Invoke();
     }
 
-    /// <summary>Claims the tab for <paramref name="path"/>, so no preview open can take its slot.</summary>
-    public void Pin(string path)
+    /// <summary>Claims <paramref name="entry"/>, so no preview open can take its slot.</summary>
+    public void Pin(RepoTabEntry entry)
     {
-        if (Find(path) is not { Pinned: false } entry)
+        if (entry is not { Pinned: false } || !_tabs.Contains(entry))
         {
             return;
         }
 
         entry.Pinned = true;
-        Refresh(entry);
+        Sync();
         Changed?.Invoke();
     }
 
@@ -276,8 +356,12 @@ public sealed class RepoTabStrip : UserControl
     ///  <see cref="Changed"/> but NOT <see cref="Activated"/>: the host is the one
     ///  restoring, so it already knows which repository it is about to load, and an
     ///  event here would make it load it twice.
+    ///
+    ///  <para><paramref name="activeId"/> is an <see cref="RepoTabEntry.Id"/>, not a
+    ///  path: with duplicates a path names any number of tabs, so it can no longer say
+    ///  which one was in front.</para>
     /// </summary>
-    public void Restore(IEnumerable<RepoTabEntry> tabs, string? activePath)
+    public void Restore(IEnumerable<RepoTabEntry> tabs, string? activeId)
     {
         foreach (RepoTabEntry old in _tabs)
         {
@@ -287,13 +371,15 @@ public sealed class RepoTabStrip : UserControl
         _tabs.Clear();
         _active = null;
         _tabs.AddRange(tabs);
-        _active = activePath is null ? null : Find(activePath);
+        _active = activeId is null ? null : _tabs.Find(t => string.Equals(t.Id, activeId, StringComparison.Ordinal));
         Sync();
         Changed?.Invoke();
     }
 
     // ---- model -------------------------------------------------------------
 
+    // Used by Open() alone, which asks "is this repository already on screen anywhere".
+    // Nothing else may look a tab up by path: with duplicates the answer is not unique.
     private RepoTabEntry? Find(string path) => _tabs.Find(t => SamePath(t.Path, path));
 
     private void Insert(int at, RepoTabEntry entry)
@@ -361,7 +447,7 @@ public sealed class RepoTabStrip : UserControl
             // arranging: a tab you are putting in a particular place is one you mean to
             // keep, and leaving it a preview would let the next single click delete the
             // arrangement you just made.
-            Pin(_pressed.Path);
+            Pin(_pressed);
 
             // From here every move and the release must reach THIS control even if the
             // pointer leaves the strip — a drag that wanders down into the tree would
@@ -442,9 +528,13 @@ public sealed class RepoTabStrip : UserControl
             }
         }
 
-        foreach (RepoTabEntry entry in _tabs)
+        // Labels are decided for the strip as a WHOLE, here, and handed to each visual:
+        // the shortest text that still tells a tab apart depends on its neighbours (see
+        // BuildLabels), so no tab can compute its own.
+        IReadOnlyList<string> labels = BuildLabels(_tabs);
+        for (int i = 0; i < _tabs.Count; i++)
         {
-            Visual(entry).Apply(ReferenceEquals(entry, _active));
+            Visual(_tabs[i]).Apply(ReferenceEquals(_tabs[i], _active), labels[i]);
         }
 
         IsVisible = _tabs.Count > 0;
@@ -481,19 +571,13 @@ public sealed class RepoTabStrip : UserControl
         return true;
     }
 
-    private void Refresh(RepoTabEntry entry)
-    {
-        if (_visuals.TryGetValue(entry, out TabVisual? visual))
-        {
-            visual.Apply(ReferenceEquals(entry, _active));
-        }
-    }
-
     private TabVisual Build(RepoTabEntry entry)
     {
         TextBlock label = new()
         {
-            Text = Label(entry.Path),
+            // Placeholder only: the real text is the strip-wide label Sync computes, and
+            // Sync always runs before this control can be seen.
+            Text = Leaf(entry.Path),
             FontSize = Metrics.Text.Body,
             Foreground = B("App.Text"),
             VerticalAlignment = VerticalAlignment.Center,
@@ -518,7 +602,7 @@ public sealed class RepoTabStrip : UserControl
         {
             // Without this the press underneath would activate the tab we just closed.
             e.Handled = true;
-            Close(entry.Path);
+            Close(entry);
         };
 
         StackPanel row = new()
@@ -566,7 +650,7 @@ public sealed class RepoTabStrip : UserControl
             {
                 // The editor gesture: middle click discards what is under the pointer.
                 e.Handled = true;
-                Close(entry.Path);
+                Close(entry);
             }
             else if (props.IsLeftButtonPressed)
             {
@@ -577,12 +661,12 @@ public sealed class RepoTabStrip : UserControl
                 if (e.ClickCount == 2)
                 {
                     e.Handled = true;
-                    Pin(entry.Path);
+                    Pin(entry);
                     return;
                 }
 
                 BeginDrag(entry, e.GetPosition(_strip));
-                Activate(entry.Path);
+                Activate(entry);
 
                 // Raised even when the tab was ALREADY the active one, which
                 // Activate deliberately keeps silent. The host needs the click
@@ -601,10 +685,13 @@ public sealed class RepoTabStrip : UserControl
     private ContextMenu BuildMenu(RepoTabEntry entry)
     {
         MenuItem keep = new();
-        keep.Click += (_, _) => Pin(entry.Path);
+        keep.Click += (_, _) => Pin(entry);
+
+        MenuItem duplicate = new();
+        duplicate.Click += (_, _) => Duplicate(entry);
 
         MenuItem close = new();
-        close.Click += (_, _) => Close(entry.Path);
+        close.Click += (_, _) => Close(entry);
 
         MenuItem others = new();
         others.Click += (_, _) => CloseOthers(entry);
@@ -614,7 +701,7 @@ public sealed class RepoTabStrip : UserControl
 
         ContextMenu menu = new()
         {
-            ItemsSource = new Control[] { keep, new Separator(), close, others, all },
+            ItemsSource = new Control[] { keep, duplicate, new Separator(), close, others, all },
         };
 
         // Headers are written when the popup opens rather than once at build time: it
@@ -625,6 +712,10 @@ public sealed class RepoTabStrip : UserControl
         {
             keep.Header = MenuText.Escape(T("Keep open"));
             keep.IsVisible = !entry.Pinned;
+            // No entry in the upstream catalogue says this — the strip is the port's own —
+            // so the English literal is both the text and the lookup key, and a catalogue
+            // that grows one later starts translating it without a code change.
+            duplicate.Header = MenuText.Escape(T("Duplicate tab"));
             close.Header = MenuText.Escape(T("TranslatedStrings/_closeText.Text", "Close"));
             others.Header = MenuText.Escape(T("Close others"));
             all.Header = MenuText.Escape(T("Close all"));
@@ -690,11 +781,150 @@ public sealed class RepoTabStrip : UserControl
     // The folder name is what tells two repositories apart; the full path is on the
     // tooltip. A path that is nothing but separators has no folder name, and showing
     // the raw string beats showing an empty tab.
-    private static string Label(string path)
+    private static string Leaf(string path)
     {
         string trimmed = path.TrimEnd('/', '\\');
         string name = System.IO.Path.GetFileName(trimmed);
         return name.Length > 0 ? name : (path.Length > 0 ? path : "?");
+    }
+
+    /// <summary>
+    ///  The text of every tab, in strip order. Two tabs the eye cannot tell apart are two
+    ///  tabs the user will click at random, so the labels are decided TOGETHER and the
+    ///  same two collisions VS Code solves are solved the same two ways.
+    ///
+    ///  <para><b>Different repositories, same folder name</b> (<c>~/work/api</c> and
+    ///  <c>~/toys/api</c>) get more of their path, one parent segment at a time, until the
+    ///  colliding paths differ — the shortest text that carries the answer, which is
+    ///  exactly VS Code's rule for two files called <c>index.ts</c>. Five segments is the
+    ///  bail-out: beyond that the label is longer than the tab and the tooltip, which
+    ///  always holds the full path, is the better place to look.</para>
+    ///
+    ///  <para><b>The same repository twice</b> cannot be disambiguated by path at all —
+    ///  there is only one — so those tabs are NUMBERED, "<c>api (1)</c>", "<c>api (2)</c>",
+    ///  the convention every browser and window manager uses for a second view of one
+    ///  thing. The number is the position among the copies from left to right, not a
+    ///  birth order: the eye counts left to right, and a birth order would leave a gap the
+    ///  moment a middle copy is closed. Dragging one copy past another therefore swaps
+    ///  their numbers, which is the honest reading of a number that means "position".</para>
+    ///
+    ///  <para>Numbering only ever appears while a duplicate is open: a single tab on a
+    ///  repository is labelled exactly as before.</para>
+    /// </summary>
+    private static IReadOnlyList<string> BuildLabels(List<RepoTabEntry> tabs)
+    {
+        List<string> labels = new(tabs.Count);
+        foreach (RepoTabEntry tab in tabs)
+        {
+            labels.Add(Leaf(tab.Path));
+        }
+
+        // Pass 1 — one label per distinct PATH, grown until distinct paths that share a
+        // leaf no longer share a label. Duplicates of one path are one member here.
+        Dictionary<string, string> byPath = [];
+        Dictionary<string, List<string>> groups = [];
+        foreach (RepoTabEntry tab in tabs)
+        {
+            string key = PathKey(tab.Path);
+            if (byPath.ContainsKey(key))
+            {
+                continue;
+            }
+
+            byPath[key] = Leaf(tab.Path);
+            if (!groups.TryGetValue(byPath[key], out List<string>? peers))
+            {
+                peers = [];
+                groups[byPath[key]] = peers;
+            }
+
+            peers.Add(key);
+        }
+
+        foreach (List<string> peers in groups.Values)
+        {
+            if (peers.Count < 2)
+            {
+                continue;
+            }
+
+            for (int depth = 2; depth <= 5; depth++)
+            {
+                HashSet<string> tails = new(StringComparer.Ordinal);
+                bool distinct = true;
+                foreach (string peer in peers)
+                {
+                    distinct &= tails.Add(Tail(peer, depth));
+                }
+
+                // The last depth is taken even when it did NOT separate them: it is still
+                // the most informative label available, and stopping short would leave the
+                // bare folder name, which carries less.
+                if (distinct || depth == 5)
+                {
+                    foreach (string peer in peers)
+                    {
+                        byPath[peer] = Tail(peer, depth);
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        // Pass 2 — the copies of one path are numbered among themselves.
+        Dictionary<string, int> total = [];
+        foreach (RepoTabEntry tab in tabs)
+        {
+            string key = PathKey(tab.Path);
+            total[key] = total.TryGetValue(key, out int n) ? n + 1 : 1;
+        }
+
+        Dictionary<string, int> seen = [];
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            string key = PathKey(tabs[i].Path);
+            labels[i] = byPath[key];
+            if (total[key] > 1)
+            {
+                seen[key] = seen.TryGetValue(key, out int n) ? n + 1 : 1;
+                labels[i] = $"{labels[i]} ({seen[key]})";
+            }
+        }
+
+        return labels;
+    }
+
+    // The last <paramref name="segments"/> parts of a path, as the user reads them. Not a
+    // prefix of the path: what distinguishes ~/work/api from ~/toys/api is the segment
+    // just above the leaf, and it is also the one the user recognises.
+    private static string Tail(string path, int segments)
+    {
+        string[] parts = path.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            return Leaf(path);
+        }
+
+        int take = Math.Min(segments, parts.Length);
+        return string.Join('/', parts[^take..]);
+    }
+
+    // The identity of a working directory, for grouping only — SamePath's normalisation
+    // squeezed into a key so the grouping is a dictionary lookup rather than an O(n²)
+    // sweep. A path too broken to normalise stands for itself, which keeps it in its own
+    // group instead of merging every broken path into one.
+    private static string PathKey(string path)
+    {
+        try
+        {
+            string full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(path));
+            return OperatingSystem.IsWindows() ? full.ToUpperInvariant() : full;
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path;
+        }
     }
 
     // The house rule for "same repository", replicated locally so the strip stays a
@@ -759,10 +989,10 @@ public sealed class RepoTabStrip : UserControl
             Paint();
         }
 
-        internal void Apply(bool active)
+        internal void Apply(bool active, string text)
         {
             _active = active;
-            label.Text = Label(entry.Path);
+            label.Text = text;
             // Italic IS the preview state — the one visual difference the user has to
             // read at a glance before double-clicking makes it permanent.
             label.FontStyle = entry.Pinned ? FontStyle.Normal : FontStyle.Italic;

@@ -1187,7 +1187,7 @@ public sealed class MainWindow : Theming.ZoomWindow
                 && _repoTabs.Active is { Pinned: false } preview
                 && SameRepositoryPath(path, preview.Path))
             {
-                _repoTabs.Pin(preview.Path);
+                _repoTabs.Pin(preview);
                 return;
             }
 
@@ -4267,9 +4267,9 @@ public sealed class MainWindow : Theming.ZoomWindow
                 // load but the promotion of its tab from preview to kept. Without this
                 // the "already open" answer below would swallow the only way to pin a
                 // tab from the tree.
-                if (Theming.RepoTabsOption.Enabled && _repoTabs.Active is { Pinned: false })
+                if (Theming.RepoTabsOption.Enabled && _repoTabs.Active is { Pinned: false } preview)
                 {
-                    _repoTabs.Pin(path);
+                    _repoTabs.Pin(preview);
                     return;
                 }
 
@@ -4467,6 +4467,20 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         _repoTabs.Changed += UpdateRepoTabsVisibility;
 
+        // "Duplicate tab" copies the entry, and the entry only holds what was written into
+        // it when its tab was last LEFT. The tab being duplicated is normally the one on
+        // screen, whose live selection is newer than that — so flush it first, and the
+        // copy inherits the commit and the bottom pane the user is actually looking at.
+        // Any other tab already carries its own state and must not be overwritten with
+        // the views of a repository that is not it.
+        _repoTabs.Duplicating += source =>
+        {
+            if (ReferenceEquals(source, _loadedTab))
+            {
+                CaptureTabState(source);
+            }
+        };
+
         // Turning the option off must not strand the user on a hidden strip: the active
         // repository stays open, the others are simply no longer reachable until it is
         // turned back on (they are still in the saved state).
@@ -4527,7 +4541,7 @@ public sealed class MainWindow : Theming.ZoomWindow
     {
         if (Theming.RepoTabsOption.Enabled && _repoTabs.Active is { } active)
         {
-            _repoTabs.Close(active.Path);
+            _repoTabs.Close(active);
             UpdateRepoTabsVisibility();
             return;
         }
@@ -4566,7 +4580,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
 
         int step = e.Key == Key.PageDown ? 1 : -1;
-        _repoTabs.Activate(tabs[(index + step + tabs.Count) % tabs.Count].Path);
+        _repoTabs.Activate(tabs[(index + step + tabs.Count) % tabs.Count]);
         e.Handled = true;
     }
 
@@ -4591,6 +4605,10 @@ public sealed class MainWindow : Theming.ZoomWindow
 
             restored.Add(new Views.RepoTabEntry
             {
+                // Carried over rather than regenerated, because ActiveRepoTab names one of
+                // these ids. The sanitiser guarantees it is non-blank and unique, filling
+                // it in for files written before tabs had an identity of their own.
+                Id = saved.Id,
                 Path = saved.Path,
                 Pinned = saved.Pinned,
                 SelectedCommit = saved.SelectedCommit,
@@ -4605,8 +4623,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         // Restore() deliberately does not raise Activated — nothing has been loaded yet —
         // so the active tab is opened here, through the one door that loads.
-        string? active = _uiState.ActiveRepoTab;
-        _repoTabs.Restore(restored, active);
+        _repoTabs.Restore(restored, _uiState.ActiveRepoTab);
         UpdateRepoTabsVisibility();
 
         ShowRepoTab(_repoTabs.Active ?? restored[0]);
@@ -4619,13 +4636,16 @@ public sealed class MainWindow : Theming.ZoomWindow
         _uiState.OpenRepoTabs = _repoTabs.Tabs
             .Select(t => new RepoTabState
             {
+                Id = t.Id,
                 Path = t.Path,
                 Pinned = t.Pinned,
                 SelectedCommit = t.SelectedCommit,
                 BottomTab = t.BottomTab,
             })
             .ToList();
-        _uiState.ActiveRepoTab = _repoTabs.Active?.Path;
+        // The id, not the path: several tabs may stand for the same repository, and a path
+        // would name all of them or none.
+        _uiState.ActiveRepoTab = _repoTabs.Active?.Id;
     }
 
     // Takes the repository, not the snapshot task: the snapshot is asked of the cache
