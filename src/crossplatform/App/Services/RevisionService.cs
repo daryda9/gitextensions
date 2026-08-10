@@ -1282,7 +1282,14 @@ public sealed class RevisionService
             result.Add(row with { NodeLane = nodeLane, NodeColor = nodeColor, GraphSegments = segments });
         }
 
-        StraightenLaneShifts(rowSegments);
+        // Read here rather than passed down from the view: the segments are computed on
+        // a background thread that has no view to ask, and this is the only place the
+        // two settings are consulted.
+        AppPreferences graphPrefs = new SettingsService().Load();
+        if (graphPrefs.StraightenGraphDiagonals)
+        {
+            StraightenLaneShifts(rowSegments, graphPrefs.StraightenGraphSegmentsLimit);
+        }
 
         // Writes a lane slot, growing both parallel lists as needed.
         void SetLane(int index, string? value, int color)
@@ -1332,12 +1339,20 @@ public sealed class RevisionService
     ///  boundary — a merge joining a lane that also continues straight down — there is
     ///  no single line to straighten, and the halves are left as they are.</para>
     /// </summary>
-    private static void StraightenLaneShifts(List<List<RevisionGraphSegment>> rowSegments)
+    private static void StraightenLaneShifts(List<List<RevisionGraphSegment>> rowSegments, int segmentsLimit)
     {
         for (int r = 0; r + 1 < rowSegments.Count; r++)
         {
             List<RevisionGraphSegment> upper = rowSegments[r];
             List<RevisionGraphSegment> lower = rowSegments[r + 1];
+
+            // Upstream's StraightenGraphSegmentsLimit: the pass below walks the lower
+            // row once per segment of the upper one, so a pathologically wide boundary
+            // costs the square of its width — and is unreadable straightened or not.
+            if (upper.Count > segmentsLimit || lower.Count > segmentsLimit)
+            {
+                continue;
+            }
 
             for (int u = 0; u < upper.Count; u++)
             {

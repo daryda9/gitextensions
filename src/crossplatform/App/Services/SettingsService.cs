@@ -179,6 +179,60 @@ public sealed class AppPreferences
     ///  "Diff with parent 2" shows that parent's patch and not the first parent's.
     /// </summary>
     public bool ShowDiffForAllParents { get; set; } = true;
+
+    /// <summary>
+    ///  Dim the TEXT of a non-relative revision as well as its graph lanes
+    ///  (<c>AppSettings.RevisionGraphDrawNonRelativesTextGray</c>, default on).
+    ///  Upstream keeps this apart from the lane graying, and so does the port now: the
+    ///  two used to be one flag here, which made "gray the lanes" unavailable without
+    ///  also fading every subject.
+    /// </summary>
+    public bool GraphDrawNonRelativesTextGray { get; set; } = true;
+
+    /// <summary>
+    ///  Give every other row a slightly different background
+    ///  (<c>AppSettings.RevisionGraphDrawAlternateBackColor</c>, default on). The port
+    ///  striped unconditionally before this.
+    /// </summary>
+    public bool GraphDrawAlternateBackColor { get; set; } = true;
+
+    /// <summary>
+    ///  Colour each graph lane by its branch (<c>AppSettings.MulticolorBranches</c>,
+    ///  default on). Off draws the whole DAG in one foreground colour, which is what
+    ///  a reader who finds the palette noisy — or who cannot tell its hues apart —
+    ///  wants.
+    /// </summary>
+    public bool MulticolorBranches { get; set; } = true;
+
+    /// <summary>
+    ///  Straighten a lane that shifts by one column between two rows, so the line meets
+    ///  its other half instead of kinking (<c>AppSettings.StraightenGraphDiagonals</c>,
+    ///  default on).
+    /// </summary>
+    public bool StraightenGraphDiagonals { get; set; } = true;
+
+    /// <summary>
+    ///  Rows with more than this many segments are left un-straightened
+    ///  (<c>AppSettings.StraightenGraphSegmentsLimit</c>, default 80). Upstream's reason
+    ///  is cost, and it is the same here: the pass is O(segments²) per row boundary, and
+    ///  a row that wide is unreadable with or without the tidy-up.
+    /// </summary>
+    public int StraightenGraphSegmentsLimit { get; set; } = 80;
+
+    /// <summary>
+    ///  Highlight the rows written by the AUTHOR of the selected revision
+    ///  (<c>AppSettings.HighlightAuthoredRevisions</c>, default on) — upstream's
+    ///  <c>AuthorHighlighting</c>, which is how one scans a branch for one person's
+    ///  commits without filtering the grid down to them.
+    /// </summary>
+    public bool HighlightAuthoredRevisions { get; set; } = true;
+
+    /// <summary>
+    ///  Show a tooltip on a revision row (<c>AppSettings.ShowRevisionGridTooltips</c>,
+    ///  default off upstream). The port had none at all; it now offers the full message
+    ///  and the author, which is exactly what the truncated columns cannot show.
+    /// </summary>
+    public bool ShowRevisionGridTooltips { get; set; }
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
@@ -224,6 +278,18 @@ public sealed class SettingsService
         return new AppPreferences();
     }
 
+    /// <summary>
+    ///  Raised after a successful <see cref="Save"/>, so a view already on screen adopts
+    ///  the new answer instead of showing the old one until the next start.
+    ///
+    ///  <para>Raised on WHATEVER thread saved — the Settings dialog saves off the UI
+    ///  thread on purpose — so a subscriber that touches controls must marshal. Static
+    ///  because the writer and the readers each build their own service instance; a
+    ///  subscriber that outlives its window must unsubscribe, or it keeps that window
+    ///  alive.</para>
+    /// </summary>
+    public static event Action? Changed;
+
     /// <summary>Writes the given settings; best-effort (never throws).</summary>
     public void Save(AppPreferences settings)
     {
@@ -240,7 +306,12 @@ public sealed class SettingsService
         catch
         {
             // Persistence is best-effort; a failure must not crash the app.
+            return;
         }
+
+        // Outside the try: a subscriber that throws is a bug in the subscriber, not a
+        // failed save, and swallowing it here would hide it forever.
+        Changed?.Invoke();
     }
 
     private static AppPreferences Sanitize(AppPreferences s)
@@ -265,6 +336,10 @@ public sealed class SettingsService
         // Floored, not clamped to 0: a delay of zero would turn one flick of the wheel
         // into a jump through several files.
         s.DiffContinuousScrollDelay = Math.Clamp(s.DiffContinuousScrollDelay, 100, 10_000);
+
+        // A limit of 0 would disable straightening through the back door, which is what
+        // the diagonals flag is for; 1 is the smallest value that still means something.
+        s.StraightenGraphSegmentsLimit = Math.Clamp(s.StraightenGraphSegmentsLimit, 1, 10_000);
 
         return s;
     }

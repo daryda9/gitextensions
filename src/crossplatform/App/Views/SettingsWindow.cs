@@ -153,6 +153,15 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly CheckBox _histogramDiff;
     private readonly CheckBox _diffAllParents;
 
+    // ---- Revision graph page: seven more.
+    private readonly CheckBox _nonRelativesTextGray;
+    private readonly CheckBox _alternateRowColor;
+    private readonly CheckBox _multicolorBranches;
+    private readonly CheckBox _straightenDiagonals;
+    private readonly TextBox _straightenLimit;
+    private readonly CheckBox _highlightAuthored;
+    private readonly CheckBox _gridTooltips;
+
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
     // CommitInfoChoices.
     private readonly CheckBox[] _commitInfoChecks;
@@ -339,6 +348,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string CommitText = "Commit";
     private const string DiffViewerKey = "DiffViewerSettingsPage/$this.Text";
     private const string DiffViewerText = "Diff viewer";
+    private const string GraphKey = "DetailedSettingsPage/tlpnlRevisionGraph.Text";
+    private const string GraphText = "Revision graph";
 
     public SettingsWindow(
         string? repoPath,
@@ -780,6 +791,62 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             _omitUninteresting,
             _histogramDiff);
 
+        // ---- Revision graph page.
+        _nonRelativesTextGray = new CheckBox();
+        _alternateRowColor = new CheckBox();
+        _multicolorBranches = new CheckBox();
+        _straightenDiagonals = new CheckBox();
+        _highlightAuthored = new CheckBox();
+        _gridTooltips = new CheckBox();
+        Localize(
+            _nonRelativesTextGray,
+            "DetailedSettingsPage/chkDrawNonRelativesTextGray.Text",
+            "Also grey the TEXT of a non-relative revision");
+        Localize(
+            _alternateRowColor,
+            "DetailedSettingsPage/chkDrawAlternateBackColor.Text",
+            "Give every other row a slightly different background");
+        Localize(
+            _multicolorBranches,
+            "DetailedSettingsPage/chkMulticolorBranches.Text",
+            "Colour each branch of the graph differently");
+        Localize(
+            _straightenDiagonals,
+            "DetailedSettingsPage/chkStraightenGraphDiagonals.Text",
+            "Straighten the diagonals of the graph");
+        Localize(
+            _highlightAuthored,
+            "DetailedSettingsPage/chkHighlightAuthored.Text",
+            "Highlight the revisions of the selected revision's author");
+        Localize(
+            _gridTooltips,
+            "DetailedSettingsPage/chkShowRevisionGridTooltips.Text",
+            "Show a tooltip on a revision row");
+
+        _straightenLimit = NumberBox();
+
+        Panel graphPanel = CategoryPanel(
+            GraphKey, GraphText,
+            null, "How the revision grid draws its rows and its DAG. Greying the lanes "
+                + "of a non-relative revision stays where it is — the View menu — "
+                + "because it is a per-session view, not a preference.",
+            text,
+            dim,
+            _multicolorBranches,
+            _alternateRowColor,
+            _highlightAuthored,
+            _nonRelativesTextGray,
+            _gridTooltips,
+            _straightenDiagonals,
+            Field(
+                null,
+                "Skip straightening rows wider than",
+                _straightenLimit,
+                dim,
+                "In segments. The tidy-up costs the square of a row's width, and a row "
+                    + "that wide is unreadable either way, so past this many segments "
+                    + "the row is left as it is."));
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -792,6 +859,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(behaviourPanel);
         _pages.Add(commitPanel);
         _pages.Add(diffPanel);
+        _pages.Add(graphPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -833,6 +901,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
         categories.Items.Add(CategoryItem(CommitKey, CommitText));
         categories.Items.Add(CategoryItem(DiffViewerKey, DiffViewerText));
+        categories.Items.Add(CategoryItem(GraphKey, GraphText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -1065,6 +1134,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _omitUninteresting.IsChecked = prefs.OmitUninterestingDiff;
         _histogramDiff.IsChecked = prefs.UseHistogramDiffAlgorithm;
         _diffAllParents.IsChecked = prefs.ShowDiffForAllParents;
+
+        _nonRelativesTextGray.IsChecked = prefs.GraphDrawNonRelativesTextGray;
+        _alternateRowColor.IsChecked = prefs.GraphDrawAlternateBackColor;
+        _multicolorBranches.IsChecked = prefs.MulticolorBranches;
+        _straightenDiagonals.IsChecked = prefs.StraightenGraphDiagonals;
+        _straightenLimit.Text = prefs.StraightenGraphSegmentsLimit.ToString(CultureInfo.InvariantCulture);
+        _highlightAuthored.IsChecked = prefs.HighlightAuthoredRevisions;
+        _gridTooltips.IsChecked = prefs.ShowRevisionGridTooltips;
 
         // Commit-info toggles: likewise their own file.
         CommitInfoSettings commitInfo = _commitInfoService.Load();
@@ -1347,6 +1424,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         bool omitUninteresting = _omitUninteresting.IsChecked == true;
         bool histogram = _histogramDiff.IsChecked == true;
         bool allParents = _diffAllParents.IsChecked == true;
+        bool textGray = _nonRelativesTextGray.IsChecked == true;
+        bool alternateRows = _alternateRowColor.IsChecked == true;
+        bool multicolor = _multicolorBranches.IsChecked == true;
+        bool straighten = _straightenDiagonals.IsChecked == true;
+        int straightenLimit = Number(_straightenLimit, 80, 10_000);
+        bool highlightAuthored = _highlightAuthored.IsChecked == true;
+        bool gridTooltips = _gridTooltips.IsChecked == true;
         _ = Task.Run(() =>
         {
             SettingsService settings = new();
@@ -1366,6 +1450,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.OmitUninterestingDiff = omitUninteresting;
             prefs.UseHistogramDiffAlgorithm = histogram;
             prefs.ShowDiffForAllParents = allParents;
+            prefs.GraphDrawNonRelativesTextGray = textGray;
+            prefs.GraphDrawAlternateBackColor = alternateRows;
+            prefs.MulticolorBranches = multicolor;
+            prefs.StraightenGraphDiagonals = straighten;
+            prefs.StraightenGraphSegmentsLimit = straightenLimit;
+            prefs.HighlightAuthoredRevisions = highlightAuthored;
+            prefs.ShowRevisionGridTooltips = gridTooltips;
             settings.Save(prefs);
 
             _commitInfoService.Save(new CommitInfoSettings

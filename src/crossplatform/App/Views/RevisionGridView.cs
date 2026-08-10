@@ -416,6 +416,11 @@ public sealed class RevisionGridView : UserControl
     // UpdateAuthorHighlight, which is the only writer.
     private string _highlightedAuthor = string.Empty;
 
+    // The grid's half of app-settings.json, re-read whenever it is saved (see the
+    // SettingsService.Changed subscription in the constructor). Held as a snapshot
+    // because every row build consults it.
+    private AppPreferences _gridPrefs = new();
+
     // Set while ANY assignment to _list.ItemsSource is in flight — RebindRows' swap
     // (plus the selection it puts back) and Reload's unbind alike. Every assignment
     // goes through SetListItems, which raises this flag.
@@ -1027,6 +1032,29 @@ public sealed class RevisionGridView : UserControl
         // (MainWindow, FileHistoryView) are readonly fields that live as long as the
         // app, so there is nothing to leak.
         ThemeManager.StyleChanged += OnStyleChanged;
+
+        // The Settings dialog writes app-settings.json off the UI thread, so the reload
+        // is posted. Same lifetime argument as the two subscriptions above: both
+        // instances of this view live as long as the app.
+        SettingsService.Changed += OnAppSettingsChanged;
+        ReadGridPreferences();
+    }
+
+    // Re-reads the settings this grid draws from and rebuilds the rows in place. The
+    // viewport is preserved: the user changed an appearance, not the set of rows.
+    private void OnAppSettingsChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        ReadGridPreferences();
+        RefreshView();
+    });
+
+    private void ReadGridPreferences()
+    {
+        _gridPrefs = new SettingsService().Load();
+
+        // Pushed onto the graph control rather than read by it: the lane palette is
+        // static, and a per-cell settings read would cost one file check per row.
+        RevisionGraphControl.Multicolor = _gridPrefs.MulticolorBranches;
     }
 
     /// <summary>
@@ -2694,6 +2722,39 @@ public sealed class RevisionGridView : UserControl
     //
     // An artificial row (working directory / commit index) has no author, so it
     // clears the emphasis rather than blanking every row.
+    /// <summary>
+    ///  The background of one row: the authored highlight first, then the alternating
+    ///  stripe, then the plain panel — upstream's order in
+    ///  <c>RevisionDataGridView.GetBackground</c>, where the authored colour WINS over
+    ///  the stripe, so a highlighted run of commits reads as one block.
+    /// </summary>
+    private IBrush RowBackground(RevisionRow row, int index)
+    {
+        if (_gridPrefs.HighlightAuthoredRevisions
+            && _highlightedAuthor.Length > 0
+            && !IsArtificial(row)
+            && string.Equals(row.Author, _highlightedAuthor, StringComparison.Ordinal))
+        {
+            return B("App.HoverRow");
+        }
+
+        // App.Panel for both when the stripe is off: it is the plain row surface, and
+        // the alternate is the one that carries the tint.
+        return !_gridPrefs.GraphDrawAlternateBackColor || (index & 1) == 0
+            ? B("App.Panel")
+            : B("App.PanelAlt");
+    }
+
+    // The text of a row's tooltip: what the truncated columns cannot say.
+    private static string RowTooltip(RevisionRow row)
+    {
+        string author = string.IsNullOrEmpty(row.AuthorEmail)
+            ? row.Author
+            : $"{row.Author} <{row.AuthorEmail}>";
+
+        return $"{row.Subject}\n\n{author}\n{row.Hash}";
+    }
+
     private void UpdateAuthorHighlight()
     {
         string author = _list.SelectedItem is RevisionRow row && !IsArtificial(row)
@@ -5277,7 +5338,16 @@ public sealed class RevisionGridView : UserControl
         // the RevisionRowView wrapper (full row width, no margin) so the selection
         // fill can cover every column edge to edge, like the original grid.
         int index = _rows is List<RevisionRow> list ? list.IndexOf(row) : IndexOf(_rows, row);
-        RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
+        RevisionRowView view = new(RowBackground(row, index), grid);
+
+        // Upstream's ShowRevisionGridTooltips. The columns truncate — the subject most
+        // of all — so the tip carries what the row cannot show: the full subject, the
+        // author with their address, and the full hash. Set on the row wrapper, so it
+        // answers wherever the pointer rests instead of only over one column.
+        if (_gridPrefs.ShowRevisionGridTooltips && !IsArtificial(row))
+        {
+            ToolTip.SetTip(view, RowTooltip(row));
+        }
 
         // Graph cell (column 0): the DAG lanes for this row. While a filter is
         // active the rows shown are a non-contiguous subset, so the precomputed
@@ -5313,7 +5383,11 @@ public sealed class RevisionGridView : UserControl
         //    same way). Guarded on a non-empty relatives set so it is a no-op when
         //    neither the anchor nor HEAD is inside the loaded window.
         bool onBranch = _highlightCurrentBranch && _currentBranchLine.Contains(row.Hash);
-        bool nonRelative = !onBranch && _drawNonRelativesGray
+
+        // The LANE graying and the TEXT graying are two settings upstream and one flag
+        // here until now: with RevisionGraphDrawNonRelativesTextGray off, the lanes
+        // still fade but the subjects stay readable.
+        bool nonRelative = !onBranch && _drawNonRelativesGray && _gridPrefs.GraphDrawNonRelativesTextGray
             && _headRelatives.Count > 0 && !_headRelatives.Contains(row.Hash);
 
         IBrush hashBrush = nonRelative ? B("App.TextDim") : B("App.Accent");
@@ -5350,7 +5424,8 @@ public sealed class RevisionGridView : UserControl
             // upstream's AuthorRevisionHighlighting, applied by
             // AuthorNameColumnProvider.cs:38-40 (bold font for the highlighted
             // author). The port drew every author in App.TextDim regardless.
-            bool sameAuthor = _highlightedAuthor.Length > 0
+            bool sameAuthor = _gridPrefs.HighlightAuthoredRevisions
+                && _highlightedAuthor.Length > 0
                 && string.Equals(row.Author, _highlightedAuthor, StringComparison.Ordinal);
 
             view.TrackText(
@@ -5438,7 +5513,7 @@ public sealed class RevisionGridView : UserControl
         grid.MinHeight = RowMinHeight;
 
         int index = IndexOf(_rows, row);
-        RevisionRowView view = new((index & 1) == 0 ? B("App.Panel") : B("App.PanelAlt"), grid);
+        RevisionRowView view = new(RowBackground(row, index), grid);
 
         if (_showGraph && !_quickFilterActive)
         {
@@ -7381,8 +7456,21 @@ public sealed class RevisionGridView : UserControl
             }
         }
 
+        /// <summary>
+        ///  Upstream's <c>MulticolorBranches</c>: off, the whole DAG is drawn in one
+        ///  colour. Static and process-wide because the palette is: the grid rebuilds
+        ///  its rows when the setting is saved, so there is nothing to invalidate here.
+        /// </summary>
+        public static bool Multicolor { get; set; } = true;
+
         private static Color LaneColor(int lane)
-            => LaneColors[((lane % LaneColors.Length) + LaneColors.Length) % LaneColors.Length];
+            => Multicolor
+                ? LaneColors[((lane % LaneColors.Length) + LaneColors.Length) % LaneColors.Length]
+                : SingleColor;
+
+        // The one colour used when Multicolor is off: the light blue of the palette,
+        // which reads as a line rather than as a highlight in both themes.
+        private static readonly Color SingleColor = Color.FromRgb(0x78, 0xB4, 0xE6);
 
         private IBrush Brush(int lane, bool relative = true)
         {
@@ -7393,6 +7481,11 @@ public sealed class RevisionGridView : UserControl
                 return _rowSelected && _nonRelativeBrush is ISolidColorBrush solid
                     ? new SolidColorBrush(Lighten(solid.Color, 0.55))
                     : _nonRelativeBrush;
+            }
+
+            if (!Multicolor)
+            {
+                return new SolidColorBrush(_rowSelected ? Lighten(SingleColor, 0.55) : SingleColor);
             }
 
             int i = ((lane % LaneBrushes.Length) + LaneBrushes.Length) % LaneBrushes.Length;
