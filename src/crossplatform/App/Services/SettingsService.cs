@@ -77,6 +77,59 @@ public sealed class AppPreferences
     ///  question is asked, exactly like upstream.</para>
     /// </summary>
     public bool DontConfirmResolveConflicts { get; set; }
+
+    /// <summary>
+    ///  Commit message editor: soft-wrap long lines instead of scrolling sideways
+    ///  (<c>AppSettings.MessageEditorWordWrap</c>, default off upstream).
+    ///
+    ///  <para>Off is also what the validation marks want: with wrapping on, one logical
+    ///  line covers several visual rows and the over-limit band drawn by
+    ///  <see cref="TextRulerOverlay"/> would sit on the wrong row. The overlay therefore
+    ///  disables itself while this is on rather than drawing something misleading.</para>
+    /// </summary>
+    public bool CommitMessageWordWrap { get; set; }
+
+    /// <summary>
+    ///  Maximum length of the commit message's SUBJECT line, 0 = no limit
+    ///  (<c>AppSettings.CommitValidationMaxCntCharsFirstLine</c>). Drives both the
+    ///  ruler/mark drawn behind the editor and the question asked before committing.
+    /// </summary>
+    public int CommitValidationFirstLineMaxChars { get; set; }
+
+    /// <summary>
+    ///  Maximum length of every OTHER line of the message, 0 = no limit
+    ///  (<c>AppSettings.CommitValidationMaxCntCharsPerLine</c>). Also the column the
+    ///  auto-wrap breaks at.
+    /// </summary>
+    public int CommitValidationMaxCharsPerLine { get; set; }
+
+    /// <summary>
+    ///  Keep the second line of the message empty, inserting one if the user starts
+    ///  typing the body right under the subject
+    ///  (<c>AppSettings.CommitValidationSecondLineMustBeEmpty</c>).
+    /// </summary>
+    public bool CommitValidationSecondLineMustBeEmpty { get; set; }
+
+    /// <summary>
+    ///  Re-flow a body line that grows past <see cref="CommitValidationMaxCharsPerLine"/>
+    ///  onto the next line while typing (<c>AppSettings.CommitValidationAutoWrap</c>,
+    ///  default on). Inert while the per-line limit is 0, exactly as upstream.
+    /// </summary>
+    public bool CommitValidationAutoWrap { get; set; } = true;
+
+    /// <summary>
+    ///  Paint the part of a line that exceeds its limit
+    ///  (<c>AppSettings.MarkIllFormedLinesInCommitMsg</c>, default on). Upstream colours
+    ///  the text; the port paints a translucent band behind it, which survives the
+    ///  theme swap and does not fight the caret.
+    /// </summary>
+    public bool MarkIllFormedCommitLines { get; set; } = true;
+
+    /// <summary>
+    ///  How many earlier commit messages the commit dialog's message menu offers
+    ///  (<c>AppSettings.CommitDialogNumberOfPreviousMessages</c>, default 6).
+    /// </summary>
+    public int CommitDialogNumberOfPreviousMessages { get; set; } = 6;
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
@@ -152,6 +205,12 @@ public sealed class SettingsService
         {
             s.DefaultCheckoutLocalChangesAction = "DontChange";
         }
+
+        // Clamped rather than rejected: a hand-edited file with a silly number must not
+        // make the editor unusable, and 0 keeps its meaning of "no limit".
+        s.CommitValidationFirstLineMaxChars = Math.Clamp(s.CommitValidationFirstLineMaxChars, 0, 999);
+        s.CommitValidationMaxCharsPerLine = Math.Clamp(s.CommitValidationMaxCharsPerLine, 0, 999);
+        s.CommitDialogNumberOfPreviousMessages = Math.Clamp(s.CommitDialogNumberOfPreviousMessages, 0, 50);
 
         return s;
     }

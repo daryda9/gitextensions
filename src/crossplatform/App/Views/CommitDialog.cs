@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
@@ -44,6 +45,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private readonly ListBox _unstagedList = MakeList();
     private readonly ListBox _stagedList = MakeList();
     private readonly TextBox _messageBox;
+    private readonly TextRulerOverlay _messageRuler;
     private readonly CheckBox _amendBox;
     private readonly SelectableTextBlock _diffView;
     private readonly ScrollViewer _diffScroll;
@@ -236,10 +238,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // with `git status -uno`. Here the rows are already loaded, so the toggle hides them
     // from the unstaged list — and, because "Stage all" acts on the rows the list shows,
     // an untracked file that is hidden is also not staged by it.
-    // Upstream's AppSettings.CommitDialogNumberOfPreviousMessages (default 6) and the
-    // 72-character cut its menu labels use.
-    private const int PreviousMessageCount = 6;
+    // The 72-character cut upstream's message-menu labels use. How MANY messages the
+    // menu offers is AppSettings.CommitDialogNumberOfPreviousMessages, now a setting
+    // (_prefs.CommitDialogNumberOfPreviousMessages) rather than the constant it was.
     private const int MaxMessageLabel = 72;
+
+    // Where the first character sits inside the message box, shared with the overlay
+    // that has to line up with it. Set explicitly instead of inherited from the theme
+    // so the two cannot drift apart when the style changes.
+    private static readonly Thickness MessagePadding = new(6, 4);
 
     // "Show only my messages" of the message drop-down. Upstream keeps it in the menu
     // item alone, so it lasts as long as the dialog does; same here.
@@ -362,6 +369,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // owned elsewhere in the port.
     private readonly SettingsService _settings = new();
     private AppPreferences _prefs;
+
+    // Re-entrancy guard for FormatMessage: assigning Text raises the very event that
+    // called it. _formatScheduled additionally collapses a burst of text changes into
+    // one posted formatting pass.
+    private bool _formattingMessage;
+    private bool _formatScheduled;
 
     // One-shot: set when a commit succeeded and "close after all files committed" is
     // on, consumed by the Reload that follows — only then is it known whether
@@ -707,8 +720,25 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             AcceptsReturn = true,
             MinHeight = 70,
-            TextWrapping = TextWrapping.Wrap,
+
+            // Upstream's AppSettings.MessageEditorWordWrap, default off. Off also keeps
+            // one logical line on one visual row, which is what lets the ruler overlay
+            // put its marks where the characters actually are.
+            TextWrapping = _prefs.CommitMessageWordWrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
             FontFamily = Monospace,
+            Padding = MessagePadding,
+        };
+
+        _messageRuler = new TextRulerOverlay(_messageBox, MessagePadding)
+        {
+            // The ruler stands at the line limit that applies to the BODY: the subject
+            // limit only concerns row one and a full-height line at 50 columns would read
+            // as a rule for the whole message, which it is not.
+            RulerColumn = _prefs.CommitValidationMaxCharsPerLine,
+            FirstLineLimit = _prefs.CommitValidationFirstLineMaxChars,
+            OtherLineLimit = _prefs.CommitValidationMaxCharsPerLine,
+            MarkIllFormed = _prefs.MarkIllFormedCommitLines,
+            Wrapping = _prefs.CommitMessageWordWrap,
         };
         _amendBox = new CheckBox
         {
@@ -819,9 +849,17 @@ public sealed class CommitDialog : Theming.ZoomWindow
         Grid.SetColumn(commitToolbar, 1);
         Grid.SetColumn(_messageBox, 1);
         Grid.SetRow(_messageBox, 1);
+        Grid.SetColumn(_messageRuler, 1);
+        Grid.SetRow(_messageRuler, 1);
         messageArea.Children.Add(commitButtons);
         messageArea.Children.Add(commitToolbar);
+
+        // The overlay goes on TOP of the box, not behind it: the box paints an opaque
+        // background of its own in both styles, which would swallow anything underneath.
+        // Both marks are translucent and the control is not hit-testable, so the text
+        // stays readable and the caret keeps working through it.
         messageArea.Children.Add(_messageBox);
+        messageArea.Children.Add(_messageRuler);
 
         _statusText = new TextBlock
         {
@@ -1094,6 +1132,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private static string T(string english) => TranslationService.T(english);
 
     private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string TFormat(string? key, string englishFormat, params object?[] args)
+        => TranslationService.TFormat(key, englishFormat, args);
 
     // Keyboard accelerators the former working-directory panel had:
     //  • Enter / Space on a list = stage (unstaged list) or unstage (staged list);
@@ -2889,6 +2930,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
             return;
         }
 
+        if (!await ConfirmMessageLengthAsync(message))
+        {
+            return;
+        }
+
         // Upstream runs the commit inside FormProcess (FormCommit.cs:1265) so the user
         // sees the command line, git's output and — the reason this matters — whatever
         // the pre-commit hook prints. Same surface the push already uses.
@@ -3251,6 +3297,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private async Task ShowMessageMenuAsync(Button anchor)
     {
         string repo = _repoPath;
+        int previousCount = Math.Max(1, _prefs.CommitDialogNumberOfPreviousMessages);
         string authorPattern = _onlyMyMessages && _committerName.Length > 0
             ? $"^{Regex.Escape(_committerName)} <{Regex.Escape(_committerEmail)}>$"
             : string.Empty;
@@ -3259,7 +3306,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             try
             {
-                return _service.PreviousCommitMessages(repo, PreviousMessageCount, authorPattern);
+                return _service.PreviousCommitMessages(repo, previousCount, authorPattern);
             }
             catch
             {
@@ -3647,6 +3694,23 @@ public sealed class CommitDialog : Theming.ZoomWindow
     {
         _messageBox.PropertyChanged += (_, e) =>
         {
+            if (e.Property == TextBox.TextProperty && !_formattingMessage && !_formatScheduled)
+            {
+                // POSTED, not called here: while TextProperty is being raised the box has
+                // the new text but the OLD caret index, so formatting now would compute
+                // the caret fix-up one character behind and leave the character just
+                // typed on the wrong side of an inserted line. Background priority puts
+                // the work after the input handling that moves the caret.
+                _formatScheduled = true;
+                Dispatcher.UIThread.Post(
+                    () =>
+                    {
+                        _formatScheduled = false;
+                        FormatMessage();
+                    },
+                    DispatcherPriority.Background);
+            }
+
             if (e.Property == TextBox.CaretIndexProperty || e.Property == TextBox.TextProperty)
             {
                 SetCaret(_messageBox.Text ?? string.Empty, _messageBox.CaretIndex);
@@ -3855,6 +3919,160 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             onConfirmed();
         }
+    }
+
+    /// <summary>
+    ///  The length check upstream runs last, right before the commit
+    ///  (<c>FormCommit.IsCommitMessageValid</c>): a subject longer than
+    ///  <c>CommitValidationMaxCntCharsFirstLine</c>, or any line longer than
+    ///  <c>CommitValidationMaxCntCharsPerLine</c>, is a question and not a refusal —
+    ///  answering No returns to the editor, Yes commits as typed.
+    ///
+    ///  <para>Both limits default to 0 = off, so a user who has not set them never sees
+    ///  this. Only the FIRST offending body line is reported: upstream asks once per
+    ///  line, which turns a pasted log into a queue of identical modal questions.</para>
+    /// </summary>
+    private async Task<bool> ConfirmMessageLengthAsync(string message)
+    {
+        string[] lines = message.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0)
+        {
+            return true;
+        }
+
+        int first = _prefs.CommitValidationFirstLineMaxChars;
+        if (first > 0 && lines[0].TrimEnd('\r').Length > first
+            && !await ConfirmAsync(
+                T("FormCommit/_commitMsgFirstLineInvalid.Text",
+                    "First line of commit message contains too many characters."
+                    + "\nDo you want to continue?"),
+                T("FormCommit/_commitValidationCaption.Text", "Commit message")))
+        {
+            return false;
+        }
+
+        int perLine = _prefs.CommitValidationMaxCharsPerLine;
+        if (perLine <= 0)
+        {
+            return true;
+        }
+
+        foreach (string raw in lines)
+        {
+            string line = raw.TrimEnd('\r');
+            if (line.Length <= perLine)
+            {
+                continue;
+            }
+
+            return await ConfirmAsync(
+                TFormat("FormCommit/_commitMsgLineInvalid.Text",
+                    "The following line of commit message contains too many characters:"
+                    + "\n{0}\nDo you want to continue?",
+                    line),
+                T("FormCommit/_commitValidationCaption.Text", "Commit message"));
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    ///  Applies the two formatting settings as the user types: keeps line two empty
+    ///  (<c>CommitValidationSecondLineMustBeEmpty</c>) and breaks a body line that has
+    ///  grown past the per-line limit (<c>CommitValidationAutoWrap</c>).
+    ///
+    ///  <para>A break REPLACES the space it happens at, so the text keeps its length and
+    ///  only the inserted blank line can move the caret — which is why the caret fix-up
+    ///  below is a single conditional increment and not an offset map. A line with no
+    ///  space inside the limit (a URL, a long path) is left alone rather than cut mid-word:
+    ///  upstream wraps only at whitespace too, and a broken path is worse than a long one.</para>
+    ///
+    ///  <para>Wrapping SPLITS, it does not re-flow: text is never pulled back up from the
+    ///  next line. Re-flowing would fight the user editing an earlier paragraph, and
+    ///  upstream's own re-flow is limited to the line being typed.</para>
+    /// </summary>
+    private void FormatMessage()
+    {
+        int limit = _prefs.CommitValidationMaxCharsPerLine;
+        bool wrap = _prefs.CommitValidationAutoWrap && limit > 0;
+        bool blankSecond = _prefs.CommitValidationSecondLineMustBeEmpty;
+        if (_formattingMessage || (!wrap && !blankSecond))
+        {
+            return;
+        }
+
+        string text = _messageBox.Text ?? string.Empty;
+        int caret = Math.Clamp(_messageBox.CaretIndex, 0, text.Length);
+        string[] source = text.Split('\n');
+        StringBuilder built = new(text.Length + 1);
+        int newCaret = caret;
+        int lineStart = 0;
+
+        for (int i = 0; i < source.Length; i++)
+        {
+            if (i > 0)
+            {
+                built.Append('\n');
+            }
+
+            string line = source[i];
+            if (blankSecond && i == 1 && line.Trim().Length > 0)
+            {
+                built.Append('\n');
+                if (caret >= lineStart)
+                {
+                    newCaret++;
+                }
+            }
+
+            built.Append(wrap && i >= 1 ? WrapLine(line, limit) : line);
+            lineStart += line.Length + 1;
+        }
+
+        string formatted = built.ToString();
+        if (string.Equals(formatted, text, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _formattingMessage = true;
+        try
+        {
+            _messageBox.Text = formatted;
+            _messageBox.CaretIndex = Math.Clamp(newCaret, 0, formatted.Length);
+        }
+        finally
+        {
+            _formattingMessage = false;
+        }
+    }
+
+    // Breaks <paramref name="line"/> at the last space at or before each limit. Returns
+    // it unchanged when no such space exists, so a long unbroken token survives intact.
+    private static string WrapLine(string line, int limit)
+    {
+        if (line.Length <= limit)
+        {
+            return line;
+        }
+
+        StringBuilder wrapped = new(line.Length);
+        int start = 0;
+        while (line.Length - start > limit)
+        {
+            int from = Math.Min(start + limit, line.Length - 1);
+            int cut = line.LastIndexOf(' ', from, from - start + 1);
+            if (cut <= start)
+            {
+                break;
+            }
+
+            wrapped.Append(line, start, cut - start).Append('\n');
+            start = cut + 1;
+        }
+
+        wrapped.Append(line, start, line.Length - start);
+        return wrapped.ToString();
     }
 
     /// <summary>

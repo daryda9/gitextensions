@@ -1,3 +1,4 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -131,6 +132,17 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // point of the setting is the emulator the probe list does NOT know about.
     private readonly TextBox _terminalCommand;
     private readonly ComboBox _checkoutLocalChanges;
+
+    // ---- Commit page: the seven message-editor settings upstream keeps in
+    // AppSettings and in FormCommitTemplateSettings, none of which the port had a
+    // consumer for until now.
+    private readonly CheckBox _messageWordWrap;
+    private readonly CheckBox _messageSecondLineEmpty;
+    private readonly CheckBox _messageAutoWrap;
+    private readonly CheckBox _messageMarkIllFormed;
+    private readonly TextBox _messageFirstLineLimit;
+    private readonly TextBox _messageLineLimit;
+    private readonly TextBox _previousMessageCount;
 
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
     // CommitInfoChoices.
@@ -314,6 +326,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string BehaviourText = "Behaviour";
     private const string AppearanceKey = "AppearanceSettingsPage/$this.Text";
     private const string AppearanceText = "Appearance";
+    private const string CommitKey = "FormCommit/$this.Text";
+    private const string CommitText = "Commit";
 
     public SettingsWindow(
         string? repoPath,
@@ -637,6 +651,67 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "immediately, no restart."),
             coloredIconsField);
 
+        // ---- Commit page: the message editor's seven settings. Numbers are plain text
+        // boxes and not spinners: every one of them means "0 = off", and a spinner's
+        // arrows invite clicking to 1, which is a limit of one character.
+        _messageWordWrap = new CheckBox();
+        _messageSecondLineEmpty = new CheckBox();
+        _messageAutoWrap = new CheckBox();
+        _messageMarkIllFormed = new CheckBox();
+        Localize(_messageWordWrap, null, "Wrap long lines in the message editor");
+        Localize(
+            _messageSecondLineEmpty,
+            "FormCommitTemplateSettings/checkBoxSecondLineEmpty.Text",
+            "Second line of the message must be empty");
+        Localize(
+            _messageAutoWrap,
+            "FormCommitTemplateSettings/checkBoxAutoWrap.Text",
+            "Wrap the body automatically at the line limit");
+        Localize(
+            _messageMarkIllFormed,
+            "GeneralSettingsPage/chkMarkIllFormedLines.Text",
+            "Mark the part of a line that exceeds its limit");
+
+        _messageFirstLineLimit = NumberBox();
+        _messageLineLimit = NumberBox();
+        _previousMessageCount = NumberBox();
+
+        Panel commitPanel = CategoryPanel(
+            CommitKey, CommitText,
+            null, "How the commit message editor behaves: the two length limits, what it "
+                + "does about them while you type, and how many earlier messages its "
+                + "drop-down offers.",
+            text,
+            dim,
+            Field(
+                "FormCommitTemplateSettings/labelMaxFirstLineLength.Text",
+                "Maximum length of the first line",
+                _messageFirstLineLimit,
+                dim,
+                "0 turns the limit off. Above it, the excess is marked in the editor and "
+                    + "committing asks for confirmation — it never refuses. 50 is the "
+                    + "conventional subject length."),
+            Field(
+                "FormCommitTemplateSettings/labelMaxLineLength.Text",
+                "Maximum length of the other lines",
+                _messageLineLimit,
+                dim,
+                "0 turns the limit off. This is also the column the ruler stands at and "
+                    + "the column the automatic wrap breaks at. 72 is the conventional "
+                    + "body width."),
+            _messageMarkIllFormed,
+            _messageAutoWrap,
+            _messageSecondLineEmpty,
+            _messageWordWrap,
+            Field(
+                null,
+                "Previous messages offered by the drop-down",
+                _previousMessageCount,
+                dim,
+                "How many of the last commit messages the \"Commit message\" button "
+                    + "lists. They are read from the log on each opening, so a large "
+                    + "number costs a slower menu, not memory."));
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -647,6 +722,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(commitInfoPanel);
         _pages.Add(hotkeysPanel);
         _pages.Add(behaviourPanel);
+        _pages.Add(commitPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -686,6 +762,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(CommitInfoKey, CommitInfoText));
         categories.Items.Add(CategoryItem(HotkeysKey, HotkeysText));
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
+        categories.Items.Add(CategoryItem(CommitKey, CommitText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -895,10 +972,21 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _autoRefresh.IsChecked = _currentAutoRefresh ?? ui.AutoRefresh;
         _terminalCommand.Text = ui.TerminalCommand;
 
-        // Checkout default: its own file, so the file is always the truth.
-        string checkoutAction = new SettingsService().Load().DefaultCheckoutLocalChangesAction;
-        int checkoutIndex = Array.FindIndex(CheckoutChoices, c => c.Token == checkoutAction);
+        // Checkout default and the commit-editor settings: their own file, so the file
+        // is always the truth. One Load() for both — they live in the same record.
+        AppPreferences prefs = new SettingsService().Load();
+        int checkoutIndex = Array.FindIndex(
+            CheckoutChoices, c => c.Token == prefs.DefaultCheckoutLocalChangesAction);
         _checkoutLocalChanges.SelectedIndex = checkoutIndex >= 0 ? checkoutIndex : 0;
+
+        _messageWordWrap.IsChecked = prefs.CommitMessageWordWrap;
+        _messageSecondLineEmpty.IsChecked = prefs.CommitValidationSecondLineMustBeEmpty;
+        _messageAutoWrap.IsChecked = prefs.CommitValidationAutoWrap;
+        _messageMarkIllFormed.IsChecked = prefs.MarkIllFormedCommitLines;
+        _messageFirstLineLimit.Text = prefs.CommitValidationFirstLineMaxChars.ToString(CultureInfo.InvariantCulture);
+        _messageLineLimit.Text = prefs.CommitValidationMaxCharsPerLine.ToString(CultureInfo.InvariantCulture);
+        _previousMessageCount.Text =
+            prefs.CommitDialogNumberOfPreviousMessages.ToString(CultureInfo.InvariantCulture);
 
         // Commit-info toggles: likewise their own file.
         CommitInfoSettings commitInfo = _commitInfoService.Load();
@@ -1164,11 +1252,28 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // details panel adopt the change instead of overwriting it later.
         string checkoutAction = CheckoutChoices[Math.Max(0, _checkoutLocalChanges.SelectedIndex)].Token;
         bool[] commitInfo = Array.ConvertAll(_commitInfoChecks, box => box.IsChecked == true);
+
+        // Snapshot the commit-editor fields HERE, on the UI thread: the save below runs
+        // off it and must not touch a control.
+        bool wordWrap = _messageWordWrap.IsChecked == true;
+        bool secondLineEmpty = _messageSecondLineEmpty.IsChecked == true;
+        bool autoWrap = _messageAutoWrap.IsChecked == true;
+        bool markIllFormed = _messageMarkIllFormed.IsChecked == true;
+        int firstLineLimit = Number(_messageFirstLineLimit, 0, 999);
+        int lineLimit = Number(_messageLineLimit, 0, 999);
+        int previousMessages = Number(_previousMessageCount, 6, 50);
         _ = Task.Run(() =>
         {
             SettingsService settings = new();
             AppPreferences prefs = settings.Load();
             prefs.DefaultCheckoutLocalChangesAction = checkoutAction;
+            prefs.CommitMessageWordWrap = wordWrap;
+            prefs.CommitValidationSecondLineMustBeEmpty = secondLineEmpty;
+            prefs.CommitValidationAutoWrap = autoWrap;
+            prefs.MarkIllFormedCommitLines = markIllFormed;
+            prefs.CommitValidationFirstLineMaxChars = firstLineLimit;
+            prefs.CommitValidationMaxCharsPerLine = lineLimit;
+            prefs.CommitDialogNumberOfPreviousMessages = previousMessages;
             settings.Save(prefs);
 
             _commitInfoService.Save(new CommitInfoSettings
@@ -1481,6 +1586,19 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
     // A label above its editor control. The label wraps: several translations of
     // these captions are half again as long as the English.
+    // A small left-aligned box for a whole number. Narrow on purpose: the width tells
+    // the user a count is expected, which no watermark would.
+    private static TextBox NumberBox() =>
+        new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 90 };
+
+    // Reads a NumberBox. Anything unparsable — blank, letters, a negative — falls back
+    // to <paramref name="fallback"/>, so a mistyped field cannot wipe a working limit.
+    private static int Number(TextBox box, int fallback, int max) =>
+        int.TryParse(box.Text?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+        && value >= 0
+            ? Math.Min(value, max)
+            : fallback;
+
     private Control Field(string? labelKey, string labelText, Control editor, IBrush dim)
     {
         StackPanel field = new() { Spacing = 4 };
