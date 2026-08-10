@@ -72,7 +72,12 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         {
             Orientation = Orientation.Vertical,
             Spacing = 6,
-            Width = 130,
+
+            // 130 was measured against the English captions alone: "Checkout this"
+            // becomes "Checkout revisione" in Italian and was verified clipped on
+            // screen. The column is fixed-width by design, so it has to hold the
+            // longest translation, not the shortest.
+            Width = 160,
             Margin = new Thickness(10, 0, 0, 0),
         };
         buttons.Children.Add(_copyHash);
@@ -237,10 +242,10 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         // the port spells the button "Copy hash".
         _copyHash.Content = T("FormReflog/copySha1ToolStripMenuItem.Text", "Copy hash");
 
-        // FormCheckoutRevision's own caption for "check this revision out". Its target
-        // carries a WinForms accelerator; Restyle folds it away because the literal
-        // passed here has none.
-        _checkout.Content = T("FormCheckoutRevision/label2.Text", "Checkout this");
+        // FormCheckoutRevision is the dialog that does exactly this. Its window title
+        // is preferred over its label2 ("Checkout this &revision") because the label
+        // is a whole sentence and does not fit a button in this fixed-width column.
+        _checkout.Content = T("FormCheckoutRevision/$this.Text", "Checkout this");
         _refresh.Content = T("FormBrowse/RefreshButton.ToolTipText", "Refresh");
         _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
 
