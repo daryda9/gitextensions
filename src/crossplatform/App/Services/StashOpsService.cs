@@ -55,6 +55,24 @@ public sealed record StashWorkingDirFiles(
 public sealed class StashOpsService
 {
     /// <summary>
+    ///  Whether a stash the USER asked for takes untracked files with it
+    ///  (<c>AppSettings.IncludeUntrackedFilesInManualStash</c>). One place for it: the
+    ///  five manual stash sites of the port each hard-coded an answer, and two of them
+    ///  disagreed with the other three.
+    /// </summary>
+    public static bool ManualStashUntracked()
+        => new SettingsService().Load().IncludeUntrackedFilesInManualStash;
+
+    /// <summary>
+    ///  The same for a stash the app makes on the user's behalf before a checkout
+    ///  (<c>AppSettings.IncludeUntrackedFilesInAutoStash</c>). A caller that passes a
+    ///  non-null <paramref name="explicitChoice"/> overrides the setting — nobody does
+    ///  today, and the parameter exists so a future caller with a reason can.
+    /// </summary>
+    public static bool AutoStashUntracked(bool? explicitChoice = null)
+        => explicitChoice ?? new SettingsService().Load().IncludeUntrackedFilesInAutoStash;
+
+    /// <summary>
     ///  Lists the current stashes (most recent first, i.e. lowest index first).
     /// </summary>
     public IReadOnlyList<StashRow> ListStashes(string repoPath)

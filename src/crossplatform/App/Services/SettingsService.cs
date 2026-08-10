@@ -233,6 +233,48 @@ public sealed class AppPreferences
     ///  and the author, which is exactly what the truncated columns cannot show.
     /// </summary>
     public bool ShowRevisionGridTooltips { get; set; }
+
+    /// <summary>
+    ///  Include untracked files in a stash the USER asked for
+    ///  (<c>AppSettings.IncludeUntrackedFilesInManualStash</c>, default off). The port
+    ///  hard-coded this per call site and disagreed with itself: the toolbar and the
+    ///  menu said no, the left tree said yes.
+    /// </summary>
+    public bool IncludeUntrackedFilesInManualStash { get; set; }
+
+    /// <summary>
+    ///  Include untracked files in a stash the APP makes on the user's behalf, before
+    ///  a checkout with local changes
+    ///  (<c>AppSettings.IncludeUntrackedFilesInAutoStash</c>, default off).
+    /// </summary>
+    public bool IncludeUntrackedFilesInAutoStash { get; set; }
+
+    /// <summary>
+    ///  What to do with the auto-stash after a checkout that created one:
+    ///  <see cref="SettingsService.AskAlwaysNever"/> — "Ask" (upstream's <c>null</c>,
+    ///  i.e. the question with a "don't ask again" box), "Always" or "Never"
+    ///  (<c>AppSettings.AutoPopStashAfterCheckoutBranch</c>).
+    /// </summary>
+    public string AutoPopStashAfterCheckout { get; set; } = "Ask";
+
+    /// <summary>
+    ///  The same, for the stash the Pull dialog's "Stash changes" button made before
+    ///  pulling (<c>AppSettings.AutoPopStashAfterPull</c>).
+    /// </summary>
+    public string AutoPopStashAfterPull { get; set; } = "Ask";
+
+    /// <summary>
+    ///  Pass <c>--autostash</c> to rebase (<c>AppSettings.RebaseAutoStash</c>, default
+    ///  off), so a dirty working tree does not stop the rebase before it starts.
+    /// </summary>
+    public bool RebaseAutoStash { get; set; }
+
+    /// <summary>
+    ///  What push does about submodules (<c>AppSettings.RecursiveSubmodules</c>,
+    ///  default 1): 0 = nothing, 1 = <c>--recurse-submodules=check</c> (refuse if a
+    ///  submodule commit is not pushed), 2 = <c>=on-demand</c> (push them first).
+    /// </summary>
+    public int RecursiveSubmodules { get; set; } = 1;
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
@@ -241,6 +283,12 @@ public sealed class SettingsService
 {
     /// <summary>Allowed pull-action tokens (order = display order).</summary>
     public static readonly IReadOnlyList<string> PullActions = new[] { "merge", "rebase", "fetch" };
+
+    /// <summary>
+    ///  The three answers to "should the app do this by itself?": ask every time
+    ///  (upstream's null), always, never. Ordered for display.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AskAlwaysNever = new[] { "Ask", "Always", "Never" };
 
     /// <summary>Allowed local-changes tokens (names of <c>LocalChangesAction</c>).</summary>
     public static readonly IReadOnlyList<string> CheckoutLocalChangesActions =
@@ -340,6 +388,17 @@ public sealed class SettingsService
         // A limit of 0 would disable straightening through the back door, which is what
         // the diagonals flag is for; 1 is the smallest value that still means something.
         s.StraightenGraphSegmentsLimit = Math.Clamp(s.StraightenGraphSegmentsLimit, 1, 10_000);
+        s.RecursiveSubmodules = Math.Clamp(s.RecursiveSubmodules, 0, 2);
+
+        if (!AskAlwaysNever.Contains(s.AutoPopStashAfterCheckout))
+        {
+            s.AutoPopStashAfterCheckout = "Ask";
+        }
+
+        if (!AskAlwaysNever.Contains(s.AutoPopStashAfterPull))
+        {
+            s.AutoPopStashAfterPull = "Ask";
+        }
 
         return s;
     }

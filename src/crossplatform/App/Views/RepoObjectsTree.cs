@@ -1944,7 +1944,7 @@ public sealed class RepoObjectsTree : UserControl
     private ContextMenu StashRootMenu()
     {
         ContextMenu menu = new();
-        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnStashAllFromRootNode.Text", "Stash"), "stash", () => RunStash(() => _stashService.StashSave(_repoPath!, string.Empty, includeUntracked: true))));
+        menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnStashAllFromRootNode.Text", "Stash"), "stash", () => RunStash(() => _stashService.StashSave(_repoPath!, string.Empty, StashOpsService.ManualStashUntracked()))));
         menu.Items.Add(MenuItem(T("RepoObjectsTree/mnubtnStashStagedFromRootNode.Text", "Stash staged"), "stash", () => RunStash(() => _stashService.StashStaged(_repoPath!, string.Empty))));
         menu.Items.Add(new Separator());
         menu.Items.Add(ManageStashesItem());

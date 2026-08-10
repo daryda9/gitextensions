@@ -162,6 +162,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly CheckBox _highlightAuthored;
     private readonly CheckBox _gridTooltips;
 
+    // ---- Stash / checkout / push page: six more.
+    private readonly CheckBox _untrackedManualStash;
+    private readonly CheckBox _untrackedAutoStash;
+    private readonly ComboBox _popAfterCheckout;
+    private readonly ComboBox _popAfterPull;
+    private readonly CheckBox _rebaseAutoStash;
+    private readonly ComboBox _recursiveSubmodules;
+
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
     // CommitInfoChoices.
     private readonly CheckBox[] _commitInfoChecks;
@@ -350,6 +358,16 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string DiffViewerText = "Diff viewer";
     private const string GraphKey = "DetailedSettingsPage/tlpnlRevisionGraph.Text";
     private const string GraphText = "Revision graph";
+    private const string StashKey = "FormStash/$this.Text";
+    private const string StashText = "Stash and checkout";
+
+    // The three answers of the two auto-pop drop-downs, in AskAlwaysNever order.
+    private static readonly (string Key, string Label)[] AskChoices =
+    [
+        (null!, "Ask each time"),
+        (null!, "Always"),
+        (null!, "Never"),
+    ];
 
     public SettingsWindow(
         string? repoPath,
@@ -847,6 +865,61 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "that wide is unreadable either way, so past this many segments "
                     + "the row is left as it is."));
 
+        // ---- Stash / checkout / push page.
+        _untrackedManualStash = new CheckBox();
+        _untrackedAutoStash = new CheckBox();
+        _rebaseAutoStash = new CheckBox();
+        Localize(
+            _untrackedManualStash,
+            "GeneralSettingsPage/chkIncludeUntrackedFilesInManualStash.Text",
+            "A stash you ask for also takes the untracked files");
+        Localize(
+            _untrackedAutoStash,
+            "GeneralSettingsPage/chkIncludeUntrackedFilesInAutoStash.Text",
+            "A stash made for you before a checkout also takes the untracked files");
+        Localize(
+            _rebaseAutoStash,
+            "FormRebase/chkAutostash.Text",
+            "Rebase with --autostash, so a dirty working tree does not stop it");
+
+        _popAfterCheckout = AskAlwaysNeverCombo();
+        _popAfterPull = AskAlwaysNeverCombo();
+
+        _recursiveSubmodules = new ComboBox { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        foreach (string label in new[] { "None", "Check", "On demand" })
+        {
+            _recursiveSubmodules.Items.Add(new ComboBoxItem { Content = label });
+        }
+
+        Panel stashPanel = CategoryPanel(
+            StashKey, StashText,
+            null, "What goes into a stash, what happens to it afterwards, and what push "
+                + "does about submodules.",
+            text,
+            dim,
+            _untrackedManualStash,
+            _untrackedAutoStash,
+            Field(
+                null,
+                "Re-apply the stash after a checkout that made one",
+                _popAfterCheckout,
+                dim),
+            Field(
+                null,
+                "Re-apply the stash after a pull you stashed for",
+                _popAfterPull,
+                dim),
+            _rebaseAutoStash,
+            Field(
+                "FormPush/label2.Text",
+                "Recursive submodules",
+                _recursiveSubmodules,
+                dim,
+                "What push does when a commit references a submodule commit that is not "
+                    + "pushed. \"Check\" refuses the push; \"On demand\" pushes the "
+                    + "submodule first; \"None\" says nothing about it. This is the "
+                    + "starting value of the same drop-down in the Push dialog."));
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -860,6 +933,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(commitPanel);
         _pages.Add(diffPanel);
         _pages.Add(graphPanel);
+        _pages.Add(stashPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -902,6 +976,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(CommitKey, CommitText));
         categories.Items.Add(CategoryItem(DiffViewerKey, DiffViewerText));
         categories.Items.Add(CategoryItem(GraphKey, GraphText));
+        categories.Items.Add(CategoryItem(StashKey, StashText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -1142,6 +1217,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _straightenLimit.Text = prefs.StraightenGraphSegmentsLimit.ToString(CultureInfo.InvariantCulture);
         _highlightAuthored.IsChecked = prefs.HighlightAuthoredRevisions;
         _gridTooltips.IsChecked = prefs.ShowRevisionGridTooltips;
+
+        _untrackedManualStash.IsChecked = prefs.IncludeUntrackedFilesInManualStash;
+        _untrackedAutoStash.IsChecked = prefs.IncludeUntrackedFilesInAutoStash;
+        _popAfterCheckout.SelectedIndex = AskIndex(prefs.AutoPopStashAfterCheckout);
+        _popAfterPull.SelectedIndex = AskIndex(prefs.AutoPopStashAfterPull);
+        _rebaseAutoStash.IsChecked = prefs.RebaseAutoStash;
+        _recursiveSubmodules.SelectedIndex = prefs.RecursiveSubmodules;
 
         // Commit-info toggles: likewise their own file.
         CommitInfoSettings commitInfo = _commitInfoService.Load();
@@ -1431,6 +1513,12 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         int straightenLimit = Number(_straightenLimit, 80, 10_000);
         bool highlightAuthored = _highlightAuthored.IsChecked == true;
         bool gridTooltips = _gridTooltips.IsChecked == true;
+        bool untrackedManual = _untrackedManualStash.IsChecked == true;
+        bool untrackedAuto = _untrackedAutoStash.IsChecked == true;
+        string popAfterCheckout = SettingsService.AskAlwaysNever[Math.Max(0, _popAfterCheckout.SelectedIndex)];
+        string popAfterPull = SettingsService.AskAlwaysNever[Math.Max(0, _popAfterPull.SelectedIndex)];
+        bool rebaseAutoStash = _rebaseAutoStash.IsChecked == true;
+        int recursiveSubmodules = Math.Max(0, _recursiveSubmodules.SelectedIndex);
         _ = Task.Run(() =>
         {
             SettingsService settings = new();
@@ -1457,6 +1545,12 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.StraightenGraphSegmentsLimit = straightenLimit;
             prefs.HighlightAuthoredRevisions = highlightAuthored;
             prefs.ShowRevisionGridTooltips = gridTooltips;
+            prefs.IncludeUntrackedFilesInManualStash = untrackedManual;
+            prefs.IncludeUntrackedFilesInAutoStash = untrackedAuto;
+            prefs.AutoPopStashAfterCheckout = popAfterCheckout;
+            prefs.AutoPopStashAfterPull = popAfterPull;
+            prefs.RebaseAutoStash = rebaseAutoStash;
+            prefs.RecursiveSubmodules = recursiveSubmodules;
             settings.Save(prefs);
 
             _commitInfoService.Save(new CommitInfoSettings
@@ -1771,6 +1865,36 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // these captions are half again as long as the English.
     // A small left-aligned box for a whole number. Narrow on purpose: the width tells
     // the user a count is expected, which no watermark would.
+    // Where a stored Ask/Always/Never token sits in the list; 0 (= Ask) for anything
+    // unrecognised, which is also what SettingsService.Sanitize would have written back.
+    private static int AskIndex(string token)
+    {
+        for (int i = 0; i < SettingsService.AskAlwaysNever.Count; i++)
+        {
+            if (string.Equals(SettingsService.AskAlwaysNever[i], token, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return 0;
+    }
+
+    // A drop-down of Ask / Always / Never, in SettingsService.AskAlwaysNever order so
+    // the index IS the stored token's index.
+    private ComboBox AskAlwaysNeverCombo()
+    {
+        ComboBox combo = new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 260 };
+        foreach ((string key, string label) in AskChoices)
+        {
+            ComboBoxItem item = new();
+            Localize(item, key, label);
+            combo.Items.Add(item);
+        }
+
+        return combo;
+    }
+
     private static TextBox NumberBox() =>
         new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 90 };
 

@@ -423,7 +423,11 @@ public sealed class PushRefsService
     /// <param name="force">How hard to overwrite the remote — see <see cref="PushForceMode"/>.</param>
     /// <param name="allTags">Add <c>--tags</c> (push every local tag).</param>
     /// <param name="setUpstream">Add <c>-u</c> so pushed branches start tracking.</param>
-    /// <param name="recurseSubmodules">Add <c>--recurse-submodules=on-demand</c>.</param>
+    /// <param name="recurseSubmodules">
+    ///  What to do about submodules, upstream's <c>AppSettings.RecursiveSubmodules</c>:
+    ///  0 nothing, 1 <c>--recurse-submodules=check</c> (refuse when a submodule commit
+    ///  is not pushed), 2 <c>=on-demand</c> (push them first).
+    /// </param>
     /// <param name="onOutput">Called per output line; may run on a background thread.</param>
     /// <param name="credentials">Optional credentials for an http/https target.</param>
     public RemoteOpResult PushRefsStreaming(
@@ -433,7 +437,7 @@ public sealed class PushRefsService
         PushForceMode force,
         bool allTags,
         bool setUpstream,
-        bool recurseSubmodules,
+        int recurseSubmodules,
         Action<string> onOutput,
         GitCredentials? credentials = null)
     {
@@ -468,7 +472,11 @@ public sealed class PushRefsService
             args.Append(" -u");
         }
 
-        if (recurseSubmodules)
+        if (recurseSubmodules == 1)
+        {
+            args.Append(" --recurse-submodules=check");
+        }
+        else if (recurseSubmodules == 2)
         {
             args.Append(" --recurse-submodules=on-demand");
         }
@@ -550,7 +558,7 @@ public sealed class PushRefsService
         bool force,
         bool allTags,
         bool setUpstream,
-        bool recurseSubmodules,
+        int recurseSubmodules,
         Action<string> onOutput,
         GitCredentials? credentials = null)
         => PushRefsStreaming(

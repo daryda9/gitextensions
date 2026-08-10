@@ -84,6 +84,10 @@ public sealed class PullDialog : Theming.ZoomWindow
     private readonly Button _solveConflictsBtn;
     private readonly Button _stashBtn;
     private readonly CheckBox _autoStash;
+
+    // Set by the "Stash changes" button: only then does a successful pull offer to put
+    // the changes back (upstream's FormPull.PopStash).
+    private bool _stashedHere;
     private readonly Button _pullBtn;
 
     private readonly Func<Task>? _solveConflicts;
@@ -651,7 +655,21 @@ public sealed class PullDialog : Theming.ZoomWindow
 
         // A pull that conflicts asks the question upstream asks before this dialog
         // disappears — otherwise the conflicted state has no surface at all here.
-        await ConflictFlow.HandleAsync(this, repo);
+        ConflictFlowResult conflicts = await ConflictFlow.HandleAsync(this, repo);
+
+        // Upstream's FormPull.PopStash: put back what the Stash button stashed, if the
+        // pull worked and nothing is half-done. Popping into a conflicted merge would
+        // pile the user's own changes onto a tree they still have to resolve.
+        if (_stashedHere && res is { Success: true } && !conflicts.HadConflicts
+            && await StashPopPrompt.ShouldPopAsync(this, StashPopScope.Pull))
+        {
+            _stashedHere = false;
+            await GitProcessDialog.RunAsync(this, T("FormStash/Pop.Text", "Stash pop"), () =>
+            {
+                StashOpResult r = new StashOpsService().StashPop(repo, string.Empty);
+                return new GitProcessOutcome(r.Success, r.Output);
+            });
+        }
 
         Close();
     }
@@ -770,7 +788,11 @@ public sealed class PullDialog : Theming.ZoomWindow
         string repo = _repoPath;
         await GitProcessDialog.RunAsync(this, T("FormPull/Stash.Text", "Stash changes"), () =>
         {
-            StashOpResult r = new StashOpsService().StashSave(repo, string.Empty, includeUntracked: false);
+            StashOpResult r = new StashOpsService().StashSave(repo, string.Empty, StashOpsService.ManualStashUntracked());
+
+            // Remembered so a pull from THIS dialog knows there is something of its own
+            // to offer back. A stash the user made elsewhere is none of its business.
+            _stashedHere = _stashedHere || r.Success;
             return new GitProcessOutcome(r.Success, r.Output);
         });
     }

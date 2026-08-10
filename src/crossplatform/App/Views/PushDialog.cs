@@ -84,7 +84,8 @@ public sealed class PushDialog : Theming.ZoomWindow
     private readonly CheckBox _forcePush;
     private readonly CheckBox _replaceTrackingReference;
     private readonly CheckBox _pushAllTagsOption;
-    private readonly CheckBox _recursiveSubmodules;
+    private readonly ComboBox _recursiveSubmodules;
+    private readonly TextBlock _recursiveSubmodulesLabel = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _branchFromLabel;
     private readonly TextBlock _branchToLabel;
     private readonly Expander _showOptions;
@@ -304,7 +305,16 @@ public sealed class PushDialog : Theming.ZoomWindow
         MakeExclusive(_forceWithLease, _forcePush);
         _replaceTrackingReference = MakeCheck();
         _pushAllTagsOption = MakeCheck();
-        _recursiveSubmodules = MakeCheck();
+        // A three-way, as upstream (FormPush.Designer.cs:275): the checkbox the port had
+        // could only say "on-demand" or nothing, and "check" — refuse to push when a
+        // submodule commit would be left behind — is the default there.
+        _recursiveSubmodules = new ComboBox { MinWidth = 170 };
+        foreach (string label in RecurseSubmoduleLabels())
+        {
+            _recursiveSubmodules.Items.Add(new ComboBoxItem { Content = label });
+        }
+
+        _recursiveSubmodules.SelectedIndex = new SettingsService().Load().RecursiveSubmodules;
 
         _showOptions = new Expander
         {
@@ -323,7 +333,14 @@ public sealed class PushDialog : Theming.ZoomWindow
                     },
                     _replaceTrackingReference,
                     _pushAllTagsOption,
-                    _recursiveSubmodules,
+
+                    // The combo needs the caption the checkbox used to carry itself.
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 8,
+                        Children = { _recursiveSubmodulesLabel, _recursiveSubmodules },
+                    },
                 },
             },
             Margin = new Thickness(0, 8, 0, 0),
@@ -557,7 +574,18 @@ public sealed class PushDialog : Theming.ZoomWindow
         _forcePush.Content = ForcePushCaption;
         _replaceTrackingReference.Content = T("FormPush/ReplaceTrackingReference.Text", "Replace tracking reference");
         _pushAllTagsOption.Content = PushAllTagsCaption;
-        _recursiveSubmodules.Content = T("FormPush/label2.Text", "Recursive submodules");
+        _recursiveSubmodulesLabel.Text = T("FormPush/label2.Text", "Recursive submodules");
+
+        // The combo's own items are re-labelled with it, so a language switch reaches
+        // the three choices and not just the caption above them.
+        int recurseIndex = Math.Max(0, _recursiveSubmodules.SelectedIndex);
+        _recursiveSubmodules.Items.Clear();
+        foreach (string label in RecurseSubmoduleLabels())
+        {
+            _recursiveSubmodules.Items.Add(new ComboBoxItem { Content = label });
+        }
+
+        _recursiveSubmodules.SelectedIndex = recurseIndex;
 
         _tagsToPushLabel.Text = T("FormPush/label1.Text", "Tags to push");
         _tagsSelectAll.Content = T("FormPush/selectAllToolStripMenuItem.Text", "Select all");
@@ -592,6 +620,15 @@ public sealed class PushDialog : Theming.ZoomWindow
     private static string ForcePushCaption => T("FormPush/ForcePushBranches.Text", "Force push");
 
     private static string PushAllTagsCaption => T("Push all tags");
+
+    // The three answers of the "Recursive submodules" combo, upstream's own wording
+    // (FormPush.Designer.cs). Rebuilt on a language switch, hence a method.
+    private static string[] RecurseSubmoduleLabels() =>
+    [
+        T("FormPush/RecursiveSubmodules.None", "None"),
+        T("FormPush/RecursiveSubmodules.Check", "Check"),
+        T("FormPush/RecursiveSubmodules.OnDemand", "On demand"),
+    ];
 
     private static string T(string english) => TranslationService.T(english);
 
@@ -1052,7 +1089,7 @@ public sealed class PushDialog : Theming.ZoomWindow
         }
 
         bool allTags = _pushAllTagsOption.IsChecked == true;
-        bool recurse = _recursiveSubmodules.IsChecked == true;
+        int recurse = Math.Max(0, _recursiveSubmodules.SelectedIndex);
         string repo = _repoPath;
 
         // Read every control value HERE, on the UI thread: the operation lambda
@@ -1077,7 +1114,7 @@ public sealed class PushDialog : Theming.ZoomWindow
             return;
         }
 
-        if (!isUrl && !allTags && !recurse
+        if (!isUrl && !allTags && recurse == 0
             && string.Equals(local, remoteBranch, StringComparison.Ordinal))
         {
             await RunPushAsync(
@@ -1114,7 +1151,7 @@ public sealed class PushDialog : Theming.ZoomWindow
         PushForceMode force = _tagsForce.IsChecked == true ? PushForceMode.Force : PushForceMode.None;
         string repo = _repoPath;
         await RunPushAsync(T("FormPush/TagTab.Text", "Push tags"), (emit, creds, over) => new PushRefsService().PushRefsStreaming(
-            repo, target, refspecs, over ?? force, allTags: all, setUpstream: false, recurseSubmodules: false, emit, creds));
+            repo, target, refspecs, over ?? force, allTags: all, setUpstream: false, recurseSubmodules: 0, emit, creds));
     }
 
     private async Task PushMultipleBranchesAsync(string target)
@@ -1170,7 +1207,7 @@ public sealed class PushDialog : Theming.ZoomWindow
         // selected branch, which silently re-pointed the upstream of each one at the
         // destination typed in the grid — a side effect nothing on this tab announces.
         await RunPushAsync(T("FormPush/BranchTab.Text", "Push branches"), (emit, creds, over) => new PushRefsService().PushRefsStreaming(
-            repo, target, refspecs, over ?? force, allTags: false, setUpstream: false, recurseSubmodules: false, emit, creds));
+            repo, target, refspecs, over ?? force, allTags: false, setUpstream: false, recurseSubmodules: 0, emit, creds));
     }
 
     /// <summary>

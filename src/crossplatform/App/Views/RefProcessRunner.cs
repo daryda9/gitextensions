@@ -65,15 +65,49 @@ public static class RefProcessRunner
         string repoPath,
         string name,
         LocalChangesAction changesAction = LocalChangesAction.DontChange,
-        bool includeUntrackedInStash = true,
+        bool? includeUntrackedInStash = null,
         BranchTagService? service = null)
     {
         BranchTagService branchTags = service ?? new BranchTagService();
-        return RunAsync(
+        return PopStashAfterAsync(
             owner,
-            string.Format(T("Checkout {0}"), name),
-            emit => branchTags.CheckoutStreaming(
-                repoPath, name, emit, changesAction, includeUntrackedInStash));
+            repoPath,
+            changesAction,
+            () => RunAsync(
+                owner,
+                string.Format(T("Checkout {0}"), name),
+                emit => branchTags.CheckoutStreaming(
+                    repoPath, name, emit, changesAction, StashOpsService.AutoStashUntracked(includeUntrackedInStash))));
+    }
+
+    /// <summary>
+    ///  Upstream's <c>FormCheckoutBranch.PopStash</c>: a checkout that stashed the local
+    ///  changes first offers to put them back, once git has finished and only if it
+    ///  succeeded. The answer, and whether the question is asked at all, is
+    ///  <see cref="AppPreferences.AutoPopStashAfterCheckout"/>.
+    ///
+    ///  <para>A FAILED checkout never pops: the working tree is still the one the stash
+    ///  was taken from, and re-applying there is at best a no-op and at worst a
+    ///  conflict the user did not ask for.</para>
+    /// </summary>
+    private static async Task<bool> PopStashAfterAsync(
+        Window? owner, string repoPath, LocalChangesAction changesAction, Func<Task<bool>> checkout)
+    {
+        // The checkout is STARTED here, inside this async method, rather than handed in
+        // as a running Task: awaiting foreign work is what VSTHRD003 warns about, and
+        // the warning is right — this method owns the sequence.
+        bool ok = await checkout();
+        if (!ok || changesAction != LocalChangesAction.Stash)
+        {
+            return ok;
+        }
+
+        if (await StashPopPrompt.ShouldPopAsync(owner, StashPopScope.Checkout))
+        {
+            await Task.Run(() => new StashOpsService().StashPop(repoPath, string.Empty));
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -96,16 +130,20 @@ public static class RefProcessRunner
         LocalChangesAction changesAction = LocalChangesAction.DontChange,
         CheckoutNewBranchMode newBranchMode = CheckoutNewBranchMode.DontCreate,
         string? newBranchName = null,
-        bool includeUntrackedInStash = true,
+        bool? includeUntrackedInStash = null,
         BranchTagService? service = null)
     {
         BranchTagService branchTags = service ?? new BranchTagService();
-        return RunAsync(
+        return PopStashAfterAsync(
             owner,
-            string.Format(T("Checkout {0}"), branchName),
-            emit => branchTags.CheckoutBranchStreaming(
-                repoPath, branchName, isRemote, emit, changesAction, newBranchMode, newBranchName,
-                includeUntrackedInStash));
+            repoPath,
+            changesAction,
+            () => RunAsync(
+                owner,
+                string.Format(T("Checkout {0}"), branchName),
+                emit => branchTags.CheckoutBranchStreaming(
+                    repoPath, branchName, isRemote, emit, changesAction, newBranchMode, newBranchName,
+                    StashOpsService.AutoStashUntracked(includeUntrackedInStash))));
     }
 
     /// <summary>

@@ -1257,7 +1257,13 @@ public sealed class BranchTagService
     public BranchTagResult RebaseOnto(string repoPath, string branch)
     {
         GitModule module = GitContext.CreateModule(repoPath);
-        Commands.RebaseOptions options = new() { BranchName = branch };
+        // Upstream's RebaseAutoStash: --autostash lets a rebase start with a dirty
+        // working tree, stashing and restoring around it. Off by default there too.
+        Commands.RebaseOptions options = new()
+        {
+            BranchName = branch,
+            AutoStash = new SettingsService().Load().RebaseAutoStash,
+        };
         ArgumentString args = Commands.Rebase(options);
         return Run(module, args);
     }

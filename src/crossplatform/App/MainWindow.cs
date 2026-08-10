@@ -1269,7 +1269,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         };
 
         _toolbar.PushRequested += OpenPushDialog;
-        _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
+        _toolbar.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", StashOpsService.ManualStashUntracked()).Success);
         _toolbar.NewBranchRequested += () => _ = NewBranchAsync();
 
         // The toolbar shows the real gestures, not the defaults, so an override in
@@ -1471,7 +1471,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         _menu.PullRequested += OpenPullDialog;
         _menu.PushRequested += OpenPushDialog;
         _menu.CommitRequested += OpenCommitDialog;
-        _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success);
+        _menu.StashRequested += () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", StashOpsService.ManualStashUntracked()).Success);
         _menu.UndoLastCommitRequested += () => _ = UndoLastCommitAsync();
         _menu.ResetChangesRequested += () => _ = ResetChangesAsync();
         _menu.CleanWorkingDirectoryRequested += () => _ = CleanWorkingDirectoryAsync();
@@ -2386,7 +2386,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         // --- stash (same service calls as the toolbar/menu items)
         Bind(BrowseCommand.Stash,
-            () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", includeUntracked: false).Success));
+            () => RunOp("Stash", () => _stashOps.StashSave(_repoPath!, "WIP", StashOpsService.ManualStashUntracked()).Success));
         Bind(BrowseCommand.StashPop,
             () => RunOp("Stash pop", () => _stashOps.StashPop(_repoPath!, "stash@{0}").Success));
         Bind(BrowseCommand.StashStaged,
