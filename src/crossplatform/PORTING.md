@@ -3565,9 +3565,22 @@ raggiunge ogni controllo senza una style per tipo.
 - `file.txt` al posto di `deep/nested/dir/file.txt` nella lista dei file; dieci «i» **esattamente**
   larghe come dieci «W» nell'editor.
 
-**Non fotografate** (cablate e compilate, ma senza prova a schermo): lo split del grigio sul testo,
-l'auto-pop dopo il pull, `--autostash` del rebase, `--histogram`, l'accorciamento del path nella
-dashboard, `OutputHistoryDepth` e il timeout della ricerca rapida.
+**Le sette che al momento della stesura erano solo cablate sono state verificate dopo (2026-08-11)**,
+una per una:
+- **grigio sul testo**: luminosità massima dell'oggetto della riga non-relativa **687 → 471** con
+  l'impostazione accesa, mentre le lane ingrigiscono in entrambi i casi;
+- **auto-pop dopo il pull**: dopo «Stash changes» + Pull compare «Apply stashed items to working
+  directory again?» con la casella «Don't show again», e il Sì esegue il pop (che nel caso di prova
+  entra in conflitto sul file toccato da entrambe le parti — git tiene la stash, come deve);
+- **`--autostash` del rebase**: il rebase **parte con l'albero sporco**, cosa che git rifiuta senza
+  quel flag, e la ri-applicazione automatica finisce nella domanda sui conflitti del port;
+- **`--histogram`**: compare nella riga di comando mostrata sopra il diff;
+- **dashboard**: `~/…/tmp/repoA` con la strategia MiddleDots, e l'ordine alfabetico A-B-E-F al posto
+  di quello per ultimo uso F-A-B-E;
+- **`OutputHistoryDepth`**: messo a 3, la scheda Output dice «3 command(s) logged» e mostra tre righe
+  su decine di comandi eseguiti;
+- **timeout della ricerca rapida**: a 4000 ms l'etichetta «quick-search: …» è ancora lì a 2,5 s ed è
+  sparita a 4,6 s; a 800 ms è già sparita a 1,4 s.
 
 ## M150 (2026-08-10, `1c0120d93`, `ac18acb5c`) — la selezione ripristinata arriva ai riquadri; e due note del grafo misurate invece che credute
 
