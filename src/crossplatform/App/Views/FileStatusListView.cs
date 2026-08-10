@@ -446,6 +446,31 @@ public sealed class FileStatusListView : UserControl
             ? []
             : [.. _list.SelectedItems.OfType<FileListFileNode>().Select(n => n.Row)];
 
+    /// <summary>
+    ///  Moves the selection to the next FILE below the current one, skipping group
+    ///  headers and folder nodes, and returns whether it moved. Used by the diff pane's
+    ///  continuous scroll, which walks the list from the bottom of a patch.
+    ///
+    ///  <para>Deliberately silent at the end of the list: the last file's patch is where
+    ///  the walk stops, and wrapping round to the first file would send the reader back
+    ///  to a patch they already scrolled through.</para>
+    /// </summary>
+    public bool SelectNextFile()
+    {
+        int from = _list.SelectedIndex;
+        for (int i = from + 1; i < _list.ItemCount; i++)
+        {
+            if (_list.Items[i] is FileListFileNode)
+            {
+                _list.SelectedIndex = i;
+                _list.ScrollIntoView(i);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Raised when the selected file changes (never for a group header).</summary>
     public event Action<DiffFileRow?>? SelectedFileChanged;
 

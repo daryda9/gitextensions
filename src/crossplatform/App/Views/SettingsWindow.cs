@@ -144,6 +144,15 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly TextBox _messageLineLimit;
     private readonly TextBox _previousMessageCount;
 
+    // ---- Diff viewer page: seven more settings that had no consumer.
+    private readonly TextBox _diffRulerPosition;
+    private readonly CheckBox _eolAsGlyph;
+    private readonly CheckBox _continuousScroll;
+    private readonly TextBox _continuousScrollDelay;
+    private readonly CheckBox _omitUninteresting;
+    private readonly CheckBox _histogramDiff;
+    private readonly CheckBox _diffAllParents;
+
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
     // CommitInfoChoices.
     private readonly CheckBox[] _commitInfoChecks;
@@ -328,6 +337,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string AppearanceText = "Appearance";
     private const string CommitKey = "FormCommit/$this.Text";
     private const string CommitText = "Commit";
+    private const string DiffViewerKey = "DiffViewerSettingsPage/$this.Text";
+    private const string DiffViewerText = "Diff viewer";
 
     public SettingsWindow(
         string? repoPath,
@@ -712,6 +723,63 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "lists. They are read from the log on each opening, so a large "
                     + "number costs a slower menu, not memory."));
 
+        // ---- Diff viewer page.
+        _eolAsGlyph = new CheckBox();
+        _continuousScroll = new CheckBox();
+        _omitUninteresting = new CheckBox();
+        _histogramDiff = new CheckBox();
+        _diffAllParents = new CheckBox();
+        Localize(
+            _eolAsGlyph,
+            "AppearanceFontsSettingsPage/ShowEolMarkerAsGlyph.Text",
+            "Show the end-of-line mark as a glyph rather than as CRLF / LF");
+        Localize(
+            _continuousScroll,
+            "DiffViewerSettingsPage/chkAutomaticContinuousScroll.Text",
+            "Scrolling past the end of a file moves to the next one");
+        Localize(
+            _omitUninteresting,
+            "DiffViewerSettingsPage/chkOmitUninterestingDiff.Text",
+            "In a merge, show only the hunks that differ from every parent");
+        Localize(
+            _histogramDiff,
+            "DiffViewerSettingsPage/chkUseHistogramDiffAlgorithm.Text",
+            "Use the histogram diff algorithm");
+        Localize(
+            _diffAllParents,
+            "FileStatusList/tsmiShowDiffForAllParents.Text",
+            "In a merge, list the changed files once per parent");
+
+        _diffRulerPosition = NumberBox();
+        _continuousScrollDelay = NumberBox();
+
+        Panel diffPanel = CategoryPanel(
+            DiffViewerKey, DiffViewerText,
+            null, "What the diff pane draws and what it asks git for. The two merge "
+                + "settings only ever apply to a commit with more than one parent.",
+            text,
+            dim,
+            Field(
+                "AppearanceSettingsPage/lblVerticalRulerPosition.Text",
+                "Vertical ruler at column",
+                _diffRulerPosition,
+                dim,
+                "0 draws no ruler. The column is measured in characters of the pane's "
+                    + "own font."),
+            _eolAsGlyph,
+            _continuousScroll,
+            Field(
+                null,
+                "Wait before moving on (ms)",
+                _continuousScrollDelay,
+                dim,
+                "How long the patch has to sit at its end before another scroll moves "
+                    + "to the next file. The wait is what stops a single flick of the "
+                    + "wheel from skipping a file unseen."),
+            _diffAllParents,
+            _omitUninteresting,
+            _histogramDiff);
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -723,6 +791,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(hotkeysPanel);
         _pages.Add(behaviourPanel);
         _pages.Add(commitPanel);
+        _pages.Add(diffPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -763,6 +832,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(HotkeysKey, HotkeysText));
         categories.Items.Add(CategoryItem(BehaviourKey, BehaviourText));
         categories.Items.Add(CategoryItem(CommitKey, CommitText));
+        categories.Items.Add(CategoryItem(DiffViewerKey, DiffViewerText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -987,6 +1057,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _messageLineLimit.Text = prefs.CommitValidationMaxCharsPerLine.ToString(CultureInfo.InvariantCulture);
         _previousMessageCount.Text =
             prefs.CommitDialogNumberOfPreviousMessages.ToString(CultureInfo.InvariantCulture);
+
+        _diffRulerPosition.Text = prefs.DiffVerticalRulerPosition.ToString(CultureInfo.InvariantCulture);
+        _eolAsGlyph.IsChecked = prefs.ShowEolMarkerAsGlyph;
+        _continuousScroll.IsChecked = prefs.DiffContinuousScroll;
+        _continuousScrollDelay.Text = prefs.DiffContinuousScrollDelay.ToString(CultureInfo.InvariantCulture);
+        _omitUninteresting.IsChecked = prefs.OmitUninterestingDiff;
+        _histogramDiff.IsChecked = prefs.UseHistogramDiffAlgorithm;
+        _diffAllParents.IsChecked = prefs.ShowDiffForAllParents;
 
         // Commit-info toggles: likewise their own file.
         CommitInfoSettings commitInfo = _commitInfoService.Load();
@@ -1262,6 +1340,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         int firstLineLimit = Number(_messageFirstLineLimit, 0, 999);
         int lineLimit = Number(_messageLineLimit, 0, 999);
         int previousMessages = Number(_previousMessageCount, 6, 50);
+        int rulerPosition = Number(_diffRulerPosition, 0, 999);
+        bool eolGlyph = _eolAsGlyph.IsChecked == true;
+        bool continuous = _continuousScroll.IsChecked == true;
+        int continuousDelay = Number(_continuousScrollDelay, 600, 10_000);
+        bool omitUninteresting = _omitUninteresting.IsChecked == true;
+        bool histogram = _histogramDiff.IsChecked == true;
+        bool allParents = _diffAllParents.IsChecked == true;
         _ = Task.Run(() =>
         {
             SettingsService settings = new();
@@ -1274,6 +1359,13 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.CommitValidationFirstLineMaxChars = firstLineLimit;
             prefs.CommitValidationMaxCharsPerLine = lineLimit;
             prefs.CommitDialogNumberOfPreviousMessages = previousMessages;
+            prefs.DiffVerticalRulerPosition = rulerPosition;
+            prefs.ShowEolMarkerAsGlyph = eolGlyph;
+            prefs.DiffContinuousScroll = continuous;
+            prefs.DiffContinuousScrollDelay = continuousDelay;
+            prefs.OmitUninterestingDiff = omitUninteresting;
+            prefs.UseHistogramDiffAlgorithm = histogram;
+            prefs.ShowDiffForAllParents = allParents;
             settings.Save(prefs);
 
             _commitInfoService.Save(new CommitInfoSettings

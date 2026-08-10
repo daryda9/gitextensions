@@ -130,6 +130,55 @@ public sealed class AppPreferences
     ///  (<c>AppSettings.CommitDialogNumberOfPreviousMessages</c>, default 6).
     /// </summary>
     public int CommitDialogNumberOfPreviousMessages { get; set; } = 6;
+
+    /// <summary>
+    ///  Column the diff viewer draws a vertical rule at, 0 = none
+    ///  (<c>AppSettings.DiffVerticalRulerPosition</c>, upstream default 0).
+    /// </summary>
+    public int DiffVerticalRulerPosition { get; set; }
+
+    /// <summary>
+    ///  With non-printing characters shown, whether a line ending is a GLYPH (¶) or
+    ///  the words CRLF / LF / CR (<c>AppSettings.ShowEolMarkerAsGlyph</c>, default on).
+    ///  Inert while the ¶ toggle of the diff toolbar is off, exactly as upstream:
+    ///  <c>FileViewer.ToggleNonPrintingChars</c> only consults it when showing.
+    /// </summary>
+    public bool ShowEolMarkerAsGlyph { get; set; } = true;
+
+    /// <summary>
+    ///  Move to the next file when the diff is scrolled past its end
+    ///  (<c>AppSettings.AutomaticContinuousScroll</c>, default off).
+    /// </summary>
+    public bool DiffContinuousScroll { get; set; }
+
+    /// <summary>
+    ///  How long the diff has to sit at its end before a further scroll moves on
+    ///  (<c>AppSettings.AutomaticContinuousScrollDelay</c>, default 600 ms). The delay
+    ///  is what stops one flick of the wheel from skipping a file the user never saw.
+    /// </summary>
+    public int DiffContinuousScrollDelay { get; set; } = 600;
+
+    /// <summary>
+    ///  For a MERGE commit, ask git for the condensed combined diff (<c>--cc</c>,
+    ///  hunks that differ from every parent) instead of the full one (<c>-c -p</c>)
+    ///  — <c>AppSettings.OmitUninterestingDiff</c>, default on.
+    /// </summary>
+    public bool OmitUninterestingDiff { get; set; } = true;
+
+    /// <summary>
+    ///  Ask git for the histogram diff algorithm (<c>--histogram</c>) instead of its
+    ///  default Myers (<c>AppSettings.UseHistogramDiffAlgorithm</c>, default off).
+    ///  Slower, and usually produces the more readable hunk boundaries.
+    /// </summary>
+    public bool UseHistogramDiffAlgorithm { get; set; }
+
+    /// <summary>
+    ///  For a MERGE commit, list the changed files once per parent instead of only
+    ///  against the first (<c>AppSettings.ShowDiffForAllParents</c>, default on
+    ///  upstream). Each group carries its own revision pair, so clicking a file under
+    ///  "Diff with parent 2" shows that parent's patch and not the first parent's.
+    /// </summary>
+    public bool ShowDiffForAllParents { get; set; } = true;
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
@@ -211,6 +260,11 @@ public sealed class SettingsService
         s.CommitValidationFirstLineMaxChars = Math.Clamp(s.CommitValidationFirstLineMaxChars, 0, 999);
         s.CommitValidationMaxCharsPerLine = Math.Clamp(s.CommitValidationMaxCharsPerLine, 0, 999);
         s.CommitDialogNumberOfPreviousMessages = Math.Clamp(s.CommitDialogNumberOfPreviousMessages, 0, 50);
+        s.DiffVerticalRulerPosition = Math.Clamp(s.DiffVerticalRulerPosition, 0, 999);
+
+        // Floored, not clamped to 0: a delay of zero would turn one flick of the wheel
+        // into a jump through several files.
+        s.DiffContinuousScrollDelay = Math.Clamp(s.DiffContinuousScrollDelay, 100, 10_000);
 
         return s;
     }

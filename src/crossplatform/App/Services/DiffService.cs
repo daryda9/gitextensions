@@ -191,6 +191,42 @@ public static class DiffService
     }
 
     /// <summary>
+    ///  The changed-file list of a single commit, as GROUPS: one per parent when the
+    ///  commit is a merge and <paramref name="allParents"/> is on, a single unnamed
+    ///  group otherwise — upstream's <c>ShowDiffForAllParents</c>
+    ///  (<c>FileStatusDiffCalculator.CalculateDiffs</c>, the <c>Take(multipleParents)</c>
+    ///  line).
+    ///
+    ///  <para>Each row of a per-parent group carries that parent as its
+    ///  <see cref="DiffFileRow.FirstRev"/>, which is what makes a click under "Diff with
+    ///  parent 2" load the patch against THAT parent. A non-merge commit yields exactly
+    ///  what <see cref="GetChangedFiles"/> returns, unnamed and un-paired, so the common
+    ///  case gains neither a caption nor a second git call.</para>
+    /// </summary>
+    public static IReadOnlyList<DiffFileGroup> GetCommitFileGroups(
+        string repoPath, string commitHash, bool allParents)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId commitId = ObjectId.Parse(commitHash);
+        IReadOnlyList<ObjectId> parents = module.GetParents(commitId);
+
+        if (!allParents || parents.Count < 2)
+        {
+            return [new DiffFileGroup(string.Empty, GetChangedFiles(repoPath, commitHash))];
+        }
+
+        List<DiffFileGroup> groups = new(parents.Count);
+        foreach (ObjectId parent in parents)
+        {
+            groups.Add(new DiffFileGroup(
+                DiffWithACaption(module, parent.ToString()),
+                Between(module, parent.ToString(), commitHash)));
+        }
+
+        return groups;
+    }
+
+    /// <summary>
     ///  Returns <b>every tracked file</b> of the tree at <paramref name="commitHash"/>
     ///  — not the files it changed — which is what the File-tree tab lists. Reuses
     ///  the core module's <see cref="GitModule.GetTreeFiles"/> (<c>git ls-tree</c>

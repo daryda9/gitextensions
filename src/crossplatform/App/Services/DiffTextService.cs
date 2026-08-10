@@ -76,6 +76,22 @@ public sealed class DiffDisplayOptions
     /// <summary>Adds <c>--word-diff=plain</c> to the git diff invocation.</summary>
     public bool WordDiff { get; set; }
 
+    /// <summary>
+    ///  Adds <c>--histogram</c> (<c>AppSettings.UseHistogramDiffAlgorithm</c>). A
+    ///  display option and not a toolbar toggle: it changes how git chooses hunk
+    ///  boundaries, which the user sets once and forgets.
+    /// </summary>
+    public bool UseHistogram { get; set; }
+
+    /// <summary>
+    ///  For a merge commit, <c>--cc</c> (only the hunks that differ from EVERY parent)
+    ///  instead of <c>-c -p</c> (the full combined patch) —
+    ///  <c>AppSettings.OmitUninterestingDiff</c>. Both are inert on a single-parent
+    ///  commit, where git prints the ordinary patch either way, so the flag is emitted
+    ///  without first asking how many parents the commit has.
+    /// </summary>
+    public bool OmitUninterestingDiff { get; set; } = true;
+
     /// <summary>Display name of the encoding used to decode git's output.</summary>
     public string EncodingName { get; set; } = DiffTextService.DefaultEncodingName;
 
@@ -166,6 +182,19 @@ public static class DiffTextService
                 // also works for a root commit.
                 args.Add("show");
                 args.Add("--format=");
+
+                // Combined-diff shape for merges, upstream's pair (GitModule.cs:3969).
+                // "-c -p" is two arguments, which is why it is not one string.
+                if (options.OmitUninterestingDiff)
+                {
+                    args.Add("--cc");
+                }
+                else
+                {
+                    args.Add("-c");
+                    args.Add("-p");
+                }
+
                 break;
             default:
                 args.Add("diff");
@@ -183,6 +212,11 @@ public static class DiffTextService
         if (options.WordDiff)
         {
             args.Add("--word-diff=plain");
+        }
+
+        if (options.UseHistogram)
+        {
+            args.Add("--histogram");
         }
 
         // -U is only spelled out when it differs from git's default, so the

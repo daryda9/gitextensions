@@ -11,6 +11,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using AvaloniaEdit;
 using AvaloniaEdit.Document;
 using GitExtensions.Avalonia.Services;
@@ -73,6 +74,17 @@ public sealed class DiffView : UserControl
 
     private readonly FileStatusListView _files;
     private readonly TextEditor _editor;
+
+    // Continuous scroll: the setting, its delay, and the moment the patch first
+    // reached its end (null = not at the end).
+    // The last read of app-settings.json, refreshed by ApplyViewerPreferences on every
+    // file-list load: the patch loader needs the two git flags without touching disk
+    // once per clicked file.
+    private AppPreferences _viewerPrefs = new();
+
+    private bool _continuousScroll;
+    private TimeSpan _continuousScrollDelay;
+    private DateTime? _atEndSince;
 
     // TWO spinners, because this view runs two loads that are not one wait: the
     // changed-file list (a new selection in the grid, the refresh button) and the patch
@@ -301,6 +313,7 @@ public sealed class DiffView : UserControl
         _editor.Options.EnableEmailHyperlinks = false;
         _editor.Options.AllowScrollBelowDocument = false;
         _editor.Options.HighlightCurrentLine = false;
+        ApplyViewerPreferences();
         ApplyNonPrintingOption();
 
         // Order matters: the search wash is added last so it paints over the
@@ -349,6 +362,11 @@ public sealed class DiffView : UserControl
         // ScrollViewer in between, and a menu on the outer control never sees the
         // right-click that lands on the text.
         _editor.TextArea.ContextMenu = diffMenu;
+
+        // Tunnelling, so the decision is made BEFORE the ScrollViewer consumes the
+        // notch: at the bottom of the document it consumes it and reports nothing,
+        // which is exactly the notch continuous scroll has to act on.
+        _editor.AddHandler(PointerWheelChangedEvent, OnDiffWheel, RoutingStrategies.Tunnel);
 
         // ---- diff toolbar (mirrors the Windows diff viewer's right-hand strip) ----
         AddToolbarStyles();
@@ -666,6 +684,83 @@ public sealed class DiffView : UserControl
         _editor.Options.ShowSpaces = on;
         _editor.Options.ShowTabs = on;
         _editor.Options.ShowEndOfLine = on;
+    }
+
+    // The three viewer settings that are pure editor configuration: the column rule,
+    // the shape of the end-of-line mark, and whether an over-scroll walks on to the
+    // next file. Re-read on every load rather than cached, so the Settings dialog is
+    // felt on the next selected file instead of the next start.
+    private void ApplyViewerPreferences()
+    {
+        AppPreferences prefs = new SettingsService().Load();
+        _viewerPrefs = prefs;
+
+        // AvaloniaEdit takes a LIST of ruler columns; upstream has one position, and 0
+        // means none — which is expressed by showing no ruler at all rather than by a
+        // ruler at column zero, where it would sit on top of the first character.
+        _editor.Options.ColumnRulerPositions = [Math.Max(1, prefs.DiffVerticalRulerPosition)];
+        _editor.Options.ShowColumnRulers = prefs.DiffVerticalRulerPosition > 0;
+
+        // Upstream's EolMarkerStyle.Glyph vs .Text (FileViewer.cs:1397). AvaloniaEdit
+        // has no such enum: it draws whatever STRING each of the three properties
+        // holds, so "as text" is spelled by putting the words there. Its own defaults
+        // are the glyphs, restored explicitly so the two paths cannot drift.
+        _editor.Options.EndOfLineCRLFGlyph = prefs.ShowEolMarkerAsGlyph ? "¶" : "CRLF";
+        _editor.Options.EndOfLineLFGlyph = prefs.ShowEolMarkerAsGlyph ? "¶" : "LF";
+        _editor.Options.EndOfLineCRGlyph = prefs.ShowEolMarkerAsGlyph ? "¶" : "CR";
+
+        _continuousScroll = prefs.DiffContinuousScroll;
+        _continuousScrollDelay = TimeSpan.FromMilliseconds(prefs.DiffContinuousScrollDelay);
+    }
+
+    /// <summary>
+    ///  Upstream's <c>AutomaticContinuousScroll</c>: a wheel notch at the very bottom of
+    ///  the patch moves to the NEXT changed file, once the patch has been sitting at its
+    ///  end for <c>AutomaticContinuousScrollDelay</c>.
+    ///
+    ///  <para>The delay is measured from the moment the end was first reached and not
+    ///  between notches: without it, the flick that scrolls the last screen also jumps
+    ///  the file, and the user never sees the lines they scrolled to. Reaching the
+    ///  bottom therefore ARMS the jump; the next notch after the delay takes it.</para>
+    /// </summary>
+    private void OnDiffWheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (!_continuousScroll || e.Delta.Y >= 0)
+        {
+            return;
+        }
+
+        // A patch shorter than the viewport is already "at the end" the moment it
+        // loads, and walking off it on the first notch would make the wheel unusable.
+        ScrollViewer? scroll = _editor.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+        if (scroll is null || scroll.Extent.Height <= scroll.Viewport.Height)
+        {
+            return;
+        }
+
+        if (scroll.Offset.Y < scroll.Extent.Height - scroll.Viewport.Height - 1)
+        {
+            _atEndSince = null;
+            return;
+        }
+
+        DateTime now = DateTime.UtcNow;
+        if (_atEndSince is null)
+        {
+            _atEndSince = now;
+            return;
+        }
+
+        if (now - _atEndSince.Value < _continuousScrollDelay)
+        {
+            return;
+        }
+
+        _atEndSince = null;
+        if (_files.SelectNextFile())
+        {
+            e.Handled = true;
+        }
     }
 
     // Hands the colorizer the language of the loaded patch (or nothing, when the
@@ -1087,12 +1182,28 @@ public sealed class DiffView : UserControl
         _baseHash = null;
         _mode = CompareMode.Commit;
 
-        LoadFileList(
-            () => DiffService.GetChangedFiles(repoPath, commitHash),
+        // The setting is read HERE, per load, and not cached in a field: it is changed
+        // in the Settings dialog while this view stays alive, and the next selected
+        // commit must already obey the new answer.
+        bool allParents = new SettingsService().Load().ShowDiffForAllParents;
+
+        // A merge shown per parent has one caption PER GROUP, which is why it cannot go
+        // through LoadFileList's single-summary shape. A non-merge comes back as one
+        // unnamed group, and then the pane's own "Diff with …" header still applies.
+        LoadFileGroups(
+            () =>
+            {
+                IReadOnlyList<DiffFileGroup> groups =
+                    DiffService.GetCommitFileGroups(repoPath, commitHash, allParents);
+                return groups.Count == 1 && groups[0].Summary.Length == 0
+                    ? [new DiffFileGroup(
+                        DiffWithHeader(repoPath, DiffService.FirstParentOf(repoPath, commitHash)),
+                        groups[0].Rows)]
+                    : groups;
+            },
             count => F(ChangedFilesFormat(), commitHash, count),
             F(LoadingFilesFormat(), commitHash),
-            preselectPath,
-            () => DiffWithHeader(repoPath, DiffService.FirstParentOf(repoPath, commitHash)));
+            preselectPath);
     }
 
     /// <summary>
@@ -1322,6 +1433,10 @@ public sealed class DiffView : UserControl
     {
         // Remembered so the toolbar's refresh button can re-run exactly this load.
         _reload = () => LoadFileGroups(load, statusFor, loadingText);
+
+        // One read of the settings file per list load, not per patch: everything below
+        // (and every patch loaded from the list that follows) reads the snapshot.
+        ApplyViewerPreferences();
 
         // The file to land on travels WITH this load, not in a field of the view.
         // One user gesture can produce two loads (a Ctrl-click on the grid raises
@@ -2340,6 +2455,11 @@ public sealed class DiffView : UserControl
             FontSize = _options.FontSize,
             ContextLines = _options.ContextLines,
             ShowEntireFile = _options.ShowEntireFile,
+
+            // The two git-side viewer settings. Read per patch, like the editor ones:
+            // changing them in Settings must show on the next file clicked.
+            UseHistogram = _viewerPrefs.UseHistogramDiffAlgorithm,
+            OmitUninterestingDiff = _viewerPrefs.OmitUninterestingDiff,
         };
 
         // The extra flags travel as their own snapshot, for the same reason.
