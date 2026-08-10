@@ -3377,6 +3377,40 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M146 (2026-08-10, `174146b3d`) — l'overflow del menu non si svuota e non ammazza la finestra
+
+Crash segnalato dall'utente all'avvio normale (`./run.sh`), passando col puntatore su una voce di
+menu: `The control MenuItem already has a visual parent StackPanel while trying to add it as a child
+of StackPanel`, lanciata dentro `DefaultMenuInteractionHandler.PointerEntered` → `MenuItem.Open` e
+quindi **non catturata**: si porta via il processo.
+
+**Causa.** Spostare un `MenuItem` fra la barra e il «…» è rotto a livello di framework. Ri-genitorarlo
+lo stacca dall'albero visuale, il che butta via il template che porta il suo popup — ma le voci
+**dentro** quel popup continuano a puntare al pannello del presenter morto come loro parent visuale.
+La successiva apertura quindi o mostra una **carta vuota** (stesso oggetto presenter, che in silenzio
+non aggiunge nulla) o, quando un presenter nuovo viene costruito, **lancia**. Entrambi riprodotti su
+Xvfb con questa sequenza: apri un menu di primo livello mentre è sulla barra, restringi la finestra
+finché finisce nel «…», poi passaci sopra lì dentro. È la **stessa classe di M132**, dove
+ri-genitorare azzerava lo stato di input delle schede.
+
+**Correzione.** Lo split ora si applica **ricostruendo** il menu invece di spostare le voci: ogni voce
+è un oggetto nuovo, consegnato direttamente al lato a cui appartiene, quindi niente viene mai
+ri-genitorato. È lo stesso lavoro che un cambio lingua già fa, e gira solo quando lo split cambia
+davvero — una manciata di volte in un intero trascinamento del bordo, mai a ogni passata di layout.
+
+Ed è al riparo dal **loop** solo perché la cache delle larghezze è ora chiavata sul **rango** e non sul
+`MenuItem`: chiavata sull'oggetto si svuoterebbe a ogni ricostruzione, e una cache vuota rimette tutto
+sulla barra, il che ri-decide lo stesso overflow → ricostruzione infinita. Chiavata sul rango le
+larghezze sopravvivono, quindi la passata dopo la ricostruzione ricalcola lo **stesso** split e non
+chiede nulla.
+
+Presente da `9a1f173e4` (M128, 2026-08-08), **non** introdotto dal round 14.
+
+Verificato a schermo: la sequenza che prima dava la carta vuota ora apre Help **con le sue voci**
+dentro il «…»; sette cicli di ridimensionamento (1400 → 900 → 740 → 1100 → 640 → 1400 → 800 px) con
+apertura di menu a ogni passo, nessun crash e nessun loop; tornando larga la barra si ripopola e Help
+si riapre completo al suo posto.
+
 ## M145 (2026-08-10, `44850dc33`) — più schede sulla stessa repository
 
 La striscia di M131-M132 teneva **una scheda per repository**: tutta l'API era chiavata sul path, e
