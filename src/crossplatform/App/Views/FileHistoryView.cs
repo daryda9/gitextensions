@@ -196,7 +196,13 @@ public sealed class FileHistoryView : UserControl
             SaveAs);
         _grid.AddCommitCommand(
             T("FileStatusList/tsmiCopyPaths.Text", "Copy path"),
-            hash => Copy(PathFor(hash)));
+            // The absolute native path, like every other "Copy path" in the app: the
+            // repo-relative one this used to copy is git's internal spelling and is
+            // useless outside the repository root. No flavour sub-menu here — the
+            // grid's host hook (AddCommitCommand) takes a flat caption plus an action,
+            // and upstream's FormFileHistory row menu is flat too.
+            hash => Copy(CopyPathsMenuItem.BuildText(
+                [PathFor(hash)], _repoPath, CopyPathsMenuItem.PathFlavour.FullNative)));
         _grid.AddCommitCommand(
             T("FormFileHistory/revertCommitToolStripMenuItem.Text", "Revert this commit…"),
             RevertCommit);

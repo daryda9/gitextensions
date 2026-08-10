@@ -105,9 +105,16 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // switch while the dialog is open can re-caption the whole window in place
     // (ApplyTranslations), the same way MainMenu rebuilds itself.
     private readonly MenuItem _stageItem = new();
-    private readonly MenuItem _unstagedCopyItem = new();
     private readonly MenuItem _unstageItem = new();
-    private readonly MenuItem _stagedCopyItem = new();
+
+    // "Copy path" is the shared CopyPathsMenuItem, not a plain entry: upstream's
+    // FileStatusList offers the flavour sub-menu here too, and its default — the one
+    // the parent command uses, shown in bold — is the ABSOLUTE native path. This
+    // dialog used to copy git's repo-relative path instead, which is the wrong thing
+    // to paste into a shell or a file manager. Built in the constructor because the
+    // item needs the list it reads its selection from.
+    private readonly CopyPathsMenuItem _unstagedCopyItem;
+    private readonly CopyPathsMenuItem _stagedCopyItem;
 
     // Upstream binds ONE shared menu (FileStatusList's ItemContextMenu) to whichever
     // file list has focus. This dialog owns two lists and a MenuItem cannot live in
@@ -464,8 +471,13 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _takeTheirsItem.Click += (_, _) => ResolveConflicts("theirs");
         _markResolvedItem.Click += (_, _) => ResolveConflicts("resolved");
 
+        // One flavour sub-menu per list: a MenuItem can only live in one menu, and this
+        // dialog owns two lists (upstream binds its single FileStatusList menu to
+        // whichever list has focus instead).
+        _unstagedCopyItem = MakeCopyPathsItem(_unstagedList);
+        _stagedCopyItem = MakeCopyPathsItem(_stagedList);
+
         _stageItem.Click += (_, _) => StageSelected();
-        _unstagedCopyItem.Click += (_, _) => CopySelectedPath(_unstagedList);
 
         _discardItem.Click += (_, _) => DiscardSelected();
         _ignorePathItem.Click += (_, _) => AddSelectedToGitignore(GitignoreMode.Path);
@@ -541,7 +553,6 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _unstagedList.ContextMenu = unstagedMenu;
 
         _unstageItem.Click += (_, _) => UnstageSelected();
-        _stagedCopyItem.Click += (_, _) => CopySelectedPath(_stagedList);
         ContextMenu stagedMenu = new()
         {
             ItemsSource = new Control[] { _unstageItem, new Separator() }
@@ -947,9 +958,12 @@ public sealed class CommitDialog : Theming.ZoomWindow
     {
 
         _stageItem.Header = StageCaption;
-        _unstagedCopyItem.Header = CopyPathCaption;
         _unstageItem.Header = UnstageCaption;
-        _stagedCopyItem.Header = CopyPathCaption;
+
+        // The copy items re-caption themselves AND their flavour sub-menu; the count
+        // suffix the menus' Opening handler adds is re-applied on the next open.
+        _unstagedCopyItem.ApplyTranslations();
+        _stagedCopyItem.ApplyTranslations();
         _discardItem.Header = DiscardCaption;
 
         _mergetoolItem.Header = T("FormResolveConflicts/OpenMergetool.Text", "Open in mergetool");
@@ -2586,24 +2600,26 @@ public sealed class CommitDialog : Theming.ZoomWindow
             });
     }
 
-    // Copies the selected file's repo-relative path to the clipboard. Nothing else
-    // depends on it, so a missing clipboard (headless) is silently ignored.
-    private void CopySelectedPath(ListBox list)
-    {
-        List<WorkingDirFileRow> rows = SelectedRows(list);
-        if (rows.Count == 0)
-        {
-            return;
-        }
+    // Builds the "Copy path" entry for one of the two file lists. The item assembles
+    // the text itself (absolute native by default, relative and bare name in the
+    // sub-menu); this dialog only supplies the selection, the repository root that
+    // turns a git path into an absolute one, and the status feedback — the lists sit
+    // in a modal with no other confirmation that anything reached the clipboard.
+    private CopyPathsMenuItem MakeCopyPathsItem(ListBox list) => new(
+        () => SelectedRows(list).Select(r => (string?)r.Path),
+        () => _repoPath,
+        text => PutOnClipboard(text, SelectedRows(list).Count));
 
-        // One path per line, like the original's multi-file "Copy path".
-        string text = string.Join("\n", rows.Select(r => r.Path));
+    // Nothing else depends on the clipboard, so a missing one (headless) is reported
+    // and otherwise ignored.
+    private void PutOnClipboard(string text, int count)
+    {
         try
         {
             _ = TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync(text);
-            SetStatus(rows.Count == 1
-                ? string.Format(T("Copied path: {0}"), rows[0].Path)
-                : string.Format(T("Copied {0} paths."), rows.Count));
+            SetStatus(count == 1
+                ? string.Format(T("Copied path: {0}"), text)
+                : string.Format(T("Copied {0} paths."), count));
         }
         catch (Exception ex)
         {
