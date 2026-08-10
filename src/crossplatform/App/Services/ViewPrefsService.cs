@@ -21,6 +21,9 @@ public sealed class ViewPrefs
     /// <summary>File history switches (see <see cref="FileHistoryPrefs"/>).</summary>
     public FileHistoryPrefs FileHistory { get; set; } = new();
 
+    /// <summary>The changed-file list's git-grep search box (see <see cref="FindInFilesPrefs"/>).</summary>
+    public FindInFilesPrefs FindInFiles { get; set; } = new();
+
     /// <summary>Left repository-objects panel filters (see <see cref="LeftPanelPrefs"/>).</summary>
     public LeftPanelPrefs LeftPanel { get; set; } = new();
 
@@ -140,6 +143,41 @@ public sealed class FileHistoryPrefs
 
     /// <summary><c>--simplify-merges</c> (inert unless <see cref="FullHistory"/>).</summary>
     public bool SimplifyMerges { get; set; }
+}
+
+/// <summary>
+///  The changed-file list's "Find in commit files using git-grep" box: whether it is
+///  open, and the two switches of its drop-down.
+///
+///  <para>Upstream keeps the same three in <c>AppSettings</c>
+///  (<c>ShowFindInCommitFilesGitGrep</c>, <c>GitGrepIgnoreCase</c>,
+///  <c>GitGrepMatchWholeWord</c>). They live here rather than in <c>UiState</c> for
+///  the reason spelled out on <see cref="ViewPrefsService"/>: the search box belongs
+///  to a control that several windows instantiate (the main Diff pane and the commit
+///  dialog's own), so a write must not wait for — nor be reverted by —
+///  <c>MainWindow.PersistLayout()</c>.</para>
+///
+///  <para><see cref="MatchCase"/> is the affirmative of upstream's
+///  <c>GitGrepIgnoreCase</c>: this file describes what the menu item says, not what
+///  the git switch does, so a reader of the JSON does not have to invert it in their
+///  head. <see cref="GitGrepService"/> performs the inversion at the one point where
+///  git is called.</para>
+/// </summary>
+public sealed class FindInFilesPrefs
+{
+    /// <summary>Whether the inline search box is shown above the list.</summary>
+    public bool Show { get; set; }
+
+    /// <summary>Case-sensitive matching (the inverse of <c>--ignore-case</c>).</summary>
+    public bool MatchCase { get; set; }
+
+    /// <summary><c>--word-regexp</c>: the pattern must match whole words.</summary>
+    public bool WholeWord { get; set; }
+
+    // The search TEXT is deliberately not persisted, and neither does upstream keep
+    // it across sessions: reopening the app on a pre-filled search would show a
+    // "grep:" section the user did not ask for, over a revision they have not chosen
+    // yet.
 }
 
 /// <summary>
@@ -456,6 +494,7 @@ public sealed class ViewPrefsService
     {
         p.Diff ??= new DiffPrefs();
         p.FileHistory ??= new FileHistoryPrefs();
+        p.FindInFiles ??= new FindInFilesPrefs();
         p.LeftPanel ??= new LeftPanelPrefs();
         p.RevisionFilterMru ??= [];
         p.HelpPanels ??= [];

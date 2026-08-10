@@ -49,6 +49,20 @@ public sealed class FileStatusListOptions
 ///
 ///  <para>Captions come from the upstream <c>FileStatusList</c> XLIFF category
 ///  and are re-applied on <see cref="TranslationService.LanguageChanged"/>.</para>
+///
+///  <para><b>Find in commit files (git grep).</b> A host that shows ONE revision sets
+///  <see cref="CanFindInFiles"/>; the toolbar then offers upstream's
+///  <c>btnFindInFilesGitGrep</c>, which opens an input box above the filter row and
+///  reports every change of it through <see cref="FindInFilesRequested"/>. The
+///  control runs no git of its own — the host answers with
+///  <see cref="SetSearchResults"/>, and the hits become one extra section under the
+///  diff's own. What upstream has here and this does not: the separate
+///  <c>FormFindInCommitFilesGitGrep</c> window and the <c>tsmiFindUsingDialog</c> /
+///  <c>tsmiFindUsingInputBox</c> / <c>tsmiFindUsingBoth</c> choice between the two
+///  (the port has only the inline box, so there is nothing to choose), and the
+///  free-text <c>tsmiFindUsingOptions</c> item that appends raw arguments to
+///  <c>git grep</c> (a settings field, not a search control — and one whose value
+///  would silently change every search made from here).</para>
 /// </summary>
 public sealed class FileStatusListView : UserControl
 {
@@ -90,6 +104,15 @@ public sealed class FileStatusListView : UserControl
     private readonly Border _toolbarBar;
     private Image? _asTreeIcon;
 
+    // ---- "Find in commit files using git-grep" (upstream btnFindInFilesGitGrep) ----
+    private readonly Border _findSplit;
+    private readonly Button _findButton;
+    private readonly Button _findMenuButton;
+    private readonly Border _findBar;
+    private readonly TextBox _findBox;
+    private readonly Button _findClearButton;
+    private readonly DispatcherTimer _findDebounce;
+
     // The sections the list shows, in order — upstream's IReadOnlyList<
     // FileStatusWithDescription>. A list that is not a comparison (the file tree, the
     // commit dialog's staged/unstaged lists, which say what they are in their own
@@ -97,6 +120,14 @@ public sealed class FileStatusListView : UserControl
     // path through this control: the single-section list is the multi-section one
     // with a single, unlabelled section.
     private IReadOnlyList<DiffFileGroup> _groups = [];
+
+    // The sections the HOST supplied, and the search section, kept apart so that
+    // reloading the diff does not drop the search results and re-running the search
+    // does not disturb the diff — upstream's two independent halves of
+    // FileStatusDiffCalculator.Calculate(refreshDiff:, refreshGrep:). _groups is
+    // always the concatenation, search last.
+    private IReadOnlyList<DiffFileGroup> _hostGroups = [];
+    private DiffFileGroup? _searchGroup;
 
     // Every row of every section, flattened, for the hosts that ask what is loaded
     // and for the "shown of total" filter counter. Rebuilt with _groups, never alone.
@@ -205,6 +236,38 @@ public sealed class FileStatusListView : UserControl
             Margin = new Thickness(1, 0),
         };
 
+        // The git-grep split button: the body opens/closes the input box, the arrow
+        // opens the two matching options — upstream's ToolStripSplitButton with
+        // tsmiFindUsingMatchCase / tsmiFindUsingWholeWord under it.
+        _findButton = IconButton("ViewFile", "⌕", ToggleFindBox);
+        _findMenuButton = IconButton(null, "▾", () => ShowFindMenu(_findMenuButton!));
+        _findMenuButton.Padding = new Thickness(2, 2);
+
+        StackPanel findSplitContent = new() { Orientation = Orientation.Horizontal };
+        findSplitContent.Children.Add(_findButton);
+        findSplitContent.Children.Add(new Border
+        {
+            Width = 1,
+            Margin = new Thickness(0, 4),
+            Background = B("App.Border"),
+        });
+        findSplitContent.Children.Add(_findMenuButton);
+
+        _findSplit = new Border
+        {
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Child = findSplitContent,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(1, 0),
+
+            // Off until a host declares it can search — upstream's
+            // CanUseFindInCommitFilesGitGrep, which is false for the lists that have
+            // no single revision to grep (the commit dialog's staged/unstaged views).
+            IsVisible = false,
+        };
+
         _byPathButton = IconToggle("FolderClosed", "/", DiffFileGroupMode.Path);
         _byExtensionButton = IconToggle("File", ".*", DiffFileGroupMode.Extension);
         _byStatusButton = IconToggle("FileStatusModified", "M", DiffFileGroupMode.Status);
@@ -221,6 +284,7 @@ public sealed class FileStatusListView : UserControl
         _toolbar.Children.Add(_byPathButton);
         _toolbar.Children.Add(_byExtensionButton);
         _toolbar.Children.Add(_byStatusButton);
+        _toolbar.Children.Add(_findSplit);
 
         _toolbarBar = new Border
         {
@@ -279,6 +343,59 @@ public sealed class FileStatusListView : UserControl
             Child = filterRow,
         };
 
+        // ---- git-grep search row (above the filter row, as upstream stacks them) ----
+        _findBox = new TextBox
+        {
+            FontSize = 12,
+            MinHeight = 0,
+            Padding = new Thickness(6, 2, 6, 2),
+            Background = B("App.Panel"),
+            Foreground = B("App.Text"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(1),
+            VerticalContentAlignment = VerticalAlignment.Center,
+
+            // Bold, like upstream's box: the search is a second, stronger filter over
+            // the same list and must not be mistaken for the regex filter below it.
+            FontWeight = FontWeight.Bold,
+        };
+        _findBox.TextChanged += (_, _) => RestartFindDebounce();
+        _findBox.KeyDown += OnFindKeyDown;
+
+        _findClearButton = IconButton("DeleteText", "✕", () =>
+        {
+            _findBox.Text = string.Empty;
+            RunFind();
+        });
+
+        Grid findRow = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Margin = new Thickness(4, 3, 4, 2),
+        };
+        Grid.SetColumn(_findBox, 0);
+        Grid.SetColumn(_findClearButton, 1);
+        findRow.Children.Add(_findBox);
+        findRow.Children.Add(_findClearButton);
+
+        _findBar = new Border
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Border"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = findRow,
+            IsVisible = false,
+        };
+
+        // Each keystroke restarts a git-grep over a whole revision, so the box waits
+        // longer than the path filter above (which only re-groups rows already held).
+        _findDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _findDebounce.Tick += (_, _) =>
+        {
+            _findDebounce.Stop();
+            RunFind();
+        };
+
         // Re-filtering rebuilds the list, so typing must not do it per keystroke
         // (the upstream box throttles by 250 ms).
         _filterDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(220) };
@@ -290,8 +407,10 @@ public sealed class FileStatusListView : UserControl
 
         DockPanel root = new() { Background = B("App.Panel") };
         DockPanel.SetDock(_toolbarBar, Dock.Top);
+        DockPanel.SetDock(_findBar, Dock.Top);
         DockPanel.SetDock(filterBar, Dock.Top);
         root.Children.Add(_toolbarBar);
+        root.Children.Add(_findBar);
         root.Children.Add(filterBar);
         root.Children.Add(_list);
 
@@ -364,6 +483,75 @@ public sealed class FileStatusListView : UserControl
         _filterBox.SelectAll();
     }
 
+    // ------------------------------------------------- find in files (git grep)
+
+    /// <summary>
+    ///  Whether this list can search the revision it shows — upstream's
+    ///  <c>CanUseFindInCommitFilesGitGrep</c>. Off by default: a list has to be about
+    ///  ONE revision for <c>git grep</c> to have something to run over, which the
+    ///  staged/unstaged lists of the commit dialog are not.
+    ///
+    ///  <para>Turning it on reveals the toolbar's search button and reopens the input
+    ///  box if the user left it open last time (persisted in
+    ///  <see cref="FindInFilesPrefs"/>); turning it off hides both and clears the
+    ///  results, because nothing would be able to refresh them.</para>
+    /// </summary>
+    public bool CanFindInFiles
+    {
+        get => _findSplit.IsVisible;
+        set
+        {
+            if (_findSplit.IsVisible == value)
+            {
+                return;
+            }
+
+            _findSplit.IsVisible = value;
+            if (value)
+            {
+                ShowFindBox(FindPrefs.Show);
+                return;
+            }
+
+            ShowFindBox(show: false, persist: false);
+            SetSearchResults(null);
+        }
+    }
+
+    /// <summary>
+    ///  Raised whenever the search should be re-run: the user typed (debounced),
+    ///  pressed Enter, toggled match-case or whole-word, or closed the box. The host
+    ///  runs it off the UI thread and answers with <see cref="SetSearchResults"/>.
+    ///
+    ///  <para>An INACTIVE query (empty box, or the box closed) is reported too, and
+    ///  means "drop the results": the caller does not have to distinguish "cleared"
+    ///  from "never searched".</para>
+    /// </summary>
+    public event Action<GitGrepQuery>? FindInFilesRequested;
+
+    /// <summary>What the search box currently asks for; inactive when it is closed.</summary>
+    public GitGrepQuery FindQuery =>
+        _findBar.IsVisible
+            ? new GitGrepQuery(_findBox.Text ?? string.Empty, FindPrefs.MatchCase, FindPrefs.WholeWord)
+            : GitGrepQuery.None;
+
+    /// <summary>
+    ///  Opens the search box and puts the caret in it — the port of upstream's
+    ///  <c>tsmiShowFindInCommitFilesGitGrep</c> / the Ctrl+F route into the list,
+    ///  for a host that offers the command from a menu of its own.
+    /// </summary>
+    public void FocusFindInFiles()
+    {
+        if (!CanFindInFiles)
+        {
+            return;
+        }
+
+        ShowFindBox(show: true);
+        _findBox.Focus();
+        _findBox.SelectAll();
+    }
+
     /// <summary>
     ///  Replaces the loaded rows and selects the first one, raising
     ///  <see cref="SelectedFileChanged"/> exactly once for the new selection.
@@ -394,12 +582,40 @@ public sealed class FileStatusListView : UserControl
     /// </summary>
     public void SetFiles(IReadOnlyList<DiffFileGroup> groups)
     {
-        _groups = groups;
-        _files = groups.Count == 1 ? groups[0].Rows : [.. groups.SelectMany(g => g.Rows)];
+        _hostGroups = groups;
+        ComposeSections();
         _collapsed.Clear();
         _selectedRow = null;
         ApplyInitialCollapse();
         Rebuild();
+    }
+
+    /// <summary>
+    ///  Replaces the <c>git grep</c> section — the extra section the search box adds
+    ///  BELOW whatever the host loaded — with <paramref name="group"/>, or removes it
+    ///  when that is <see langword="null"/>. Its caption must start with
+    ///  <see cref="GitGrepService.SummaryPrefix"/>; that prefix is what makes its rows
+    ///  read as hits rather than as changes.
+    ///
+    ///  <para>Unlike <see cref="SetFiles(IReadOnlyList{DiffFileGroup})"/> this keeps
+    ///  the selection and the folded groups: a search that finishes while the user is
+    ///  reading a patch must not move them off it, and the two halves are independent
+    ///  exactly as upstream's <c>refreshDiff</c> / <c>refreshGrep</c> are.</para>
+    /// </summary>
+    public void SetSearchResults(DiffFileGroup? group)
+    {
+        _searchGroup = group;
+        ComposeSections();
+        Rebuild();
+    }
+
+    // _groups (what the list draws) is always the host's sections followed by the
+    // search section, and _files the flattening of both — so the filter counter and
+    // the hosts that ask what is loaded see the hits too.
+    private void ComposeSections()
+    {
+        _groups = _searchGroup is null ? _hostGroups : [.. _hostGroups, _searchGroup];
+        _files = _groups.Count == 1 ? _groups[0].Rows : [.. _groups.SelectMany(g => g.Rows)];
     }
 
     /// <summary>
@@ -431,8 +647,17 @@ public sealed class FileStatusListView : UserControl
         }
     }
 
-    /// <summary>Empties the list (a repository was closed, a load failed).</summary>
-    public void Clear() => SetFiles(groups: []);
+    /// <summary>
+    ///  Empties the list (a repository was closed, a load failed). The search RESULTS
+    ///  go with it — they describe a revision that is no longer on screen — while the
+    ///  search BOX and its text stay, so the host can re-run them against whatever it
+    ///  loads next.
+    /// </summary>
+    public void Clear()
+    {
+        _searchGroup = null;
+        SetFiles(groups: []);
+    }
 
     /// <summary>
     ///  Whether the grouping toolbar is shown. Upstream hides the whole toolbar in
@@ -596,6 +821,15 @@ public sealed class FileStatusListView : UserControl
             "FileStatusList/cboFilterComboBox.Watermark", "Filter files using a regular expression...");
         ToolTip.SetTip(_filterClearButton, T("Clear the filter"));
 
+        ToolTip.SetTip(_findButton, T(
+            "FileStatusList/btnFindInFilesGitGrep.ToolTipText",
+            "Toggle 'Find in commit files using git-grep'"));
+        ToolTip.SetTip(_findMenuButton, T("FileStatusList/tsmiFindUsingOptions.Text", "Options"));
+        _findBox.Watermark = T(
+            "FileStatusList/cboFindInCommitFilesGitGrep.Watermark",
+            "Find in commit files using git-grep regular expression...");
+        ToolTip.SetTip(_findClearButton, T("Clear the filter"));
+
         UpdateFilterFeedback();
     }
 
@@ -645,6 +879,14 @@ public sealed class FileStatusListView : UserControl
     // than shown as a meaningless "M".
     private Control BuildFileRow(FileListFileNode node)
     {
+        // A search hit keeps the glyph COLUMN, so its path lines up with the changed
+        // files above it, but says "found in" rather than claiming a modification —
+        // upstream swaps the status icon for Images.ViewFile in the same place.
+        if (node.IsSearchHit)
+        {
+            return BuildGlyphFileRow(node, "⌕", B("App.TextDim"));
+        }
+
         if (!ShowStatusGlyphs)
         {
             return new TextBlock
@@ -659,6 +901,36 @@ public sealed class FileStatusListView : UserControl
         }
 
         return BuildStatusFileRow(node);
+    }
+
+    // A path preceded by one monospace character in the status column.
+    private static Control BuildGlyphFileRow(FileListFileNode node, string glyph, IBrush glyphBrush)
+    {
+        StackPanel panel = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(node.Level * 12, 0, 0, 0),
+        };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = glyph,
+            Foreground = glyphBrush,
+            FontFamily = Monospace,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = node.Display,
+            Foreground = B("App.Text"),
+            FontFamily = Monospace,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        return panel;
     }
 
     private static Control BuildStatusFileRow(FileListFileNode node)
@@ -821,18 +1093,32 @@ public sealed class FileStatusListView : UserControl
                 continue;
             }
 
+            // The search section's rows are hits, not changes: the flag travels here,
+            // where the section is known, rather than being read off the row (which is
+            // the same DiffFileRow shape a diff produces).
+            bool isSearch = group.Summary.StartsWith(GitGrepService.SummaryPrefix, StringComparison.Ordinal);
+
             foreach (object item in built)
             {
-                items.Add(item is FileListGroupNode inner
-                    ? new FileListGroupNode
+                items.Add(item switch
+                {
+                    FileListGroupNode inner => new FileListGroupNode
                     {
                         Key = prefix + inner.Key,
                         Header = inner.Header,
                         Count = inner.Count,
                         IsCollapsed = inner.IsCollapsed,
                         Level = inner.Level,
-                    }
-                    : item);
+                    },
+                    FileListFileNode file when isSearch => new FileListFileNode
+                    {
+                        Row = file.Row,
+                        Display = file.Display,
+                        Level = file.Level,
+                        IsSearchHit = true,
+                    },
+                    _ => item,
+                });
             }
         }
 
@@ -984,6 +1270,141 @@ public sealed class FileStatusListView : UserControl
         _filterCount.Text = _filter.Error is null
             ? F("{0}/{1}", shown, _files.Count)
             : F("⚠ {0}/{1}", shown, _files.Count);
+    }
+
+    // ------------------------------------------------- find in files (git grep)
+
+    // The three search options are process-wide and file-backed, exactly as the
+    // grouping above is process-wide in FileStatusListOptions: two lists in two
+    // windows must not disagree about what "match case" means. view-prefs.json rather
+    // than ui-state.json for the reason written on ViewPrefsService — the host
+    // reserialises ui-state.json on close and would revert whatever a pane wrote.
+    private static readonly ViewPrefsService PrefsStore = new();
+    private static FindInFilesPrefs? _findPrefs;
+
+    private static FindInFilesPrefs FindPrefs => _findPrefs ??= PrefsStore.Load().FindInFiles;
+
+    private static void UpdateFindPrefs(Action<FindInFilesPrefs> mutate)
+    {
+        FindInFilesPrefs prefs = FindPrefs;
+        mutate(prefs);
+
+        // Read-modify-write of the whole file, so a group written meanwhile by another
+        // surface (the diff toolbar, the filter MRU) is not reverted by this one.
+        PrefsStore.Update(p => p.FindInFiles = prefs);
+    }
+
+    private void ToggleFindBox() => ShowFindBox(!_findBar.IsVisible);
+
+    // Opens or closes the input box. Closing EMPTIES it and asks for a re-run, which
+    // is how the search results disappear with the box (upstream does the same in
+    // SetFindInCommitFilesGitGrepVisibilityImpl); the caret goes back to the list, so
+    // the keyboard is not left in a control that is no longer on screen.
+    private void ShowFindBox(bool show, bool persist = true)
+    {
+        if (persist && FindPrefs.Show != show)
+        {
+            UpdateFindPrefs(p => p.Show = show);
+        }
+
+        if (_findBar.IsVisible == show)
+        {
+            return;
+        }
+
+        _findBar.IsVisible = show;
+        _findDebounce.Stop();
+
+        if (show)
+        {
+            _findBox.Focus();
+            _findBox.SelectAll();
+            RunFind();
+            return;
+        }
+
+        bool hadText = (_findBox.Text ?? string.Empty).Length > 0;
+        _findBox.Text = string.Empty;
+        _list.Focus();
+
+        if (hadText)
+        {
+            RunFind();
+        }
+    }
+
+    private void RestartFindDebounce()
+    {
+        _findDebounce.Stop();
+        _findDebounce.Start();
+    }
+
+    private void RunFind()
+    {
+        _findDebounce.Stop();
+        FindInFilesRequested?.Invoke(FindQuery);
+    }
+
+    private void OnFindKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Enter or Key.Return)
+        {
+            // Enter searches NOW rather than waiting out the debounce: the user has
+            // said the pattern is complete.
+            RunFind();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape)
+        {
+            ShowFindBox(show: false);
+            e.Handled = true;
+        }
+    }
+
+    // The split button's drop-down. Only the two switches that map onto a git-grep
+    // flag are here; see the class remarks for what upstream offers and this does not.
+    private void ShowFindMenu(Control anchor)
+    {
+        MenuItem Option(string key, string english, Func<FindInFilesPrefs, bool> read, Action<FindInFilesPrefs, bool> write)
+        {
+            MenuItem item = new()
+            {
+                Header = T(key, english),
+                ToggleType = MenuItemToggleType.CheckBox,
+                IsChecked = read(FindPrefs),
+            };
+
+            item.Click += (_, _) =>
+            {
+                bool value = !read(FindPrefs);
+                UpdateFindPrefs(p => write(p, value));
+
+                // Only re-run when there is a search on screen to re-run: toggling an
+                // option with an empty box must not spawn a git process.
+                if (FindQuery.IsActive)
+                {
+                    RunFind();
+                }
+            };
+
+            return item;
+        }
+
+        MenuFlyout flyout = new()
+        {
+            ItemsSource = new Control[]
+            {
+                Option("FileStatusList/tsmiFindUsingMatchCase.Text", "Match case",
+                    static p => p.MatchCase, static (p, v) => p.MatchCase = v),
+                Option("FileStatusList/tsmiFindUsingWholeWord.Text", "Match whole word",
+                    static p => p.WholeWord, static (p, v) => p.WholeWord = v),
+            },
+            Placement = PlacementMode.BottomEdgeAlignedLeft,
+        };
+
+        flyout.ShowAt(anchor);
     }
 
     // --------------------------------------------------------------- toolbar

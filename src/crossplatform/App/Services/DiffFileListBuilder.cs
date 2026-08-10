@@ -54,6 +54,19 @@ public sealed class FileListFileNode : FileListNode
 
     /// <summary>The text to show — the full path, or just the file name inside a path tree.</summary>
     public required string Display { get; init; }
+
+    /// <summary>
+    ///  Whether this row is a <c>git grep</c> hit rather than a changed file — the
+    ///  rows of the search section (<see cref="GitGrepService.SummaryPrefix"/>).
+    ///
+    ///  <para>A flag on the NODE and not on <c>DiffFileRow</c>: which section a row
+    ///  was put in is a fact about this list, not about the file, and the same file
+    ///  legitimately appears both as a change and as a hit. It exists so the row can
+    ///  be drawn without the M/A/D status glyph, which would claim a modification the
+    ///  search says nothing about (upstream swaps the whole icon for
+    ///  <c>Images.ViewFile</c> in the same situation).</para>
+    /// </summary>
+    public bool IsSearchHit { get; init; }
 }
 
 /// <summary>

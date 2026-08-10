@@ -168,6 +168,24 @@ public sealed class DiffView : UserControl
     private CompareMode _mode = CompareMode.Commit;
     private CancellationTokenSource? _diffCts;
 
+    // ---- "Find in commit files using git-grep" ----
+
+    // What the list's search box last asked for. Kept because the search has to be
+    // re-run whenever the pane loads a different revision (upstream recomputes the
+    // grep group in the same Calculate that recomputes the diff), and because the
+    // patch pane needs the pattern again to list the matching lines of one file.
+    private GitGrepQuery _grepQuery = GitGrepQuery.None;
+
+    // Its own cancellation, separate from _diffCts: typing in the box supersedes the
+    // previous git-grep, and must not cancel the patch the user is reading.
+    private CancellationTokenSource? _grepCts;
+
+    // The rows of the current search section, by REFERENCE. DiffFileRow is a record,
+    // so a hit and a changed file with the same path compare EQUAL by value; identity
+    // is the only thing that says which section the clicked row came from, and that is
+    // what decides whether the pane shows a patch or the matching lines.
+    private readonly HashSet<DiffFileRow> _grepRows = new(RowByReference.Instance);
+
     // Whether the last file diff was loaded as "commit vs working tree" through
     // the context-menu command, so a toggle re-runs the same comparison.
     private bool _forceWorkingTreeCompare;
@@ -197,6 +215,13 @@ public sealed class DiffView : UserControl
         _files = new FileStatusListView { ShowRefreshButton = true };
         _files.SelectedFileChanged += _ => OnFileSelected();
         _files.RefreshRequested += ReloadFileList;
+
+        // Every comparison this pane shows is about ONE revision to grep — a commit, a
+        // range's "other" end, or one of the two artificial rows (git grep understands
+        // the index and the worktree as well) — so the search button is always offered
+        // here, which is upstream's CanUseFindInCommitFilesGitGrep for the Diff tab.
+        _files.CanFindInFiles = true;
+        _files.FindInFilesRequested += OnFindInFilesRequested;
 
         _copyPathItem = new CopyPathsMenuItem(
             () => _files.SelectedFiles.Select(r => r.Name),
@@ -1088,6 +1113,12 @@ public sealed class DiffView : UserControl
     {
         _diffCts?.Cancel();
 
+        // The search is about the revision that is going away, so it goes with it —
+        // its results would name files of another repository. The BOX stays open (and
+        // keeps its text): the next revision loaded here re-runs it through RunGrep.
+        _grepCts?.Cancel();
+        _grepRows.Clear();
+
         // Both spinners come down here, and this is the ONE place that has to do it by
         // hand: a cancelled patch load returns off the UI thread without touching the
         // pane (that is what the token check below the await is for), so the overlay it
@@ -1335,6 +1366,14 @@ public sealed class DiffView : UserControl
                     _files.SetFiles(groups);
                     Preselect(wanted);
                     _status.Text = statusFor(total);
+
+                    // The diff half has just been replaced; the search half is
+                    // independent and is re-run for the revision now on screen, so an
+                    // open search box keeps answering after a refresh or a new
+                    // selection instead of leaving stale hits (or none) behind. This is
+                    // upstream's second pass in ReloadFileStatus, which recomputes the
+                    // grep group after the diff group is already visible.
+                    RunGrep();
                 });
             }
             catch (Exception ex)
@@ -1386,6 +1425,169 @@ public sealed class DiffView : UserControl
     // The toolbar's refresh button: re-reads the changed-file list of whatever
     // comparison is on screen (the working-tree one is the one that goes stale).
     private void ReloadFileList() => _reload?.Invoke();
+
+    // ------------------------------------------- find in commit files (git grep)
+
+    // The list's search box changed (typing, Enter, an option, the box closing).
+    private void OnFindInFilesRequested(GitGrepQuery query)
+    {
+        _grepQuery = query;
+        RunGrep();
+    }
+
+    // Runs the current query against the revision the pane is showing and hands the
+    // result to the list as its extra section. An inactive query (empty box, closed
+    // box) removes the section instead of running anything.
+    private void RunGrep()
+    {
+        // Whatever was running is no longer the answer to the question on screen:
+        // superseded searches are cancelled, not awaited.
+        _grepCts?.Cancel();
+        _grepCts?.Dispose();
+        _grepCts = null;
+
+        if (!_grepQuery.IsActive || _repoPath is null || _commitHash is null)
+        {
+            _grepRows.Clear();
+            _files.SetSearchResults(null);
+            return;
+        }
+
+        _grepCts = new CancellationTokenSource();
+        CancellationToken token = _grepCts.Token;
+
+        // Snapshot everything the background thread reads: the pane's revision can
+        // change under it, and a search must answer for the revision it started on.
+        string repoPath = _repoPath;
+        string commitHash = _commitHash;
+        GitGrepQuery query = _grepQuery;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                DiffFileGroup? group = GitGrepService.SearchGroup(repoPath, commitHash, query, token);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    // Re-checked on the UI thread: the query may have been superseded
+                    // between the git call returning and this post being pumped, and
+                    // the newer search's results must not be overwritten by an older
+                    // one's.
+                    if (token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    _grepRows.Clear();
+                    if (group is not null)
+                    {
+                        foreach (DiffFileRow row in group.Rows)
+                        {
+                            _grepRows.Add(row);
+                        }
+                    }
+
+                    _files.SetSearchResults(group);
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by another search; ignore.
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        // A failed search leaves the diff sections alone and says so on
+                        // the shared status line — the pane is not broken, the search is.
+                        _status.Text = F("{0}: {1}", ErrorWord(), ex.Message);
+                    }
+                });
+            }
+        });
+    }
+
+    // Shows the matching lines of a search hit in the patch pane. A hit has no patch:
+    // the file merely CONTAINS the pattern at this revision, so what belongs here is
+    // git grep's own listing (upstream: GitUIExtensions.ViewChangesAsync routes a
+    // status carrying a GrepString to GetGrepFileAsync rather than to a diff).
+    private void LoadSelectedGrepMatches(DiffFileRow row, string repoPath, string commitHash)
+    {
+        _diffCts?.Cancel();
+        _diffCts?.Dispose();
+        _diffCts = new CancellationTokenSource();
+        CancellationToken token = _diffCts.Token;
+
+        GitGrepQuery query = _grepQuery;
+        int contextLines = _options.ShowEntireFile ? 100_000 : _options.ContextLines;
+
+        _diffPath = row.Name;
+        ShowPlaceholder(string.Empty);
+        _patchBusy.Show(LoadingCaption());
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string text = await GitGrepService
+                    .GetMatchesAsync(repoPath, commitHash, row.Name, query, contextLines, token)
+                    .ConfigureAwait(false);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        _patchBusy.Hide();
+
+                        // RenderDiff, not ShowPlaceholder: the text is content (it is
+                        // what "Copy diff" should hand over, and the syntax highlighter
+                        // can colour it by the file's extension), even though no line
+                        // of it is a +/- one.
+                        RenderDiff(text);
+                        _status.Text = F("{0}  —  {1}", row.Name, query.Text);
+                    }
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by another selection.
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        _patchBusy.Hide();
+                        ShowPlaceholder(F("{0}: {1}", ErrorWord(), ex.Message));
+                    }
+                });
+            }
+        });
+    }
+
+    // Reference identity for DiffFileRow, which is a record and therefore equal by
+    // value to any row naming the same file in the same state.
+    private sealed class RowByReference : IEqualityComparer<DiffFileRow>
+    {
+        public static RowByReference Instance { get; } = new();
+
+        public bool Equals(DiffFileRow? x, DiffFileRow? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(DiffFileRow obj)
+            => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+    }
 
     private void OnFileSelected()
     {
@@ -2085,6 +2287,15 @@ public sealed class DiffView : UserControl
     {
         if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
         {
+            return;
+        }
+
+        // A row of the search section is answered with git grep's matching lines, not
+        // with a patch: the file need not have changed in this revision at all, and a
+        // diff of it would usually be empty — the wrong answer to the click.
+        if (_grepRows.Contains(row))
+        {
+            LoadSelectedGrepMatches(row, _repoPath, _commitHash);
             return;
         }
 
