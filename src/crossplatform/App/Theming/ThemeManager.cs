@@ -36,7 +36,7 @@ public static class ThemeManager
         "App.ConsoleBackground", "App.ConsoleForeground",
         "App.RepoStateClean", "App.RepoStateDirty", "App.RepoStateDirtySubmodules",
         "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
-        "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag",
+        "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag", "App.RefNote",
         "App.Link",
         "App.HoverRow", "App.Hover", "App.Pressed", "App.BorderStrong",
         "App.IconGreen", "App.IconRed", "App.IconBlue",
@@ -187,6 +187,16 @@ public static class ThemeManager
         // 6.67 / 6.56 / 6.67:1 — deliberately one narrow band, so no pill reads as the
         // weak one of the family.
         ["App.RefPillBg"] = Color.Parse("#252526"),
+
+        // The git-notes chip. It used to be the ONE badge with hard-coded colours — an
+        // opaque brown fill carrying pale amber text — which made it the odd one out
+        // on a light row, where every other badge is an outline pill on the pill
+        // surface, and left its own text/fill pair at 5.34:1, the weakest contrast on
+        // the row. Now it is an outline pill like the others, so it needs only an ink.
+        // Violet, not another amber: the ink has to be told apart from Tag as well as
+        // read, and it clears ΔE 48 from the nearest of the other three refs under
+        // normal, deuteranope AND protanope simulation.
+        ["App.RefNote"] = Color.Parse("#9B8FD6"),
         ["App.RefBranch"] = Color.Parse("#5FBF6B"),
         ["App.RefRemote"] = Color.Parse("#EE908A"),
         ["App.RefTag"] = Color.Parse("#D9A226"),
@@ -312,6 +322,16 @@ public static class ThemeManager
         // most (#B8860B was 3.25:1) because amber is the hue that fights a white
         // background hardest — at AA it necessarily lands on a dark olive.
         ["App.RefPillBg"] = Color.Parse("#FFFFFF"),
+
+        // The git-notes chip. It used to be the ONE badge with hard-coded colours — an
+        // opaque brown fill carrying pale amber text — which made it the odd one out
+        // on a light row, where every other badge is an outline pill on the pill
+        // surface, and left its own text/fill pair at 5.34:1, the weakest contrast on
+        // the row. Now it is an outline pill like the others, so it needs only an ink.
+        // Violet, not another amber: the ink has to be told apart from Tag as well as
+        // read, and it clears ΔE 48 from the nearest of the other three refs under
+        // normal, deuteranope AND protanope simulation.
+        ["App.RefNote"] = Color.Parse("#5A2D8A"),
         ["App.RefBranch"] = Color.Parse("#256B29"),
         ["App.RefRemote"] = Color.Parse("#A83226"),
         ["App.RefTag"] = Color.Parse("#7E5800"),
@@ -537,6 +557,16 @@ public static class ThemeManager
         // so the two themes are pinned to the same band instead of each drifting on
         // its own.
         ["App.RefPillBg"] = Color.Parse("#1C1D21"),
+
+        // The git-notes chip. It used to be the ONE badge with hard-coded colours — an
+        // opaque brown fill carrying pale amber text — which made it the odd one out
+        // on a light row, where every other badge is an outline pill on the pill
+        // surface, and left its own text/fill pair at 5.34:1, the weakest contrast on
+        // the row. Now it is an outline pill like the others, so it needs only an ink.
+        // Violet, not another amber: the ink has to be told apart from Tag as well as
+        // read, and it clears ΔE 48 from the nearest of the other three refs under
+        // normal, deuteranope AND protanope simulation.
+        ["App.RefNote"] = Color.Parse("#9B8FD6"),
         ["App.RefBranch"] = Color.Parse("#49B656"),
         ["App.RefRemote"] = Color.Parse("#EC837D"),
         ["App.RefTag"] = Color.Parse("#CC9924"),
@@ -700,6 +730,16 @@ public static class ThemeManager
         // that fights a light background hardest — at AA it necessarily lands on a dark
         // olive.
         ["App.RefPillBg"] = Color.Parse("#FDFDFD"),
+
+        // The git-notes chip. It used to be the ONE badge with hard-coded colours — an
+        // opaque brown fill carrying pale amber text — which made it the odd one out
+        // on a light row, where every other badge is an outline pill on the pill
+        // surface, and left its own text/fill pair at 5.34:1, the weakest contrast on
+        // the row. Now it is an outline pill like the others, so it needs only an ink.
+        // Violet, not another amber: the ink has to be told apart from Tag as well as
+        // read, and it clears ΔE 48 from the nearest of the other three refs under
+        // normal, deuteranope AND protanope simulation.
+        ["App.RefNote"] = Color.Parse("#5A2D8A"),
         ["App.RefBranch"] = Color.Parse("#256A29"),
         ["App.RefRemote"] = Color.Parse("#A93226"),
         ["App.RefTag"] = Color.Parse("#7B5600"),

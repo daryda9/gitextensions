@@ -1763,7 +1763,7 @@ public sealed class RevisionGridView : UserControl
                     _allRows = graphed;
                     // Display-only: _repoPath keeps the absolute path, the status
                     // line shows the same "~" form as the toolbar repo dropdown.
-                    _repoLabel = CollapseHome(repoPath);
+                    _repoLabel = PathDisplay.CollapseHome(repoPath);
                     // Recompute HEAD reachability for the relatives/highlight styles.
                     ComputeReachability();
                     // Re-apply any current filter text so a reload keeps the view
@@ -1833,8 +1833,7 @@ public sealed class RevisionGridView : UserControl
     }
 
     // Path display (home collapsed to "~") is shared with the toolbar's repository
-    // caption — see PathDisplay.CollapseHome.
-    private static string CollapseHome(string path) => PathDisplay.CollapseHome(path);
+
 
     // Human label for the current branch scope, shown in the status line so the
     // effect of the toggle (and the resulting commit count) is visible.
@@ -4882,18 +4881,26 @@ public sealed class RevisionGridView : UserControl
         };
 
     // A small amber "note" pill indicating the commit carries a git note.
+    // The same outline pill BuildRefBadge draws, in the notes ink. It used to be the
+    // one badge with hard-coded colours — an opaque brown fill carrying pale amber
+    // text — which made it the odd one out on a light row, where every other badge is
+    // an outline on App.RefPillBg, and left its own text-on-fill pair at 5.34:1, the
+    // weakest contrast on the row. Brushes taken BY REFERENCE for the same reason the
+    // ref pill does it: a live theme switch repaints without rebuilding the row.
     private static Border BuildNotesBadge()
         => new()
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x5A, 0x4B, 0x2E)),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(6, 0, 6, 1),
+            Background = B("App.RefPillBg"),
+            BorderBrush = B("App.RefNote"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(7, 0, 7, 1),
             VerticalAlignment = VerticalAlignment.Center,
             [ToolTip.TipProperty] = T("This commit has a git note"),
             Child = new TextBlock
             {
                 Text = T("note"),
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE3, 0xCB, 0x95)),
+                Foreground = B("App.RefNote"),
                 FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center,
             },

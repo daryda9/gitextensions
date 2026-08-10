@@ -748,7 +748,7 @@ public sealed class MainToolbar : UserControl
         {
             _repoPathCaption.Text = string.IsNullOrWhiteSpace(repoPath)
                 ? T("(no repository)")
-                : CollapseHome(repoPath);
+                : PathDisplay.CollapseHome(repoPath);
         }
 
         // The strip used to end with a far-right "repo — path (branch)" label. It had
@@ -760,8 +760,7 @@ public sealed class MainToolbar : UserControl
     }
 
     // Path display (home collapsed to "~") is shared with the revision grid's
-    // status line — see PathDisplay.CollapseHome.
-    private static string CollapseHome(string path) => PathDisplay.CollapseHome(path);
+
 
     /// <summary>
     ///  Reflects the host's split-view state on the toggle: a checked, accented
