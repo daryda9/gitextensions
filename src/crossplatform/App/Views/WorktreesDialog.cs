@@ -25,8 +25,10 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
     private readonly WorktreeService _service = new();
     private readonly string _repoPath;
     private readonly ListBox _list;
+    private readonly Button _add;
     private readonly Button _remove;
     private readonly Button _prune;
+    private readonly Button _close;
     private readonly TextBox _output;
     private readonly TextBlock _status;
 
@@ -53,7 +55,6 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
     {
         _repoPath = repoPath;
 
-        Title = "Worktrees";
         Width = 640;
         Height = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -86,15 +87,17 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
             return text;
         });
 
-        Button add = MakeButton("Add…");
-        _remove = MakeButton("Remove");
-        _prune = MakeButton("Prune");
-        Button close = MakeButton("Close");
+        _add = MakeButton();
+        _remove = MakeButton();
+        _prune = MakeButton();
+        _close = MakeButton();
 
-        add.Click += (_, _) => _ = DoAddAsync();
+        _add.Click += (_, _) => _ = DoAddAsync();
         _remove.Click += (_, _) => _ = DoRemoveAsync();
-        _prune.Click += (_, _) => Run("Prune", () => _service.PruneWorktrees(_repoPath));
-        close.Click += (_, _) => Close();
+        _prune.Click += (_, _) => Run(
+            T("TranslatedStrings/_pruneWorktrees.Text", "Prune"),
+            () => _service.PruneWorktrees(_repoPath));
+        _close.Click += (_, _) => Close();
 
         // Escape = Close (upstream's CancelButton). Bubbling, so inner popups keep
         // their own Escape; Close() does not touch <see cref="Changed"/>.
@@ -111,14 +114,18 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
         {
             Orientation = Orientation.Vertical,
             Spacing = 6,
-            Width = 140,
+
+            // MinWidth, not Width: translated captions are routinely longer than the
+            // English ones ("Prune deleted worktrees" → "Prune dei worktree eliminati"),
+            // and a hard width would clip them instead of growing this Auto column.
+            MinWidth = 140,
             Margin = new Thickness(10, 0, 0, 0),
         };
-        buttons.Children.Add(add);
+        buttons.Children.Add(_add);
         buttons.Children.Add(_remove);
         buttons.Children.Add(_prune);
         buttons.Children.Add(new Border { Height = 8 });
-        buttons.Children.Add(close);
+        buttons.Children.Add(_close);
 
         Grid top = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         Grid.SetColumn(_list, 0);
@@ -164,9 +171,42 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
         Content = body;
         DialogKeys.EnsureFocusRoute(this);
 
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
+
         Opened += (_, _) => ReloadList();
         UpdateButtons();
     }
+
+    // --- Translations -----------------------------------------------------
+
+    // Re-labelling the chrome is not enough: every row's caption is built by
+    // WorktreeItem.ToString, which the ListBox only calls when the item collection
+    // changes. ReloadList is the rebuild path, exactly as MainToolbar re-runs its own.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        ApplyTranslations();
+        ReloadList();
+    });
+
+    private void ApplyTranslations()
+    {
+        Title = T("TranslatedStrings/_worktreesText.Text", "Worktrees");
+
+        // Upstream's captions are longer sentences on wider buttons ("&Create...",
+        // "&Delete selected", "&Prune deleted worktrees"); the ids are still the right
+        // ones, because they are what a translator has already been asked to word for
+        // exactly these four actions.
+        _add.Content = T("FormManageWorktree/buttonCreateNewWorktree.Text", "Add…");
+        _remove.Content = T("FormManageWorktree/buttonDeleteSelectedWorktree.Text", "Remove");
+        _prune.Content = T("FormManageWorktree/buttonPruneWorktrees.Text", "Prune");
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     private WorktreeItem? Selected => _list.SelectedItem as WorktreeItem;
 
@@ -241,7 +281,8 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
 
     private async Task DoAddAsync()
     {
-        string? path = await PromptAsync("New worktree path:", string.Empty);
+        string? path = await PromptAsync(
+            T("FormCreateWorktree/lblNewWorktreeFolder.Text", "New worktree path:"), string.Empty);
         if (path is not { Length: > 0 } target)
         {
             return;
@@ -249,9 +290,12 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
 
         // Branch is optional: empty lets git create a branch named after the path
         // (normalised to git's ref rules by the service).
-        string? branch = await PromptAsync($"Branch/revision for '{target}' (blank = new branch):", string.Empty);
+        string? branch = await PromptAsync(
+            TranslationService.TFormat(
+                null, "Branch/revision for '{0}' (blank = new branch):", target),
+            string.Empty);
         Run(
-            $"Add '{target}'",
+            TranslationService.TFormat(null, "Add '{0}'", target),
             () => _service.AddWorktree(_repoPath, target, branch ?? string.Empty),
             onSuccess: () => _ = OfferToOpenAsync(target));
     }
@@ -263,9 +307,16 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
             return;
         }
 
-        if (await ConfirmAsync($"Remove worktree '{item.Row.Path}'?"))
+        // Upstream's own confirmation, placeholder included, so the question reads the
+        // way the Windows dialog asks it.
+        if (await ConfirmAsync(TranslationService.TFormat(
+            "TranslatedStrings/_deleteWorktreeConfirmation.Text",
+            "Remove worktree '{0}'?",
+            item.Row.Path)))
         {
-            Run($"Remove '{item.Row.Path}'", () => _service.RemoveWorktree(_repoPath, item.Row.Path));
+            Run(
+                TranslationService.TFormat(null, "Remove '{0}'", item.Row.Path),
+                () => _service.RemoveWorktree(_repoPath, item.Row.Path));
         }
     }
 
@@ -274,7 +325,10 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
     // closes this dialog: the host cannot switch the repository under an open modal.
     private async Task OfferToOpenAsync(string path)
     {
-        if (await ConfirmAsync($"Switch to the new worktree '{path}'?"))
+        if (await ConfirmAsync(TranslationService.TFormat(
+            "TranslatedStrings/_switchWorktreeConfirmation.Text",
+            "Switch to the new worktree '{0}'?",
+            path)))
         {
             RepositoryToOpen = System.IO.Path.GetFullPath(path);
             Close();
@@ -289,7 +343,7 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
         }
 
         _busy = true;
-        _status.Text = $"{label}…";
+        _status.Text = TranslationService.TFormat(null, "{0}…", label);
         UpdateButtons();
         _ = Task.Run(() =>
         {
@@ -311,7 +365,9 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
                     Changed = true;
                 }
 
-                _status.Text = $"{label}: {(result.Success ? "OK" : "failed")}";
+                _status.Text = result.Success
+                    ? TranslationService.TFormat(null, "{0}: OK", label)
+                    : TranslationService.TFormat(null, "{0}: failed", label);
                 _output.Text = result.Output;
                 ReloadList();
 
@@ -329,11 +385,11 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
     {
         TaskCompletionSource<bool> tcs = new();
 
-        Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
-        Button no = new() { Content = "Cancel" };
+        Button yes = new() { Content = T("Confirm"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 340,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -360,11 +416,11 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
         TaskCompletionSource<string?> tcs = new();
 
         TextBox input = new() { Text = initial };
-        Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
-        Button cancel = new() { Content = "Cancel" };
+        Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK"), Margin = new Thickness(0, 0, 6, 0) };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Worktree",
+            Title = T("Worktree"),
             Width = 460,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -396,8 +452,9 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
         return await tcs.Task;
     }
 
-    private static Button MakeButton(string text)
-        => new() { Content = text, HorizontalAlignment = HorizontalAlignment.Stretch };
+    // No caption here: ApplyTranslations owns every button label in this dialog.
+    private static Button MakeButton()
+        => new() { HorizontalAlignment = HorizontalAlignment.Stretch };
 
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;
@@ -408,6 +465,10 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
     {
         public override string ToString()
         {
+            // "bare" and "detached" are left in git's own words: they are the names of
+            // the states as git prints them (`git worktree list` writes "(bare)" and
+            // "(detached HEAD)"), not prose the port invented, and the row shows them
+            // next to a path and a SHA that are equally untranslatable.
             string state = Row.IsBare ? "bare"
                 : Row.Branch.Length > 0 ? Row.Branch
                 : Row.IsDetached ? $"detached @ {Row.Head}"
@@ -419,11 +480,11 @@ public sealed class WorktreesDialog : Theming.ZoomWindow
             // disabled Remove button.
             if (Row.IsPrunable)
             {
-                label += "  (deleted — use Prune)";
+                label += "  " + TranslationService.T("(deleted — use Prune)");
             }
             else if (Row.IsMain)
             {
-                label += "  (main)";
+                label += "  " + TranslationService.T("(main)");
             }
 
             return label;
