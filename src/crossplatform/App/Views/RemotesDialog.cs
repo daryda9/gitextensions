@@ -46,8 +46,10 @@ public sealed class RemotesDialog : Theming.ZoomWindow
 
     // --- Tab 1: remotes
     private readonly ListBox _list;
+    private readonly Button _add;
     private readonly Button _rename;
     private readonly Button _remove;
+    private readonly TextBlock _fetchUrlLabel;
     private readonly TextBox _fetchUrl;
     private readonly CheckBox _useSeparatePushUrl;
     private readonly TextBlock _pushUrlLabel;
@@ -62,6 +64,18 @@ public sealed class RemotesDialog : Theming.ZoomWindow
     private readonly AutoCompleteBox _mergeWith;
     private readonly Button _saveBranch;
     private readonly TextBlock _branchStatus;
+    private readonly TextBlock _behaviorHint;
+    private readonly TextBlock _branchNameHeader;
+    private readonly TextBlock _remoteHeader;
+    private readonly TextBlock _mergeWithHeader;
+    private readonly TextBlock _localBranchLabel;
+    private readonly TextBlock _remoteLabel;
+    private readonly TextBlock _mergeWithLabel;
+
+    // --- Shell
+    private readonly TabItem _remotesTab;
+    private readonly TabItem _behaviorTab;
+    private readonly Button _close;
 
     private bool _busy;
     private bool _suppressRemoteSelection;
@@ -79,7 +93,6 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         IBrush text = Brush("App.Text", Brushes.Gainsboro);
         IBrush dim = Brush("App.TextDim", Brushes.Gray);
 
-        Title = "Remotes";
         Width = 760;
         Height = 560;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -100,11 +113,11 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             }
         };
 
-        Button add = MakeButton("Add…");
-        _rename = MakeButton("Rename…");
-        _remove = MakeButton("Remove");
+        _add = MakeButton();
+        _rename = MakeButton();
+        _remove = MakeButton();
 
-        add.Click += (_, _) => _ = DoAddAsync();
+        _add.Click += (_, _) => _ = DoAddAsync();
         _rename.Click += (_, _) => _ = DoRenameAsync();
         _remove.Click += (_, _) => _ = DoRemoveAsync();
 
@@ -113,26 +126,21 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         // Upstream's "Sep&arate Push Url" check box: ticked iff remote.<n>.pushurl
         // exists (FormRemotes.cs:768-769), and it HIDES the URL row when unticked
         // (ShowSeparatePushUrl, FormRemotes.cs:787-806).
-        _useSeparatePushUrl = new CheckBox
-        {
-            Content = "Use separate push URL",
-            Foreground = text,
-        };
+        _useSeparatePushUrl = new CheckBox { Foreground = text };
         _useSeparatePushUrl.IsCheckedChanged += (_, _) => ApplySeparatePushUrlVisibility();
 
         _pushUrlLabel = new TextBlock
         {
-            Text = "Push URL",
             Foreground = dim,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0),
         };
         _pushUrl = new TextBox { Foreground = text };
-        _pushUrlBrowse = MakeButton("Browse…");
+        _pushUrlBrowse = MakeButton();
         _pushUrlBrowse.Width = double.NaN;
         _pushUrlBrowse.Click += (_, _) => _ = BrowseForPushUrlAsync();
 
-        _saveRemote = MakeButton("Save changes");
+        _saveRemote = MakeButton();
         _saveRemote.Width = double.NaN;
         _saveRemote.HorizontalAlignment = HorizontalAlignment.Right;
         _saveRemote.Click += (_, _) => _ = DoSaveRemoteAsync();
@@ -141,10 +149,14 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         {
             Orientation = Orientation.Vertical,
             Spacing = 6,
-            Width = 120,
+
+            // MinWidth, not Width: the Italian captions ("Rinomina…", "Aggiungi…") are
+            // longer than the English ones, and a hard width would clip them instead of
+            // letting this Auto-sized column grow.
+            MinWidth = 120,
             Margin = new Thickness(10, 0, 0, 0),
         };
-        remoteButtons.Children.Add(add);
+        remoteButtons.Children.Add(_add);
         remoteButtons.Children.Add(_rename);
         remoteButtons.Children.Add(_remove);
 
@@ -155,15 +167,14 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto"),
         };
 
-        TextBlock fetchLabel = new()
+        _fetchUrlLabel = new TextBlock
         {
-            Text = "Fetch URL",
             Foreground = dim,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 6),
         };
-        Grid.SetRow(fetchLabel, 0);
-        Grid.SetColumn(fetchLabel, 0);
+        Grid.SetRow(_fetchUrlLabel, 0);
+        Grid.SetColumn(_fetchUrlLabel, 0);
         _fetchUrl.Margin = new Thickness(0, 0, 0, 6);
         Grid.SetRow(_fetchUrl, 0);
         Grid.SetColumn(_fetchUrl, 1);
@@ -187,7 +198,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         Grid.SetColumn(_saveRemote, 1);
         Grid.SetColumnSpan(_saveRemote, 2);
 
-        details.Children.Add(fetchLabel);
+        details.Children.Add(_fetchUrlLabel);
         details.Children.Add(_fetchUrl);
         details.Children.Add(_useSeparatePushUrl);
         details.Children.Add(_pushUrlLabel);
@@ -244,10 +255,9 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             IsTextCompletionEnabled = false,
             MaxDropDownHeight = 220,
             MinWidth = 200,
-            Watermark = "Type or pick a remote branch",
         };
 
-        _saveBranch = MakeButton("Save changes");
+        _saveBranch = MakeButton();
         _saveBranch.Width = double.NaN;
         _saveBranch.Click += (_, _) => _ = DoSaveBranchAsync();
 
@@ -263,29 +273,29 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             ColumnDefinitions = BranchColumns(),
             Margin = new Thickness(6, 0, 6, 4),
         };
-        AddHeaderCell(branchHeader, 0, "Local branch name", dim);
-        AddHeaderCell(branchHeader, 1, "Remote repository", dim);
-        AddHeaderCell(branchHeader, 2, "Default merge with", dim);
+        _branchNameHeader = AddHeaderCell(branchHeader, 0, dim);
+        _remoteHeader = AddHeaderCell(branchHeader, 1, dim);
+        _mergeWithHeader = AddHeaderCell(branchHeader, 2, dim);
 
         Grid branchEditor = new()
         {
             Margin = new Thickness(0, 12, 0, 0),
             ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto,Auto"),
         };
-        TextBlock lbl1 = new() { Text = "Local branch", Foreground = dim, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
-        TextBlock lbl2 = new() { Text = "Remote", Foreground = dim, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0) };
-        TextBlock lbl3 = new() { Text = "Merge with", Foreground = dim, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0) };
-        Grid.SetColumn(lbl1, 0);
+        _localBranchLabel = new TextBlock { Foreground = dim, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        _remoteLabel = new TextBlock { Foreground = dim, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0) };
+        _mergeWithLabel = new TextBlock { Foreground = dim, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0) };
+        Grid.SetColumn(_localBranchLabel, 0);
         Grid.SetColumn(_localBranch, 1);
-        Grid.SetColumn(lbl2, 2);
+        Grid.SetColumn(_remoteLabel, 2);
         Grid.SetColumn(_trackingRemote, 3);
-        Grid.SetColumn(lbl3, 4);
+        Grid.SetColumn(_mergeWithLabel, 4);
         Grid.SetColumn(_mergeWith, 5);
-        branchEditor.Children.Add(lbl1);
+        branchEditor.Children.Add(_localBranchLabel);
         branchEditor.Children.Add(_localBranch);
-        branchEditor.Children.Add(lbl2);
+        branchEditor.Children.Add(_remoteLabel);
         branchEditor.Children.Add(_trackingRemote);
-        branchEditor.Children.Add(lbl3);
+        branchEditor.Children.Add(_mergeWithLabel);
         branchEditor.Children.Add(_mergeWith);
 
         StackPanel branchActions = new()
@@ -302,21 +312,18 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             Margin = new Thickness(12),
             RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto,Auto"),
         };
-        TextBlock behaviorHint = new()
+        _behaviorHint = new TextBlock
         {
-            Text = "For each local branch, the remote it pulls from (branch.<name>.remote) "
-                 + "and the remote branch it merges with (branch.<name>.merge). "
-                 + "Clearing a field removes the corresponding git config key.",
             Foreground = dim,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10),
         };
-        Grid.SetRow(behaviorHint, 0);
+        Grid.SetRow(_behaviorHint, 0);
         Grid.SetRow(branchHeader, 1);
         Grid.SetRow(_branches, 2);
         Grid.SetRow(branchEditor, 3);
         Grid.SetRow(_branchStatus, 4);
-        behaviorBody.Children.Add(behaviorHint);
+        behaviorBody.Children.Add(_behaviorHint);
         behaviorBody.Children.Add(branchHeader);
         behaviorBody.Children.Add(_branches);
         behaviorBody.Children.Add(branchEditor);
@@ -331,22 +338,24 @@ public sealed class RemotesDialog : Theming.ZoomWindow
 
         // ================= Shell =================
 
+        _remotesTab = new TabItem { Content = remotesBody };
+        _behaviorTab = new TabItem { Content = behaviorRoot };
         TabControl tabs = new();
-        tabs.Items.Add(new TabItem { Header = "Remotes", Content = remotesBody });
-        tabs.Items.Add(new TabItem { Header = "Default pull behavior (fetch & merge)", Content = behaviorRoot });
+        tabs.Items.Add(_remotesTab);
+        tabs.Items.Add(_behaviorTab);
 
-        Button close = MakeButton("Close");
-        close.Width = double.NaN;
-        close.MinWidth = 90;
-        close.HorizontalAlignment = HorizontalAlignment.Right;
-        close.Margin = new Thickness(12, 0, 12, 12);
-        close.Click += (_, _) => Close();
+        _close = MakeButton();
+        _close.Width = double.NaN;
+        _close.MinWidth = 90;
+        _close.HorizontalAlignment = HorizontalAlignment.Right;
+        _close.Margin = new Thickness(12, 0, 12, 12);
+        _close.Click += (_, _) => Close();
 
         Grid root = new() { RowDefinitions = new RowDefinitions("*,Auto") };
         Grid.SetRow(tabs, 0);
-        Grid.SetRow(close, 1);
+        Grid.SetRow(_close, 1);
         root.Children.Add(tabs);
-        root.Children.Add(close);
+        root.Children.Add(_close);
 
         // Escape = Close, like every WinForms dialog upstream (their CancelButton).
         // Bubbling phase, so an open context menu or the inline prompts get the key
@@ -364,26 +373,88 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         Content = root;
         DialogKeys.EnsureFocusRoute(this);
 
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
+
         Opened += (_, _) => ReloadAll();
         UpdateButtons();
         ApplySeparatePushUrlVisibility();
     }
+
+    // --- Translations -----------------------------------------------------
+
+    // A language switch re-labels the chrome AND re-reads both lists: the branch rows
+    // carry translated prose of their own ("(none)") inside a data template, which only
+    // a fresh item collection re-renders. Re-reading git config is cheap and a language
+    // switch is rare, so this is preferred over hand-walking the containers.
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        ApplyTranslations();
+        ReloadAll();
+    });
+
+    private void ApplyTranslations()
+    {
+        // Upstream's window is "Remote repositories"; the port's shorter "Remotes" is
+        // only the English literal, the id decides what a translation says.
+        Title = T("FormRemotes/$this.Text", "Remotes");
+        _remotesTab.Header = T("FormRemotes/tabPage1.Text", "Remotes");
+        _behaviorTab.Header = T("FormRemotes/tabPage2.Text", "Default pull behavior (fetch & merge)");
+
+        // No upstream counterpart for the three list buttons: FormRemotes drives its
+        // remote list from a toolbar whose captions are tooltips on icons
+        // (_btnNewTooltip / _btnDeleteTooltip), which are sentences, not button labels.
+        // The single-argument overload finds the plain words by source text instead.
+        _add.Content = T("Add…");
+        _rename.Content = T("FormQuickGitRefSelector/_actionRename.Text", "Rename…");
+        _remove.Content = T("Remove");
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
+
+        _fetchUrlLabel.Text = T("FormRemotes/_labelUrlAsFetch.Text", "Fetch URL");
+        _useSeparatePushUrl.Content = T("FormRemotes/checkBoxSepPushUrl.Text", "Use separate push URL");
+        _pushUrlLabel.Text = T("FormRemotes/labelPushUrl.Text", "Push URL");
+        _pushUrlBrowse.Content = T("FormRemotes/folderBrowserButtonPushUrl.Text", "Browse…");
+        _saveRemote.Content = T("FormRemotes/Save.Text", "Save changes");
+
+        _behaviorHint.Text = T(
+            "For each local branch, the remote it pulls from (branch.<name>.remote) "
+            + "and the remote branch it merges with (branch.<name>.merge). "
+            + "Clearing a field removes the corresponding git config key.");
+
+        // The three column captions are upstream's DataGridView headers verbatim; the
+        // three editor captions are its labels, which carry the accelerator form.
+        _branchNameHeader.Text = T("FormRemotes/BranchName.HeaderText", "Local branch name");
+        _remoteHeader.Text = T("FormRemotes/RemoteCombo.HeaderText", "Remote repository");
+        _mergeWithHeader.Text = T("FormRemotes/MergeWith.HeaderText", "Default merge with");
+        _localBranchLabel.Text = T("FormRemotes/label4.Text", "Local branch");
+        _remoteLabel.Text = T("TranslatedStrings/_remote.Text", "Remote");
+        _mergeWithLabel.Text = T("FormRemotes/label6.Text", "Merge with");
+        _mergeWith.Watermark = T("Type or pick a remote branch");
+        _saveBranch.Content = T("FormRemotes/SaveDefaultPushPull.Text", "Save changes");
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     // Shared column geometry for the branch header and each branch row, so the two
     // line up. Kept in one place because a mismatch is invisible in code review and
     // obvious on screen.
     private static ColumnDefinitions BranchColumns() => new("2*,1.4*,2*");
 
-    private static void AddHeaderCell(Grid grid, int column, string caption, IBrush brush)
+    // Returns the cell so the caller can keep it and re-caption it on a language
+    // change; the caption itself is set by ApplyTranslations, never here.
+    private static TextBlock AddHeaderCell(Grid grid, int column, IBrush brush)
     {
         TextBlock cell = new()
         {
-            Text = caption,
             Foreground = brush,
             FontWeight = FontWeight.SemiBold,
         };
         Grid.SetColumn(cell, column);
         grid.Children.Add(cell);
+        return cell;
     }
 
     // NOTE: Avalonia re-invokes an item template with a NULL item when it empties a
@@ -406,7 +477,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             bool hasRemote = !string.IsNullOrEmpty(row?.TrackingRemote);
             TextBlock remote = new()
             {
-                Text = hasRemote ? row!.TrackingRemote : "(none)",
+                Text = hasRemote ? row!.TrackingRemote : T("(none)"),
                 Foreground = hasRemote ? text : dim,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
@@ -414,7 +485,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             bool hasMerge = !string.IsNullOrEmpty(row?.MergeWith);
             TextBlock merge = new()
             {
-                Text = hasMerge ? row!.MergeWith : "(none)",
+                Text = hasMerge ? row!.MergeWith : T("(none)"),
                 Foreground = hasMerge ? text : dim,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
@@ -600,7 +671,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
 
     private async Task DoAddAsync()
     {
-        string? name = await PromptAsync("New remote name:", string.Empty);
+        string? name = await PromptAsync(T("New remote name:"), string.Empty);
         if (name is not { Length: > 0 })
         {
             return;
@@ -608,17 +679,28 @@ public sealed class RemotesDialog : Theming.ZoomWindow
 
         if (RemoteExists(name))
         {
-            await ShowErrorAsync("Add remote", $"A remote named '{name}' already exists.");
+            // Upstream's own wording for the clash, with its {0} placeholder kept so a
+            // translator can move the name: an active remote is the only kind the port
+            // has (it does not implement upstream's "inactive remote" concept).
+            await ShowErrorAsync(
+                T("Add remote"),
+                TranslationService.TFormat(
+                    "FormRemotes/_enabledRemoteAlreadyExists.Text",
+                    "A remote named '{0}' already exists.",
+                    name));
             return;
         }
 
-        string? url = await PromptAsync($"URL for remote '{name}':", string.Empty);
+        string? url = await PromptAsync(
+            TranslationService.TFormat(null, "URL for remote '{0}':", name), string.Empty);
         if (url is not { Length: > 0 })
         {
             return;
         }
 
-        RunMutation($"Add remote '{name}'", () => _service.AddRemote(_repoPath, name, url));
+        RunMutation(
+            TranslationService.TFormat(null, "Add remote '{0}'", name),
+            () => _service.AddRemote(_repoPath, name, url));
     }
 
     private async Task DoRenameAsync()
@@ -628,7 +710,8 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             return;
         }
 
-        string? name = await PromptAsync($"Rename remote '{row.Name}' to:", row.Name);
+        string? name = await PromptAsync(
+            TranslationService.TFormat(null, "Rename remote '{0}' to:", row.Name), row.Name);
         if (name is not { Length: > 0 } target || string.Equals(target, row.Name, StringComparison.Ordinal))
         {
             return;
@@ -636,11 +719,18 @@ public sealed class RemotesDialog : Theming.ZoomWindow
 
         if (RemoteExists(target))
         {
-            await ShowErrorAsync("Rename remote", $"A remote named '{target}' already exists.");
+            await ShowErrorAsync(
+                T("Rename remote"),
+                TranslationService.TFormat(
+                    "FormRemotes/_enabledRemoteAlreadyExists.Text",
+                    "A remote named '{0}' already exists.",
+                    target));
             return;
         }
 
-        RunMutation($"Rename '{row.Name}' to '{target}'", () => _service.RenameRemote(_repoPath, row.Name, target));
+        RunMutation(
+            TranslationService.TFormat(null, "Rename '{0}' to '{1}'", row.Name, target),
+            () => _service.RenameRemote(_repoPath, row.Name, target));
     }
 
     private async Task DoRemoveAsync()
@@ -650,9 +740,11 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             return;
         }
 
-        if (await ConfirmAsync($"Remove remote '{row.Name}'?"))
+        if (await ConfirmAsync(TranslationService.TFormat(null, "Remove remote '{0}'?", row.Name)))
         {
-            RunMutation($"Remove remote '{row.Name}'", () => _service.RemoveRemote(_repoPath, row.Name));
+            RunMutation(
+                TranslationService.TFormat(null, "Remove remote '{0}'", row.Name),
+                () => _service.RemoveRemote(_repoPath, row.Name));
         }
     }
 
@@ -675,7 +767,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         string wantedUrl = _fetchUrl.Text?.Trim() ?? string.Empty;
         if (wantedUrl.Length == 0)
         {
-            await ShowErrorAsync("Save remote", "The fetch URL cannot be empty.");
+            await ShowErrorAsync(T("Save remote"), T("The fetch URL cannot be empty."));
             return;
         }
 
@@ -716,8 +808,8 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         else
         {
             await ShowErrorAsync(
-                $"Save remote '{name}'",
-                string.IsNullOrWhiteSpace(result.Output) ? "git reported no output." : result.Output.Trim());
+                TranslationService.TFormat(null, "Save remote '{0}'", name),
+                string.IsNullOrWhiteSpace(result.Output) ? T("git reported no output.") : result.Output.Trim());
         }
     }
 
@@ -740,7 +832,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         string merge = _mergeWith.Text?.Trim() ?? string.Empty;
         string branch = row.Name;
 
-        _branchStatus.Text = $"Saving '{branch}'…";
+        _branchStatus.Text = TranslationService.TFormat(null, "Saving '{0}'…", branch);
         RemoteOpResult result = await Task.Run(
             () => _service.SetBranchPullConfiguration(_repoPath, branch, remote, merge));
 
@@ -754,16 +846,16 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             // it, since its merge-with handler never fires. The refreshed grid below is
             // the authoritative report.
             _branchStatus.Text = remote.Length == 0
-                ? $"'{branch}': saved — no default pull remote."
-                : $"'{branch}': pulls from '{remote}'.";
+                ? TranslationService.TFormat(null, "'{0}': saved — no default pull remote.", branch)
+                : TranslationService.TFormat(null, "'{0}': pulls from '{1}'.", branch, remote);
             ReloadBranches();
         }
         else
         {
             _branchStatus.Text = string.Empty;
             await ShowErrorAsync(
-                $"Save default pull behavior for '{branch}'",
-                string.IsNullOrWhiteSpace(result.Output) ? "git reported no output." : result.Output.Trim());
+                TranslationService.TFormat(null, "Save default pull behavior for '{0}'", branch),
+                string.IsNullOrWhiteSpace(result.Output) ? T("git reported no output.") : result.Output.Trim());
         }
     }
 
@@ -776,7 +868,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
             IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(
                 new FolderPickerOpenOptions
                 {
-                    Title = "Select the push target repository",
+                    Title = T("Select the push target repository"),
                     AllowMultiple = false,
                 });
 
@@ -837,7 +929,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
                     // Git sometimes fails with no output at all (killed process,
                     // missing git); still tell the user something concrete.
                     string message = string.IsNullOrWhiteSpace(result.Output)
-                        ? "git reported no output."
+                        ? T("git reported no output.")
                         : result.Output.Trim();
                     _ = ShowErrorAsync(label, message);
                 }
@@ -850,7 +942,11 @@ public sealed class RemotesDialog : Theming.ZoomWindow
     {
         TaskCompletionSource<bool> tcs = new();
 
-        Button ok = new() { Content = "OK", HorizontalAlignment = HorizontalAlignment.Right };
+        Button ok = new()
+        {
+            Content = T("TranslatedStrings/_okText.Text", "OK"),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
         Theming.ZoomWindow dialog = new()
         {
             Title = label,
@@ -865,7 +961,7 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         StackPanel content = new() { Margin = new Thickness(16), Spacing = 12 };
         content.Children.Add(new TextBlock
         {
-            Text = $"{label} failed:",
+            Text = TranslationService.TFormat(null, "{0} failed:", label),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -903,11 +999,11 @@ public sealed class RemotesDialog : Theming.ZoomWindow
     {
         TaskCompletionSource<bool> tcs = new();
 
-        Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
-        Button no = new() { Content = "Cancel" };
+        Button yes = new() { Content = T("Confirm"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 340,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -934,11 +1030,11 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         TaskCompletionSource<string?> tcs = new();
 
         TextBox input = new() { Text = initial };
-        Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
-        Button cancel = new() { Content = "Cancel" };
+        Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK"), Margin = new Thickness(0, 0, 6, 0) };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Remote",
+            Title = T("TranslatedStrings/_remote.Text", "Remote"),
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -970,8 +1066,10 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         return await tcs.Task;
     }
 
-    private static Button MakeButton(string text)
-        => new() { Content = text, HorizontalAlignment = HorizontalAlignment.Stretch };
+    // No caption here: every button this dialog keeps is captioned by
+    // ApplyTranslations, which is the single place that knows the active language.
+    private static Button MakeButton()
+        => new() { HorizontalAlignment = HorizontalAlignment.Stretch };
 
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;
