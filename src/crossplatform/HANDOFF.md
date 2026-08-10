@@ -772,10 +772,12 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
 > group-by). **2d**: le opzioni del viewer diff ci sono — ignore-whitespace nelle tre varianti,
 > righe di contesto +/-/intero file, evidenziazione della sintassi, caratteri non stampabili,
 > «vai alla riga», «prossima modifica».
-> **Unico residuo davvero aperto, e più stretto della nota vecchia**: la ricerca `git grep`
-> dalla lista dei file (`FileStatusList.Toolbar.cs` → «Find using dialog / input box»,
-> `GitGrepUserArguments`) non è portata. Non è chrome: è una funzione a sé, e va valutata
-> come tale.
+> Il residuo che questa riverifica aveva isolato — la ricerca `git grep` dalla lista dei
+> file — è **CHIUSO in M148**: nuovo `Services/GitGrepService` sul `GetGrepFilesStatus` del
+> core, casella inline, Match case / Match whole word persistiti in `view-prefs.json`,
+> risultati come sezione in più. Restano fuori, con motivo, il dialogo separato
+> `FormFindInCommitFilesGitGrep` e gli argomenti liberi `GitGrepUserArguments`.
+> **P2 non ha più nulla di aperto.**
 > **P3 — Pull: FATTA.** Split-button (corpo = azione predefinita persistita in
 > `UiState.DefaultPullAction`, freccia = menu upstream con il sottomenu "Set default"),
 > `PullDialog` su modello `FormPull`, `PullOptions` in `RemoteService` con tag policy/prune/
