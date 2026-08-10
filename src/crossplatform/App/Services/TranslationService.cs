@@ -324,6 +324,47 @@ public static class TranslationService
         }
     }
 
+    /// <summary>
+    ///  Translates a <b>count-dependent</b> sentence and fills it in, picking the
+    ///  singular or the plural wording by <paramref name="count"/>:
+    ///  <c>TPlural(null, "{0} revision left", "{0} revisions left", n)</c>.
+    ///
+    ///  <para><b>Why a second entry point rather than one format with an "(s)".</b>
+    ///  "1 revisions left" is wrong in English and worse elsewhere: a translator
+    ///  given a single string has nowhere to put a different word, and several
+    ///  languages inflect the noun, the verb and the numeral together. Two English
+    ///  originals give the catalogue two trans-units to carry two real sentences.</para>
+    ///
+    ///  <para><b>What this deliberately does NOT do.</b> It is not a CLDR plural-rule
+    ///  engine. Russian, Polish and Arabic distinguish three to six categories and
+    ///  would need the rule table plus a catalogue format that can express them —
+    ///  XLIFF 1.2 as Git Extensions uses it cannot. Two forms is what the catalogue
+    ///  can hold, so two forms is what this promises; a language needing more gets
+    ///  the plural form for every count but one, which is the same compromise every
+    ///  existing string in the app already makes, made visible instead of hidden.</para>
+    /// </summary>
+    /// <param name="key">Trans-unit id of the PLURAL form, or null to look both up by source text.</param>
+    /// <param name="englishSingular">The English wording used when <paramref name="count"/> is exactly 1.</param>
+    /// <param name="englishPlural">The English wording used for every other count, zero included.</param>
+    /// <param name="count">The count that decides the wording AND fills <c>{0}</c>.</param>
+    /// <param name="rest">Any further format arguments, filling <c>{1}</c> onwards.</param>
+    public static string TPlural(
+        string? key, string englishSingular, string englishPlural, long count, params object?[] rest)
+    {
+        // The count is always {0}: the caller writes one sentence per form and both
+        // start from the same argument list, so the two cannot drift apart.
+        object?[] args = new object?[rest.Length + 1];
+        args[0] = count;
+        rest.CopyTo(args, 1);
+
+        // Only the plural form carries the id. Upstream's catalogues have one unit
+        // per control, so there is no second id to give the singular; it falls back
+        // to the source-text lookup, which is exactly what T(string) does.
+        return count == 1
+            ? TFormat(key: null, englishSingular, args)
+            : TFormat(key, englishPlural, args);
+    }
+
     // ---- catalog -----------------------------------------------------------
 
     private sealed class Catalog

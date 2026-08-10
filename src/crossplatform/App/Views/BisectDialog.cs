@@ -306,11 +306,21 @@ public sealed class BisectDialog : Theming.ZoomWindow
 
         if (session.HasProgress)
         {
-            return string.Format(
-                System.Globalization.CultureInfo.CurrentCulture,
-                T("{0} revisions left to test, roughly {1} more steps."),
+            // Four wordings, not one with "(s)": the count of revisions and the count
+            // of steps run down independently, so "1 revision left … 1 more step" is a
+            // real state a bisect passes through and "1 revisions … 1 steps" is what
+            // the single format used to print. The step half is nested inside each
+            // revision half because a translator has to be able to move the two
+            // clauses relative to each other.
+            string steps = TranslationService.TPlural(
+                null, "roughly {0} more step", "roughly {0} more steps", session.StepsLeft);
+
+            return TranslationService.TPlural(
+                null,
+                "{0} revision left to test, {1}.",
+                "{0} revisions left to test, {1}.",
                 session.RevisionsLeft,
-                session.StepsLeft);
+                steps);
         }
 
         return T("This is the last commit to test.");

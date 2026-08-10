@@ -119,19 +119,35 @@ public static class ThemeManager
         // (App.Window, App.Panel, App.PanelAlt and the two diff tints).
         //
         // Kept apart on purpose, not just legible: the five are checked pairwise in
-        // CIE L*a*b* under normal, deuteranope and protanope simulation. The dark
-        // family's weakest pair was String↔Comment at ΔE 2.4 under protanopia (two
-        // tokens a red-blind reader could not tell apart); the light family below
-        // holds ΔE ≥ 17.6 across all three simulations, which is why Number is the
-        // darkest of the five — the green/olive/rust cluster collapses in hue for a
-        // colour-blind reader and has to separate by lightness instead. That also
-        // preserves each token's identity across themes: Number was the brightest
-        // (highest-contrast) token in the dark theme and stays the strongest here.
-        ["App.TokenKeyword"] = Color.Parse("#8AB4F8"),
-        ["App.TokenString"] = Color.Parse("#CE9178"),
-        ["App.TokenComment"] = Color.Parse("#8BA78B"),
-        ["App.TokenNumber"] = Color.Parse("#B5CEA8"),
-        ["App.TokenPreprocessor"] = Color.Parse("#C88DC4"),
+        // CIE L*a*b* under normal, deuteranope and protanope simulation, against the
+        // five surfaces a token can land on (App.Window, App.Panel, App.PanelAlt and
+        // the two diff tints composited over App.Window).
+        //
+        // This family's weak point was String↔Comment: ΔE 6.45 under protanopia — two
+        // tokens a red-blind reader genuinely cannot tell apart, and the pair that
+        // matters most, since string literals and comments are what a diff is full of.
+        // The Modern dark family was re-solved for exactly this and left Classic
+        // behind; Classic is solved here the same way, as a constrained family rather
+        // than one colour at a time (moving Comment alone tops out at ΔE 15.6 and
+        // turns it teal, which loses the token's identity).
+        //
+        // Constraints: hue within 14° of the value each token had, ΔE ≤ 16 from it,
+        // contrast ≥ 4.6:1 on all five surfaces. The separation is bought with
+        // LIGHTNESS, the only axis that survives simulation — the green/olive/rust
+        // cluster collapses in hue for a colour-blind reader — so Number stays the
+        // brightest of the five and Comment the most recessed, exactly as before.
+        //
+        //   pair                  before (norm/deut/prot)   after
+        //   String↔Comment          36.96 / 14.05 /  6.45    37.92 / 30.52 / 25.52
+        //   Keyword↔Preprocessor    34.22 / 23.43 / 16.72    30.64 / 33.65 / 24.54
+        //   Comment↔Number          15.12 / 15.11 / 14.69    28.58 / 24.77 / 26.99
+        //
+        // Worst pair over all ten pairs and all three simulations: 6.45 → 24.54.
+        ["App.TokenKeyword"] = Color.Parse("#8EA4FF"),
+        ["App.TokenString"] = Color.Parse("#CE965F"),
+        ["App.TokenComment"] = Color.Parse("#92A48F"),
+        ["App.TokenNumber"] = Color.Parse("#BCE6B0"),
+        ["App.TokenPreprocessor"] = Color.Parse("#C39DCA"),
 
         // Commit-button accents, one per upstream RepoState (RepoStateVisualiser). The
         // dark values ARE the upstream ones: on the dark toolbar they already read.

@@ -534,7 +534,11 @@ public sealed class PushDialog : Theming.ZoomWindow
     // names, tracking info) is never translated.
     private void ApplyTranslations()
     {
-        Title = $"{T("FormPush/$this.Text", "Push")} ({CollapseHome(_repoPath)})";
+        // Just "Push", like upstream's FormPush. The repository path used to be
+        // appended here; it is redundant — the dialog is modal over the window whose
+        // title bar already names the repository — and long enough to push the real
+        // caption off the strip a window manager gives a modal.
+        Title = T("FormPush/$this.Text", "Push");
 
         _pushToGroup.Header = T("FormPush/groupBox2.Text", "Push to");
         _remoteRadio.Content = T("FormPush/PushToRemote.Text", "Remote");
@@ -588,11 +592,6 @@ public sealed class PushDialog : Theming.ZoomWindow
     private static string ForcePushCaption => T("FormPush/ForcePushBranches.Text", "Force push");
 
     private static string PushAllTagsCaption => T("Push all tags");
-
-    // Abbreviates the home directory to "~", like the toolbar and the revision grid.
-    // The local copy this dialog used to carry is gone: PathDisplay.CollapseHome is
-    // now the single implementation shared by every caption that shows a repo path.
-    private static string CollapseHome(string path) => PathDisplay.CollapseHome(path);
 
     private static string T(string english) => TranslationService.T(english);
 
