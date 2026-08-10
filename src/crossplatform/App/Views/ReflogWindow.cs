@@ -28,6 +28,8 @@ public sealed class ReflogWindow : Theming.ZoomWindow
     private readonly ListBox _list;
     private readonly Button _copyHash;
     private readonly Button _checkout;
+    private readonly Button _refresh;
+    private readonly Button _close;
     private readonly TextBlock _status;
 
     private bool _busy;
@@ -42,7 +44,6 @@ public sealed class ReflogWindow : Theming.ZoomWindow
     {
         _repoPath = repoPath;
 
-        Title = "Reflog";
         Width = 760;
         Height = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -57,15 +58,15 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         _list.SelectionChanged += (_, _) => UpdateButtons();
         _list.DoubleTapped += (_, _) => DoCheckout();
 
-        _copyHash = MakeButton("Copy hash");
-        _checkout = MakeButton("Checkout this");
-        Button refresh = MakeButton("Refresh");
-        Button close = MakeButton("Close");
+        _copyHash = MakeButton();
+        _checkout = MakeButton();
+        _refresh = MakeButton();
+        _close = MakeButton();
 
         _copyHash.Click += (_, _) => _ = DoCopyHashAsync();
         _checkout.Click += (_, _) => DoCheckout();
-        refresh.Click += (_, _) => ReloadList();
-        close.Click += (_, _) => Close();
+        _refresh.Click += (_, _) => ReloadList();
+        _close.Click += (_, _) => Close();
 
         StackPanel buttons = new()
         {
@@ -76,8 +77,8 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         };
         buttons.Children.Add(_copyHash);
         buttons.Children.Add(_checkout);
-        buttons.Children.Add(refresh);
-        buttons.Children.Add(close);
+        buttons.Children.Add(_refresh);
+        buttons.Children.Add(_close);
 
         _status = new TextBlock
         {
@@ -98,6 +99,10 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         body.Children.Add(row);
         Content = body;
         DialogKeys.InstallEscapeClose(this);
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
 
         Opened += (_, _) => ReloadList();
         UpdateButtons();
@@ -120,7 +125,7 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         }
 
         _busy = true;
-        _status.Text = "Reading reflog…";
+        _status.Text = T("Reading reflog…");
         _ = Task.Run(() =>
         {
             IReadOnlyList<ReflogEntry> entries;
@@ -137,9 +142,14 @@ public sealed class ReflogWindow : Theming.ZoomWindow
             {
                 _busy = false;
                 _list.ItemsSource = entries;
-                _status.Text = entries.Count > 0
-                    ? $"{entries.Count} reflog entr{(entries.Count == 1 ? "y" : "ies")}."
-                    : "No reflog entries (or not a git repository).";
+                // One whole format per plural form: gluing a translated stem to a
+                // suffix ("entr" + "y"/"ies") is an English-only trick.
+                _status.Text = entries.Count switch
+                {
+                    0 => T("No reflog entries (or not a git repository)."),
+                    1 => TranslationService.TFormat(null, "{0} reflog entry.", entries.Count),
+                    _ => TranslationService.TFormat(null, "{0} reflog entries.", entries.Count),
+                };
                 UpdateButtons();
             });
         });
@@ -155,7 +165,8 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         if (Clipboard is { } clip)
         {
             await clip.SetTextAsync(entry.ShortHash);
-            _status.Text = $"Copied {entry.ShortHash} to the clipboard.";
+            _status.Text = TranslationService.TFormat(
+                null, "Copied {0} to the clipboard.", entry.ShortHash);
         }
     }
 
@@ -181,7 +192,7 @@ public sealed class ReflogWindow : Theming.ZoomWindow
         }
 
         _busy = true;
-        _status.Text = $"Checking out {hash}…";
+        _status.Text = TranslationService.TFormat(null, "Checking out {0}…", hash);
         _ = Task.Run(() =>
         {
             BranchTagResult result;
@@ -200,18 +211,50 @@ public sealed class ReflogWindow : Theming.ZoomWindow
                 if (result.Success)
                 {
                     CheckedOut = true;
-                    _status.Text = $"Checked out {hash} (detached).";
+                    _status.Text = TranslationService.TFormat(
+                        null, "Checked out {0} (detached).", hash);
                 }
                 else
                 {
-                    _status.Text = $"Checkout failed: {result.Output}";
+                    // result.Output is git's own diagnostic: it stays verbatim.
+                    _status.Text = TranslationService.TFormat(
+                        null, "Checkout failed: {0}", result.Output);
                 }
             });
         });
     }
 
-    private static Button MakeButton(string text)
-        => new() { Content = text, HorizontalAlignment = HorizontalAlignment.Stretch };
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        Title = T("FormReflog/$this.Text", "Reflog");
+
+        // Upstream's reflog grid offers "Copy SHA-1" for exactly this action (it too
+        // copies the selected entry's hash), so its id is the right one even though
+        // the port spells the button "Copy hash".
+        _copyHash.Content = T("FormReflog/copySha1ToolStripMenuItem.Text", "Copy hash");
+
+        // FormCheckoutRevision's own caption for "check this revision out". Its target
+        // carries a WinForms accelerator; Restyle folds it away because the literal
+        // passed here has none.
+        _checkout.Content = T("FormCheckoutRevision/label2.Text", "Checkout this");
+        _refresh.Content = T("FormBrowse/RefreshButton.ToolTipText", "Refresh");
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
+
+        // The status line is deliberately left as it stands: it reports the result of
+        // a git run that already happened (a hash checked out, a copy confirmation),
+        // and re-stating it in the new language would mean re-running the command.
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static Button MakeButton()
+        => new() { HorizontalAlignment = HorizontalAlignment.Stretch };
 
     private static IBrush Brush(string key, IBrush fallback)
         => Application.Current?.Resources[key] as IBrush ?? fallback;

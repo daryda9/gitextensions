@@ -4,6 +4,8 @@ using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
+using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -28,6 +30,10 @@ public sealed class PatchViewerWindow : Theming.ZoomWindow
 
     private static IBrush RemovedBrush =>
         _removedBrush ??= (IBrush)Application.Current!.Resources["App.DiffRemoved"]!;
+
+    // The only piece of chrome in this window: the title is the caller's (a file name
+    // or a caption it already translated) and the body is the patch itself.
+    private readonly Button _close;
 
     public PatchViewerWindow(string title, string patchText)
     {
@@ -58,8 +64,8 @@ public sealed class PatchViewerWindow : Theming.ZoomWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        Button close = new() { Content = "Close", MinWidth = 80, IsCancel = true, IsDefault = true };
-        close.Click += (_, _) => Close();
+        _close = new Button { MinWidth = 80, IsCancel = true, IsDefault = true };
+        _close.Click += (_, _) => Close();
 
         DockPanel root = new() { Background = window };
         StackPanel buttons = new()
@@ -67,7 +73,7 @@ public sealed class PatchViewerWindow : Theming.ZoomWindow
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(12, 8, 12, 12),
-            Children = { close },
+            Children = { _close },
         };
         DockPanel.SetDock(buttons, Dock.Bottom);
         root.Children.Add(buttons);
@@ -75,7 +81,16 @@ public sealed class PatchViewerWindow : Theming.ZoomWindow
 
         Content = root;
         DialogKeys.InstallEscapeClose(this);
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
     }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+        => _close.Content = TranslationService.T("TranslatedStrings/_closeText.Text", "Close");
 
     // Colour each patch line, mirroring DiffView.RenderDiff exactly.
     private static void RenderPatch(SelectableTextBlock target, string patchText)
@@ -142,6 +157,10 @@ public sealed class PatchOutputWindow : Theming.ZoomWindow
 {
     private static readonly FontFamily Monospace = new("monospace,Consolas,Menlo");
 
+    // As in PatchViewerWindow: the title is the caller's and the body is git's own
+    // output, so "Close" is the only string this window owns.
+    private readonly Button _close;
+
     public PatchOutputWindow(string title, string outputText)
     {
         IBrush window = (IBrush)Application.Current!.Resources["App.Window"]!;
@@ -171,8 +190,8 @@ public sealed class PatchOutputWindow : Theming.ZoomWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        Button close = new() { Content = "Close", MinWidth = 80, IsCancel = true, IsDefault = true };
-        close.Click += (_, _) => Close();
+        _close = new Button { MinWidth = 80, IsCancel = true, IsDefault = true };
+        _close.Click += (_, _) => Close();
 
         DockPanel root = new() { Background = window };
         StackPanel buttons = new()
@@ -180,7 +199,7 @@ public sealed class PatchOutputWindow : Theming.ZoomWindow
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(12, 8, 12, 12),
-            Children = { close },
+            Children = { _close },
         };
         DockPanel.SetDock(buttons, Dock.Bottom);
         root.Children.Add(buttons);
@@ -188,7 +207,16 @@ public sealed class PatchOutputWindow : Theming.ZoomWindow
 
         Content = root;
         DialogKeys.InstallEscapeClose(this);
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
     }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+        => _close.Content = TranslationService.T("TranslatedStrings/_closeText.Text", "Close");
 
     private static IBrush B(string key, string fallback)
         => Application.Current?.TryFindResource(key, out object? value) == true && value is IBrush b

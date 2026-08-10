@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands.Logging;
+using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -27,6 +28,10 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
     private readonly ScrollViewer _scroll;
     private readonly TextBlock _status;
 
+    // Promoted from locals for ApplyTranslations' sake only.
+    private readonly Button _refresh;
+    private readonly Button _close;
+
     // Live updates, as in OutputView: CommandLog.CommandsChanged fires from the
     // thread that ran the process and fires several times per command, so the
     // handler only arms a throttle timer. Upstream subscribes on Load and
@@ -37,7 +42,6 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
 
     public CommandLogWindow()
     {
-        Title = "Git command log";
         Width = 900;
         Height = 520;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -64,10 +68,10 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        Button refresh = MakeButton("Refresh");
-        Button close = MakeButton("Close");
-        refresh.Click += (_, _) => Reload();
-        close.Click += (_, _) => Close();
+        _refresh = MakeButton();
+        _close = MakeButton();
+        _refresh.Click += (_, _) => Reload();
+        _close.Click += (_, _) => Close();
 
         StackPanel buttons = new()
         {
@@ -75,7 +79,7 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
             HorizontalAlignment = HorizontalAlignment.Right,
             Spacing = 8,
             Margin = new Thickness(0, 10, 0, 0),
-            Children = { refresh, close },
+            Children = { _refresh, _close },
         };
 
         _status = new TextBlock
@@ -96,6 +100,10 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
         body.Children.Add(_scroll);
         Content = body;
         DialogKeys.InstallEscapeClose(this);
+
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
 
         _throttle = new DispatcherTimer(
             TimeSpan.FromMilliseconds(ThrottleMs),
@@ -152,8 +160,11 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
         }
         catch (Exception ex)
         {
-            _log.Text = "Could not read the command log: " + ex.Message;
-            _status.Text = "Error reading command log.";
+            // ex.Message comes from the core and is not ours to translate; only the
+            // sentence around it is.
+            _log.Text = TranslationService.TFormat(
+                null, "Could not read the command log: {0}", ex.Message);
+            _status.Text = T("Error reading command log.");
             return;
         }
 
@@ -164,10 +175,11 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
         Vector offset = _scroll.Offset;
         int caret = _log.CaretIndex;
 
+        // The log lines themselves are git command lines: never translated.
         _log.Text = lines.Count > 0
             ? string.Join(Environment.NewLine, lines)
-            : "(no git commands have been executed yet in this session)";
-        _status.Text = $"{lines.Count} command(s) logged.";
+            : T("(no git commands have been executed yet in this session)");
+        _status.Text = TranslationService.TFormat(null, "{0} command(s) logged.", lines.Count);
 
         Dispatcher.UIThread.Post(
             () =>
@@ -186,9 +198,29 @@ public sealed class CommandLogWindow : Theming.ZoomWindow
             DispatcherPriority.Background);
     }
 
-    private Button MakeButton(string text) => new()
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
     {
-        Content = text,
+        // Upstream's viewer is FormGitCommandLog; its $this.Text is "Git Command Log",
+        // which the port spells with lower-case words — the id match wins anyway.
+        Title = T("FormGitCommandLog/$this.Text", "Git command log");
+        _refresh.Content = T("FormBrowse/RefreshButton.ToolTipText", "Refresh");
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
+
+        // Re-states the status line (and the empty-log placeholder) in the new
+        // language: both are built inside Reload, so re-running it is the whole fix.
+        Reload();
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private Button MakeButton() => new()
+    {
         MinWidth = 90,
         HorizontalContentAlignment = HorizontalAlignment.Center,
         Background = Brush("App.Control", Brushes.DimGray),
