@@ -24,6 +24,32 @@ public enum DiffChangeKind
 /// </summary>
 public sealed record DiffFileRow(string Name, string? OldName, DiffChangeKind Kind, bool IsTracked)
 {
+    /// <summary>
+    ///  The "old" side of the comparison this row belongs to, when the row was
+    ///  produced for a specific GROUP of a multi-group list
+    ///  (<see cref="DiffService.GetSelectionDiffGroups"/>). Null for the ordinary
+    ///  single-comparison lists, whose whole list shares the host's own pair.
+    ///
+    ///  <para>The pair rides on the ROW rather than on the group node because the
+    ///  list control hands its host a <see cref="DiffFileRow"/> and nothing else
+    ///  (<c>FileStatusListView.SelectedFile</c>), and the node types that would
+    ///  otherwise have to carry it live in a file this change is not allowed to
+    ///  touch. It is also the honest place for it: which two revisions a patch is
+    ///  between is a property of the changed file, not of the header above it.</para>
+    /// </summary>
+    public string? FirstRev { get; init; }
+
+    /// <summary>The "new" side of this row's comparison; see <see cref="FirstRev"/>.</summary>
+    public string? SecondRev { get; init; }
+
+    /// <summary>
+    ///  Where the change was made, relative to the merge base, when this row is part
+    ///  of a BASE-with-A / BASE-with-B comparison — upstream's
+    ///  <c>GitItemStatus.DiffStatus</c>. <see cref="DiffBranchStatus.Unknown"/>
+    ///  everywhere else, and the list then draws no marker.
+    /// </summary>
+    public DiffBranchStatus BranchStatus { get; init; }
+
     private static char KindGlyph(DiffChangeKind kind) => kind switch
     {
         DiffChangeKind.Added => 'A',
@@ -37,6 +63,18 @@ public sealed record DiffFileRow(string Name, string? OldName, DiffChangeKind Ki
         ? $"{KindGlyph(Kind)}  {Name}"
         : $"{KindGlyph(Kind)}  {OldName} -> {Name}";
 }
+
+/// <summary>
+///  One collapsible section of a changed-files list: a caption and the rows below
+///  it — the port of upstream's <c>FileStatusWithDescription</c>.
+///
+///  <para>Deliberately thinner than upstream's: the two revisions and the icon
+///  name it carries are not here, because the rows themselves carry the pair
+///  (<see cref="DiffFileRow.FirstRev"/>) and the port draws no per-group icon —
+///  the caption already says "Diff with A …" / "Diff BASE with A …", which is the
+///  information the icon duplicates.</para>
+/// </summary>
+public sealed record DiffFileGroup(string Summary, IReadOnlyList<DiffFileRow> Rows);
 
 /// <summary>
 ///  Which of the two artificial (non-commit) revisions of the revision grid a
@@ -356,6 +394,234 @@ public static class DiffService
     }
 
     /// <summary>
+    ///  The changed-file GROUPS a multi-revision selection produces — the port of
+    ///  upstream's <c>FileStatusDiffCalculator.CalculateDiffs</c>, its
+    ///  <c>revisions.Count > 1</c> branch (FileStatusDiffCalculator.cs:148-307).
+    ///  <paramref name="revisions"/> is the selection NEWEST FIRST, as upstream
+    ///  orders it, and must hold at least two real commits.
+    ///
+    ///  <para>What it answers, in upstream's own terms:</para>
+    ///  <list type="bullet">
+    ///   <item>More than four selected: only "first → selected" is interesting, so
+    ///    that single group comes back and no merge base is looked for.</item>
+    ///   <item>"first" is the LAST selected revision, except with exactly four,
+    ///    where it is <c>revisions[2]</c> — four rows are read as two ranges
+    ///    <c>baseA..headA baseB..headB</c>, so the first range's head is the third
+    ///    row from the top.</item>
+    ///   <item>Then the merge base: <c>merge-base(first, selected)</c> with two,
+    ///    the middle revision with three (only if it really is an ancestor of both),
+    ///    and with four the two ranges must check out as ranges.</item>
+    ///   <item>No usable merge base — including a base that IS one of the two ends,
+    ///    which means one side is simply an ancestor of the other — gives a MULTI
+    ///    DIFF: one group per selected revision that is neither end, each against
+    ///    the selected one.</item>
+    ///   <item>A usable merge base gives two further groups, BASE→B and BASE→A,
+    ///    whose rows are tagged with <see cref="DiffBranchStatus"/>.</item>
+    ///  </list>
+    ///
+    ///  <para><b>Deliberately NOT ported</b>: upstream's last step, the synthetic
+    ///  <c>Range diff … BASE …</c> row (<c>git range-diff</c>, lines 287-305). It is
+    ///  a pseudo file row whose only purpose is to open a dedicated range-diff
+    ///  viewer, and the port has no such viewer — the row would be a line of text
+    ///  that does nothing when clicked. The two BASE groups carry the same
+    ///  information in a form the port can actually show.</para>
+    ///
+    ///  <para><b>Also not ported</b>: <c>GetRevisionOrHead</c>, upstream's mapping of
+    ///  the artificial work-tree/index rows onto HEAD. The port's grid never
+    ///  announces an artificial row as part of a selection (see
+    ///  <c>RevisionGridView.SelectedRevisionsNewestFirst</c>), so every hash reaching
+    ///  this method is a real commit and there is nothing to substitute.</para>
+    ///
+    ///  <para>Blocking, like every other method here: several <c>git diff</c> and
+    ///  <c>git merge-base</c> runs, to be called from a background thread only.</para>
+    /// </summary>
+    public static IReadOnlyList<DiffFileGroup> GetSelectionDiffGroups(string repoPath, IReadOnlyList<string> revisions)
+    {
+        if (revisions.Count < 2)
+        {
+            return [];
+        }
+
+        // One module for the whole calculation: it is the handle on the repository
+        // that every git run below goes through, and building it per call would pay
+        // for the same discovery a dozen times in one selection change.
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        string selected = revisions[0];
+
+        // Upstream's maxMultiCompare. Beyond it a selection is a range, not a
+        // comparison of branches, and only its two ends mean anything.
+        const int maxMultiCompare = 4;
+        string first = revisions.Count == maxMultiCompare ? revisions[2] : revisions[^1];
+
+        List<DiffFileRow> aToB = Between(module, first, selected);
+        List<DiffFileGroup> groups =
+        [
+            new DiffFileGroup(DiffWithACaption(module, first), aToB),
+        ];
+
+        if (revisions.Count > maxMultiCompare)
+        {
+            return groups;
+        }
+
+        string? baseRev;
+        if (revisions.Count != 3)
+        {
+            baseRev = MergeBaseService.FindMergeBase(module, first, selected);
+        }
+        else
+        {
+            // Three selected: the middle row is offered AS the base, and is accepted
+            // only if it is an ancestor of both ends. Upstream tests that by asking
+            // for the merge base and checking it comes back as the middle commit
+            // itself, which also accepts a commit that sits EARLIER than the real
+            // base — the user pointed at a common starting point, and that is enough.
+            string middle = revisions[1];
+            baseRev = Same(MergeBaseService.FindMergeBase(module, first, middle), middle)
+                      && Same(MergeBaseService.FindMergeBase(module, selected, middle), middle)
+                ? middle
+                : null;
+        }
+
+        if (baseRev is not null && revisions.Count < maxMultiCompare)
+        {
+            // A base that is one of the ends means one end is an ancestor of the
+            // other: the selection is a plain range, not two branches, and a
+            // "BASE with A" group would repeat the first group verbatim.
+            if (Same(baseRev, first) || Same(baseRev, selected))
+            {
+                baseRev = null;
+            }
+        }
+        else if (baseRev is not null)
+        {
+            // Four selected: only two genuine ranges may be read as A and B. Row 3 has
+            // to be the base of row 2 (= first) and row 1 the base of row 0 (=
+            // selected); anything else is four unrelated commits, and upstream then
+            // falls back to the multi diff rather than inventing a BASE.
+            string? baseA = MergeBaseService.FindMergeBase(module, revisions[3], first);
+            string? baseB = Same(baseA, revisions[3])
+                ? MergeBaseService.FindMergeBase(module, revisions[1], selected)
+                : null;
+
+            if (!Same(baseB, revisions[1]))
+            {
+                baseRev = null;
+            }
+        }
+
+        if (baseRev is null)
+        {
+            // No variant of a range diff: show each remaining selected revision as its
+            // own comparison against the selected one, which is all that can honestly
+            // be said about an arbitrary set of commits.
+            foreach (string rev in revisions)
+            {
+                if (!Same(rev, first) && !Same(rev, selected))
+                {
+                    groups.Add(new DiffFileGroup(DiffWithACaption(module, rev), Between(module, rev, selected)));
+                }
+            }
+
+            return groups;
+        }
+
+        List<DiffFileRow> baseToB = Between(module, baseRev, selected);
+        List<DiffFileRow> baseToA = Between(module, baseRev, first);
+        TagBranchStatus(aToB, baseToA, baseToB);
+
+        string baseWith = TranslationService.T("TranslatedStrings/_diffBaseWith.Text", "Diff BASE with");
+        groups.Add(new DiffFileGroup($"{baseWith} B {Describe(module, selected)}", baseToB));
+        groups.Add(new DiffFileGroup($"{baseWith} A {Describe(module, first)}", baseToA));
+
+        return groups;
+    }
+
+    // Upstream's per-file DiffBranchStatus, computed once over the three lists and
+    // written back onto every row of all three — a file is marked with WHERE the
+    // change was made, so the same file reads the same way in the A→B group and in
+    // the two BASE groups. Sets are compared by name only, with a rename's old name
+    // counting as the same file (upstream's GitItemStatusNameEqualityComparer).
+    private static void TagBranchStatus(
+        List<DiffFileRow> aToB,
+        List<DiffFileRow> baseToA,
+        List<DiffFileRow> baseToB)
+    {
+        // An exact rename/copy is left out of the "changed in both, identically"
+        // test: it moves a file without touching its content, so counting it as a
+        // change would mark untouched files as unequal between the two branches.
+        // The port has no rename PERCENTAGE (GetDiffFilesBetween keeps only the
+        // kind), so every rename/copy is treated as the exact one upstream excludes.
+        List<DiffFileRow> aToBChanges =
+            [.. aToB.Where(r => r.Kind is not (DiffChangeKind.Renamed or DiffChangeKind.Copied))];
+
+        bool InAny(List<DiffFileRow> list, DiffFileRow row) => list.Exists(other => SameFile(other, row));
+
+        DiffBranchStatus StatusOf(DiffFileRow row)
+        {
+            if (InAny(baseToB, row) && InAny(baseToA, row) && !InAny(aToBChanges, row))
+            {
+                return DiffBranchStatus.SameChange;
+            }
+
+            bool inA = InAny(baseToA, row);
+            bool inB = InAny(baseToB, row);
+            return inA && !inB ? DiffBranchStatus.OnlyAChange
+                : inB && !inA ? DiffBranchStatus.OnlyBChange
+                : DiffBranchStatus.UnequalChange;
+        }
+
+        foreach (List<DiffFileRow> list in new[] { aToB, baseToA, baseToB })
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                list[i] = list[i] with { BranchStatus = StatusOf(list[i]) };
+            }
+        }
+    }
+
+    // Two rows name the same file when either of their names matches either of the
+    // other's — a rename has to be recognised from both sides of the branch point.
+    private static bool SameFile(DiffFileRow x, DiffFileRow y)
+        => x.Name == y.Name
+           || (!string.IsNullOrWhiteSpace(x.OldName) && x.OldName == y.Name)
+           || (!string.IsNullOrWhiteSpace(y.OldName) && x.Name == y.OldName)
+           || (!string.IsNullOrWhiteSpace(x.OldName) && !string.IsNullOrWhiteSpace(y.OldName) && x.OldName == y.OldName);
+
+    private static bool Same(string? a, string? b)
+        => a is { Length: > 0 } && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static string DiffWithACaption(GitModule module, string rev)
+        => TranslationService.T("TranslatedStrings/_diffWithParent.Text", "Diff with A ") + Describe(module, rev);
+
+    // The changed files of first..second, each row already knowing which pair it
+    // belongs to — that is what lets a click in ANY group load the patch of THAT
+    // group instead of the one the pane was opened with.
+    private static List<DiffFileRow> Between(GitModule module, string firstRev, string secondRev)
+    {
+        IReadOnlyList<GitItemStatus> changes = module.GetDiffFilesWithSubmodulesStatus(
+            firstId: ObjectId.Parse(firstRev),
+            secondId: ObjectId.Parse(secondRev),
+            parentToSecond: ObjectId.Parse(firstRev),
+            excludeSkipWorktreeFiles: true,
+            untrackedFilesMode: UntrackedFilesMode.No,
+            cancellationToken: CancellationToken.None);
+
+        List<DiffFileRow> rows = new(changes.Count);
+        foreach (GitItemStatus item in changes)
+        {
+            rows.Add(new DiffFileRow(item.Name, item.OldName, MapKind(item), item.IsTracked)
+            {
+                FirstRev = firstRev,
+                SecondRev = secondRev,
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>
     ///  Returns the files that differ between <paramref name="commitHash"/> and
     ///  the current working tree — the changed-file set of <c>git diff &lt;commitHash&gt;</c>
     ///  (the commit is the "old" side, the working tree the "new" side).
@@ -516,11 +782,17 @@ public static class DiffService
             return string.Empty;
         }
 
-        GitModule module = GitContext.CreateModule(repoPath);
+        return Describe(GitContext.CreateModule(repoPath), id.ToString());
+    }
 
+    // The same naming, for a caller that already holds the module — the multi-group
+    // calculation names up to four revisions and must not open the repository again
+    // for each of them.
+    private static string Describe(GitModule module, string hash)
+    {
         // One cheap plumbing call rather than a revision cache: this runs on the
         // background thread of the file-list load, alongside the diff itself.
-        GitArgumentBuilder args = new("log") { "-1", "--format=%s", id.ToString() };
+        GitArgumentBuilder args = new("log") { "-1", "--format=%s", hash };
         ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
         string subject = result.ExitedSuccessfully ? result.StandardOutput.Trim() : string.Empty;
         string shortHash = hash.Length > 8 ? hash[..8] : hash;

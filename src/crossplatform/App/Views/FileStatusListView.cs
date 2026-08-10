@@ -11,6 +11,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
+using GitExtensions.Extensibility.Git;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -89,23 +90,31 @@ public sealed class FileStatusListView : UserControl
     private readonly Border _toolbarBar;
     private Image? _asTreeIcon;
 
+    // The sections the list shows, in order — upstream's IReadOnlyList<
+    // FileStatusWithDescription>. A list that is not a comparison (the file tree, the
+    // commit dialog's staged/unstaged lists, which say what they are in their own
+    // captions) is ONE section with an empty summary, which is why there is no second
+    // path through this control: the single-section list is the multi-section one
+    // with a single, unlabelled section.
+    private IReadOnlyList<DiffFileGroup> _groups = [];
+
+    // Every row of every section, flattened, for the hosts that ask what is loaded
+    // and for the "shown of total" filter counter. Rebuilt with _groups, never alone.
     private IReadOnlyList<DiffFileRow> _files = [];
 
-    // What the whole list is a diff OF, shown as a header row above everything —
-    // upstream's FileStatusWithDescription.Summary ("Diff with A <sha>: <subject>").
-    // Empty for a list that is not a comparison (the file tree, the commit dialog's
-    // staged/unstaged lists, which say what they are in their own captions).
-    private string _summary = string.Empty;
-
-    /// <summary>Identity of the summary header row; not a grouping key of the
+    /// <summary>Identity of a section header row; not a grouping key of the
     /// builder, so it cannot collide with a path/extension/status group.</summary>
     private const string SummaryKey = "\u0000summary";
     private DiffFileFilter _filter = DiffFileFilter.None;
     private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
 
-    // The path of the row that must stay selected across a rebuild (filter
-    // change, collapse, reload), so re-grouping does not reload another diff.
-    private string? _selectedName;
+    // The row that must stay selected across a rebuild (filter change, collapse,
+    // reload), so re-grouping does not reload another diff. Held as the row OBJECT
+    // and matched by reference, not by path: the same file legitimately appears in
+    // several sections of a multi-revision comparison, and matching by name would
+    // move the selection into whichever section happens to come first — silently
+    // showing the patch of a comparison the user did not click on.
+    private DiffFileRow? _selectedRow;
     private bool _suppressSelection;
     private bool _updatingGroupButtons;
 
@@ -369,11 +378,26 @@ public sealed class FileStatusListView : UserControl
     ///  or an empty string leaves the list headerless, as it was.
     /// </summary>
     public void SetFiles(IReadOnlyList<DiffFileRow> rows, string? summary)
+        => SetFiles([new DiffFileGroup(summary ?? string.Empty, rows)]);
+
+    /// <summary>
+    ///  Replaces the loaded rows with SEVERAL sections, each with its own collapsible
+    ///  header — what a multi-revision selection produces
+    ///  (<see cref="DiffService.GetSelectionDiffGroups"/>): "Diff with A …",
+    ///  "Diff BASE with B …", "Diff BASE with A …". The single-section overloads are
+    ///  this one with a one-element list, so there is exactly one way a list is
+    ///  filled.
+    ///
+    ///  <para>Selection lands on the first file of the first section and is reported
+    ///  once, as for a single section. Sections keep their own collapsed state: the
+    ///  grouping keys of one cannot fold a same-named group in another.</para>
+    /// </summary>
+    public void SetFiles(IReadOnlyList<DiffFileGroup> groups)
     {
-        _summary = summary ?? string.Empty;
-        _files = rows;
+        _groups = groups;
+        _files = groups.Count == 1 ? groups[0].Rows : [.. groups.SelectMany(g => g.Rows)];
         _collapsed.Clear();
-        _selectedName = null;
+        _selectedRow = null;
         ApplyInitialCollapse();
         Rebuild();
     }
@@ -408,7 +432,7 @@ public sealed class FileStatusListView : UserControl
     }
 
     /// <summary>Empties the list (a repository was closed, a load failed).</summary>
-    public void Clear() => SetFiles([]);
+    public void Clear() => SetFiles(groups: []);
 
     /// <summary>
     ///  Whether the grouping toolbar is shown. Upstream hides the whole toolbar in
@@ -475,26 +499,40 @@ public sealed class FileStatusListView : UserControl
     private List<string> AllGroupKeys(int? maxLevel = null)
     {
         DiffFileGroupMode mode = _options.GroupMode;
-        (List<object> items, _) = DiffFileListBuilder.Build(
-            _files,
-            _filter,
-            mode,
-            _options.AsTree,
-            GrouperFor(mode),
-            new HashSet<string>(StringComparer.Ordinal),
-            static (header, _) => header);
-
         List<string> keys = [];
-        foreach (object item in items)
+
+        for (int i = 0; i < _groups.Count; i++)
         {
-            if (item is FileListGroupNode group && (maxLevel is null || group.Level <= maxLevel))
+            (List<object> items, _) = DiffFileListBuilder.Build(
+                _groups[i].Rows,
+                _filter,
+                mode,
+                _options.AsTree,
+                GrouperFor(mode),
+                new HashSet<string>(StringComparer.Ordinal),
+                static (header, _) => header);
+
+            foreach (object item in items)
             {
-                keys.Add(group.Key);
+                if (item is FileListGroupNode group && (maxLevel is null || group.Level <= maxLevel))
+                {
+                    keys.Add(SectionPrefix(i) + group.Key);
+                }
             }
         }
 
         return keys;
+
+        // The section headers themselves are NOT in this list, and that is the point:
+        // "collapse on load" and "collapse all groups" fold the file groups, while
+        // folding the sections would hide the very captions that say what the list is
+        // comparing — and, with a single unlabelled section, would empty the pane.
     }
+
+    // Namespaces one section's grouping keys, so "src/" in the BASE→A section and
+    // "src/" in the BASE→B section fold independently. NUL cannot occur in a path,
+    // an extension or a translated status word, so no real key can forge a prefix.
+    private static string SectionPrefix(int index) => $"\u0000s{index}\u0000";
 
     // ------------------------------------------------------------- translation
 
@@ -648,6 +686,24 @@ public sealed class FileStatusListView : UserControl
             FontWeight = FontWeight.Bold,
             VerticalAlignment = VerticalAlignment.Center,
         });
+
+        // Where the change was made, relative to the merge base of a two-branch
+        // comparison. Upstream overlays a small A/B/=/≠ badge on the status icon; the
+        // port has no such composed icons, so the same four states are written as one
+        // monospace character in their own column — which also keeps the paths of the
+        // three sections aligned with each other.
+        if (BranchMarker(node.Row.BranchStatus) is (string marker, IBrush markerBrush))
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = marker,
+                Foreground = markerBrush,
+                FontFamily = Monospace,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+
         panel.Children.Add(new TextBlock
         {
             Text = node.Display,
@@ -659,6 +715,18 @@ public sealed class FileStatusListView : UserControl
 
         return panel;
     }
+
+    // The four upstream DiffBranchStatus values as a character and a colour, or null
+    // for a row that is not part of a base-with-A/base-with-B comparison (every
+    // ordinary list), which then looks exactly as it always did.
+    private static (string Marker, IBrush Brush)? BranchMarker(DiffBranchStatus status) => status switch
+    {
+        DiffBranchStatus.SameChange => ("=", B("App.TextDim")),
+        DiffBranchStatus.OnlyAChange => ("A", ModifiedGlyph),
+        DiffBranchStatus.OnlyBChange => ("B", AddedGlyph),
+        DiffBranchStatus.UnequalChange => ("≠", DeletedGlyph),
+        _ => null,
+    };
 
     // --------------------------------------------------------------- selection
 
@@ -687,7 +755,7 @@ public sealed class FileStatusListView : UserControl
             return;
         }
 
-        _selectedName = node.Row.Name;
+        _selectedRow = node.Row;
         SelectedFileChanged?.Invoke(node.Row);
     }
 
@@ -697,38 +765,75 @@ public sealed class FileStatusListView : UserControl
     {
         DiffFileGroupMode mode = _options.GroupMode;
 
-        (List<object> items, int fileCount) = DiffFileListBuilder.Build(
-            _files,
-            _filter,
-            mode,
-            _options.AsTree,
-            GrouperFor(mode),
-            _collapsed,
-            (header, count) => F("{0}  ({1})", header, count));
+        List<object> items = [];
+        int fileCount = 0;
 
-        // The comparison header, above every group the builder made. It behaves like
-        // any other group row — clicking it folds the whole list — so nothing else in
-        // this control has to know it is special.
-        if (_summary.Length > 0)
+        for (int section = 0; section < _groups.Count; section++)
         {
-            bool folded = _collapsed.Contains(SummaryKey);
-            List<object> withSummary =
-            [
-                new FileListGroupNode
-                {
-                    Key = SummaryKey,
-                    Header = F("({0})  {1}", fileCount, _summary),
-                    Count = fileCount,
-                    IsCollapsed = folded,
-                },
-            ];
+            DiffFileGroup group = _groups[section];
+            string prefix = SectionPrefix(section);
 
-            if (!folded)
+            // The builder knows nothing about sections, so it is asked with the
+            // section's keys stripped back to their bare form and its answers are
+            // re-prefixed below. That keeps the collapsed-state bookkeeping in ONE
+            // set, keyed by what the user actually folded.
+            HashSet<string> collapsedHere = new(StringComparer.Ordinal);
+            foreach (string key in _collapsed)
             {
-                withSummary.AddRange(items);
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    collapsedHere.Add(key[prefix.Length..]);
+                }
             }
 
-            items = withSummary;
+            (List<object> built, int count) = DiffFileListBuilder.Build(
+                group.Rows,
+                _filter,
+                mode,
+                _options.AsTree,
+                GrouperFor(mode),
+                collapsedHere,
+                (header, n) => F("{0}  ({1})", header, n));
+
+            fileCount += count;
+
+            // A section with no caption contributes its rows and nothing else — that
+            // is the plain list (file tree, commit dialog) and the reason those hosts
+            // did not have to change.
+            if (group.Summary.Length == 0)
+            {
+                items.AddRange(built);
+                continue;
+            }
+
+            string sectionKey = prefix + SummaryKey;
+            bool folded = _collapsed.Contains(sectionKey);
+            items.Add(new FileListGroupNode
+            {
+                Key = sectionKey,
+                Header = F("({0})  {1}", count, group.Summary),
+                Count = count,
+                IsCollapsed = folded,
+            });
+
+            if (folded)
+            {
+                continue;
+            }
+
+            foreach (object item in built)
+            {
+                items.Add(item is FileListGroupNode inner
+                    ? new FileListGroupNode
+                    {
+                        Key = prefix + inner.Key,
+                        Header = inner.Header,
+                        Count = inner.Count,
+                        IsCollapsed = inner.IsCollapsed,
+                        Level = inner.Level,
+                    }
+                    : item);
+            }
         }
 
         _suppressSelection = true;
@@ -744,7 +849,7 @@ public sealed class FileStatusListView : UserControl
             }
 
             first ??= file;
-            if (file.Row.Name == _selectedName)
+            if (ReferenceEquals(file.Row, _selectedRow))
             {
                 target = file;
                 break;
@@ -760,10 +865,9 @@ public sealed class FileStatusListView : UserControl
 
         // Only tell the host when the selection really moved: re-grouping or
         // filtering must not re-run the diff of the same file.
-        string? newName = target?.Row.Name;
-        if (newName != _selectedName)
+        if (!ReferenceEquals(target?.Row, _selectedRow))
         {
-            _selectedName = newName;
+            _selectedRow = target?.Row;
             SelectedFileChanged?.Invoke(target?.Row);
         }
     }

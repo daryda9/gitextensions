@@ -1133,6 +1133,47 @@ public sealed class DiffView : UserControl
     }
 
     /// <summary>
+    ///  Shows what a selection of SEVERAL revisions in the grid compares — upstream's
+    ///  <c>FileStatusDiffCalculator</c> answer to a multi-row selection, which is more
+    ///  than one comparison: "Diff with A …" always, plus either one group per
+    ///  further selected revision, or the two "Diff BASE with A/B …" groups when the
+    ///  selection really does span two branches.
+    ///  <paramref name="revisions"/> is newest first, as the grid announces it.
+    ///
+    ///  <para>Two selected revisions are not a special case here — they are the
+    ///  ordinary shape of this call, and the reason
+    ///  <see cref="ShowRange(string, string, string)"/> is left to the callers that
+    ///  genuinely mean ONE comparison ("Compare to BASE", the file-history window).</para>
+    /// </summary>
+    public void ShowRevisions(string repoPath, IReadOnlyList<string> revisions)
+    {
+        if (revisions.Count < 2)
+        {
+            return;
+        }
+
+        _repoPath = repoPath;
+
+        // The extremes still describe the pane as a whole: they are what the commands
+        // that act on "the comparison on screen" (open a revision, the external
+        // difftool) use, and what a row without a pair of its own falls back to.
+        _commitHash = revisions[0];
+        _baseHash = revisions[^1];
+        _mode = CompareMode.Range;
+
+        string shortBase = Short(revisions[^1]);
+        string shortOther = Short(revisions[0]);
+        string range = F("{0} .. {1}", shortBase, shortOther);
+
+        LoadFileGroups(
+            () => DiffService.GetSelectionDiffGroups(repoPath, revisions),
+            count => F(ChangedFilesFormat(), range, count),
+            F(LoadingFilesFormat(), range));
+    }
+
+    private static string Short(string hash) => hash.Length > 8 ? hash[..8] : hash;
+
+    /// <summary>
     ///  Loads the changed-files list and per-file diffs comparing
     ///  <paramref name="commitHash"/> against the current working tree
     ///  (i.e. <c>git diff &lt;commit&gt;</c>).
@@ -1233,9 +1274,23 @@ public sealed class DiffView : UserControl
         string loadingText,
         string? preselectPath = null,
         Func<string>? summaryFor = null)
+        => LoadFileGroups(
+            () => [new DiffFileGroup(summaryFor?.Invoke() ?? string.Empty, load())],
+            statusFor,
+            loadingText,
+            preselectPath);
+
+    // The one loader. A single-comparison list is one section with (at most) a
+    // caption, a multi-revision selection is several — so there is no second code
+    // path for the panes that show one diff, only a thinner call above.
+    private void LoadFileGroups(
+        Func<IReadOnlyList<DiffFileGroup>> load,
+        Func<int, string> statusFor,
+        string loadingText,
+        string? preselectPath = null)
     {
         // Remembered so the toolbar's refresh button can re-run exactly this load.
-        _reload = () => LoadFileList(load, statusFor, loadingText);
+        _reload = () => LoadFileGroups(load, statusFor, loadingText);
 
         // The file to land on travels WITH this load, not in a field of the view.
         // One user gesture can produce two loads (a Ctrl-click on the grid raises
@@ -1265,11 +1320,11 @@ public sealed class DiffView : UserControl
         {
             try
             {
-                IReadOnlyList<DiffFileRow> rows = load();
-
-                // Named on THIS thread, next to the diff itself: describing a
-                // revision costs a git call, and the UI thread must not pay it.
-                string summary = summaryFor?.Invoke() ?? string.Empty;
+                // Everything git — the diffs, the merge base, and the naming of each
+                // revision in the captions — happens on THIS thread; the UI thread
+                // only ever receives finished rows.
+                IReadOnlyList<DiffFileGroup> groups = load();
+                int total = groups.Sum(g => g.Rows.Count);
 
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -1277,9 +1332,9 @@ public sealed class DiffView : UserControl
                     // starts the PATCH load, and that load's own spinner must not go up
                     // behind a veil this one has not taken down yet.
                     _filesBusy.Hide();
-                    _files.SetFiles(rows, summary);
+                    _files.SetFiles(groups);
                     Preselect(wanted);
-                    _status.Text = statusFor(rows.Count);
+                    _status.Text = statusFor(total);
                 });
             }
             catch (Exception ex)
@@ -2038,20 +2093,31 @@ public sealed class DiffView : UserControl
         _diffCts = new CancellationTokenSource();
         CancellationToken token = _diffCts.Token;
 
+        // A row that carries its own pair belongs to ONE section of a multi-revision
+        // comparison, and its patch is the patch of THAT section — clicking a file
+        // under "Diff BASE with A" must show base..A, not the pane's own extremes.
+        // The pane-level hashes remain the fallback for every ordinary list, whose
+        // rows carry no pair at all.
+        bool ownPair = row.SecondRev is { Length: > 0 } && !_forceWorkingTreeCompare;
+        string commitHash = ownPair ? row.SecondRev! : _commitHash;
+        string? baseHash = ownPair ? row.FirstRev : _baseHash;
+
         DiffTextKind kind = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree
             ? DiffTextKind.WorkingTree
-            : _mode switch
-            {
-                CompareMode.Range => DiffTextKind.Range,
-                CompareMode.WorkTree => DiffTextKind.WorkTree,
-                CompareMode.Index => DiffTextKind.Index,
-                _ => DiffTextKind.Commit,
-            };
+            : ownPair
+                ? DiffTextKind.Range
+                : _mode switch
+                {
+                    CompareMode.Range => DiffTextKind.Range,
+                    CompareMode.WorkTree => DiffTextKind.WorkTree,
+                    CompareMode.Index => DiffTextKind.Index,
+                    _ => DiffTextKind.Commit,
+                };
 
         // IsTracked only ever matters for the working-directory row, where a brand
         // new file has no other side to be compared against.
         DiffTextRequest request = new(
-            kind, _repoPath, _commitHash, _baseHash, row.Name, row.OldName, row.IsTracked);
+            kind, _repoPath, commitHash, baseHash, row.Name, row.OldName, row.IsTracked);
 
         // Snapshot the options: they live on the UI thread and the git run does not.
         DiffDisplayOptions options = new()

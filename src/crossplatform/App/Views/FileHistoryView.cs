@@ -174,7 +174,11 @@ public sealed class FileHistoryView : UserControl
             ShowStatus();
             RevisionSelected?.Invoke(hash);
         };
-        _grid.RangeSelected += (older, newer) => RangeSelected?.Invoke(older, newer);
+        // Reduced to the two ENDS on the way out, on purpose: this window is about one
+        // file across a span of history, and the multi-group answer the repository
+        // window now gives (BASE with A / BASE with B) has no meaning for a single
+        // file's Diff tab, which shows one patch and nothing else.
+        _grid.RangeSelected += revisions => RangeSelected?.Invoke(revisions[^1], revisions[0]);
         _grid.RevisionActivated += hash => RevisionActivated?.Invoke(hash);
 
         // The name-per-revision map arrives from the grid's own walk: resolving the

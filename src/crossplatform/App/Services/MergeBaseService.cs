@@ -28,15 +28,30 @@ public static class MergeBaseService
     ///  <see langword="null"/> when there is none (or git failed).
     /// </summary>
     public static string? FindMergeBase(string repoPath, string first, string second)
+        => string.IsNullOrEmpty(repoPath) ? null : FindMergeBase(GitContext.CreateModule(repoPath), first, second);
+
+    /// <summary>
+    ///  As <see cref="FindMergeBase(string, string, string)"/>, for a caller that
+    ///  already holds the module. The multi-revision diff
+    ///  (<see cref="DiffService.GetSelectionDiffGroups"/>) asks for up to three merge
+    ///  bases in one selection change, and each <c>CreateModule</c> re-discovers the
+    ///  repository — so the module is passed in there rather than rebuilt per query.
+    ///
+    ///  <para>Answers <see langword="null"/> for the two cases upstream's own
+    ///  <c>GetMergeBase</c> local function short-circuits (an empty side, or both
+    ///  sides being the same commit): a commit is trivially its own base, and saying
+    ///  so would make the caller believe it had found a branch point.</para>
+    /// </summary>
+    public static string? FindMergeBase(GitModule module, string first, string second)
     {
-        if (string.IsNullOrEmpty(repoPath) || string.IsNullOrEmpty(first) || string.IsNullOrEmpty(second))
+        if (string.IsNullOrEmpty(first) || string.IsNullOrEmpty(second)
+            || string.Equals(first, second, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
         try
         {
-            GitModule module = GitContext.CreateModule(repoPath);
             ExecutionResult result = module.GitExecutable.Execute(
                 new GitArgumentBuilder("merge-base") { first, second },
                 throwOnErrorExit: false);

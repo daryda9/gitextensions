@@ -2135,17 +2135,22 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
     }
 
-    // Two commits selected in the grid: show the diff between them (baseHash is the
-    // older side, otherHash the newer) in the shared DiffView and reveal the tab.
-    private void OnRangeSelected(string baseHash, string otherHash)
+    // Two or more commits selected in the grid: hand the WHOLE selection (newest
+    // first) to the diff pane, which decides how many comparisons it stands for —
+    // one range, a group per extra revision, or a merge base with a side each. The
+    // status line keeps naming the two ends, which is what the user picked.
+    private void OnRangeSelected(IReadOnlyList<string> revisions)
     {
-        if (_repoPath is null)
+        if (_repoPath is null || revisions.Count < 2)
         {
             return;
         }
 
+        string baseHash = revisions[^1];
+        string otherHash = revisions[0];
+
         _diffShowsRange = true;
-        _diff.ShowRange(_repoPath, baseHash, otherHash);
+        _diff.ShowRevisions(_repoPath, revisions);
         FocusDiff();
         string shortBase = baseHash.Length > 8 ? baseHash[..8] : baseHash;
         string shortOther = otherHash.Length > 8 ? otherHash[..8] : otherHash;

@@ -530,9 +530,19 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     public event Action<string>? RevisionSelected;
 
-    // Raised when exactly two rows are selected (ctrl/shift multi-select). Carries
-    // (baseHash, otherHash) = (older, newer) so a diff between the two can be shown.
-    public event Action<string, string>? RangeSelected;
+    /// <summary>
+    ///  Raised when two or more real commits are selected (ctrl/shift multi-select).
+    ///  Carries the WHOLE selection, newest first — the order upstream's
+    ///  <c>FileStatusDiffCalculator</c> works in, where <c>revisions[0]</c> is the
+    ///  selected revision and <c>revisions[^1]</c> the oldest.
+    ///
+    ///  <para>The whole selection and not only its two ends: with two to four rows
+    ///  the host does not show one diff but several groups (the merge base of the two
+    ///  branches, each side against it), and the middle rows are what decide which of
+    ///  those shapes applies. Artificial rows never appear here — the working-tree and
+    ///  index rows are not commits and cannot be an end, or a member, of a range.</para>
+    /// </summary>
+    public event Action<IReadOnlyList<string>>? RangeSelected;
 
     /// <summary>Raised when the artificial "Working directory" row is clicked.</summary>
     public event Action? WorkingDirectorySelected;
@@ -886,16 +896,16 @@ public sealed class RevisionGridView : UserControl
             // to fall through to the single-commit branch below and show the diff of
             // whichever row happened to be SelectedItem — the selection said "compare
             // these" and the pane showed one commit.
-            if (_list.SelectedItems is { Count: >= 2 } sel && RangeEnds(sel) is { } ends)
+            if (_list.SelectedItems is { Count: >= 2 } sel && SelectedRevisionsNewestFirst(sel) is { Count: >= 2 } picked)
             {
                 // One Ctrl-click raises SelectionChanged TWICE (the removal and the
                 // addition are reported separately), and every announcement costs the
-                // host a git diff. Announcing a range only when it actually changed
-                // keeps one gesture to one comparison.
-                if (_announcedRange != ends)
+                // host several git diffs now, not one. Announcing a selection only when
+                // it actually changed keeps one gesture to one comparison.
+                if (_announcedRange is null || !_announcedRange.SequenceEqual(picked))
                 {
-                    _announcedRange = ends;
-                    RangeSelected?.Invoke(ends.Older, ends.Newer);
+                    _announcedRange = picked;
+                    RangeSelected?.Invoke(picked);
                 }
             }
             else if (_list.SelectedItem is RevisionRow row && !IsArtificial(row))
@@ -6042,50 +6052,34 @@ public sealed class RevisionGridView : UserControl
             ? items.OfType<RevisionRow>().Where(r => !IsArtificial(r)).ToList()
             : [];
 
-    /// <summary>The range last announced through <see cref="RangeSelected"/>, so the
-    /// second SelectionChanged of one Ctrl-click does not repeat it.</summary>
-    private (string Older, string Newer)? _announcedRange;
+    /// <summary>The selection last announced through <see cref="RangeSelected"/>, so
+    /// the second SelectionChanged of one Ctrl-click does not repeat it.</summary>
+    private IReadOnlyList<string>? _announcedRange;
 
     /// <summary>
-    ///  The two ends of a multi-row selection, oldest first, or <c>null</c> when the
-    ///  selection does not span two real commits.
+    ///  The real commits of a multi-row selection, NEWEST FIRST.
     ///
-    ///  <para>ONLY the ends: everything picked in between is what the user is asking
-    ///  to see the combined effect of, which is exactly <c>git diff oldest newest</c>.
-    ///  Artificial rows are skipped — a "working directory" row caught inside a
-    ///  Shift-run is not a commit and cannot be an end of a range.</para>
+    ///  <para>Ordered by ROW INDEX and not by the order the user clicked in: which
+    ///  revision is "the selected one" and which are the bases must not depend on
+    ///  which end of the range was picked first, and the whole multi-diff shape
+    ///  upstream computes is keyed on that order
+    ///  (<c>revisions[0]</c>, <c>revisions[1]</c>, <c>revisions[2]</c>).</para>
+    ///
+    ///  <para>Artificial rows are skipped — a "working directory" row caught inside a
+    ///  Shift-run is not a commit and cannot take part in a comparison of commits.</para>
     /// </summary>
-    private (string Older, string Newer)? RangeEnds(System.Collections.IList selection)
+    private List<string> SelectedRevisionsNewestFirst(System.Collections.IList selection)
     {
-        RevisionRow? older = null;
-        RevisionRow? newer = null;
-        int olderIndex = -1;
-        int newerIndex = int.MaxValue;
-
+        List<RevisionRow> rows = [];
         foreach (object? item in selection)
         {
-            if (item is not RevisionRow row || IsArtificial(row))
+            if (item is RevisionRow row && !IsArtificial(row))
             {
-                continue;
-            }
-
-            int index = _list.Items.IndexOf(row);
-            if (index > olderIndex)
-            {
-                olderIndex = index;
-                older = row;
-            }
-
-            if (index < newerIndex)
-            {
-                newerIndex = index;
-                newer = row;
+                rows.Add(row);
             }
         }
 
-        return older is not null && newer is not null && !ReferenceEquals(older, newer)
-            ? (older.Hash, newer.Hash)
-            : null;
+        return [.. rows.OrderBy(r => _list.Items.IndexOf(r)).Select(r => r.Hash)];
     }
 
     // --- Menu wiring helpers ---------------------------------------------------
@@ -6386,8 +6380,9 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
-        // Oldest first, matching the grid's own two-row selection behaviour.
-        RangeSelected?.Invoke(rows[1].Hash, rows[0].Hash);
+        // Newest first, exactly as the grid's own selection announcement orders it —
+        // SelectedCommits() answers in click order, which says nothing about age.
+        RangeSelected?.Invoke([.. rows.OrderBy(r => _list.Items.IndexOf(r)).Select(r => r.Hash)]);
     }
 
     private void GoToCurrentRevision()
