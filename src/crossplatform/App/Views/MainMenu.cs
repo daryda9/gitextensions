@@ -64,12 +64,19 @@ public sealed class MainMenu : UserControl
 
     // Natural (unconstrained) bar width per top-level entry, captured while the entry
     // is ON the bar. An entry parked in the overflow is not realised as a bar item any
-    // more, so its width could not be measured there — hence the cache. Every Build()
-    // starts with all entries on the bar, so the first layout pass fills it.
-    private readonly Dictionary<MenuItem, double> _naturalWidth = new();
+    // more, so its width could not be measured there — hence the cache.
+    //
+    // Keyed by RANK, not by the MenuItem: the split is applied by REBUILDING the menu
+    // (see ApplyOverflow), so the object at a given rank changes identity while its
+    // width does not. Keying by object would empty the cache on every rebuild, and an
+    // empty cache puts everything back on the bar, which re-triggers the same overflow
+    // decision — a rebuild loop.
+    private readonly Dictionary<int, double> _naturalWidth = new();
 
-    // How many leading entries of _topLevel are on the bar right now.
-    private int _onBar;
+    // How many leading entries of _topLevel are on the bar right now. Seeded above any
+    // possible count and clamped by Distribute, so the FIRST build puts everything on
+    // the bar — which is what lets the first layout pass measure them all.
+    private int _onBar = int.MaxValue;
 
     // Width of the "…" entry, reserved before deciding what fits. It can only be
     // measured while the entry is visible, i.e. while something already overflows, so
@@ -681,17 +688,15 @@ public sealed class MainMenu : UserControl
         {
             Background = toolbar,
             Foreground = text,
-            Items = { start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help, _overflow },
         };
         _bar = menu;
 
-        // A rebuild throws away every previous entry, so the width cache goes with it;
-        // and it starts with everything on the bar, which is what lets the very first
-        // layout pass measure them all (see _naturalWidth).
         _topLevel.Clear();
         _topLevel.AddRange([start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help]);
-        _naturalWidth.Clear();
-        _onBar = _topLevel.Count;
+
+        // The entries are handed to the bar and to the "…" ALREADY on the right side,
+        // rather than all put on the bar and moved afterwards. See Distribute.
+        Distribute();
 
         // Fluent caps every flyout — a menu popup included — at FlyoutThemeMaxWidth
         // (456px), and the item template clips rather than ellipsises what does not
@@ -732,11 +737,12 @@ public sealed class MainMenu : UserControl
         // by the host (SetRepositoryState) measure to zero and are deliberately NOT
         // cached: they cost nothing, so they always "fit" and stay on the bar, which is
         // also why they can never turn up inside the "…" flyout.
-        foreach (MenuItem item in _topLevel)
+        for (int i = 0; i < _topLevel.Count; i++)
         {
+            MenuItem item = _topLevel[i];
             if (item.IsVisible && item.DesiredSize.Width > 0)
             {
-                _naturalWidth[item] = item.DesiredSize.Width;
+                _naturalWidth[i] = item.DesiredSize.Width;
             }
         }
 
@@ -746,9 +752,9 @@ public sealed class MainMenu : UserControl
         }
 
         double total = 0;
-        foreach (MenuItem item in _topLevel)
+        for (int i = 0; i < _topLevel.Count; i++)
         {
-            total += WidthOf(item);
+            total += WidthOf(i);
         }
 
         int wanted;
@@ -765,7 +771,7 @@ public sealed class MainMenu : UserControl
             wanted = 0;
             for (int i = 0; i < _topLevel.Count; i++)
             {
-                double step = WidthOf(_topLevel[i]);
+                double step = WidthOf(i);
                 if (used + step > budget)
                 {
                     break;
@@ -785,8 +791,8 @@ public sealed class MainMenu : UserControl
     // Cached width, or "unknown" for an entry never yet measured on the bar. Unknown
     // reads as zero on purpose: it can only happen before the first layout pass, when
     // everything is still on the bar anyway, and the pass that follows corrects it.
-    private double WidthOf(MenuItem item)
-        => item.IsVisible && _naturalWidth.TryGetValue(item, out double w) ? w : 0;
+    private double WidthOf(int rank)
+        => _topLevel[rank].IsVisible && _naturalWidth.TryGetValue(rank, out double w) ? w : 0;
 
     private void RequestOverflow(int onBar)
     {
@@ -803,22 +809,21 @@ public sealed class MainMenu : UserControl
         }, DispatcherPriority.Loaded);
     }
 
-    // Rebuilds both collections from _topLevel. Both are cleared first: a MenuItem has
-    // one logical parent, so it must leave the bar before it can enter the flyout.
-    private void ApplyOverflow(int onBar)
+    /// <summary>
+    ///  Puts every entry of <see cref="_topLevel"/> on the side <see cref="_onBar"/>
+    ///  says it belongs to, into collections that are empty to begin with.
+    /// </summary>
+    /// <remarks>
+    ///  Called only from <see cref="Build"/>, on entries that have just been created and
+    ///  have never been parented — which is the whole point. See
+    ///  <see cref="ApplyOverflow"/> for why an entry must not be moved instead.
+    /// </remarks>
+    private void Distribute()
     {
-        onBar = Math.Clamp(onBar, 0, _topLevel.Count);
-        if (onBar == _onBar)
-        {
-            return;
-        }
-
-        _onBar = onBar;
-        _bar.Items.Clear();
-        _overflow.Items.Clear();
+        _onBar = Math.Clamp(_onBar, 0, _topLevel.Count);
         for (int i = 0; i < _topLevel.Count; i++)
         {
-            if (i < onBar)
+            if (i < _onBar)
             {
                 _bar.Items.Add(_topLevel[i]);
             }
@@ -828,8 +833,44 @@ public sealed class MainMenu : UserControl
             }
         }
 
-        _overflow.IsVisible = onBar < _topLevel.Count;
+        _overflow.IsVisible = _onBar < _topLevel.Count;
         _bar.Items.Add(_overflow);
+    }
+
+    /// <summary>
+    ///  Applies a new split by REBUILDING the menu, not by moving entries between the
+    ///  bar and the "…".
+    /// </summary>
+    /// <remarks>
+    ///  <para>Moving them is what this used to do, and it is broken at the framework
+    ///  level: re-parenting a <see cref="MenuItem"/> detaches it from the visual tree,
+    ///  which throws away the template that carries its popup — but the child items
+    ///  inside that popup keep pointing at the dead presenter's panel as their VISUAL
+    ///  parent. The next open therefore either shows an EMPTY card (the new presenter
+    ///  is the same object and silently adds nothing) or, when a fresh presenter is
+    ///  built, throws <c>"The control MenuItem already has a visual parent StackPanel"</c>
+    ///  out of the pointer-entered handler and takes the process with it. Both were
+    ///  reproduced: shrink the window with a top-level menu already opened once, then
+    ///  hover that entry inside the "…".</para>
+    ///
+    ///  <para>A rebuild sidesteps it because nothing is ever re-parented: every entry is
+    ///  a new object, created and then handed straight to the side it belongs on. It is
+    ///  the same work a language switch already does, and it runs only when the split
+    ///  actually changes — a handful of times across a whole drag-resize, never per
+    ///  layout pass. It is safe from looping only because <see cref="_naturalWidth"/> is
+    ///  keyed by rank and therefore survives the rebuild: with the widths still known,
+    ///  the pass that follows re-computes the SAME split and asks for nothing.</para>
+    /// </remarks>
+    private void ApplyOverflow(int onBar)
+    {
+        onBar = Math.Clamp(onBar, 0, _topLevel.Count);
+        if (onBar == _onBar)
+        {
+            return;
+        }
+
+        _onBar = onBar;
+        Build();
     }
 
     // Repository → Git maintenance. Upstream is a submenu of four entries
