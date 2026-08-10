@@ -962,6 +962,19 @@ public sealed class CommitDialog : Theming.ZoomWindow
         RefreshBranchCaption();
     }
 
+    /// <summary>
+    ///  What a user script bound to a commit event can substitute. The message is passed
+    ///  in for the AFTER case, where the box has already been cleared; the branch and the
+    ///  repository are what this dialog already knows.
+    /// </summary>
+    private UserScriptContext ScriptContext(string? message = null)
+        => new(
+            _repoPath,
+            CurrentBranch: _titleBranch,
+            Message: message ?? _messageBox.Text ?? string.Empty,
+            Subject: (message ?? _messageBox.Text ?? string.Empty).Split('\n')[0].Trim(),
+            Author: _committerName.Length > 0 ? $"{_committerName} <{_committerEmail}>" : string.Empty);
+
     // Persists one options-menu toggle. The whole record is rewritten, so a
     // concurrently changed sibling setting would be overwritten — the file is only
     // written from the UI thread, and only by an explicit user click.
@@ -2935,6 +2948,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
             return;
         }
 
+        // User scripts bound to BeforeCommit. A failing one STOPS the commit — that is
+        // what a pre-hook is for — and says so on the status line, so the message the
+        // user typed is still there to fix and commit again.
+        if (!await UserScriptRunner.RunEventAsync(this, UserScriptEvent.BeforeCommit, ScriptContext()))
+        {
+            SetStatus(T("Commit cancelled by a user script."));
+            return;
+        }
+
         // Upstream runs the commit inside FormProcess (FormCommit.cs:1265) so the user
         // sees the command line, git's output and — the reason this matters — whatever
         // the pre-commit hook prints. Same surface the push already uses.
@@ -2964,6 +2986,10 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
         _messageBox.Text = string.Empty;
         _amendBox.IsChecked = false;
+
+        // AfterCommit scripts see the commit that was just made, message included: the
+        // context is built from the message BEFORE the box is cleared, above.
+        await UserScriptRunner.RunEventAsync(this, UserScriptEvent.AfterCommit, ScriptContext(message));
         Committed?.Invoke();
         SetStatus(string.Format(T("Committed ({0})."), CommitActionsService.DescribeCommit(options)));
 

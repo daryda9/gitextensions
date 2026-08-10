@@ -1490,6 +1490,12 @@ public sealed class MainWindow : Theming.ZoomWindow
         _menu.AboutRequested += () => _ = AboutDialog.ShowAsync(this);
         _menu.SettingsRequested += () => _ = OpenSettingsAsync();
 
+        // Tools → Scripts. The menu raises, the shell runs: only the shell knows the
+        // repository and the selected revision the placeholders are filled from.
+        _menu.UserScriptRequested += script => Async.Run(
+            () => UserScriptRunner.RunAsync(this, script, ScriptContext(_lastSelectedHash)),
+            "running a user script");
+
         // Plugins: run a plugin (off-thread) / open its settings editor.
         _menu.PluginRunRequested += plugin => RunPlugin(plugin);
         _menu.PluginSettingsRequested += plugin => _ = OpenPluginSettingsAsync(plugin);
@@ -1569,6 +1575,33 @@ public sealed class MainWindow : Theming.ZoomWindow
             _commitCommands.Add((header, handler));
             _revisions.AddCommitCommand(header, handler);
         }
+
+        // The scripts marked "add to the revision grid context menu", refreshed whenever
+        // the list is saved. Replaced rather than appended: a script renamed in Settings
+        // must not leave its old name behind in the menu.
+        void RefreshScriptCommands()
+        {
+            List<(string Header, Action<string> Handler)> commands = [];
+            foreach (UserScript script in new UserScriptService().Load())
+            {
+                if (!script.Enabled || !script.AddToRevisionGridContextMenu)
+                {
+                    continue;
+                }
+
+                UserScript captured = script;
+                commands.Add((
+                    captured.Name is { Length: > 0 } name ? name : captured.Command,
+                    hash => Async.Run(
+                        () => UserScriptRunner.RunAsync(this, captured, ScriptContext(hash)),
+                        "running a user script")));
+            }
+
+            _revisions.SetScriptCommands(commands);
+        }
+
+        RefreshScriptCommands();
+        UserScriptService.Changed += () => Dispatcher.UIThread.Post(RefreshScriptCommands);
 
         Register("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
         Register("Cherry-pick",
@@ -2036,6 +2069,18 @@ public sealed class MainWindow : Theming.ZoomWindow
     // Reflects an external-tool result in the status bar; failures are reported
     // as text rather than thrown, so a missing tool never crashes the UI.
     private void Surface(ExternalToolResult result) => _statusBar.SetText(result.Message);
+
+    /// <summary>
+    ///  What a user script run from the shell can substitute: the repository, the
+    ///  and the revision the user has in hand. The branch is left to <c>{cBranch}</c>'s
+    ///  own lookup (the shell holds it only as display text). Everything about the
+    ///  revision beyond its hash is left to the script — <c>git show</c> on
+    ///  <c>{sHash}</c> is one command, and reading it here would cost a git call per
+    ///  menu opening.
+    /// </summary>
+    private UserScriptContext ScriptContext(string? hash) => new(
+        _repoPath ?? string.Empty,
+        SelectedHashes: hash is { Length: > 0 } ? [hash] : []);
 
     private void OnRevisionSelected(string commitHash)
     {

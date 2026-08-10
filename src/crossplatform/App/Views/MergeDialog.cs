@@ -516,6 +516,14 @@ public sealed class MergeDialog : Theming.ZoomWindow
             return;
         }
 
+        // BeforeMerge scripts. A failure keeps the dialog open with its options intact,
+        // so whatever the script objected to can be fixed and the merge repeated.
+        if (!await UserScriptRunner.RunEventAsync(
+                this, UserScriptEvent.BeforeMerge, new UserScriptContext(repo, RemoteBranch: branch)))
+        {
+            return;
+        }
+
         BranchTagResult? res = null;
         await GitProcessDialog.RunStreamingAsync(
             this,
@@ -537,6 +545,15 @@ public sealed class MergeDialog : Theming.ZoomWindow
             Executed: true,
             Success: res?.Success == true,
             Output: res?.Output ?? string.Empty);
+
+        // AfterMerge only on a merge that finished. A CONFLICTED merge is not finished:
+        // git stopped half-way and the caller is about to offer the conflict resolver,
+        // so a script that builds or tests would be running against an unresolved tree.
+        if (res?.Success == true)
+        {
+            await UserScriptRunner.RunEventAsync(
+                this, UserScriptEvent.AfterMerge, new UserScriptContext(repo, RemoteBranch: branch));
+        }
 
         Close();
     }

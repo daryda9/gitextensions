@@ -605,6 +605,12 @@ public sealed class PullDialog : Theming.ZoomWindow
             AutoStash: !fetchOnly && _autoStash.IsChecked == true);
     }
 
+    /// <summary>What a user script bound to a pull/fetch event can substitute.</summary>
+    private UserScriptContext ScriptContext(PullOptions options) => new(
+        _repoPath,
+        Remote: options.EffectiveRemote,
+        RemoteBranch: options.RemoteBranch);
+
     // --- Actions ----------------------------------------------------------
 
     private async Task OnPullAsync()
@@ -631,6 +637,16 @@ public sealed class PullDialog : Theming.ZoomWindow
             ? T("FormPull/_buttonFetch.Text", "Fetch")
             : T("FormPull/$this.Text", "Pull");
 
+        // Before(Pull|Fetch), by what the dialog is actually about to do: "fetch only"
+        // is a fetch, and a script that guards a pull has no business stopping one.
+        UserScriptEvent before = options.IsFetchOnly
+            ? UserScriptEvent.BeforeFetch
+            : UserScriptEvent.BeforePull;
+        if (!await UserScriptRunner.RunEventAsync(this, before, ScriptContext(options)))
+        {
+            return;
+        }
+
         RemoteOpResult? res = null;
         await GitProcessDialog.RunStreamingAsync(this, label, emit =>
         {
@@ -656,6 +672,17 @@ public sealed class PullDialog : Theming.ZoomWindow
         // A pull that conflicts asks the question upstream asks before this dialog
         // disappears — otherwise the conflicted state has no surface at all here.
         ConflictFlowResult conflicts = await ConflictFlow.HandleAsync(this, repo);
+
+        // After(Pull|Fetch), on success only, before the stash question: a script that
+        // rebuilds or re-indexes wants to see the tree git just wrote, not that tree with
+        // the user's stash applied on top.
+        if (res is { Success: true })
+        {
+            await UserScriptRunner.RunEventAsync(
+                this,
+                options.IsFetchOnly ? UserScriptEvent.AfterFetch : UserScriptEvent.AfterPull,
+                ScriptContext(options));
+        }
 
         // Upstream's FormPull.PopStash: put back what the Stash button stashed, if the
         // pull worked and nothing is half-done. Popping into a conflicted merge would

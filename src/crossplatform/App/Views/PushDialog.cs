@@ -1218,6 +1218,14 @@ public sealed class PushDialog : Theming.ZoomWindow
     /// </summary>
     private async Task RunPushAsync(string label, PushOperation operation, PushRejectionContext? rejection = null)
     {
+        // BeforePush scripts. A failing one abandons the push and leaves the dialog
+        // open, which is the only useful answer: the user has to fix whatever the script
+        // objected to and press Push again.
+        if (!await UserScriptRunner.RunEventAsync(this, UserScriptEvent.BeforePush, ScriptContext()))
+        {
+            return;
+        }
+
         _pushLaunched = true;
 
         // The LAST attempt's result — a rejected push may be retried in place, and it
@@ -1252,8 +1260,22 @@ public sealed class PushDialog : Theming.ZoomWindow
             }
         }
 
+        // AfterPush runs on a push that actually worked. Its failure is reported and
+        // ignored: what it guards has already left the machine.
+        if (res is { Success: true })
+        {
+            await UserScriptRunner.RunEventAsync(this, UserScriptEvent.AfterPush, ScriptContext());
+        }
+
         Close();
     }
+
+    /// <summary>What a user script bound to a push event can substitute.</summary>
+    private UserScriptContext ScriptContext() => new(
+        _repoPath,
+        CurrentBranch: _currentBranch,
+        Remote: (_remoteCombo.SelectedItem as string ?? string.Empty).Trim(),
+        RemoteBranch: (_remoteBranchCombo?.SelectedItem as string ?? string.Empty).Trim());
 
     // --- Rejected push recovery -------------------------------------------
 

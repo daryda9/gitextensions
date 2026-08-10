@@ -182,6 +182,20 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly ComboBox _monospaceFont;
     private readonly TextBox _monospaceFontSize;
 
+    // ---- Scripts page: the user scripts and their editor. The list is edited in place
+    // and only written on OK/Apply, so Cancel really cancels.
+    private readonly ListBox _scriptList = new() { MinHeight = 150 };
+    private readonly TextBox _scriptName = new();
+    private readonly TextBox _scriptCommand = new();
+    private readonly TextBox _scriptArguments = new();
+    private readonly ComboBox _scriptEvent = new() { MinWidth = 260, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly CheckBox _scriptEnabled = new();
+    private readonly CheckBox _scriptAsk = new();
+    private readonly CheckBox _scriptBackground = new();
+    private readonly CheckBox _scriptInGridMenu = new();
+    private readonly List<UserScript> _scripts = [];
+    private bool _loadingScript;
+
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
     // CommitInfoChoices.
     private readonly CheckBox[] _commitInfoChecks;
@@ -374,6 +388,28 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string StashText = "Stash and checkout";
     private const string DashboardKey = "Dashboard/$this.Text";
     private const string DashboardText = "Dashboard and paths";
+    private const string ScriptsKey = "ScriptsSettingsPage/$this.Text";
+    private const string ScriptsText = "Scripts";
+
+    // The events a script can be bound to, in the order upstream's combo lists them.
+    // Tokens are the names of UserScriptEvent, so the file stays readable.
+    private static readonly (UserScriptEvent Event, string Label)[] ScriptEvents =
+    [
+        (UserScriptEvent.None, "(never — run it by hand)"),
+        (UserScriptEvent.ShowInUserMenuBar, "Show it in the Tools menu"),
+        (UserScriptEvent.BeforeCommit, "Before a commit"),
+        (UserScriptEvent.AfterCommit, "After a commit"),
+        (UserScriptEvent.BeforePush, "Before a push"),
+        (UserScriptEvent.AfterPush, "After a push"),
+        (UserScriptEvent.BeforePull, "Before a pull"),
+        (UserScriptEvent.AfterPull, "After a pull"),
+        (UserScriptEvent.BeforeFetch, "Before a fetch"),
+        (UserScriptEvent.AfterFetch, "After a fetch"),
+        (UserScriptEvent.BeforeCheckout, "Before a checkout"),
+        (UserScriptEvent.AfterCheckout, "After a checkout"),
+        (UserScriptEvent.BeforeMerge, "Before a merge"),
+        (UserScriptEvent.AfterMerge, "After a merge"),
+    ];
 
     // The three answers of the two auto-pop drop-downs, in AskAlwaysNever order.
     private static readonly (string Key, string Label)[] AskChoices =
@@ -1009,6 +1045,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                     + "\"Compact\", is a Windows API and is not offered here — its own "
                     + "code falls back to the full path off Windows."));
 
+        Panel scriptsPanel = BuildScriptsPage(text, dim);
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -1024,6 +1062,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(graphPanel);
         _pages.Add(stashPanel);
         _pages.Add(dashboardPanel);
+        _pages.Add(scriptsPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -1068,6 +1107,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(GraphKey, GraphText));
         categories.Items.Add(CategoryItem(StashKey, StashText));
         categories.Items.Add(CategoryItem(DashboardKey, DashboardText));
+        categories.Items.Add(CategoryItem(ScriptsKey, ScriptsText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -1325,6 +1365,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             SettingsService.ShorteningStrategies, prefs.ShorteningRecentRepoPathStrategy);
         _truncatePathMethod.SelectedIndex = TokenIndex(
             SettingsService.TruncateMethods, prefs.TruncatePathMethod);
+
+        // Scripts: their own file, edited in place and written on OK/Apply.
+        _scripts.Clear();
+        _scripts.AddRange(new UserScriptService().Load());
+        RebuildScriptList(0);
 
         SelectFont(_uiFont, prefs.UiFontFamily);
         SelectFont(_monospaceFont, prefs.MonospaceFontFamily);
@@ -1633,6 +1678,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         string monospaceFont = SelectedFont(_monospaceFont);
         int uiFontSize = Number(_uiFontSize, 0, 40);
         int monospaceFontSize = Number(_monospaceFontSize, 0, 40);
+
+        // Copied out on the UI thread: the save below runs off it, and _scripts keeps
+        // being edited as long as this dialog is open (Apply does not close it).
+        List<UserScript> scripts = [.. _scripts];
         _ = Task.Run(() =>
         {
             SettingsService settings = new();
@@ -1674,6 +1723,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.UiFontSize = uiFontSize;
             prefs.MonospaceFontSize = monospaceFontSize;
             settings.Save(prefs);
+
+            // Saving raises UserScriptService.Changed, which is what puts a new script in
+            // the Tools menu and in the grid's context menu without a restart.
+            new UserScriptService().Save(scripts);
 
             // Drop the resolved families so the next window built asks again. Windows
             // already open keep theirs: re-flowing every layout under the pointer is
@@ -1761,6 +1814,213 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     ///  the keys of <c>hotkeys.json</c>, so what the page shows and what a hand-edited
     ///  file contains cannot diverge.</para>
     /// </summary>
+    /// <summary>
+    ///  The Scripts page: the list on the left of its editor, plus Add / Duplicate /
+    ///  Remove. Upstream's <c>ScriptsSettingsPage</c>, minus the icon picker and the
+    ///  PowerShell flag (see <see cref="UserScript"/> for why).
+    ///
+    ///  <para>Edits are written into <see cref="_scripts"/> as they are typed and saved
+    ///  with the rest of the dialog, so Cancel really cancels — upstream writes each
+    ///  field straight into its store.</para>
+    /// </summary>
+    private Panel BuildScriptsPage(IBrush text, IBrush dim)
+    {
+        foreach ((UserScriptEvent _, string label) in ScriptEvents)
+        {
+            _scriptEvent.Items.Add(new ComboBoxItem { Content = label });
+        }
+
+        Localize(_scriptEnabled, "ScriptsSettingsPage/chkEnabled.Text", "Enabled");
+        Localize(_scriptAsk, "ScriptsSettingsPage/chkAskConfirmation.Text", "Ask before running it");
+        Localize(
+            _scriptBackground,
+            "ScriptsSettingsPage/chkRunInBackground.Text",
+            "Run it without showing the process window");
+        Localize(
+            _scriptInGridMenu,
+            "ScriptsSettingsPage/chkAddToRevisionGridContextMenu.Text",
+            "Also show it in the revision grid's context menu");
+
+        _scriptList.SelectionChanged += (_, _) => LoadSelectedScript();
+        _scriptName.PropertyChanged += (_, e) => EditScript(e, s => s.Name = _scriptName.Text ?? string.Empty);
+        _scriptCommand.PropertyChanged += (_, e) => EditScript(e, s => s.Command = _scriptCommand.Text ?? string.Empty);
+        _scriptArguments.PropertyChanged += (_, e) => EditScript(e, s => s.Arguments = _scriptArguments.Text ?? string.Empty);
+        _scriptEvent.SelectionChanged += (_, _) => EditScript(
+            null, s => s.OnEvent = ScriptEvents[Math.Max(0, _scriptEvent.SelectedIndex)].Event);
+        _scriptEnabled.IsCheckedChanged += (_, _) => EditScript(null, s => s.Enabled = _scriptEnabled.IsChecked == true);
+        _scriptAsk.IsCheckedChanged += (_, _) => EditScript(null, s => s.AskConfirmation = _scriptAsk.IsChecked == true);
+        _scriptBackground.IsCheckedChanged += (_, _) => EditScript(null, s => s.RunInBackground = _scriptBackground.IsChecked == true);
+        _scriptInGridMenu.IsCheckedChanged += (_, _) => EditScript(
+            null, s => s.AddToRevisionGridContextMenu = _scriptInGridMenu.IsChecked == true);
+
+        Button add = new() { MinWidth = 84, Margin = new Thickness(0, 0, 6, 0) };
+        Button duplicate = new() { MinWidth = 84, Margin = new Thickness(0, 0, 6, 0) };
+        Button remove = new() { MinWidth = 84 };
+        Localize(add, "ScriptsSettingsPage/btnAdd.Text", "Add");
+        Localize(duplicate, null, "Duplicate");
+        Localize(remove, "ScriptsSettingsPage/btnRemove.Text", "Remove");
+
+        add.Click += (_, _) =>
+        {
+            _scripts.Add(new UserScript { Name = TranslationService.T("New script") });
+            RebuildScriptList(_scripts.Count - 1);
+        };
+        duplicate.Click += (_, _) =>
+        {
+            if (SelectedScript() is not { } source)
+            {
+                return;
+            }
+
+            _scripts.Add(new UserScript
+            {
+                Name = source.Name + " (2)",
+                Command = source.Command,
+                Arguments = source.Arguments,
+                OnEvent = source.OnEvent,
+                AskConfirmation = source.AskConfirmation,
+                RunInBackground = source.RunInBackground,
+                AddToRevisionGridContextMenu = source.AddToRevisionGridContextMenu,
+
+                // A copy starts DISABLED: duplicating a pre-commit hook and having the
+                // copy fire on the next commit, before it has been edited, is the one
+                // outcome nobody wants.
+                Enabled = false,
+            });
+
+            RebuildScriptList(_scripts.Count - 1);
+        };
+        remove.Click += (_, _) =>
+        {
+            int index = _scriptList.SelectedIndex;
+            if (index >= 0 && index < _scripts.Count)
+            {
+                _scripts.RemoveAt(index);
+                RebuildScriptList(Math.Min(index, _scripts.Count - 1));
+            }
+        };
+
+        StackPanel buttons = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        buttons.Children.Add(add);
+        buttons.Children.Add(duplicate);
+        buttons.Children.Add(remove);
+
+        string placeholders = string.Join(
+            ", ",
+            UserScriptService.Placeholders.Select(p => "{" + p.Name + "}"));
+
+        return CategoryPanel(
+            ScriptsKey, ScriptsText,
+            null, "Your own commands, run from the Tools menu or around the operations "
+                + "that matter. A script bound to a \"Before…\" event that exits with an "
+                + "error STOPS the operation — that is what makes it a check and not a "
+                + "log line.",
+            text,
+            dim,
+            _scriptList,
+            buttons,
+            Field("ScriptsSettingsPage/lblName.Text", "Name", _scriptName, dim),
+            Field(
+                "ScriptsSettingsPage/lblCommand.Text",
+                "Command",
+                _scriptCommand,
+                dim,
+                "The program to run. It is NOT passed to a shell, so a repository name "
+                    + "with a space or a semicolon in it cannot turn into extra commands. "
+                    + "For a pipeline, name the shell yourself: command \"bash\", "
+                    + "arguments \"-c\" \"…\"."),
+            Field(
+                "ScriptsSettingsPage/lblArguments.Text",
+                "Arguments",
+                _scriptArguments,
+                dim,
+                "Split on spaces; put double quotes around anything that must stay one "
+                    + "argument. Substituted before running: " + placeholders + "."),
+            Field("ScriptsSettingsPage/lblOnEvent.Text", "When", _scriptEvent, dim),
+            _scriptEnabled,
+            _scriptAsk,
+            _scriptBackground,
+            _scriptInGridMenu);
+    }
+
+    private UserScript? SelectedScript()
+        => _scriptList.SelectedIndex >= 0 && _scriptList.SelectedIndex < _scripts.Count
+            ? _scripts[_scriptList.SelectedIndex]
+            : null;
+
+    // Applies one edit to the selected script. The PropertyChanged overload filters for
+    // TextProperty, so a focus or a caret move does not count as an edit.
+    private void EditScript(global::Avalonia.AvaloniaPropertyChangedEventArgs? e, Action<UserScript> change)
+    {
+        if (_loadingScript || (e is not null && e.Property != TextBox.TextProperty))
+        {
+            return;
+        }
+
+        if (SelectedScript() is { } script)
+        {
+            change(script);
+            if (_scriptList.SelectedIndex is int index && index >= 0 && index < _scriptList.ItemCount
+                && _scriptList.Items[index] is ListBoxItem item)
+            {
+                item.Content = ScriptLabel(script);
+            }
+        }
+    }
+
+    private static string ScriptLabel(UserScript script)
+    {
+        string name = script.Name is { Length: > 0 } n ? n : script.Command;
+        return script.Enabled ? name : name + "  —  " + TranslationService.T("disabled");
+    }
+
+    // Rebuilds the list box from _scripts and selects one row. The list is rebuilt rather
+    // than bound: it is at most a handful of rows, and a binding would need a model with
+    // change notification for four checkboxes that are edited in place.
+    private void RebuildScriptList(int select)
+    {
+        _scriptList.Items.Clear();
+        foreach (UserScript script in _scripts)
+        {
+            _scriptList.Items.Add(new ListBoxItem { Content = ScriptLabel(script) });
+        }
+
+        _scriptList.SelectedIndex = _scripts.Count == 0 ? -1 : Math.Clamp(select, 0, _scripts.Count - 1);
+        LoadSelectedScript();
+    }
+
+    private void LoadSelectedScript()
+    {
+        UserScript? script = SelectedScript();
+        _loadingScript = true;
+        try
+        {
+            _scriptName.Text = script?.Name ?? string.Empty;
+            _scriptCommand.Text = script?.Command ?? string.Empty;
+            _scriptArguments.Text = script?.Arguments ?? string.Empty;
+            _scriptEnabled.IsChecked = script?.Enabled ?? false;
+            _scriptAsk.IsChecked = script?.AskConfirmation ?? false;
+            _scriptBackground.IsChecked = script?.RunInBackground ?? false;
+            _scriptInGridMenu.IsChecked = script?.AddToRevisionGridContextMenu ?? false;
+            _scriptEvent.SelectedIndex = script is null
+                ? 0
+                : Math.Max(0, Array.FindIndex(ScriptEvents, c => c.Event == script.OnEvent));
+        }
+        finally
+        {
+            _loadingScript = false;
+        }
+
+        foreach (Control control in new Control[]
+                 {
+                     _scriptName, _scriptCommand, _scriptArguments, _scriptEvent,
+                     _scriptEnabled, _scriptAsk, _scriptBackground, _scriptInGridMenu,
+                 })
+        {
+            control.IsEnabled = script is not null;
+        }
+    }
+
     private Panel BuildHotkeysPage(IBrush text, IBrush dim)
     {
         foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())

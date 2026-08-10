@@ -57,6 +57,9 @@ public sealed class MainMenu : UserControl
     private Menu _bar = new();
     private MenuItem _overflow = new();
 
+    // Tools → Scripts. Rebuilt from scripts.json whenever it is saved.
+    private MenuItem _userScripts = new();
+
     // Every top-level entry in bar order, whether it is currently on the bar or in
     // the overflow. This is the single source of truth ApplyOverflow rebuilds both
     // collections from, so an entry can never change rank or be listed twice.
@@ -675,6 +678,10 @@ public sealed class MainMenu : UserControl
         };
 
         MenuItem tools = new() { Header = T("FormBrowse/toolsToolStripMenuItem.Text", "_Tools") };
+        _userScripts = new MenuItem
+        {
+            Header = T("ScriptsSettingsPage/$this.Text", "Scripts"),
+        };
         tools.Items.Add(Item("FormBrowse/gitBashToolStripMenuItem.Text", "Git bash", "GitForWindows", () => GitBashRequested?.Invoke(), gesture: BrowseCommand.GitBash));
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/kGitToolStripMenuItem.Text", "GitK", null, () => GitKRequested?.Invoke()));
@@ -682,7 +689,15 @@ public sealed class MainMenu : UserControl
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/gitcommandLogToolStripMenuItem.Text", "Git command log", null, () => GitCommandLogRequested?.Invoke()));
         tools.Items.Add(new Separator());
+        tools.Items.Add(_userScripts);
+        tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/settingsToolStripMenuItem.Text", "Settings…", "Settings", () => SettingsRequested?.Invoke(), gesture: BrowseCommand.OpenSettings));
+        BuildUserScripts();
+
+        // The submenu is rebuilt whenever the list is saved, so a script added in
+        // Settings is in the menu before the dialog has finished closing. Subscribed for
+        // the life of the window, like the language and style hooks above it.
+        UserScriptService.Changed += OnUserScriptsChanged;
 
         // GitHub: repository-host integration is out of scope for the Linux port,
         // so this is a disabled placeholder kept for visual parity only.
@@ -980,6 +995,39 @@ public sealed class MainMenu : UserControl
     {
         _pluginList = plugins ?? [];
         BuildPlugins();
+    }
+
+    /// <summary>
+    ///  Raised when the user picks a script from Tools → Scripts. The menu does not run
+    ///  anything itself: the host is what knows the repository and the selected revision
+    ///  the script's placeholders are filled from.
+    /// </summary>
+    public event Action<UserScript>? UserScriptRequested;
+
+    private void OnUserScriptsChanged() => Dispatcher.UIThread.Post(BuildUserScripts);
+
+    // The scripts marked ShowInUserMenuBar, one entry each. A disabled "(none)"
+    // placeholder when there are none, like the plugins and the recent repositories —
+    // an empty submenu that opens onto nothing reads as a broken menu.
+    private void BuildUserScripts()
+    {
+        _userScripts.Items.Clear();
+
+        IReadOnlyList<UserScript> scripts =
+            new UserScriptService().For(UserScriptEvent.ShowInUserMenuBar);
+        if (scripts.Count == 0)
+        {
+            _userScripts.Items.Add(None());
+            return;
+        }
+
+        foreach (UserScript script in scripts)
+        {
+            UserScript captured = script;
+            string label = script.Name is { Length: > 0 } name ? name : script.Command;
+            _userScripts.Items.Add(Item(
+                null, label, null, () => UserScriptRequested?.Invoke(captured), translate: false));
+        }
     }
 
     private void BuildRecentRepositories()

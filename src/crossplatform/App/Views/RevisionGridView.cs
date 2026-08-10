@@ -633,6 +633,11 @@ public sealed class RevisionGridView : UserControl
     // appended to each row's context menu. Each handler receives the full hash.
     private readonly List<(string Header, Action<string> Handler)> _commitCommands = [];
 
+    // The user scripts marked "add to the revision grid context menu". Kept apart from
+    // _commitCommands because that list only grows — the shell registers into it once —
+    // whereas this one is REPLACED every time scripts.json is saved.
+    private IReadOnlyList<(string Header, Action<string> Handler)> _scriptCommands = [];
+
     /// <summary>
     ///  Registers an extra context-menu command shown on each commit row; the
     ///  handler is invoked with the row's full commit hash.
@@ -643,12 +648,27 @@ public sealed class RevisionGridView : UserControl
     ///  unchanged. Registering invalidates the built menu, which is rebuilt on the
     ///  next row that needs it.</para>
     /// </summary>
+    /// <summary>
+    ///  Replaces the user-script entries of the row menu. Called by the shell on start
+    ///  and whenever the script list is saved, so a script added in Settings is in the
+    ///  menu without a restart.
+    /// </summary>
+    public void SetScriptCommands(IReadOnlyList<(string Header, Action<string> Handler)> commands)
+    {
+        _scriptCommands = commands;
+        InvalidateRowMenu();
+    }
+
     public void AddCommitCommand(string header, Action<string> handler)
     {
         _commitCommands.Add((header, handler));
+        InvalidateRowMenu();
+    }
 
-        // Items cannot be added to a live popup (it would not re-measure), so the
-        // whole menu is discarded and rebuilt instead.
+    // Items cannot be added to a live popup (it would not re-measure), so the whole menu
+    // is discarded and rebuilt on the next row that needs one.
+    private void InvalidateRowMenu()
+    {
         if (_rowMenu is not null)
         {
             _rowMenu.Opening -= OnRowMenuOpening;
@@ -6186,7 +6206,9 @@ public sealed class RevisionGridView : UserControl
         // Anything the host registered that this menu does not place explicitly
         // still has to appear (AddCommitCommand is the shell's only hook), so it
         // lands here rather than being dropped.
-        foreach ((string header, Action<string> handler) in _commitCommands)
+        // The scripts go with them, under the same "Other actions" heading: they are
+        // commands on the selected commit, which is exactly what that submenu holds.
+        foreach ((string header, Action<string> handler) in _commitCommands.Concat(_scriptCommands))
         {
             if (_routedCommands.Contains(header))
             {

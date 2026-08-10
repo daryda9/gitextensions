@@ -93,13 +93,27 @@ public static class RefProcessRunner
     private static async Task<bool> PopStashAfterAsync(
         Window? owner, string repoPath, LocalChangesAction changesAction, Func<Task<bool>> checkout)
     {
+        // BeforeCheckout scripts run before anything is stashed or moved, so a script
+        // that refuses leaves the working tree exactly as the user left it.
+        if (!await UserScriptRunner.RunEventAsync(
+                owner, UserScriptEvent.BeforeCheckout, new UserScriptContext(repoPath)))
+        {
+            return false;
+        }
+
         // The checkout is STARTED here, inside this async method, rather than handed in
         // as a running Task: awaiting foreign work is what VSTHRD003 warns about, and
         // the warning is right — this method owns the sequence.
         bool ok = await checkout();
-        if (!ok || changesAction != LocalChangesAction.Stash)
+        if (!ok)
         {
-            return ok;
+            return false;
+        }
+
+        if (changesAction != LocalChangesAction.Stash)
+        {
+            await RunAfterCheckoutAsync(owner, repoPath);
+            return true;
         }
 
         if (await StashPopPrompt.ShouldPopAsync(owner, StashPopScope.Checkout))
@@ -107,8 +121,16 @@ public static class RefProcessRunner
             await Task.Run(() => new StashOpsService().StashPop(repoPath, string.Empty));
         }
 
+        await RunAfterCheckoutAsync(owner, repoPath);
         return true;
     }
+
+    // AfterCheckout runs LAST, after the stash has been put back: the tree a script
+    // inspects should be the one the user is about to work in, not the intermediate
+    // clean one.
+    private static Task RunAfterCheckoutAsync(Window? owner, string repoPath)
+        => UserScriptRunner.RunEventAsync(
+            owner, UserScriptEvent.AfterCheckout, new UserScriptContext(repoPath));
 
     /// <summary>
     ///  The full <c>FormCheckoutBranch</c> checkout: a remote branch as a new tracking
