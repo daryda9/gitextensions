@@ -3449,6 +3449,23 @@ oggetto intero, autore con indirizzo, hash intero.
 salvata invece di aspettare un riavvio. Scatta sul thread che ha salvato (il dialogo salva **fuori**
 dal thread UI), e la griglia lo gestisce con un post.
 
+### M153bis (2026-08-10, `98e88c68e`) — l'evidenziazione dell'autore non deve sembrare una selezione
+Segnalato dall'utente subito dopo: **«come mai ora vedo tutte queste linee tipo selezionate?»**. Due
+errori nello sfondo di riga aggiunto sopra.
+
+Usava `App.HoverRow`, che è il colore che dipinge **il puntatore**: una colonna di righe col colore
+dell'hover si legge come «sono tutte selezionate». Ora la tinta è **mescolata dalla palette** —
+il colore del pannello spostato di un decimo verso l'accento, misurato a `(31,39,54)` contro un
+pannello `(28,29,33)` e una striscia `(38,39,45)`.
+
+E dipingeva **ogni** riga in una repository con un autore solo, che non è un'evidenziazione ma un
+secondo sfondo applicato a tutta la griglia. Ora si tira indietro quando l'autore copre più di nove
+righe su dieci. Upstream non ci arriva mai perché evidenzia con un grigio di Windows che non si
+vede; il port deve dirlo.
+
+Verificato: repository a due autori → tinge solo le righe dell'altro autore; repository a un autore
+→ solo la striscia ordinaria.
+
 ### M154 — stash, checkout, push (6)
 `IncludeUntrackedFilesInManualStash`, `IncludeUntrackedFilesInAutoStash`,
 `AutoPopStashAfterCheckoutBranch`, `AutoPopStashAfterPull`, `RebaseAutoStash`, `RecursiveSubmodules`.
