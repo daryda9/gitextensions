@@ -3377,6 +3377,50 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M145 (2026-08-10, `44850dc33`) — più schede sulla stessa repository
+
+La striscia di M131-M132 teneva **una scheda per repository**: tutta l'API era chiavata sul path, e
+riaprire una repo già aperta si limitava ad attivare la scheda esistente.
+
+Ora `RepoTabEntry` ha un'**identità propria** — un GUID, non un contatore, perché l'id finisce in
+`ui-state.json` e viene riletto: un contatore ripartirebbe da zero a ogni avvio e collidereb­be con le
+schede ripristinate. Tutta l'API prende l'entry (`Activate`/`Close`/`Pin`/`Duplicate`) o l'id
+(`Restore(tabs, activeId)`); `Find(path)` resta privato e serve solo a `Open()`.
+
+**Il comportamento di default non cambia**: aprire una repo già aperta continua ad attivare la scheda
+esistente, e preferisce quella *attiva* se combacia, così non salta a un duplicato più vecchio. Il
+duplicato nasce solo da **«Duplicate tab»**, primo elemento del menu contestuale dopo «Keep open».
+Nessuna scorciatoia, deliberatamente: la striscia rivendica solo Ctrl+PagSu/Giù e il resto è già
+occupato da comandi upstream.
+
+Il duplicato nasce **fissato** (un'anteprima verrebbe rubata dal primo clic nell'albero) ed eredita
+commit selezionato e tab in basso; da lì in poi è indipendente. Nuovo evento `Duplicating` alzato
+**prima** della copia, così `MainWindow` riversa lo stato vivo nella sorgente solo se è la scheda
+caricata.
+
+**Etichette**: calcolate per l'intera striscia in `BuildLabels`. Repo diversi con la stessa foglia
+(`~/work/api` contro `~/toys/api`) crescono di un segmento di path alla volta finché si distinguono
+(si smette a 5, il tooltip ha il path intero); copie dello **stesso** path — che per path non sono
+distinguibili — sono numerate `repo (1)`, `repo (2)`, con il numero preso dalla posizione fra le
+copie, così chiudere una copia di mezzo non lascia buchi. Con una sola scheda per repo l'etichetta è
+identica a prima.
+
+**Migrazione**: `RepoTabState.Id` è nuovo e `ActiveRepoTab` passa da path a id. Nel sanitizer un id
+mancante o ripetuto produce un id fresco — una scheda non viene mai scartata; il dedup è per id, ma le
+voci **senza** id (formato vecchio) restano deduplicate per path, perché la versione precedente non
+poteva esprimere «due volte lo stesso repo»; un `ActiveRepoTab` che non è un id viene cercato fra i
+path e tradotto.
+
+Verificato a schermo, compresa la migrazione da un `ui-state.json` in formato precedente scritto a
+mano, la persistenza attraverso Start → Exit (non `kill`, che salta `PersistLayout`), «Close others» e
+il riordino per trascinamento con duplicati. Dopo l'integrazione, riverificata anche la convivenza con
+M143: due schede `fork184 (1)`/`fork184 (2)` e i gruppi del diff multi-revisione nella stessa sessione.
+
+**Difetto minore osservato e non corretto** (stesso percorso di un normale cambio scheda, quindi non è
+una regressione di questa milestone): subito dopo la creazione del duplicato la griglia evidenzia il
+commit ereditato ma il riquadro «Commit info» resta su «No commit selected» finché non si tocca la
+selezione o si cambia scheda.
+
 ## M144 (2026-08-10, `1ae6d9f90`) — la pill delle note entra nella famiglia, e via i due alias di CollapseHome
 
 Il chip delle note era **l'unico badge di una riga con i colori cablati**: riempimento marrone opaco
