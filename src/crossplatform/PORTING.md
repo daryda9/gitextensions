@@ -3377,6 +3377,163 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M141 (2026-08-10, `da67cb929`, `1ae1ae552`, `2a7b382a8`, `384177c01`, `87e5237ea`, `80dffc03f`) — traduzioni: i gestori di remoti, worktree, submodule e sparse
+
+Terzo e ultimo gruppo del layer `T()`. 115 stringhe in cinque view: `RemotesDialog` (38),
+`RemotePanel` (18), `WorktreesDialog` (17), `SubmodulesDialog` (15), `SparseDialog` (27).
+`WorktreesDialog`, `SubmodulesDialog` e `RemotesDialog` **ripassano anche dal proprio rebuild** al
+cambio lingua, perché le didascalie delle righe nascono da `ToString()` o da un data template e solo
+una nuova collezione le ri-disegna.
+
+Due cose trovate strada facendo:
+
+- `T("Add…")` non trovava nulla — **nessuna trans-unit porta i puntini di sospensione**, quindi la
+  chiave va cercata senza (fix `80dffc03f`).
+- Le quattro colonne dei pulsanti sono passate da `Width` a `MinWidth`: «Prune dei worktree
+  eliminati» e «Disabilita Git Sparse» sono più lunghe dell'inglese e una larghezza fissa le tagliava.
+
+Non tradotti, e dichiarato in commento: `core.sparsecheckout = true/false`, il path del file delle
+regole e l'output di `git sparse-checkout list` (è una trascrizione da incollare in una shell, non
+prosa); `bare` e `detached @ <sha>` come li stampa `git worktree list`; il watermark `/*\n!docs/`,
+che è un valore e non una didascalia.
+
+`RemotePanel` **non è verificabile a schermo: nessuno lo istanzia** (view morta, un solo riferimento
+in un commento di `ConflictFlow`). Vale la pena decidere se cancellarla.
+
+Verificato a schermo in italiano (Xvfb): Remotes su entrambe le schede, Worktrees, Sparse working
+copy, Submodules.
+
+## M140 (2026-08-10, `070259047`, `5623913a1`, `3d2a296bd`, `d6099baea`, `4c90ad496`) — traduzioni: dialogo di processo, console, log dei comandi, reflog
+
+Secondo gruppo. 65 stringhe in otto view: `GitProcessDialog` (19), `ReflogWindow` (9),
+`RepositoryPickerView` (9), `ConsoleView` (6), `PluginSettingsWindow` (6), `CredentialsDialog` (8),
+`CommandLogWindow` (6), `PatchDialogs` (2).
+
+`GitProcessDialog` ha dovuto crescere una enum `Phase` privata: la sua intestazione e la sua riga di
+stato vengono riscritte man mano che il comando procede, quindi un cambio lingua deve sapere **quale**
+frase è a schermo — e `Phase.Prompt` marca l'unica riga che non va toccata, perché è la domanda di git
+verbatim. `ConsoleView` e `RepositoryPickerView` hanno la stessa protezione in forma ridotta, così un
+cambio lingua non sovrascrive mai un path o un messaggio di git.
+
+Un difetto vero trovato dalla verifica a schermo: «Checkout di questa revisione» era **tagliato** dalla
+colonna fissa da 130 px del reflog. Corretto due volte — l'id è passato a
+`FormCheckoutRevision/$this.Text` (una didascalia da pulsante invece di una frase) e la colonna a
+160 px, misurata sulla traduzione più lunga.
+
+Restano in inglese, senza inventare id, le stringhe che nessuna trans-unit copre: «Command to be
+executed:», «Running…», «Success», «Failed», «Reply:», «Terminal», «Restart shell», «Open terminal
+here», le frasi del picker e il prompt delle credenziali.
+
+Verificato a schermo in italiano: scheda Console, finestra del log dei comandi, dialogo di processo su
+un fetch vero (`Processo — Fetch (Fatto)`, `Mantieni aperta la finestra`), finestra del reflog.
+
+## M139 (2026-08-10, `aa1ef99ef`, `1b7541034`, `d26256f90`, `a64a9d324`) — traduzioni: About, oggetti perduti, pannello branch/tag — e una perdita nella lista dei file
+
+Primo gruppo. 109 stringhe in tre view: `AboutDialog` (15), `VerifyDialog` (55),
+`BranchTagPanel` (39).
+
+**La premessa era sbagliata per due file su cinque, e verificarla ha pagato:**
+
+- `FileStatusListView` **era già tradotta per intero**. Aveva però un difetto vero: la sottoscrizione a
+  `LanguageChanged` era presa nel costruttore e mai rilasciata, su un controllo che nasce e muore con
+  il riquadro. Spostata su `OnAttachedToVisualTree`/`OnDetachedFromVisualTree`, con un `Relabel()` al
+  ri-attach perché un cambio lingua avvenuto mentre era staccata non vada perso (`a64a9d324`).
+- `BusyOverlay` **non ha didascalie da tradurre**: le riceve dall'host, e tutti e 15 i call-site
+  passano già `T("RevisionGridControl/_strLoading.Text", "Loading…")` o nulla. Zero modifiche.
+
+`BranchTagPanel` è **UI morta**: nessun riferimento in tutto `src/crossplatform` fuori dal proprio
+file. È tradotta e senza perdite, ma non è verificabile a schermo. Da decidere se cancellarla.
+
+Non tradotti: «Git Extensions» e «Proudly presented by the Git Extensions team.» — upstream marca le
+proprie copie `_NO_TRANSLATE_` (`FormAbout.Designer.cs:136`), e un marchio letto in un'altra lingua
+smette di identificare il programma; la riga di copyright (è un dato, non una didascalia); `(Dirty)`
+nella riga di build, citato verbatim nelle segnalazioni di bug — tradurlo le renderebbe incomparabili.
+
+Verificato a schermo in italiano: lista dei file cambiati con raggruppamento per stato, About,
+finestra «Recupera oggetti perduti» (colonne, pulsanti, `Chiudi`).
+
+## M138 (2026-08-10, `b014168e3`) — «Fetch all» e «Fetch and prune all» in toolbar, con tre glifi nuovi
+
+`InsertFetchPullShortcuts` di upstream clona **sei** voci del menu Pull nella striscia; il port ne
+aveva solo la prima. Le altre due varianti di fetch erano rimaste fuori per una ragione concreta e
+dichiarata in M119: i tre nomi di fetch risolvevano **tutti allo stesso glifo**, e tre pulsanti
+identici in fila sono peggio di nessun pulsante.
+
+Ora `Theming/Icons` li distingue. `FetchAll`, `FetchPrune` e `FetchPruneAll` sono **nuovi e non presi
+da Lucide** (la libreria non ha un «fetch all»): sono costruiti col vocabolario di `Fetch` — una
+freccia in giù che atterra su una base spezzata — sulla stessa griglia 24x24 a spessore 2. Il plurale
+è una **seconda freccia** e non un badge, il prune è una **x accanto alla base**: a 16 px un badge è
+tre pixel e si legge come sporco.
+
+«Fetch all» segue `UpdateFetchAllVisibility` di upstream e **sparisce con un solo remote**, dove fa
+esattamente quel che fa Fetch; è valutato in `UpdateState` e non alla costruzione, perché il numero di
+remoti si sa solo a repository caricato e cambia quando se ne aggiunge o toglie uno. «Fetch and prune
+all» resta comunque: potare i branch remoti morti ha senso anche contro un remote solo.
+
+Verificato a schermo: con due remoti la striscia mostra tre glifi distinti (una freccia, due frecce,
+due frecce più la x); con zero remoti «Fetch all» non c'è.
+
+## M137 (2026-08-10, `11d797fbf`) — il comando del terminale si può nominare (così si usa Warp)
+
+La lista di candidati può solo tirare a indovinare, e Warp è il caso che lo dimostra: risponde a
+`x-terminal-emulator`, quindi vince la sonda, e poi rifiuta il `-e` che ogni voce della lista gli
+passa. M127 aveva fatto in modo che quel fallimento non venisse riportato come successo, ma **non
+c'era comunque modo di usare Warp davvero**.
+
+«Terminal command», nella pagina Behaviour delle impostazioni, è quel modo. È una riga di comando
+libera e **non** una tendina di candidati, perché tutto il punto dell'impostazione è l'emulatore che
+la lista non conosce. `{dir}` e `{shell}` sono sostituiti dove compaiono; senza di essi la directory
+resta comunque la working directory del processo figlio e l'emulatore avvia la shell di login. Il
+comando configurato si prova **per primo** e, se non parte, si ricade sulla lista: un refuso deve
+costare il comportamento vecchio, non un pulsante morto.
+
+Upstream non ha un'impostazione corrispondente (su Windows il terminale è Git bash a un percorso
+noto), quindi l'etichetta e la nota sono letterali senza id da prendere in prestito. Nuovo campo
+`UiState.TerminalCommand` (vuoto = sonda, com'è sempre stato).
+
+Verificato a schermo: comando finto `/tmp/cpv/fake-term.sh --dir {dir} --run {shell}` salvato dal
+dialogo, riletto alla riapertura, e il pulsante del terminale ha lanciato **quello**, con
+`ARGS: --dir /tmp/dsc` e `PWD: /tmp/dsc`.
+
+## M136 (2026-08-10, `b8df3e616`) — «Copy path» copia il path assoluto, con il sottomenu
+
+I due elenchi del dialogo di commit e il menu di riga della storia di un file erano gli ultimi punti
+che mettevano sulla clipboard la grafia **relativa** di git — l'unico path inutile ovunque fuori dalla
+radice del repository.
+
+I due elenchi ora montano il `CopyPathsMenuItem` condiviso, quindi hanno il sottomenu di upstream
+(full native / relative / nome del file) con la variante **assoluta nativa in grassetto come default**,
+esattamente come già facevano il pannello del diff e l'albero dei file. Un item per elenco, perché un
+`MenuItem` non può stare in due menu.
+
+La storia di un file resta con una voce piatta: il gancio della griglia (`AddCommitCommand`) prende una
+didascalia più un'azione e non sa esprimere un sottomenu, e il menu di riga di `FormFileHistory` di
+upstream è piatto a sua volta. Copia il path assoluto.
+
+Verificato a schermo: sottomenu aperto sul dialogo di commit, «Copy full path(s) - native» in grassetto
+con Ctrl+C, e la riga di stato che risponde `Copied path: /tmp/cpv/repo/alpha.txt`.
+
+## Voci verificate e già chiuse (2026-08-10) — nessun codice scritto
+
+Tre voci della coda dell'utente si sono rivelate **già implementate**. La regola «verificare la
+premessa prima di scrivere codice» ha evitato tre riscritture:
+
+- **Guardia «nothing staged» su un merge commit legittimo.** Già risolta: `CommitDialog` tiene
+  `_mergeInProgress` (letto da `MERGE_HEAD` nella git-dir *risolta*, quindi funziona anche nei
+  worktree) e la guardia lo esclude. Provato davvero: repo con conflitto risolto in favore di «ours»,
+  quindi indice identico a HEAD e `git status` vuoto, con `MERGE_HEAD` presente → il dialogo non
+  rifiuta, chiede conferma («There are no files staged for this commit.») e il merge commit `68eca9e`
+  viene creato.
+- **Discard multi-file nel dialogo di commit.** Già multi-selezione: le liste sono
+  `SelectionMode.Multiple` e `DiscardSelected` cicla sulla selezione. Provato: due file su tre
+  selezionati con Ctrl+clic, voce «Discard changes (2 files)», conferma, e a valle `git status` mostra
+  il solo terzo file ancora modificato.
+- **Titolo centrato nella barra unita.** Già così da M128: `BarLayout.ArrangeOverride` centra la
+  didascalia **sulla finestra** finché non tocca né il menu né i pulsanti, e solo allora ripiega sul
+  centro dello spazio residuo. Misurato su uno screenshot a 1280 px: finestra centrata a 700, menu che
+  finisce a 712, didascalia centrata a 961 — cioè esattamente il centro dello spazio libero, che è il
+  ripiego previsto. Non è un difetto: a questa larghezza il menu arriva oltre la metà.
+
 ## M135 (2026-08-09, `a75850cd4`, `e8b04aa68`, `36fb0539a`) — il diff non resta appeso alla repo precedente, e lo spinner è uno solo
 
 > Dall'utente: «quando cambia tab (quindi repo o submodules) se ho un commit selezionato e aperta la
