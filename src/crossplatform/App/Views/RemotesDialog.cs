@@ -406,8 +406,12 @@ public sealed class RemotesDialog : Theming.ZoomWindow
         // remote list from a toolbar whose captions are tooltips on icons
         // (_btnNewTooltip / _btnDeleteTooltip), which are sentences, not button labels.
         // The single-argument overload finds the plain words by source text instead.
-        _add.Content = T("Add…");
-        _rename.Content = T("FormQuickGitRefSelector/_actionRename.Text", "Rename…");
+        // The trailing "…" is appended, not translated: it is the UI convention for
+        // "this opens a dialog", identical in every language, and none of the XLIFF
+        // units for these two verbs carries it — asking for "Add…" by source text finds
+        // nothing at all, which is how this button stayed English.
+        _add.Content = T("FormAddSubmodule/Add.Text", "Add") + "…";
+        _rename.Content = T("FormQuickGitRefSelector/_actionRename.Text", "Rename") + "…";
         _remove.Content = T("Remove");
         _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
 
