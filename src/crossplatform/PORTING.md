@@ -3377,6 +3377,85 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M144 (2026-08-10, `1ae6d9f90`) — la pill delle note entra nella famiglia, e via i due alias di CollapseHome
+
+Il chip delle note era **l'unico badge di una riga con i colori cablati**: riempimento marrone opaco
+con testo ambra pallido. In tema chiaro, dove ogni altro badge è una pillola a contorno su
+`App.RefPillBg`, si leggeva come un corpo estraneo — e la sua coppia testo-su-riempimento stava a
+**5,34:1**, il contrasto più debole della riga (misurato, non a occhio).
+
+Ora è la stessa pillola a contorno di `BuildRefBadge`, con la nuova chiave tematica `App.RefNote`.
+**Viola e non un altro ambra**: l'inchiostro deve distinguersi da Tag oltre che essere leggibile, e
+questo tiene ΔE 48 dal più vicino degli altri tre colori di ref sotto simulazione normale,
+deuteranope e protanope, a ≥ 5,3:1 sulla superficie della pillola in tutte e quattro le palette.
+
+Tolti anche i due alias `CollapseHome` di una riga in `MainToolbar` e `RevisionGridView`: inoltravano
+già entrambi a `PathDisplay.CollapseHome`, quindi la duplicazione era di **nome** e non di logica — ma
+un nome basta a far cercare a chi legge una seconda implementazione.
+
+## M143 (2026-08-10, `b54f8ad9c`) — da 2 a 4 revisioni selezionate: più gruppi di diff, sul merge base
+
+Con due o più revisioni selezionate il port mostrava **un solo gruppo**, il diff fra i due estremi
+(M116). L'originale, da 2 a 4 selezionate, fa molto di più: è
+`FileStatusDiffCalculator.CalculateDiffs`, ramo `revisions.Count > 1`, ed è portato qui.
+
+- `firstRev` è l'ultima selezionata, tranne con **esattamente 4**, dove è `revisions[2]` (si assume
+  che siano due range `baseA..headA baseB..headB`).
+- Primo gruppo sempre: «Diff with A ‹descrizione›».
+- Poi il **merge base**: con 2 è `merge-base(first, selected)`; con 3 si accetta quella di mezzo se è
+  base di entrambe; con 4 si verifica che siano davvero due range.
+- Merge base valido → due gruppi in più, «Diff BASE with B ‹selected›» e «Diff BASE with A ‹first›»,
+  con lo stato per-file `DiffBranchStatus` (`= / A / B / ≠`) calcolato per intersezione e differenza
+  degli insiemi baseToA e baseToB.
+- Merge base non valido → **multi diff**: un gruppo per ogni revisione diversa dai due estremi.
+- Oltre 4 selezionate resta com'era: solo primo → selezionato.
+
+Lato port: `RevisionGridView.RangeSelected` porta ora **tutta la selezione** dal più recente al più
+vecchio (`RangeEnds` → `SelectedRevisionsNewestFirst`), con la deduplica dell'annuncio conservata come
+confronto di sequenza; `FileStatusListView` sa mostrare **N sezioni** e il vecchio
+`SetFiles(rows, summary)` è una chiamata a una sezione sola, quindi la strada resta una; cliccando un
+file si carica la coppia **del suo gruppo** e non più sempre quella degli estremi; nuovo overload
+`MergeBaseService.FindMergeBase(GitModule, …)` che cortocircuita i due casi che upstream tratta a
+parte.
+
+**Non portati, e dichiarato in commento**: la riga sintetica `git range-diff` (è una pseudo-riga che
+apre un viewer dedicato che il port non ha: si disegnerebbe come testo che al clic non fa nulla);
+`GetRevisionOrHead`, perché la griglia del port non annuncia mai una riga artificiale dentro una
+selezione, quindi non c'è nulla da sostituire; il raffinamento sui rename al 100%, perché le righe del
+port non portano la percentuale di rename; le icone per gruppo (`DiffA`/`DiffB`/`DiffR`), perché le
+intestazioni già dicono la stessa cosa e lo stato per-file è reso come colonna monospazio.
+
+Verificato a schermo su un repo con biforcazione vera (`main` c1→c2→c3, `b` che diverge da c2 con
+b1,b2, file comuni ed esclusivi): 2 selezionate sui due rami → tre sezioni con i marcatori giusti
+(`bfile.txt` A, `mainfile.txt` B, `common.txt` ≠); cliccando `bfile.txt` sotto «BASE with A» la riga
+di comando passa a `diff 87783edc… ab484a20…` e il file risulta **aggiunto**, mentre nella sezione
+A→B lo stesso file risulta cancellato; 3 selezionate con la mezzana come base → tre sezioni; 3 senza
+base valida → ripiego multi-diff; 1 selezionata → invariata.
+
+## M142 (2026-08-10, `c58327158`) — conteggi al plurale, palette Classic sicura per i daltonici, titolo del push più corto
+
+Tre difetti piccoli.
+
+`TranslationService.TPlural` è il nuovo ingresso per le frasi che dipendono da un conteggio. **Due
+originali inglesi, non un formato con «(s)»**: «1 revisions left» è sbagliato in inglese e peggio
+altrove, e un traduttore a cui si dà una stringa sola non ha dove mettere una parola diversa. Non è
+**deliberatamente** un motore di regole plurali CLDR: XLIFF 1.2 come lo usa Git Extensions non può
+tenere sei categorie, quindi due forme è ciò che può portare e due forme è ciò che promette. La riga
+di stato del bisect è il primo chiamante e ha avuto bisogno di **quattro** dizioni, perché il conteggio
+delle revisioni e quello dei passi scendono in modo indipendente.
+
+La palette della sintassi in **Classic scuro** falliva la protanopia sulla coppia che conta di più:
+String contro Comment a **ΔE 6,45**, cioè indistinguibili per un lettore cieco al rosso proprio sui
+due token di cui un diff è pieno. Modern era stata ri-risolta per questo e Classic era rimasta
+indietro. Risolta allo stesso modo, come **famiglia vincolata**: tinta entro 14° e ΔE ≤ 16 dal valore
+che ogni token aveva, contrasto ≥ 4,6:1 su tutte e cinque le superfici su cui un token può finire. La
+separazione si compra con la **luminosità**, l'unico asse che sopravvive alla simulazione. Peggior
+coppia su tutte e dieci e tutte e tre le simulazioni: **6,45 → 24,54**.
+
+Il titolo del dialogo di push non porta più il path del repository. Il titolo di `FormPush` di
+upstream è solo «Push»; il path è ridondante accanto alla barra del titolo della finestra che possiede
+il modale, ed è lungo abbastanza da spingere fuori la didascalia vera.
+
 ## M141 (2026-08-10, `da67cb929`, `1ae1ae552`, `2a7b382a8`, `384177c01`, `87e5237ea`, `80dffc03f`) — traduzioni: i gestori di remoti, worktree, submodule e sparse
 
 Terzo e ultimo gruppo del layer `T()`. 115 stringhe in cinque view: `RemotesDialog` (38),
