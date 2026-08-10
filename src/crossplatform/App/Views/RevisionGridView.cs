@@ -421,6 +421,11 @@ public sealed class RevisionGridView : UserControl
     // because every row build consults it.
     private AppPreferences _gridPrefs = new();
 
+    // Whether the authored highlight is worth painting at all (see
+    // RecomputeAuthoredHighlight), and the tint it uses, resolved once per theme.
+    private bool _authoredHighlightIsUseful;
+    private IBrush? _authoredBrush;
+
     // Set while ANY assignment to _list.ItemsSource is in flight — RebindRows' swap
     // (plus the selection it puts back) and Reload's unbind alike. Every assignment
     // goes through SetListItems, which raises this flag.
@@ -1055,6 +1060,8 @@ public sealed class RevisionGridView : UserControl
     private void ReadGridPreferences()
     {
         _gridPrefs = new SettingsService().Load();
+        _authoredBrush = null;
+        RecomputeAuthoredHighlight();
         _quickSearchTimer.Interval = TimeSpan.FromMilliseconds(_gridPrefs.RevisionGridQuickSearchTimeout);
 
         // Pushed onto the graph control rather than read by it: the lane palette is
@@ -1255,7 +1262,12 @@ public sealed class RevisionGridView : UserControl
     // Posted, not called inline: ThemeManager raises StyleChanged in the middle of
     // installing the style block, and RebindRows assigns ItemsSource, which runs a
     // layout pass. Let the switch finish first.
-    private void OnStyleChanged() => Dispatcher.UIThread.Post(() => RebindRows(preserveViewport: true));
+    private void OnStyleChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        // The authored tint is mixed from the palette, so it dies with the old theme.
+        _authoredBrush = null;
+        RebindRows(preserveViewport: true);
+    });
 
     /// <summary>
     ///  Re-captions every piece of chrome this view owns after a language change.
@@ -2449,6 +2461,10 @@ public sealed class RevisionGridView : UserControl
         // graph and selection model.
         _rows = BuildDisplayRows(filtered);
 
+        // The row set decides whether the authored highlight means anything, so it is
+        // re-judged here and not only when the selection moves.
+        RecomputeAuthoredHighlight();
+
         // The graph column width changes with the filter state; rebuild the
         // header so its columns stay aligned with the (re-templated) rows.
         _headerHost.Content = BuildHeader();
@@ -2735,12 +2751,11 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     private IBrush RowBackground(RevisionRow row, int index)
     {
-        if (_gridPrefs.HighlightAuthoredRevisions
-            && _highlightedAuthor.Length > 0
+        if (_authoredHighlightIsUseful
             && !IsArtificial(row)
             && string.Equals(row.Author, _highlightedAuthor, StringComparison.Ordinal))
         {
-            return B("App.HoverRow");
+            return AuthoredBackground();
         }
 
         // App.Panel for both when the stripe is off: it is the plain row surface, and
@@ -2760,6 +2775,30 @@ public sealed class RevisionGridView : UserControl
         return $"{row.Subject}\n\n{author}\n{row.Hash}";
     }
 
+    /// <summary>
+    ///  The authored-row tint: the panel colour nudged a tenth of the way towards the
+    ///  accent. NOT <c>App.HoverRow</c>, which is what the pointer paints — a whole
+    ///  column of rows wearing the hover colour reads as "everything is selected", which
+    ///  is exactly how this landed the first time.
+    /// </summary>
+    private IBrush AuthoredBackground()
+    {
+        if (_authoredBrush is not null)
+        {
+            return _authoredBrush;
+        }
+
+        Color panel = B("App.Panel") is ISolidColorBrush p ? p.Color : Colors.Black;
+        Color accent = B("App.Accent") is ISolidColorBrush a ? a.Color : Colors.SteelBlue;
+        _authoredBrush = new SolidColorBrush(Mix(panel, accent, 0.10));
+        return _authoredBrush;
+    }
+
+    private static Color Mix(Color from, Color to, double amount) => Color.FromRgb(
+        (byte)Math.Round(from.R + ((to.R - from.R) * amount)),
+        (byte)Math.Round(from.G + ((to.G - from.G) * amount)),
+        (byte)Math.Round(from.B + ((to.B - from.B) * amount)));
+
     private void UpdateAuthorHighlight()
     {
         string author = _list.SelectedItem is RevisionRow row && !IsArtificial(row)
@@ -2772,7 +2811,44 @@ public sealed class RevisionGridView : UserControl
         }
 
         _highlightedAuthor = author;
+        RecomputeAuthoredHighlight();
         RefreshView();
+    }
+
+    /// <summary>
+    ///  Decides whether the authored highlight says anything at all. In a repository
+    ///  with one author it would tint EVERY row, which is not a highlight — it is a
+    ///  second background colour applied to the whole grid, and it reads as a selection.
+    ///  Upstream never hits this because it highlights on Windows-grey; the port has to
+    ///  say it out loud.
+    /// </summary>
+    private void RecomputeAuthoredHighlight()
+    {
+        _authoredHighlightIsUseful = false;
+        if (!_gridPrefs.HighlightAuthoredRevisions || _highlightedAuthor.Length == 0 || _rows.Count == 0)
+        {
+            return;
+        }
+
+        int matching = 0;
+        int total = 0;
+        foreach (RevisionRow row in _rows)
+        {
+            if (IsArtificial(row))
+            {
+                continue;
+            }
+
+            total++;
+            if (string.Equals(row.Author, _highlightedAuthor, StringComparison.Ordinal))
+            {
+                matching++;
+            }
+        }
+
+        // Anything above nine rows in ten is "the whole grid", and marking the whole
+        // grid marks nothing.
+        _authoredHighlightIsUseful = total > 0 && matching * 10 < total * 9;
     }
 
     // "View" menu: which refs the log walks (remotes / tags / stashes), the walk
