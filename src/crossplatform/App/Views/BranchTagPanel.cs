@@ -32,9 +32,16 @@ public sealed class BranchTagPanel : UserControl
     private readonly Button _deleteButton;
     private readonly Button _refreshButton;
     private readonly TextBlock _status;
+    private readonly TextBlock _branchesHeader;
+    private readonly TextBlock _tagsHeader;
 
     private string? _repoPath;
     private bool _busy;
+
+    // True while the status line still shows the "no repository" placeholder, the only
+    // status ApplyTranslations may overwrite: every other one reports a git run that
+    // already happened and must survive a language switch.
+    private bool _statusIsPlaceholder = true;
 
     /// <summary>
     ///  Raised on the UI thread after any successful mutating operation
@@ -56,8 +63,8 @@ public sealed class BranchTagPanel : UserControl
             ColumnDefinitions = new ColumnDefinitions("*,*"),
             Margin = new Thickness(8, 4, 8, 4),
         };
-        Control branchPanel = MakeListPanel("Branches (* = current)", _branchList);
-        Control tagPanel = MakeListPanel("Tags", _tagList);
+        (Control branchPanel, _branchesHeader) = MakeListPanel(_branchList);
+        (Control tagPanel, _tagsHeader) = MakeListPanel(_tagList);
         Grid.SetColumn(branchPanel, 0);
         Grid.SetColumn(tagPanel, 1);
         lists.Children.Add(branchPanel);
@@ -65,8 +72,8 @@ public sealed class BranchTagPanel : UserControl
 
         // Name / message / checkout-after-create now live in the create dialogs
         // (CreateBranchDialog / CreateTagDialog); only the start point stays here.
-        _refBox = new TextBox { Watermark = "Start point / commit (default HEAD)" };
-        _forceDelete = new CheckBox { Content = "Force delete branch", Margin = new Thickness(0, 2, 0, 0) };
+        _refBox = new TextBox();
+        _forceDelete = new CheckBox { Margin = new Thickness(0, 2, 0, 0) };
 
         StackPanel inputs = new() { Spacing = 4, Margin = new Thickness(8, 4, 8, 4) };
         inputs.Children.Add(_refBox);
@@ -74,13 +81,13 @@ public sealed class BranchTagPanel : UserControl
         checks.Children.Add(_forceDelete);
         inputs.Children.Add(checks);
 
-        _checkoutButton = MakeButton("Checkout", () => DoCheckout());
-        _newBranchButton = MakeButton("New branch…", () => DoCreateBranch());
-        _newTagButton = MakeButton("New tag…", () => DoCreateTag());
-        _mergeButton = MakeButton("Merge", () => DoMerge());
-        _rebaseButton = MakeButton("Rebase", () => DoRebase());
-        _deleteButton = MakeButton("Delete", () => _ = DoDeleteAsync());
-        _refreshButton = MakeButton("Refresh", () => RefreshRefs());
+        _checkoutButton = MakeButton(() => DoCheckout());
+        _newBranchButton = MakeButton(() => DoCreateBranch());
+        _newTagButton = MakeButton(() => DoCreateTag());
+        _mergeButton = MakeButton(() => DoMerge());
+        _rebaseButton = MakeButton(() => DoRebase());
+        _deleteButton = MakeButton(() => _ = DoDeleteAsync());
+        _refreshButton = MakeButton(() => RefreshRefs());
 
         WrapPanel buttons = new() { Margin = new Thickness(8, 0, 8, 4) };
         foreach (Button b in new[] { _checkoutButton, _newBranchButton, _newTagButton, _mergeButton, _rebaseButton, _deleteButton, _refreshButton })
@@ -92,7 +99,6 @@ public sealed class BranchTagPanel : UserControl
         {
             Margin = new Thickness(10, 2, 10, 6),
             Foreground = (IBrush)Application.Current!.Resources["App.TextDim"]!,
-            Text = "No repository loaded.",
             TextWrapping = TextWrapping.Wrap,
         };
 
@@ -107,6 +113,77 @@ public sealed class BranchTagPanel : UserControl
         root.Children.Add(lists);
 
         Content = root;
+
+        ApplyTranslations();
+    }
+
+    // --- Translations -----------------------------------------------------
+
+    // A panel has no Closed event, so the subscription is tied to the visual tree
+    // instead: a panel torn out of it (a closed tab, a rebuilt layout) would otherwise
+    // stay reachable from the static LanguageChanged event forever.
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        TranslationService.LanguageChanged += OnLanguageChanged;
+
+        // The language may have changed while this panel was detached, in which case
+        // no event reached it; re-stating the captions here is what makes the
+        // unsubscribe above safe.
+        ApplyTranslations();
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        TranslationService.LanguageChanged -= OnLanguageChanged;
+    }
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        // "(* = current)" is the legend of the marker the rows carry, so it travels
+        // with the caption rather than being pasted on afterwards.
+        _branchesHeader.Text = TF("{0} (* = current)", T("TranslatedStrings/_branchesText.Text", "Branches"));
+        _tagsHeader.Text = T("TranslatedStrings/_tagsText.Text", "Tags");
+
+        _refBox.Watermark = T("Start point / commit (default HEAD)");
+        _forceDelete.Content = T("Force delete branch");
+
+        _checkoutButton.Content = T("FormCheckoutBranch/Ok.Text", "Checkout");
+
+        // The English here stays "New …", the port's own wording, but the ids are
+        // upstream's "Create branch"/"Create tag": the two say the same thing, and
+        // borrowing the id is what gives every catalogue a translation for free —
+        // inventing an id, or leaving these on the source-text lookup, would leave
+        // both buttons in English in every language.
+        _newBranchButton.Content = T("TranslatedStrings/_buttonCreateBranch.Text", "New branch") + "…";
+        _newTagButton.Content = T("FormCreateTag/Ok.Text", "New tag") + "…";
+        _mergeButton.Content = T("FormMergeBranch/Ok.Text", "Merge");
+        _rebaseButton.Content = T("FormRebase/btnRebase.Text", "Rebase");
+        _deleteButton.Content = T("FormDeleteTag/Ok.Text", "Delete");
+        _refreshButton.Content = T("FormBrowse/RefreshButton.ToolTipText", "Refresh");
+
+        if (_statusIsPlaceholder)
+        {
+            _status.Text = T("No repository loaded.");
+        }
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private static string TF(string englishFormat, params object?[] args)
+        => TranslationService.TFormat(key: null, englishFormat, args);
+
+    // Every status but the "no repository" placeholder describes something that has
+    // already happened, so it is written once and never re-stated.
+    private void Status(string message)
+    {
+        _statusIsPlaceholder = false;
+        _status.Text = message;
     }
 
     /// <summary>
@@ -118,7 +195,9 @@ public sealed class BranchTagPanel : UserControl
         RefreshRefs();
     }
 
-    private static Control MakeListPanel(string header, ListBox list)
+    // Returns the header block as well: it carries a caption, so the panel has to keep
+    // hold of it to re-label it.
+    private static (Control Panel, TextBlock Header) MakeListPanel(ListBox list)
     {
         Grid grid = new()
         {
@@ -127,7 +206,6 @@ public sealed class BranchTagPanel : UserControl
         };
         TextBlock title = new()
         {
-            Text = header,
             FontWeight = FontWeight.Bold,
             Margin = new Thickness(0, 0, 0, 2),
         };
@@ -135,12 +213,12 @@ public sealed class BranchTagPanel : UserControl
         Grid.SetRow(list, 1);
         grid.Children.Add(title);
         grid.Children.Add(list);
-        return grid;
+        return (grid, title);
     }
 
-    private Button MakeButton(string text, Action onClick)
+    private static Button MakeButton(Action onClick)
     {
-        Button b = new() { Content = text, Margin = new Thickness(0, 0, 6, 0) };
+        Button b = new() { Margin = new Thickness(0, 0, 6, 0) };
         b.Click += (_, _) => onClick();
         return b;
     }
@@ -152,18 +230,19 @@ public sealed class BranchTagPanel : UserControl
     {
         if (_repoPath is not { Length: > 0 } repo)
         {
-            _status.Text = "No repository loaded.";
+            _status.Text = T("No repository loaded.");
+            _statusIsPlaceholder = true;
             return;
         }
 
-        _status.Text = "Loading…";
+        Status(T("RevisionGridControl/_strLoading.Text", "Loading…"));
         RunGit(
             () => _service.LoadRefs(repo),
             listing =>
             {
                 _branchList.ItemsSource = listing.Branches.ToList();
                 _tagList.ItemsSource = listing.Tags.ToList();
-                _status.Text = $"{listing.Branches.Count} branches, {listing.Tags.Count} tags.";
+                Status(TF("{0} branches, {1} tags.", listing.Branches.Count, listing.Tags.Count));
             });
     }
 
@@ -182,7 +261,7 @@ public sealed class BranchTagPanel : UserControl
 
             if (SelectedRow() is not { } row)
             {
-                _status.Text = "Select a branch or tag to checkout.";
+                Status(T("Select a branch or tag to checkout."));
                 return;
             }
 
@@ -194,7 +273,7 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            _status.Text = $"Checking out {row.Name}…";
+            Status(TF("Checking out {0}…", row.Name));
 
             // The checkout runs inside the process dialog (upstream's FormCheckoutBranch
             // goes through FormProcess), so RunMutation must NOT wrap it — that would
@@ -213,13 +292,15 @@ public sealed class BranchTagPanel : UserControl
 
             // Reloaded on failure and on Abort too: an interrupted checkout can already
             // have moved HEAD, so the list has to show what the repository is now.
-            _status.Text = ok ? $"Checked out {row.Name}." : $"Checkout of {row.Name} did not complete.";
+            Status(ok
+                ? TF("Checked out {0}.", row.Name)
+                : TF("Checkout of {0} did not complete.", row.Name));
             RefreshRefs();
             OperationCompleted?.Invoke();
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            Status(TF("Failed: {0}", ex.Message));
         }
     }
 
@@ -246,7 +327,7 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            _status.Text = $"Creating branch {r.Name}…";
+            Status(TF("Creating branch {0}…", r.Name));
 
             // Created inside the process dialog, as upstream does through FormProcess
             // (FormCreateBranch.cs:163). No RunMutation wrapper: it would run git twice.
@@ -267,13 +348,15 @@ public sealed class BranchTagPanel : UserControl
                 SetBusy(false);
             }
 
-            _status.Text = ok ? $"Created branch {r.Name}." : $"Creation of {r.Name} did not complete.";
+            Status(ok
+                ? TF("Created branch {0}.", r.Name)
+                : TF("Creation of {0} did not complete.", r.Name));
             RefreshRefs();
             OperationCompleted?.Invoke();
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            Status(TF("Failed: {0}", ex.Message));
         }
     }
 
@@ -299,12 +382,12 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            _status.Text = $"Creating tag {r.Name}…";
+            Status(TF("Creating tag {0}…", r.Name));
             RunMutation(() => _service.CreateTag(repo, r.Name, commit, r.Message, r.Operation, r.SignKeyId, r.Force, r.PushToRemote));
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            Status(TF("Failed: {0}", ex.Message));
         }
     }
 
@@ -324,7 +407,7 @@ public sealed class BranchTagPanel : UserControl
 
             if (SelectedRow() is not { IsTag: false } row)
             {
-                _status.Text = "Select a branch to merge.";
+                Status(T("Select a branch to merge."));
                 return;
             }
 
@@ -336,9 +419,9 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            _status.Text = result.Success
-                ? $"Merged {result.Branch}."
-                : $"Merge of {result.Branch} did not complete.";
+            Status(result.Success
+                ? TF("Merged {0}.", result.Branch)
+                : TF("Merge of {0} did not complete.", result.Branch));
             RefreshRefs();
 
             // Conflicts left by the merge: ask, as upstream does.
@@ -368,11 +451,11 @@ public sealed class BranchTagPanel : UserControl
 
             if (SelectedRow() is not { IsTag: false } row)
             {
-                _status.Text = "Select a branch to rebase onto.";
+                Status(T("Select a branch to rebase onto."));
                 return;
             }
 
-            _status.Text = $"Rebasing onto {row.Name}…";
+            Status(TF("Rebasing onto {0}…", row.Name));
             BranchTagResult result;
             try
             {
@@ -383,9 +466,9 @@ public sealed class BranchTagPanel : UserControl
                 result = new BranchTagResult(false, ex.Message);
             }
 
-            _status.Text = result.Success
-                ? $"Rebased onto {row.Name}."
-                : $"Rebase onto {row.Name} did not complete.";
+            Status(result.Success
+                ? TF("Rebased onto {0}.", row.Name)
+                : TF("Rebase onto {0} did not complete.", row.Name));
             RefreshRefs();
 
             if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })
@@ -395,7 +478,7 @@ public sealed class BranchTagPanel : UserControl
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            Status(TF("Failed: {0}", ex.Message));
         }
     }
 
@@ -410,13 +493,13 @@ public sealed class BranchTagPanel : UserControl
 
             if (SelectedRow() is not { } row)
             {
-                _status.Text = "Select a branch or tag to delete.";
+                Status(T("Select a branch or tag to delete."));
                 return;
             }
 
             if (row.IsCurrent)
             {
-                _status.Text = "Cannot delete the current branch.";
+                Status(T("Cannot delete the current branch."));
                 return;
             }
 
@@ -424,18 +507,24 @@ public sealed class BranchTagPanel : UserControl
             // busy check used to live, so it is made here explicitly.
             if (_busy)
             {
-                _status.Text = "Another Git operation is still running.";
+                Status(T("Another Git operation is still running."));
                 return;
             }
 
-            string kind = row.IsTag ? "tag" : "branch";
-            bool confirmed = await ConfirmAsync($"Delete {kind} '{row.Name}'?");
+            // One whole sentence per kind: the noun is inflected differently in the
+            // rest of the sentence in most languages, so a "{kind}" hole would give a
+            // translator nothing to work with.
+            bool confirmed = await ConfirmAsync(row.IsTag
+                ? TF("Delete tag '{0}'?", row.Name)
+                : TF("Delete branch '{0}'?", row.Name));
             if (!confirmed)
             {
                 return;
             }
 
-            _status.Text = $"Deleting {kind} {row.Name}…";
+            Status(row.IsTag
+                ? TF("Deleting tag {0}…", row.Name)
+                : TF("Deleting branch {0}…", row.Name));
 
             if (row.IsTag)
             {
@@ -461,15 +550,15 @@ public sealed class BranchTagPanel : UserControl
                 SetBusy(false);
             }
 
-            _status.Text = ok
-                ? $"Deleted branch {row.Name}."
-                : $"Deletion of {row.Name} did not complete.";
+            Status(ok
+                ? TF("Deleted branch {0}.", row.Name)
+                : TF("Deletion of {0} did not complete.", row.Name));
             RefreshRefs();
             OperationCompleted?.Invoke();
         }
         catch (Exception ex)
         {
-            _status.Text = "Failed: " + ex.Message;
+            Status(TF("Failed: {0}", ex.Message));
         }
     }
 
@@ -483,20 +572,23 @@ public sealed class BranchTagPanel : UserControl
             {
                 if (result.Success)
                 {
-                    _status.Text = "Done. " + result.Output.Trim();
+                    // git's own output is program output, not a caption: appended raw.
+                    Status(T("Done.") + " " + result.Output.Trim());
                     RefreshRefs();
                     OperationCompleted?.Invoke();
                 }
                 else
                 {
-                    _status.Text = "Failed: " + result.Output.Trim();
+                    Status(TF("Failed: {0}", result.Output.Trim()));
                 }
             });
     }
 
     // Runs a git operation off the UI thread and marshals the result (or error)
     // back onto it, disabling the action buttons while busy.
-    private void RunGit<T>(Func<T> work, Action<T> onResult)
+    // The type parameter is TResult, not T: T is now the translation helper of this
+    // class, and a generic parameter of that name would hide it inside this method.
+    private void RunGit<TResult>(Func<TResult> work, Action<TResult> onResult)
     {
         if (_busy)
         {
@@ -508,7 +600,7 @@ public sealed class BranchTagPanel : UserControl
         {
             try
             {
-                T result = work();
+                TResult result = work();
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
@@ -520,7 +612,7 @@ public sealed class BranchTagPanel : UserControl
                 Dispatcher.UIThread.Post(() =>
                 {
                     SetBusy(false);
-                    _status.Text = "Error: " + ex.Message;
+                    Status(T("TranslatedStrings/_error.Text", "Error") + ": " + ex.Message);
                 });
             }
         });
@@ -549,11 +641,13 @@ public sealed class BranchTagPanel : UserControl
 
         TaskCompletionSource<bool> tcs = new();
 
-        Button yes = new() { Content = "Delete", Margin = new Thickness(0, 0, 6, 0) };
-        Button no = new() { Content = "Cancel" };
+        // Built in the language in force when it opens and thrown away afterwards, so
+        // there is nothing here to re-label on a language change.
+        Button yes = new() { Content = T("FormDeleteTag/Ok.Text", "Delete"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 340,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
