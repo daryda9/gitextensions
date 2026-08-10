@@ -141,6 +141,12 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     private string? _repoPath;
     private int _repositoryEpoch;
+
+    // The utility window currently open on THIS repository, if any (see
+    // ShowRepositoryToolAsync). Only tools whose panel was handed a path once and cannot
+    // be re-pointed are registered here; every other dialog either takes the path per
+    // call or is short-lived enough not to care.
+    private Window? _repositoryScopedWindow;
     private readonly object _activeNavigationGate = new();
     private string? _activeNavigationRepository;
     private Task<RepositoryNavigationSnapshot>? _activeNavigationSnapshot;
@@ -1520,6 +1526,8 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         // ---- menu bar: the Repository dialogs, Git maintenance and the state gating
         _menu.RemotesRequested += () => _ = ShowRemotesAsync();
+        _menu.RemoteOperationsRequested += () => _ = ShowRemoteOperationsAsync();
+        _menu.BranchTagWorkbenchRequested += () => _ = ShowBranchTagWorkbenchAsync();
         _menu.SubmodulesRequested += () => _ = ShowSubmodulesAsync();
         _menu.WorktreesRequested += () => _ = ShowWorktreesAsync();
         _menu.UpdateAllSubmodulesRequested += () => RunOp(
@@ -2693,6 +2701,83 @@ public sealed class MainWindow : Theming.ZoomWindow
         if (dialog.Changed)
         {
             RefreshAll();
+        }
+    }
+
+    /// <summary>
+    ///  "Remote operations…" (Repository menu, right under "Remote repositories…") and
+    ///  "Branches and tags…" (Commands menu, closing the branch/tag block): the two
+    ///  utility windows around <see cref="Views.RemotePanel"/> and
+    ///  <see cref="Views.BranchTagPanel"/>. Each window's own doc comment argues its
+    ///  slot; here is the host contract, which is the one every other panel-in-a-window
+    ///  tool of this shell already follows (<see cref="ShowStashDialogAsync"/>): modal,
+    ///  registered as the repository-scoped window while it is up, and one
+    ///  <see cref="RefreshAll"/> on close if anything inside it succeeded.
+    ///
+    ///  <para>The refresh is not optional decoration: a checkout or a push made in
+    ///  there moves HEAD or the tracking refs, and without it the grid behind would go
+    ///  on showing the state the repository had before the window was opened.</para>
+    /// </summary>
+    private async Task ShowRemoteOperationsAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        Views.RemoteOperationsWindow window = new(repo);
+        await ShowRepositoryToolAsync(window);
+        if (window.Changed)
+        {
+            RefreshAll();
+        }
+    }
+
+    private async Task ShowBranchTagWorkbenchAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            _statusBar.SetText(T("No repository is open."));
+            return;
+        }
+
+        Views.BranchTagWindow window = new(repo);
+        await ShowRepositoryToolAsync(window);
+        if (window.Changed)
+        {
+            RefreshAll();
+        }
+    }
+
+    /// <summary>
+    ///  Shows a window whose content is pinned to the repository that was open when it
+    ///  was created, and remembers it for the length of the wait so
+    ///  <see cref="LoadRepository"/> can close it if the repository changes.
+    /// </summary>
+    /// <remarks>
+    ///  Being modal already stops the user from switching repositories, so this is a
+    ///  belt for a brace — but not a theoretical one: the native X11 drop receiver this
+    ///  window installs bypasses Avalonia's modal disabling entirely, so a folder
+    ///  dropped on the shell while such a tool is up would re-point the shell and leave
+    ///  the tool acting on the repository the user just left. Closing beats following:
+    ///  these panels are handed a path once, and a window that silently re-aimed itself
+    ///  mid-operation would be worse than one that went away.
+    /// </remarks>
+    private async Task ShowRepositoryToolAsync(Window window)
+    {
+        Window? previous = _repositoryScopedWindow;
+        _repositoryScopedWindow = window;
+        try
+        {
+            await window.ShowDialog(this);
+        }
+        finally
+        {
+            // Restore rather than clear: these tools can be nested (the branch workbench
+            // opens the merge dialog, which can open others), and the innermost one
+            // finishing must not un-register the one still on screen behind it.
+            _repositoryScopedWindow = previous;
         }
     }
 
@@ -4393,6 +4478,15 @@ public sealed class MainWindow : Theming.ZoomWindow
         // would reload them. So switching tabs used to leave the previous repository's
         // diff sitting under the new repository's history.
         ResetBottomPanes();
+
+        // A repository-scoped tool (remote operations, the branch/tag workbench) holds
+        // the OLD path and would go on fetching into, or checking out of, a repository
+        // the user has just left. It closes with the repository it belongs to.
+        if (_repositoryScopedWindow is { } scoped && !SameRepositoryPath(repoPath, _repoPath))
+        {
+            _repositoryScopedWindow = null;
+            scoped.Close();
+        }
 
         _repoPath = repoPath;
         int epoch = ++_repositoryEpoch;

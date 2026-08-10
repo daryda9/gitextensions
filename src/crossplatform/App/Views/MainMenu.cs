@@ -190,6 +190,14 @@ public sealed class MainMenu : UserControl
     // ---- Repository
     public event Action? FileExplorerRequested;
     public event Action? RemotesRequested;
+
+    /// <summary>
+    ///  "Remote operations…" — opens <see cref="RemoteOperationsWindow"/>, the acting
+    ///  half of the remotes pair whose configuring half is
+    ///  <see cref="RemotesRequested"/>. Port extra: upstream has no such form.
+    /// </summary>
+    public event Action? RemoteOperationsRequested;
+
     public event Action? SubmodulesRequested;
     public event Action? UpdateAllSubmodulesRequested;
     public event Action? SynchronizeAllSubmodulesRequested;
@@ -225,6 +233,14 @@ public sealed class MainMenu : UserControl
     public event Action? CleanWorkingDirectoryRequested;
     public event Action? NewBranchRequested;
     public event Action? NewTagRequested;
+
+    /// <summary>
+    ///  "Branches and tags…" — opens <see cref="BranchTagWindow"/>, the workbench that
+    ///  operates on refs that already exist, next to the two entries that create them.
+    ///  Port extra: upstream spreads these over the tree and three dialogs.
+    /// </summary>
+    public event Action? BranchTagWorkbenchRequested;
+
     public event Action? FormatPatchRequested;
     public event Action? ApplyPatchRequested;
     public event Action? ViewPatchRequested;
@@ -571,6 +587,18 @@ public sealed class MainMenu : UserControl
         _repository.Items.Add(Item("FormBrowse/fileExplorerToolStripMenuItem.Text", "File Explorer", "BrowseFileExplorer", () => FileExplorerRequested?.Invoke()));
         _repository.Items.Add(new Separator());
         _repository.Items.Add(Item("FormBrowse/manageRemoteRepositoriesToolStripMenuItem1.Text", "Remote repositories…", "Remotes", () => RemotesRequested?.Invoke()));
+        // Port extra, immediately under "Remote repositories…" and inside the same
+        // block on purpose: that entry CONFIGURES remotes, this one ACTS on one and
+        // shows git's transcript while it does (see RemoteOperationsWindow). Adjacency
+        // is what tells the two apart; a slot anywhere else would read as a third,
+        // unrelated "remotes" command.
+        MenuItem remoteOperations = Item(null, "Remote operations", "PullFetch", () => RemoteOperationsRequested?.Invoke());
+        // The ellipsis is glued on AFTER the lookup: no trans-unit in the catalogues
+        // carries one, so an id (or a source text) ending in "…" matches nothing and the
+        // entry would be left in English everywhere. Same trick as BranchTagPanel's
+        // "New branch…" / "New tag…" buttons.
+        remoteOperations.Header = T(null, "Remote operations") + "…";
+        _repository.Items.Add(remoteOperations);
         _repository.Items.Add(new Separator());
         _repository.Items.Add(Gated("manageSubmodules", Item("FormBrowse/manageSubmodulesToolStripMenuItem.Text", "Manage submodules…", "SubmodulesManage", () => SubmodulesRequested?.Invoke())));
         _repository.Items.Add(Gated("updateAllSubmodules", Item("FormBrowse/updateAllSubmodulesToolStripMenuItem.Text", "Update all submodules", "SubmodulesUpdate", () => UpdateAllSubmodulesRequested?.Invoke())));
@@ -612,6 +640,15 @@ public sealed class MainMenu : UserControl
         _commands.Items.Add(new Separator());
         _commands.Items.Add(Gated("branch", Item("FormBrowse/branchToolStripMenuItem.Text", "New branch…", "BranchCreate", () => NewBranchRequested?.Invoke(), gesture: BrowseCommand.CreateBranch)));
         _commands.Items.Add(Gated("tag", Item("FormBrowse/tagToolStripMenuItem.Text", "New tag…", "TagCreate", () => NewTagRequested?.Invoke(), gesture: BrowseCommand.CreateTag)));
+        // Port extra, closing the branch/tag block of the Commands menu — the block
+        // whose two entries CREATE a ref and then get out of the way. This one opens the
+        // workbench where an existing ref is checked out, merged, rebased or deleted
+        // without losing the selection between steps (see BranchTagWindow); it belongs
+        // with them because it is about the same objects, and last in the block because
+        // it is the general case the two specific commands are shortcuts out of.
+        MenuItem branchesAndTags = Item(null, "Branches and tags", "Branch", () => BranchTagWorkbenchRequested?.Invoke());
+        branchesAndTags.Header = T(null, "Branches and tags") + "…";
+        _commands.Items.Add(Gated("branchTagWorkbench", branchesAndTags));
         _commands.Items.Add(new Separator());
         // Upstream's bisectToolStripMenuItem — "B&isect...", Images.Bisect, in this
         // same slot of the Commands dropdown (FormBrowse.Designer.cs:1206-1212, added
@@ -1162,6 +1199,20 @@ public sealed class MainMenu : UserControl
         // upstream's strict count == 1 would only make the entry dead after a refresh
         // that dropped the selection.
         Enable("bisect", (_selectionIsNormal || noSelection) && live);
+
+        // The two port-extra utility windows. Both live in menus that are hidden
+        // outright without a valid repository, so this only has to answer the bare
+        // question — and it answers it the way upstream answers it for the commands
+        // each window contains:
+        //  * the branch/tag workbench checks out, merges and rebases, all of which need
+        //    a work tree, so it follows the same `live` gate as "New branch";
+        //  * remote operations do NOT: fetch and push are perfectly ordinary in a bare
+        //    repository (a bare repo is what one pushes TO), and upstream greys out only
+        //    pullToolStripMenuItem there, never push. The panel's own Pull button is the
+        //    single work-tree action inside, and git refuses it with a plain message —
+        //    so it is not registered as gated at all, exactly like the neighbour it was
+        //    placed under, "Remote repositories…".
+        Enable("branchTagWorkbench", live);
     }
 
     private void Enable(string name, bool enabled)
