@@ -3377,6 +3377,142 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M151–M155 (2026-08-10, `60e1131c2`, `0fbac5dbe`, `16a3d1de0`, `020186374`, `809c859b8`) — le ~35 impostazioni senza consumatore, cablate davvero
+
+Lo SKIP dichiarato diceva: «~35 impostazioni upstream sarebbero **pulsanti finti** se portate così
+come sono (nessun consumatore nel port)». L'utente ha chiesto di implementarle. Non sono state
+aggiunte alla finestra Impostazioni e basta: **ognuna ha un consumatore vero**, e la finestra ha
+cinque pagine nuove (Commit, Diff viewer, Revision graph, Stash and checkout, Dashboard and paths)
+più quattro campi in Appearance.
+
+Il censimento «~35» non era mai stato elencato: la lista qui sotto è quella scelta e chiusa, 35 voci
+in cinque milestone. Le voci upstream **escluse per onestà** sono dette in fondo.
+
+### M151 — editor del messaggio di commit (7)
+`MessageEditorWordWrap`, `CommitValidationMaxCntCharsFirstLine`, `CommitValidationMaxCntCharsPerLine`,
+`CommitValidationSecondLineMustBeEmpty`, `CommitValidationAutoWrap`, `MarkIllFormedLinesInCommitMsg`,
+`CommitDialogNumberOfPreviousMessages` (che era una costante 6).
+
+I due limiti **segnano** l'eccedenza nell'editor e **chiedono conferma** prima del commit — una
+domanda, mai un rifiuto, come `FormCommit.IsCommitMessageValid`. L'auto-wrap spezza sull'ultimo
+spazio entro il limite e lascia intatto un token senza spazi (un URL, un path): la spezzatura
+**sostituisce** lo spazio, quindi il testo non cambia lunghezza.
+
+Nuovo `Views/TextRulerOverlay`: riga verticale e banda sull'eccedenza, disegnate **sopra** la
+TextBox (che ha uno sfondo opaco) e non hit-testable. **Misura, non moltiplica**: la versione ovvia
+— colonna × larghezza di un carattere — qui è sbagliata, e il perché è diventato il difetto grosso
+di questo round (vedi M155).
+
+**Difetto trovato e corretto in corso d'opera**: la formattazione girava dentro l'handler di
+`TextProperty`, dove la TextBox ha già il testo nuovo ma il **caret vecchio** — il primo carattere
+del corpo finiva dall'altra parte della riga vuota inserita. Visto a schermo, poi corretto con un
+`Dispatcher.Post` a priorità Background.
+
+### M152 — visualizzatore di diff (7)
+`DiffVerticalRulerPosition`, `ShowEolMarkerAsGlyph`, `AutomaticContinuousScroll` +
+`AutomaticContinuousScrollDelay`, `OmitUninterestingDiff`, `UseHistogramDiffAlgorithm`,
+`ShowDiffForAllParents`.
+
+Due sono configurazione pura di AvaloniaEdit, che le espone già: `ColumnRulerPositions` /
+`ShowColumnRulers` per il righello, e le tre stringhe `EndOfLine*Glyph` per l'enum
+`EolMarkerStyle.Glyph`/`.Text` di upstream — qui non esiste un enum, «come testo» si scrive mettendo
+le parole CRLF/LF/CR nelle proprietà.
+
+`ShowDiffForAllParents` riusa le **N sezioni** introdotte in M143: un merge è elencato una volta per
+parent, e ogni riga porta il suo parent in `FirstRev`, così il clic su un file sotto «Diff with A
+`<parent 2>`» carica la patch di *quel* parent. Un commit non-merge torna come **un** gruppo senza
+titolo e non costa nessuna chiamata git in più.
+
+Lo scroll continuo **si arma** quando la patch tocca il fondo e salta al notch **successivo** dopo
+il ritardo, non su quello che tocca il fondo: altrimenti la stessa rotellata che scorre l'ultima
+schermata salta anche il file. L'handler è in **tunnel**, perché in fondo al documento lo
+`ScrollViewer` consuma il notch e non lo riporta.
+
+### M153 — griglia delle revisioni (7)
+`RevisionGraphDrawNonRelativesTextGray`, `RevisionGraphDrawAlternateBackColor`, `MulticolorBranches`,
+`StraightenGraphDiagonals`, `StraightenGraphSegmentsLimit`, `HighlightAuthoredRevisions`,
+`ShowRevisionGridTooltips`.
+
+Tre erano **comportamenti senza interruttore**: il port strisciava sempre le righe, evidenziava
+sempre l'autore della revisione selezionata, e raddrizzava sempre le diagonali. L'evidenziazione
+dell'autore ha guadagnato anche lo **sfondo di riga** che ha upstream
+(`RevisionDataGridView.GetBackground`), che **vince** sulla striscia — così una serie di commit
+della stessa persona si legge come un blocco.
+
+Il grigio delle **lane** e il grigio del **testo** erano un flag solo qui e sono due upstream:
+«ingrigisci le lane» non costringe più a sbiadire ogni oggetto.
+
+I tooltip di riga non esistevano: ora la riga offre ciò che le colonne troncate non possono —
+oggetto intero, autore con indirizzo, hash intero.
+
+`SettingsService` ha ora un evento `Changed`, così una griglia già aperta adotta l'impostazione
+salvata invece di aspettare un riavvio. Scatta sul thread che ha salvato (il dialogo salva **fuori**
+dal thread UI), e la griglia lo gestisce con un post.
+
+### M154 — stash, checkout, push (6)
+`IncludeUntrackedFilesInManualStash`, `IncludeUntrackedFilesInAutoStash`,
+`AutoPopStashAfterCheckoutBranch`, `AutoPopStashAfterPull`, `RebaseAutoStash`, `RecursiveSubmodules`.
+
+I due flag «untracked» sostituiscono **cinque risposte cablate che non erano d'accordo fra loro**:
+toolbar, menu e dialogo di pull dicevano no, l'albero di sinistra diceva sì.
+
+Le due «auto-pop» sono il `bool?` di upstream — `null` chiede con la casella «non chiedere più»,
+`true`/`false` è la risposta ricordata — scritto qui come **Ask / Always / Never**, perché devono
+anche stare in una tendina, dove una casella a tre stati non direbbe da che parte pende. Nessuna
+delle due fa pop dopo un fallimento o dentro un albero in conflitto.
+
+`RecursiveSubmodules` ha trasformato la casella del dialogo di push nella **tendina a tre** di
+upstream (none / check / on-demand): la casella sapeva dire solo on-demand o niente, e «check» —
+rifiuta il push se un commit di submodule resterebbe indietro — è il default di upstream.
+
+### M155 — lista recenti, profondità dell'output, ricerca rapida, i due font (8+1)
+`RecentRepositoriesHistorySize`, `SortRecentRepos`, `ShorteningRecentRepoPathStrategy`,
+`TruncatePathMethod`, `OutputHistoryDepth`, `RevisionGridQuickSearchTimeout`, `Font`,
+`MonospaceFont`.
+
+La dimensione della cronologia è scritta **nell'impostazione del core**, non copiata: è il core a
+tagliare la lista quando la salva (`LocalRepositoryManager.AdjustHistorySize`), e una seconda
+risposta qui potrebbe solo essere in disaccordo.
+
+**Il difetto grosso di questo round.** Ventisette superfici chiedevano la famiglia
+`"monospace,Consolas,Menlo"`. Su Linux `monospace` è un **alias di fontconfig, non un nome di
+famiglia**, e Skia risolve per nome: nessuna delle tre esiste qui, quindi **il diff, l'editor del
+messaggio, la console e la barra del blame erano tutti proporzionali**. Trovato di rimbalzo mentre
+si verificava la banda dell'eccedenza (M151), poi misurato: dieci «i» e dieci «W» venivano di
+larghezza diversa. Nuovo `Theming/AppFonts`: cerca la prima famiglia **esistente** (DejaVu Sans
+Mono, Liberation Mono, Noto Sans Mono, Ubuntu Mono, Menlo, Consolas) e mette in cache **solo** una
+corrispondenza vera, così una chiamata precoce prima che il font manager sia in piedi non blocca il
+fallback per tutta la vita del processo. Il font dell'interfaccia si applica **per finestra**
+(`ZoomWindow`): `FontFamily`/`FontSize` ereditano lungo l'albero visuale, quindi una assegnazione
+raggiunge ogni controllo senza una style per tipo.
+
+### Escluse, e perché
+- **`Compact`** di `TruncatePathMethod`: è una API Win32, e il codice di upstream stesso ripiega sul
+  path intero fuori da Windows (`PathFormatter.cs:39`). Offrirla qui sarebbe il pulsante finto che
+  questo round serve a togliere.
+- **`CommitValidationRegEx`** e **`CommitValidationIndentAfterFirstLine`**: restano fuori dalle 35.
+- **Cache/provider degli avatar**: il port disegna identicon **offline per scelta** (M26), quindi
+  provider, template e giorni di cache non hanno un consumatore che non sia «aggiungiamo la rete».
+
+### Verifiche a schermo (Xvfb :181)
+- banda dell'eccedenza che parte **esattamente** sul primo carattere fuori limite (test «iiiiiiiiii»
+  + «WWWWWWWWWW» con limite 10), domanda di conferma al commit, pagina Commit con i valori letti dal
+  file;
+- due gruppi per-parent su un merge vero, con la patch del parent giusto nella riga di comando;
+  righello a colonna 40; «LF» al posto di ¶; la rotella che cammina da una patch di 400 righe al file
+  successivo;
+- lane a un colore, striscia via, autore non più evidenziato, tooltip via, e **137 pixel** di
+  differenza nella colonna del grafo con il raddrizzamento spento;
+- checkout con modifiche locali che stasha **senza** `--include-untracked`, chiede «Apply stashed
+  items again?» e, rispondendo Sì, lascia la stash list vuota con la modifica tornata nel working
+  tree; tendina a tre del push su «Check»;
+- `file.txt` al posto di `deep/nested/dir/file.txt` nella lista dei file; dieci «i» **esattamente**
+  larghe come dieci «W» nell'editor.
+
+**Non fotografate** (cablate e compilate, ma senza prova a schermo): lo split del grigio sul testo,
+l'auto-pop dopo il pull, `--autostash` del rebase, `--histogram`, l'accorciamento del path nella
+dashboard, `OutputHistoryDepth` e il timeout della ricerca rapida.
+
 ## M150 (2026-08-10, `1c0120d93`, `ac18acb5c`) — la selezione ripristinata arriva ai riquadri; e due note del grafo misurate invece che credute
 
 **Il difetto vero.** Cambiando scheda restava «No commit selected.» sotto una riga visibilmente
