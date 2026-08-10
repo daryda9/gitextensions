@@ -762,10 +762,20 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
 > no), lane/nodo/testo non-relative in grigio, `_drawNonRelativesGray` default `true` come
 > upstream. Limite: la relatività dei segmenti è dedotta dalle lane, quindi una lane riusata da
 > un parent di merge può restare colorata.
-> **P2 — chrome: FATTA per 2a+2b** (barra pulsanti + casella di ricerca sopra l'albero, icone
-> nei nove tab del pannello inferiore). **RESTANO 2c e 2d**: gli altri pulsanti/split-button
-> della toolbar in alto, la toolbar ricca della lista file (`FileStatusList.Toolbar.cs`) e le
-> opzioni del viewer diff (`FileViewer.Designer.cs:27-48`).
+> **P2 — chrome: CHIUSA. Riverificata il 2026-08-10** — la nota «restano 2c e 2d» era
+> invecchiata: M115-M121 hanno rifatto tutte e tre le strisce che nominava.
+> 2a+2b erano già fatte (barra pulsanti + casella di ricerca sopra l'albero, icone nei tab
+> del pannello inferiore). **2c**: `ToolStripMain` è stata rifatta in M119 (le sei scorciatoie
+> di `InsertFetchPullShortcuts`, di cui le ultime due aggiunte in M138) e appiattita in
+> M115/M121; lo split-button del Pull è di M50/P3. La lista dei file ha oggi la sua casella
+> di filtro e il raggruppamento pieghevole (M117 per l'intestazione di confronto, e il flyout
+> group-by). **2d**: le opzioni del viewer diff ci sono — ignore-whitespace nelle tre varianti,
+> righe di contesto +/-/intero file, evidenziazione della sintassi, caratteri non stampabili,
+> «vai alla riga», «prossima modifica».
+> **Unico residuo davvero aperto, e più stretto della nota vecchia**: la ricerca `git grep`
+> dalla lista dei file (`FileStatusList.Toolbar.cs` → «Find using dialog / input box»,
+> `GitGrepUserArguments`) non è portata. Non è chrome: è una funzione a sé, e va valutata
+> come tale.
 > **P3 — Pull: FATTA.** Split-button (corpo = azione predefinita persistita in
 > `UiState.DefaultPullAction`, freccia = menu upstream con il sottomenu "Set default"),
 > `PullDialog` su modello `FormPull`, `PullOptions` in `RemoteService` con tag policy/prune/
