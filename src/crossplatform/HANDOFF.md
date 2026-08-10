@@ -788,16 +788,20 @@ GUI. Dettaglio per milestone in `PORTING.md` → "Blocco RIFINITURE (round 4)".
    "Undo last commit…" sono nel menu `Commands` negli slot di `FormBrowse.Designer.cs`;
    finestra utility e `Ctrl+Shift+W` rimossi. `App/Services/WorkingDirectoryService.cs`
    **resta** (backend dei nuovi chiamanti). Dettaglio in `PORTING.md` → "Blocco FOLLOW-UP 1
-   (round 5)". Code smell residui, tutti minori e registrati lì: discard solo mono-file
-   (liste `SelectionMode.Single`), niente drag&drop tra liste (assente anche
-   nell'originale), acceleratori Enter/Space/Ctrl+Enter non replicati, e la guardia
-   "Nothing staged to commit." che può rifiutare un merge commit legittimo (servirebbe
-   rilevare `MERGE_HEAD`).
+   (round 5)". **Due dei code smell registrati qui non esistono più — riverificati il
+   2026-08-10 con prova a schermo**: le liste sono `SelectionMode.Multiple` e il discard
+   agisce sulla selezione («Discard changes (2 files)»), e la guardia "Nothing staged"
+   esclude già un merge commit legittimo tramite `MERGE_HEAD` (`_mergeInProgress`, letto
+   dalla git-dir *risolta*, quindi valido anche nei worktree). Restano: niente drag&drop fra
+   le liste (assente anche nell'originale) e acceleratori Enter/Space/Ctrl+Enter non
+   replicati.
 2. **Traduzioni** — **infrastruttura FATTA in M46/T1**: `.xlf` copiati in output e nel
    `.deb` (66 file), `App/Services/TranslationService.cs` (riusa il loader XLIFF del core,
    sostituisce il matcher WinForms con lookup per id **e** per `<source>` inglese
    normalizzato), selettore **View → Language** persistito in `UiState.Language`, cambio
-   lingua senza riavvio. **Resta**: applicare il layer a tutte le view oltre a `MainMenu`.
+   lingua senza riavvio. **CHIUSA in M139-M141** (2026-08-10): il layer copre tutte le view,
+   ~290 stringhe in 21 file, con ricostruzione su `LanguageChanged`. Restano in inglese solo
+   le stringhe che nessuna trans-unit copre — elencate nelle milestone, senza inventare id.
    Convenzione: `T("<Categoria>/<Item>.<Prop>", "English literal")` con la categoria =
    `<file original>` dell'XLIFF (la form upstream corrispondente: `FormCommit` per
    `CommitDialog`, `FormPush` per `PushDialog`, `RepoObjectsTree`, `RevisionGrid`,
@@ -885,13 +889,16 @@ Materiale noto e già motivato, dietro le priorità:
 - **Note estetiche aperte, piccole**: le **icone ambra** del file picker managed non sono
   sovrascrivibili (prova strutturale in M70) e stonano in tema chiaro; la pill **note** del grafo è un
   chip scuro in tema chiaro (5,34:1, passa AA); la coppia scura **string↔comment** della sintassi
-  resta la più debole per un protanope (ΔE 2,4 → misurata, non risolta); le stringhe dei conteggi del
-  bisect non sono **pluralizzate** ("1 revisions left") — servirebbe un formatter plural-aware in
-  `TranslationService`.
-- **Debito noto**: `TranslationService` è applicato a `MainMenu` e a parte delle view, non a tutte
-  (convenzione in §4); i due `CollapseHome` duplicati; `PushDialog.cs:95` che stampa il path assoluto
-  nel titolo; la guardia "Nothing staged to commit." che può rifiutare un merge commit legittimo
-  (servirebbe rilevare `MERGE_HEAD`); il discard solo mono-file.
+  era la più debole per un protanope: **risolta il 2026-08-10** (famiglia Classic ri-solta a vincolo
+  di tinta ±14°, ΔE ≤ 16 e contrasto ≥ 4,6:1 — peggior coppia da 6,45 a 24,54). I conteggi del bisect
+  sono **pluralizzati** dal nuovo `TranslationService.TPlural` (due forme, non un "(s)"): resta da
+  passarci gli altri conteggi dell'app.
+- **Debito noto** (rivisto il 2026-08-10): restano i due `CollapseHome` duplicati — due alias privati
+  di una riga che inoltrano entrambi a `PathDisplay.CollapseHome`, quindi duplicazione di nome e non di
+  logica. Le altre quattro voci di questo elenco sono chiuse: il layer di traduzione copre tutte le
+  view (M139-M141), `PushDialog` non stampa più il path nel titolo, la guardia "Nothing staged"
+  riconosce `MERGE_HEAD` e il discard è multi-selezione (le ultime due erano già vere: la nota era
+  invecchiata).
 - **Idee di valore vero, se si vuole continuare**: un **giro di collaudo end-to-end** su un repo
   grosso e reale (prestazioni del grafo, paging, memoria) invece di nuove feature; oppure alzare la
   copertura del layer di traduzione; oppure il sottosistema **script utente**, che è l'unica lacuna
