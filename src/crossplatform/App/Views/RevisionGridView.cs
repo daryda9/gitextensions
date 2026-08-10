@@ -2610,8 +2610,18 @@ public sealed class RevisionGridView : UserControl
     {
         _graphRelatives = new List<(bool, bool[])>(_rows.Count);
 
-        // Flags of the lanes crossing the top edge of the current row.
-        bool[] incoming = [];
+        // Which EDGES crossing the top edge of the current row are relative, keyed by
+        // ColorLane.
+        //
+        // Keyed by edge identity and not by lane index, which is what this used to do
+        // and what made it wrong: a lane is only a column and BuildGraph recycles it —
+        // it frees the column when two branches converge and FirstFree hands the same
+        // column to an unrelated branch further down. The flag of the branch that left
+        // was then read by the branch that arrived, so an unrelated line kept the
+        // colour of an ancestor of HEAD. ColorLane already exists for exactly this
+        // reason (M75 gave the graph an edge identity so colours would stop following
+        // recycled columns); the relatives pass simply had not been moved onto it.
+        HashSet<int> incoming = [];
 
         for (int i = 0; i < _rows.Count; i++)
         {
@@ -2624,37 +2634,34 @@ public sealed class RevisionGridView : UserControl
             IReadOnlyList<RevisionGraphSegment> segments = row.GraphSegments;
 
             bool[] flags = new bool[segments.Count];
-            int maxLane = nodeLane;
-            foreach (RevisionGraphSegment s in segments)
-            {
-                maxLane = Math.Max(maxLane, (int)Math.Round(Math.Max(s.FromLane, s.ToLane)));
-            }
-
-            bool[] outgoing = new bool[maxLane + 1];
+            HashSet<int> outgoing = [];
 
             for (int s = 0; s < segments.Count; s++)
             {
                 RevisionGraphSegment seg = segments[s];
-                int fromLane = (int)Math.Round(seg.FromLane);
-                int toLane = (int)Math.Round(seg.ToLane);
-                bool bottomHalf = seg.FromY >= 0.5;
-                bool relative = bottomHalf && fromLane == nodeLane
-                    ? nodeRelative || Flag(incoming, toLane)
-                    : Flag(incoming, fromLane);
+
+                // An edge that LEAVES this node — its lower half starts at the node
+                // lane — is relative because the node is; anything else inherits the
+                // flag its own edge arrived with.
+                bool leavesNode = seg.FromY >= 0.5 && (int)Math.Round(seg.FromLane) == nodeLane;
+                bool relative = leavesNode
+                    ? nodeRelative || incoming.Contains(seg.ColorLane)
+                    : incoming.Contains(seg.ColorLane);
 
                 flags[s] = relative;
-                if (bottomHalf && toLane < outgoing.Length)
+
+                // Whatever reaches the bottom edge is what the next row inherits —
+                // full-height segments included, which is why this asks about ToY
+                // rather than about the half the segment lives in.
+                if (relative && seg.ToY >= 1.0)
                 {
-                    outgoing[toLane] |= relative;
+                    outgoing.Add(seg.ColorLane);
                 }
             }
 
             _graphRelatives.Add((nodeRelative, flags));
             incoming = outgoing;
         }
-
-        static bool Flag(bool[] flags, int lane)
-            => lane >= 0 && lane < flags.Length && flags[lane];
     }
 
     // The graph flags of one display row, or null when they are unavailable (row
