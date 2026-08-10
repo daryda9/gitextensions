@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using GitExtensions.Avalonia.Services;
 
 namespace GitExtensions.Avalonia.Views;
 
@@ -21,9 +22,28 @@ public sealed class ConsoleView : UserControl
     private readonly TerminalControl _terminal = new();
     private readonly TextBlock _status;
     private readonly Button _restart;
+    private readonly Button _external;
+    private readonly TextBlock _title;
     private bool _started;
     private Window? _hostWindow;
     private string? _repoPath;
+
+    // What the status line is currently saying. The line doubles as a translatable
+    // message AND as a plain working-directory path, so a language change must know
+    // which of the two it is looking at before rewriting it — a path is not chrome.
+    private enum Status
+    {
+        Starting,
+        WorkingDirectory,
+        PtyFailed,
+        ShellExited,
+    }
+
+    private Status _statusKind = Status.Starting;
+
+    // The PTY error text as the platform reported it: kept so the sentence around it
+    // can be re-stated in another language without re-trying to open a terminal.
+    private string _ptyError = string.Empty;
 
     /// <summary>Raised when the user asks to open an external terminal in the repo.</summary>
     public event Action? OpenTerminalRequested;
@@ -37,31 +57,27 @@ public sealed class ConsoleView : UserControl
 
         _status = new TextBlock
         {
-            Text = "starting shell…",
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8, 0, 0, 0),
             Foreground = Brush("App.TextDim", Brushes.Gray),
         };
 
-        _restart = MakeButton("Restart shell", () => StartShell(force: true));
-        Button external = MakeButton("Open terminal here", () => OpenTerminalRequested?.Invoke());
+        _restart = MakeButton(() => StartShell(force: true));
+        _external = MakeButton(() => OpenTerminalRequested?.Invoke());
+
+        _title = new TextBlock
+        {
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+        };
 
         StackPanel header = new()
         {
             Orientation = Orientation.Horizontal,
             Spacing = 6,
             Margin = new Thickness(6, 4, 6, 4),
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = "Terminal",
-                    FontWeight = FontWeight.Bold,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Foreground = Brush("App.Text", Brushes.Gainsboro),
-                },
-                _status,
-            },
+            Children = { _title, _status },
         };
 
         StackPanel actions = new()
@@ -70,7 +86,7 @@ public sealed class ConsoleView : UserControl
             Spacing = 6,
             Margin = new Thickness(6, 4, 6, 4),
             HorizontalAlignment = HorizontalAlignment.Right,
-            Children = { _restart, external },
+            Children = { _restart, _external },
         };
 
         Grid bar = new()
@@ -91,6 +107,13 @@ public sealed class ConsoleView : UserControl
         Content = root;
         Background = Brush("App.Window", Brushes.DimGray);
         ClipToBounds = true;
+
+        ApplyTranslations();
+
+        // A tab page, not a window: subscribe while attached only, so a Console tab
+        // that is torn down does not keep this view alive through the static event.
+        AttachedToVisualTree += (_, _) => TranslationService.LanguageChanged += OnLanguageChanged;
+        DetachedFromVisualTree += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
 
         AttachedToVisualTree += OnAttached;
     }
@@ -141,6 +164,7 @@ public sealed class ConsoleView : UserControl
         try
         {
             _terminal.Send("\u0001\u000B" + $"cd {Quote(path)}\n");
+            _statusKind = Status.WorkingDirectory;
             _status.Text = path;
             _status.Foreground = Brush("App.TextDim", Brushes.Gray);
         }
@@ -182,6 +206,7 @@ public sealed class ConsoleView : UserControl
         {
             _terminal.StartShell(cwd);
             _started = true;
+            _statusKind = Status.WorkingDirectory;
             _status.Text = cwd;
             _status.Foreground = Brush("App.TextDim", Brushes.Gray);
             Dispatcher.UIThread.Post(() => _terminal.Focus(), DispatcherPriority.Background);
@@ -189,14 +214,17 @@ public sealed class ConsoleView : UserControl
         catch (Exception ex)
         {
             _started = false;
-            _status.Text = $"cannot open a pseudo-terminal: {ex.Message} — use “Open terminal here”";
+            _statusKind = Status.PtyFailed;
+            _ptyError = ex.Message;
+            _status.Text = PtyFailedText();
             _status.Foreground = Brush("App.DiffRemoved", Brushes.IndianRed);
         }
     }
 
     private void OnShellExited()
     {
-        _status.Text = "shell exited — press “Restart shell”";
+        _statusKind = Status.ShellExited;
+        _status.Text = ShellExitedText();
         _status.Foreground = Brush("App.TextDim", Brushes.Gray);
     }
 
@@ -213,11 +241,49 @@ public sealed class ConsoleView : UserControl
         return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     }
 
-    private Button MakeButton(string text, Action onClick)
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        // No upstream ids: FormBrowse's console tab is a ConEmu host with no header
+        // bar of its own, so these three captions exist only in the port.
+        _title.Text = T("Terminal");
+        _restart.Content = T("Restart shell");
+        _external.Content = T("Open terminal here");
+
+        // What the shell PRINTS is never touched — only this one status line, and
+        // only when it holds a sentence rather than the working directory.
+        _status.Text = _statusKind switch
+        {
+            Status.Starting => T("starting shell…"),
+            Status.PtyFailed => PtyFailedText(),
+            Status.ShellExited => ShellExitedText(),
+            _ => _status.Text ?? string.Empty,
+        };
+    }
+
+    // Both messages quote a button caption, so they are rebuilt from the CURRENT
+    // captions instead of being frozen at the moment the shell died.
+    private string PtyFailedText()
+        => TranslationService.TFormat(
+            null,
+            "cannot open a pseudo-terminal: {0} — use “{1}”",
+            _ptyError,
+            T("Open terminal here"));
+
+    private string ShellExitedText()
+        => TranslationService.TFormat(null, "shell exited — press “{0}”", T("Restart shell"));
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
+
+    private Button MakeButton(Action onClick)
     {
         Button button = new()
         {
-            Content = text,
             Padding = new Thickness(10, 3, 10, 3),
             Background = Brush("App.Control", Brushes.DimGray),
             Foreground = Brush("App.Text", Brushes.Gainsboro),
