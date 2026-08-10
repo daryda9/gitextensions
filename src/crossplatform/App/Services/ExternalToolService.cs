@@ -424,6 +424,42 @@ public sealed class ExternalToolService
 
         List<string> failures = [];
 
+        // A command the user named wins over the probe list: the list can only ever
+        // guess, and it cannot cover every emulator's CLI (Warp is reachable through
+        // x-terminal-emulator but rejects the -e the list passes it — M127). It is
+        // tried FIRST and, if it will not start, we still fall through to the probe
+        // rather than leaving the button dead: a typo in the setting should degrade
+        // to the old behaviour, not break the feature.
+        string configured = ConfiguredTerminalCommand();
+        if (configured.Length > 0)
+        {
+            string[] parts = SplitCommand(configured);
+            if (parts.Length > 0 && parts[0].Length > 0)
+            {
+                // {dir} / {shell} are substituted wherever they appear; a command that
+                // names neither still gets the directory (ProcessStartInfo.WorkingDirectory,
+                // set by LaunchTerminal) and simply starts the login shell.
+                List<string> args = [.. parts.Skip(1)
+                    .Select(a => a.Replace("{dir}", dir, StringComparison.Ordinal)
+                                  .Replace("{shell}", shell ?? string.Empty, StringComparison.Ordinal))
+                    .Where(a => a.Length > 0)];
+
+                ExternalToolResult configuredResult = LaunchTerminal(
+                    parts[0].Replace("{dir}", dir, StringComparison.Ordinal),
+                    args,
+                    dir,
+                    friendly: shell is null
+                        ? $"Opened terminal in {dir}"
+                        : $"Opened {shell} in {dir}");
+                if (configuredResult.Success)
+                {
+                    return configuredResult;
+                }
+
+                failures.Add(parts[0]);
+            }
+        }
+
         foreach ((string exe, string? dirArg, string? execArg) in Terminals)
         {
             if (!OnPath(exe))
@@ -621,6 +657,22 @@ public sealed class ExternalToolService
     ///  <see cref="TerminalStartupGrace"/>, which is why the callers run this off the
     ///  UI thread.</para>
     /// </summary>
+    // Read at launch time rather than cached: the setting is edited in a dialog that
+    // does not know this service exists, and a terminal is opened rarely enough that
+    // one small JSON read costs nothing. Never throws — an unreadable state file just
+    // means "no configured command".
+    private static string ConfiguredTerminalCommand()
+    {
+        try
+        {
+            return new UiStateService().Load().TerminalCommand?.Trim() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     private ExternalToolResult LaunchTerminal(string exe, IReadOnlyList<string> args, string dir, string friendly)
     {
         try

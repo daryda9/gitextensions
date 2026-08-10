@@ -275,6 +275,27 @@ public sealed class UiState
     public string AutoPullOnPushRejected { get; set; } = string.Empty;
 
     /// <summary>
+    ///  The command line to open a terminal, or <c>""</c> — the default — meaning
+    ///  "probe the known emulators", which is what the port has always done.
+    ///
+    ///  <para>Upstream has no counterpart: on Windows the terminal is Git bash at a
+    ///  known path. On Linux the candidate list can only ever be a guess, and it
+    ///  cannot be complete — Warp, for one, is reachable through
+    ///  <c>x-terminal-emulator</c> but rejects the <c>-e</c> that every entry in the
+    ///  list passes it (M127). Naming the command is the escape hatch for exactly
+    ///  that case.</para>
+    ///
+    ///  <para>The value is a command line, split on spaces with quoting honoured. Two
+    ///  placeholders are substituted when present: <c>{dir}</c> — the directory to
+    ///  open in — and <c>{shell}</c> — the shell chosen in the Terminal drop-down.
+    ///  Without <c>{dir}</c> the directory is still handed over as the child's
+    ///  working directory; without <c>{shell}</c> the emulator starts the login
+    ///  shell. A configured command that fails to start falls through to the probe
+    ///  list rather than leaving the user with a dead button.</para>
+    /// </summary>
+    public string TerminalCommand { get; set; } = string.Empty;
+
+    /// <summary>
     ///  Where the commit-info panel sits, as the name of a
     ///  <c>Views.CommitInfoPosition</c> member ("BelowGraph", "LeftOfGraph",
     ///  "RightOfGraph"). Upstream persists the same choice

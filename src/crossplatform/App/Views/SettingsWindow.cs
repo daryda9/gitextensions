@@ -126,6 +126,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
     // Behaviour page, beyond the pull action.
     private readonly CheckBox _autoRefresh;
+
+    // The terminal command line. A TextBox and not a drop-down of candidates: the
+    // point of the setting is the emulator the probe list does NOT know about.
+    private readonly TextBox _terminalCommand;
     private readonly ComboBox _checkoutLocalChanges;
 
     // Commit-info page: one checkbox per CommitInfoSettings flag, same order as
@@ -447,6 +451,12 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // all) — it simply had no UI, so it could only be changed by editing
         // ui-state.json by hand.
         _autoRefresh = new CheckBox();
+        _terminalCommand = new TextBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            MinWidth = 360,
+            Watermark = "x-terminal-emulator",
+        };
         Localize(
             _autoRefresh,
             "FormBrowse/toolStripMenuItemReloadRevisions.Text",
@@ -466,8 +476,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         Panel behaviourPanel = CategoryPanel(
             BehaviourKey, BehaviourText,
             null, "What the Pull command does by default, whether the app follows the "
-                + "repository on disk, and what the checkout dialog pre-selects when the "
-                + "working tree is dirty.",
+                + "repository on disk, what the checkout dialog pre-selects when the "
+                + "working tree is dirty, and which command opens a terminal.",
             text,
             dim,
             Field("GeneralSettingsPage/lblDefaultPullAction.Text", "Default pull action", _pullAction, dim),
@@ -476,7 +486,21 @@ public sealed class SettingsWindow : Theming.ZoomWindow
                 "FormCheckoutBranch/lblLocalChanges.Text",
                 "Local changes when checking out a branch",
                 _checkoutLocalChanges,
-                dim));
+                dim),
+            // No upstream trans-unit: on Windows the terminal is Git bash at a known
+            // path and there is no such setting to borrow an id from.
+            Field(null, "Terminal command", _terminalCommand, dim,
+                "The command that opens a terminal. Leave it empty to keep probing the "
+                    + "known emulators (x-terminal-emulator, gnome-terminal, konsole, "
+                    + "kitty, foot, xterm and a dozen more, in that order). Name a "
+                    + "command to use an emulator the list cannot drive — Warp, for "
+                    + "instance, answers to x-terminal-emulator but rejects the \"-e\" "
+                    + "the list passes it. Two placeholders are substituted if present: "
+                    + "{dir} for the directory to open in and {shell} for the shell "
+                    + "picked in the Terminal drop-down; without them the directory is "
+                    + "still the working directory of the new process and the emulator "
+                    + "starts the login shell. A command that will not start falls back "
+                    + "to the probe list."));
 
         // ---- Commit info: the panel's own visibility toggles, exposed here too.
         // Same store the panel writes from its context menu; saving raises
@@ -869,6 +893,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // in-memory UiState is the instance that will be saved at exit.
         UiState ui = _uiStateService.Load();
         _autoRefresh.IsChecked = _currentAutoRefresh ?? ui.AutoRefresh;
+        _terminalCommand.Text = ui.TerminalCommand;
 
         // Checkout default: its own file, so the file is always the truth.
         string checkoutAction = new SettingsService().Load().DefaultCheckoutLocalChangesAction;
@@ -1172,6 +1197,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         ui.RepoTabs = RepoTabsOption.Name(SelectedRepoTabs);
         ui.DefaultPullAction = pullAction;
         ui.AutoRefresh = autoRefresh;
+
+        // Trimmed on the way in: a stray trailing space would make the first token —
+        // the executable — the empty string and silently disable the setting.
+        ui.TerminalCommand = (_terminalCommand.Text ?? string.Empty).Trim();
         _uiStateService.Save(ui);
         SystemTheme.Follow(ui.Theme == SystemTheme.Name);
         ThemeManager.Apply(SelectedVariant, SelectedStyle);
