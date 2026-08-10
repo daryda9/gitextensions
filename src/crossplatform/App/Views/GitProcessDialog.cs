@@ -63,6 +63,26 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
     private readonly TextBlock _inputLabel;
     private readonly Grid _inputRow;
 
+    /// <summary>
+    ///  What the header and the status line are currently saying. Both are rewritten
+    ///  as the run progresses, so a language change cannot simply re-apply a fixed
+    ///  caption: it has to know which sentence is on screen. <see cref="Phase.Prompt"/>
+    ///  is the one state whose status text belongs to git (the question it just
+    ///  asked) and is therefore never translated.
+    /// </summary>
+    private enum Phase
+    {
+        Running,
+        Aborting,
+        Aborted,
+        Success,
+        Failed,
+        AuthRequired,
+        Prompt,
+    }
+
+    private Phase _phase = Phase.Running;
+
     // The console content. Held in a terminal-aware buffer (not in the TextBox) so a
     // \r progress update REWRITES the current line instead of appending another one,
     // and so appending is not an O(n²) string concatenation.
@@ -101,7 +121,6 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
     public GitProcessDialog(string label)
     {
         _label = label ?? string.Empty;
-        Title = $"Process — {_label}";
         Width = 760;
         Height = 460;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -125,7 +144,6 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
         _header = new TextBlock
         {
-            Text = $"Process — {_label}",
             FontWeight = FontWeight.Bold,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             VerticalAlignment = VerticalAlignment.Center,
@@ -166,7 +184,6 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
         _status = new TextBlock
         {
-            Text = "Running…",
             Foreground = Brush("App.TextDim", Brushes.Gray),
             VerticalAlignment = VerticalAlignment.Center,
             // A prompt echoed here can be long; ellipsize it instead of letting it
@@ -182,7 +199,6 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         // was forgotten.
         _keepOpen = new CheckBox
         {
-            Content = "Keep dialog open",
             IsChecked = !new Services.ViewPrefsService().Load().CloseProcessDialog,
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             VerticalAlignment = VerticalAlignment.Center,
@@ -193,7 +209,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         // OK stays disabled until the operation really finished: closing mid-run
         // must not look like an acknowledged success (mirrors FormStatus, where Ok
         // is only enabled by Done()).
-        _ok = MakeButton("OK");
+        _ok = MakeButton();
         _ok.IsEnabled = false;
 
         // IsDefault (Enter activates it) is granted only together with IsEnabled, so
@@ -204,7 +220,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
         // Abort is only shown when there is something we can genuinely kill (the
         // streaming path); RunStreamingInternalAsync makes it visible.
-        _abort = MakeButton("Abort");
+        _abort = MakeButton();
         _abort.IsVisible = false;
         _abort.Click += (_, _) => AbortOperation();
 
@@ -225,17 +241,12 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         // where there is a terminal to write to.
         _inputLabel = new TextBlock
         {
-            Text = "Reply:",
             Foreground = Brush("App.TextDim", Brushes.Gray),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0),
         };
 
-        _input = new TextBox
-        {
-            Watermark = "type here to answer git (Enter sends)",
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        _input = new TextBox { VerticalAlignment = VerticalAlignment.Center };
         _input.KeyDown += (_, e) =>
         {
             if (e.Key == global::Avalonia.Input.Key.Enter)
@@ -245,7 +256,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             }
         };
 
-        _send = MakeButton("Send");
+        _send = MakeButton();
         _send.MinWidth = 70;
         _send.Margin = new Thickness(8, 0, 0, 0);
         _send.Click += (_, _) => SendInput();
@@ -288,6 +299,10 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         body.Children.Add(_progress);
         body.Children.Add(_scroll);
         Content = body;
+
+        ApplyTranslations();
+        Services.TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => Services.TranslationService.LanguageChanged -= OnLanguageChanged;
 
         // One renderer for the whole dialog lifetime: it copies the console buffer into
         // the TextBox only when it changed, which keeps a flood of progress updates
@@ -387,7 +402,10 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         }
 
         Append(string.Empty);
-        Append(note ?? "Retrying…");
+
+        // The caller's note is already in the user's language when it supplies one;
+        // only the default belongs to this dialog.
+        Append(note ?? T("Retrying…"));
         Append(string.Empty);
         StartStreamingRun();
     }
@@ -473,9 +491,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         _ok.IsDefault = false;
         _abort.IsEnabled = true;
         _check.IsVisible = false;
-        _header.Text = $"Process — {_label}";
-        _status.Text = "Running…";
-        _status.Foreground = Brush("App.TextDim", Brushes.Gray);
+        SetPhase(Phase.Running);
 
         Services.GitAuthSignal authSignal = new();
         _authSignal = authSignal;
@@ -511,7 +527,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             }
             catch (Exception ex)
             {
-                outcome = new GitProcessOutcome(false, ex.GetBaseException().Message ?? "Operation failed.");
+                outcome = new GitProcessOutcome(false, ex.GetBaseException().Message ?? OperationFailedText);
             }
 
             Dispatcher.UIThread.Post(() => Complete(outcome, streaming: true));
@@ -524,7 +540,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         => _outcome
            ?? new GitProcessOutcome(
                false,
-               _aborted ? "Aborted" : "The process dialog was closed before the operation finished.",
+               _aborted ? T("Aborted") : T("The process dialog was closed before the operation finished."),
                _aborted);
 
     /// <summary>
@@ -543,10 +559,9 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
         _aborted = true;
         _abort.IsEnabled = false;
-        _status.Text = "Aborting…";
-        _status.Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed);
+        SetPhase(Phase.Aborting);
         Append(string.Empty);
-        Append("Aborted");
+        Append(T("Aborted"));
 
         Services.GitProcessScope scope = _scope;
         _ = Task.Run(() =>
@@ -574,13 +589,15 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             {
                 if (!killed)
                 {
-                    Append("(no git process was live at that moment; any command this "
-                        + "operation starts from now on is killed immediately)");
+                    Append(T("(no git process was live at that moment; any command this "
+                        + "operation starts from now on is killed immediately)"));
                 }
 
                 if (unlockError is not null)
                 {
-                    Append("Could not remove index.lock: " + unlockError);
+                    // The exception text is the runtime's; only the sentence is ours.
+                    Append(Services.TranslationService.TFormat(
+                        null, "Could not remove index.lock: {0}", unlockError));
                 }
             });
         });
@@ -608,7 +625,9 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
         // Header for the non-streaming path only: the streaming path gets it from
         // GitStreamRunner, which echoes the exact command line it runs.
-        Append("Command to be executed:");
+        // No upstream id: FormProcess writes this header from a literal too, so the
+        // source-text overload is all there is.
+        Append(T("Command to be executed:"));
 
         Opened += (_, _) =>
         {
@@ -626,7 +645,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             }).ContinueWith(t =>
             {
                 GitProcessOutcome outcome = t.IsFaulted
-                    ? new GitProcessOutcome(false, t.Exception?.GetBaseException().Message ?? "Operation failed.")
+                    ? new GitProcessOutcome(false, t.Exception?.GetBaseException().Message ?? OperationFailedText)
                     : t.Result;
                 Dispatcher.UIThread.Post(() => Complete(outcome));
             }, TaskScheduler.Default);
@@ -684,9 +703,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             }
 
             _outcome = new GitProcessOutcome(false, outcome.Output ?? string.Empty, Aborted: true);
-            _header.Text = $"Process — {_label} (Aborted)";
-            _status.Text = "Aborted";
-            _status.Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed);
+            SetPhase(Phase.Aborted);
             _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
             _closeTimer.Tick += (_, _) =>
             {
@@ -755,14 +772,12 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
     {
         // Cosmetic closing hint, echoing the original console.
         Append(string.Empty);
-        Append("Press Enter or Esc to exit…");
+        Append(T("Press Enter or Esc to exit…"));
 
         if (outcome.Success)
         {
-            _header.Text = $"Process — {_label} (Done)";
             _check.IsVisible = true;
-            _status.Text = "Success";
-            _status.Foreground = Brush("App.DiffAdded", Brushes.LimeGreen);
+            SetPhase(Phase.Success);
 
             // Keep-open semantics: auto-close only when the box is UNCHECKED.
             if (_keepOpen.IsChecked != true)
@@ -779,9 +794,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         }
         else
         {
-            _header.Text = $"Process — {_label} (Failed)";
-            _status.Text = "Failed";
-            _status.Foreground = Brush("App.DiffRemoved", Brushes.OrangeRed);
+            SetPhase(Phase.Failed);
 
             // On an authentication failure, when the caller opted in, auto-close so
             // it can immediately show the in-app credentials prompt and retry —
@@ -795,7 +808,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
             if (_closeOnAuthFailure && authFailure)
             {
-                _status.Text = "Authentication required — asking for credentials…";
+                SetPhase(Phase.AuthRequired);
                 _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
                 _closeTimer.Tick += (_, _) =>
                 {
@@ -932,10 +945,13 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
 
         bool secret = prompting && IsSecretPrompt(currentLine);
         _input.PasswordChar = secret ? '•' : '\0';
-        _inputLabel.Text = prompting ? "git asks:" : "Reply:";
+        _inputLabel.Text = prompting ? T("git asks:") : T("Reply:");
         _inputLabel.Foreground = prompting ? Brushes.Goldenrod : Brush("App.TextDim", Brushes.Gray);
         if (prompting && running)
         {
+            // The question is git's own line: echoed verbatim, never translated. The
+            // phase records that, so a language change leaves it standing.
+            _phase = Phase.Prompt;
             _status.Text = currentLine.Trim();
             _status.Foreground = Brushes.Goldenrod;
         }
@@ -970,7 +986,8 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         }
         catch (Exception ex)
         {
-            Append("<could not send input: " + ex.Message + ">");
+            Append(Services.TranslationService.TFormat(
+                null, "<could not send input: {0}>", ex.Message));
         }
     }
 
@@ -986,9 +1003,97 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         }
     }
 
-    private Button MakeButton(string text) => new()
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
     {
-        Content = text,
+        // The window title never carries the (Done)/(Failed) suffix — only the header
+        // inside the dialog does, exactly as before.
+        Title = HeaderText(suffix: null);
+
+        // Captions come from FormStatus, the WinForms dialog this one imitates. Its
+        // targets carry WinForms accelerators ("&Annulla"); Restyle strips them
+        // because the literals passed here have none.
+        _keepOpen.Content = T("FormStatus/KeepDialogOpen.Text", "Keep dialog open");
+        _ok.Content = T("FormStatus/Ok.Text", "OK");
+        _abort.Content = T("FormStatus/Abort.Text", "Abort");
+
+        // The PTY reply row has no WinForms counterpart except upstream's password
+        // prompt, whose button is "Send input".
+        _send.Content = T("PasswordInput/SendInput.Text", "Send");
+        _input.Watermark = T("type here to answer git (Enter sends)");
+        _inputLabel.Text = T("Reply:");
+
+        // Restates whatever the header and status line are saying right now. The
+        // console is NOT re-rendered: it holds git's output plus lines already
+        // written, and re-translating a transcript would rewrite history.
+        SetPhase(_phase);
+    }
+
+    // Header and status for a phase, and the phase itself: the single place that
+    // decides what those two say, so ApplyTranslations can simply replay it.
+    private void SetPhase(Phase phase)
+    {
+        _phase = phase;
+
+        _header.Text = HeaderText(phase switch
+        {
+            Phase.Aborted => T("Aborted"),
+            Phase.Success => T("CreatePullRequestForm/_strDone.Text", "Done"),
+            // An authentication failure IS a failure: the header keeps saying so
+            // while the status line explains what happens next.
+            Phase.Failed or Phase.AuthRequired => T("Failed"),
+            _ => null,
+        });
+
+        if (phase == Phase.Prompt)
+        {
+            // git's question is already on the status line; leave it there.
+            return;
+        }
+
+        _status.Text = phase switch
+        {
+            Phase.Aborting => T("Aborting…"),
+            Phase.Aborted => T("Aborted"),
+            Phase.Success => T("Success"),
+            Phase.Failed => T("Failed"),
+            Phase.AuthRequired => T("Authentication required — asking for credentials…"),
+            _ => T("Running…"),
+        };
+
+        _status.Foreground = phase switch
+        {
+            Phase.Success => Brush("App.DiffAdded", Brushes.LimeGreen),
+            Phase.Aborting or Phase.Aborted or Phase.Failed or Phase.AuthRequired
+                => Brush("App.DiffRemoved", Brushes.OrangeRed),
+            _ => Brush("App.TextDim", Brushes.Gray),
+        };
+    }
+
+    // "Process — <label>", optionally with the run's verdict appended. The label is
+    // the caller's and is already in the user's language.
+    private string HeaderText(string? suffix)
+    {
+        string head = Services.TranslationService.TFormat(
+            null, "{0} — {1}", T("FormStatus/$this.Text", "Process"), _label);
+        return suffix is null
+            ? head
+            : Services.TranslationService.TFormat(null, "{0} ({1})", head, suffix);
+    }
+
+    // Read from the operation's background thread as well as from the UI thread; T is
+    // a dictionary hit, so that is safe.
+    private static string OperationFailedText => T("Operation failed.");
+
+    private static string T(string english) => Services.TranslationService.T(english);
+
+    private static string T(string? key, string english) => Services.TranslationService.T(key, english);
+
+    private Button MakeButton() => new()
+    {
         MinWidth = 90,
         HorizontalContentAlignment = HorizontalAlignment.Center,
         Background = Brush("App.Control", Brushes.DimGray),
