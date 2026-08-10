@@ -3377,6 +3377,45 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M150 (2026-08-10, `1c0120d93`, `ac18acb5c`) — la selezione ripristinata arriva ai riquadri; e due note del grafo misurate invece che credute
+
+**Il difetto vero.** Cambiando scheda restava «No commit selected.» sotto una riga visibilmente
+selezionata, e su una scheda **duplicata** succedeva sempre.
+
+Selezionare non è **annunciare**, e una selezione ripristinata fa regolarmente la prima cosa senza la
+seconda: il widget alza `SelectionChanged` solo quando l'indice cambia davvero, e il rebind che
+precede rimette la vecchia selezione da dentro `SetListItems`, dove la guardia `_rebinding` **apposta**
+si mangia l'evento. In entrambi i casi la riga finisce selezionata mentre l'host non è stato avvisato —
+e l'host ha appena **svuotato** i riquadri (`ResetBottomPanes`, M135), quindi restano vuoti. Su una
+scheda duplicata non poteva funzionare in nessun caso: il commit ereditato è quello **già** selezionato,
+quindi non c'era proprio nulla che potesse alzare l'evento.
+
+Ora `RevisionSelected` passa da un imbuto solo che registra cosa è stato annunciato, e
+`ApplyPendingSelection` annuncia quando l'host non lo sa. Passa **solo** una selezione *pending* — un
+host che chiede un commit preciso — quindi un refresh del watcher che ri-seleziona la stessa riga
+continua a non costare nulla. `SelectCommitWhenLoaded` azzera il registro, perché chiedere un commit è
+anche dire «consegnamelo».
+
+**Le due note del grafo: misurate, non erano difetti.** Erano in coda come «difetti aperti» da M75/M76.
+
+- *Relatività dedotta dalle lane.* La propagazione teneva i flag in array indicizzati per **lane**, e
+  una lane è solo una colonna che `BuildGraph` **ricicla**. Spostata su `ColorLane`, che è l'identità
+  d'arco introdotta proprio per questo in M75. Ma l'effetto è **aliasing tolto per costruzione, non un
+  difetto visto a schermo**: due topologie costruite apposta (una lane liberata da un merge e riusata
+  da un ramo scorrelato, in entrambi gli ordini) rendono **pixel-identiche** prima e dopo, perché una
+  lane liberata non contribuisce ai flag della riga successiva e quindi non può portarne uno stantio.
+- *1 px dove i due mezzi segmenti si toccano.* **Non riprodotto.** Il profilo del tratto misurato
+  pixel per pixel sulla colonna del grafo è costante a 2 px fra un nodo e l'altro: nessun rigonfiamento
+  a metà riga. La modifica preparata — emettere un segmento a tutta altezza per le lane che passano
+  dritte — è stata **scartata**: zero pixel di differenza misurati, contro un'interazione non banale
+  con `StraightenLaneShifts`. Non si spedisce una modifica al rendering che non si riesce a dimostrare.
+
+## M149bis (2026-08-10) — 13.1 chiusa dall'utente
+
+`Create branch…` inerte al primo clic (coda round 13): **l'utente la considera risolta**. M75 non
+l'aveva mai riprodotta e aveva falsificato due ipotesi su tre con prova diretta; i due difetti reali
+del flag `_busy` trovati per strada erano comunque stati corretti allora. Voce chiusa.
+
 ## M149 (2026-08-10, `bfaee4643`) — il commit radice elenca i file che ha introdotto
 
 Difetto trovato di striscio durante M148 e verificato contro la baseline: il diff di un **commit
