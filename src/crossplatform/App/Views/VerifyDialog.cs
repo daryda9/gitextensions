@@ -77,9 +77,24 @@ public sealed class VerifyDialog : Theming.ZoomWindow
     private readonly Button _prune;
     private readonly Button _selectAll;
     private readonly Button _rescan;
+    private readonly Button _close;
+
+    private readonly TextBlock _heading;
+    private readonly TextBlock _hint;
+    private readonly TextBlock[] _headerCells;
+
+    private readonly MenuItem _viewItem;
+    private readonly MenuItem _copyHashItem;
+    private readonly MenuItem _copyParentItem;
+    private readonly MenuItem _saveAsItem;
 
     private IReadOnlyList<LostObjectEntry> _all = [];
     private bool _busy;
+
+    // True until something real (a git show, a command's output) has been written to
+    // the preview pane. Only while it holds may ApplyTranslations replace the pane's
+    // text: re-labelling it later would throw away a report the user is reading.
+    private bool _previewIsPlaceholder = true;
 
     /// <summary>
     ///  True when something was written to the repository (tags, branches, a prune), so
@@ -94,31 +109,20 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         IBrush text = Brush("App.Text", Brushes.Gainsboro);
         IBrush dim = Brush("App.TextDim", Brushes.Gray);
 
-        Title = "Recover lost objects";
         Width = 1040;
         Height = 680;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
         // --- options (upstream's five check boxes, same defaults) ---------
-        _unreachable = OptionBox(
-            "Show unreachable objects (--unreachable)",
-            false,
-            text,
-            "Print out objects that exist but that aren't reachable from any of the reference nodes.");
-        _fullCheck = OptionBox(
-            "Full check (--full)",
-            false,
-            text,
-            "Check not just objects in GIT_OBJECT_DIRECTORY, but also the ones found in alternate object pools.");
-        _noReflogs = OptionBox(
-            "Ignore reflogs (--no-reflogs)",
-            true,
-            text,
-            "Do not consider commits that are referenced only by an entry in a reflog to be reachable.");
+        // Captions and tooltips are all set by ApplyTranslations; only the initial
+        // check state, which is behaviour rather than text, is fixed here.
+        _unreachable = OptionBox(false, text);
+        _fullCheck = OptionBox(false, text);
+        _noReflogs = OptionBox(true, text);
 
-        _showCommitsAndTags = OptionBox("Show commits and tags", true, text, null);
-        _showOtherObjects = OptionBox("Show blobs and trees", false, text, null);
+        _showCommitsAndTags = OptionBox(true, text);
+        _showOtherObjects = OptionBox(false, text);
 
         // The three fsck switches change the COMMAND, so they re-run git.
         foreach (CheckBox box in new[] { _unreachable, _fullCheck, _noReflogs })
@@ -148,7 +152,6 @@ public sealed class VerifyDialog : Theming.ZoomWindow
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.NoWrap,
                 FontFamily = new FontFamily("monospace"),
-                Text = "Select an object to preview it.",
                 [ScrollViewer.HorizontalScrollBarVisibilityProperty] = ScrollBarVisibility.Auto,
                 [ScrollViewer.VerticalScrollBarVisibilityProperty] = ScrollBarVisibility.Auto,
             },
@@ -162,18 +165,19 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         };
 
         // --- actions -----------------------------------------------------
-        _rescan = new Button { Content = "Rescan" };
-        _selectAll = new Button { Content = "Select all / none" };
-        _recover = new Button { Content = "Recover selected objects" };
-        _createTag = new Button { Content = "Create tag…" };
-        _createBranch = new Button { Content = "Create branch…" };
-        _saveToLostFound = new Button { Content = "Save objects to .git/lost-found" };
+        _rescan = new Button();
+        _selectAll = new Button();
+        _recover = new Button();
+        _createTag = new Button();
+        _createBranch = new Button();
+        _saveToLostFound = new Button();
 
         // The caption MUST NOT be a bare string: a Button treats "_" in string content as
         // an access-key marker and swallows it, so "LOST_AND_FOUND" rendered as
         // "LOSTAND_FOUND" on screen. A TextBlock child is not access-key processed.
-        _deleteTags = new Button { Content = new TextBlock { Text = "Delete all LOST_AND_FOUND tags" } };
-        _prune = new Button { Content = "Remove all dangling objects" };
+        // ApplyTranslations therefore writes into this TextBlock, never into Content.
+        _deleteTags = new Button { Content = new TextBlock() };
+        _prune = new Button();
 
         _rescan.Click += (_, _) => _ = RescanAsync();
         _selectAll.Click += (_, _) => ToggleSelectAll();
@@ -184,51 +188,48 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         _deleteTags.Click += (_, _) => _ = DeleteTagsAsync();
         _prune.Click += (_, _) => _ = PruneAsync();
 
-        Button close = new() { Content = "Close", MinWidth = 90 };
-        close.Click += (_, _) => Close();
+        _close = new Button { MinWidth = 90 };
+        _close.Click += (_, _) => Close();
 
         // --- context menu (upstream's mnuLostObjects) --------------------
-        MenuItem view = new() { Header = "View" };
-        MenuItem copyHash = new() { Header = "Copy object hash" };
-        MenuItem copyParent = new() { Header = "Copy parent hash" };
-        MenuItem saveAs = new() { Header = "Save as…" };
-        view.Click += (_, _) => _ = PreviewSelectedAsync();
-        copyHash.Click += (_, _) => _ = CopyAsync(Selected?.Item.Hash);
-        copyParent.Click += (_, _) => _ = CopyAsync(Selected?.Item.Parent);
-        saveAs.Click += (_, _) => _ = SaveBlobAsAsync();
+        // The menu is built once and only re-labelled, so its items are fields.
+        _viewItem = new MenuItem();
+        _copyHashItem = new MenuItem();
+        _copyParentItem = new MenuItem();
+        _saveAsItem = new MenuItem();
+        _viewItem.Click += (_, _) => _ = PreviewSelectedAsync();
+        _copyHashItem.Click += (_, _) => _ = CopyAsync(Selected?.Item.Hash);
+        _copyParentItem.Click += (_, _) => _ = CopyAsync(Selected?.Item.Parent);
+        _saveAsItem.Click += (_, _) => _ = SaveBlobAsAsync();
 
         ContextMenu menu = new();
-        menu.Items.Add(view);
+        menu.Items.Add(_viewItem);
         menu.Items.Add(new Separator());
-        menu.Items.Add(copyHash);
-        menu.Items.Add(copyParent);
+        menu.Items.Add(_copyHashItem);
+        menu.Items.Add(_copyParentItem);
         menu.Items.Add(new Separator());
-        menu.Items.Add(saveAs);
+        menu.Items.Add(_saveAsItem);
 
         // Enablement mirrors upstream's Opening handler: "save as" is blob-only.
         menu.Opening += (_, _) =>
         {
             LostObjectEntry? row = Selected;
-            view.IsEnabled = row is not null;
-            copyHash.IsEnabled = row is not null;
-            copyParent.IsEnabled = row?.Item.Parent.Length > 0;
-            saveAs.IsEnabled = row?.Item.Kind == LostObjectKind.Blob;
+            _viewItem.IsEnabled = row is not null;
+            _copyHashItem.IsEnabled = row is not null;
+            _copyParentItem.IsEnabled = row?.Item.Parent.Length > 0;
+            _saveAsItem.IsEnabled = row?.Item.Kind == LostObjectKind.Blob;
         };
         _list.ContextMenu = menu;
 
         // --- layout ------------------------------------------------------
-        TextBlock heading = new()
+        _heading = new TextBlock
         {
-            Text = "Lost and unreachable objects",
             Foreground = text,
             FontSize = 16,
             FontWeight = FontWeight.SemiBold,
         };
-        TextBlock hint = new()
+        _hint = new TextBlock
         {
-            Text = "Tick the objects you want to recover, then press \"Recover selected objects\" to create "
-                 + $"{VerifyService.RecoveredTagPrefix}* tags for them. A recovered object becomes reachable "
-                 + "again, so it survives the next garbage collection.",
             Foreground = dim,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 2, 0, 0),
@@ -246,13 +247,9 @@ public sealed class VerifyDialog : Theming.ZoomWindow
             ColumnDefinitions = RowColumns(),
             Margin = new Thickness(6, 6, 6, 4),
         };
-        AddHeader(header, 0, string.Empty, dim);
-        AddHeader(header, 1, "Date", dim);
-        AddHeader(header, 2, "Type", dim);
-        AddHeader(header, 3, "Subject", dim);
-        AddHeader(header, 4, "Author", dim);
-        AddHeader(header, 5, "Hash", dim);
-        AddHeader(header, 6, "Parent", dim);
+        // Column 0 holds the tick boxes and has no caption; it is still built through
+        // the same helper so the header grid keeps one cell per column definition.
+        _headerCells = [.. Enumerable.Range(0, 7).Select(c => AddHeader(header, c, dim))];
 
         WrapPanel actions = new() { Margin = new Thickness(0, 10, 0, 0) };
         foreach (Button b in new[] { _rescan, _selectAll, _recover, _createTag, _createBranch, _saveToLostFound, _deleteTags, _prune })
@@ -277,35 +274,134 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         middle.Children.Add(splitter);
         middle.Children.Add(_preview);
 
-        close.HorizontalAlignment = HorizontalAlignment.Right;
-        close.Margin = new Thickness(0, 8, 0, 0);
+        _close.HorizontalAlignment = HorizontalAlignment.Right;
+        _close.Margin = new Thickness(0, 8, 0, 0);
 
         Grid root = new()
         {
             Margin = new Thickness(16),
             RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,Auto,Auto,Auto"),
         };
-        Grid.SetRow(heading, 0);
-        Grid.SetRow(hint, 1);
+        Grid.SetRow(_heading, 0);
+        Grid.SetRow(_hint, 1);
         Grid.SetRow(options, 2);
         Grid.SetRow(middle, 3);
         Grid.SetRow(actions, 4);
         Grid.SetRow(_status, 5);
-        Grid.SetRow(close, 6);
-        root.Children.Add(heading);
-        root.Children.Add(hint);
+        Grid.SetRow(_close, 6);
+        root.Children.Add(_heading);
+        root.Children.Add(_hint);
         root.Children.Add(options);
         root.Children.Add(middle);
         root.Children.Add(actions);
         root.Children.Add(_status);
-        root.Children.Add(close);
+        root.Children.Add(_close);
 
         Content = root;
         DialogKeys.InstallEscapeClose(this);
 
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
+
         Opened += (_, _) => _ = RescanAsync();
         UpdateButtons();
     }
+
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        // Upstream's window is titled "Verify database"; the port renamed it after what
+        // the dialog is FOR, so the id is given explicitly and the English literal is
+        // the port's own wording.
+        Title = T("FormVerify/$this.Text", "Recover lost objects");
+
+        _heading.Text = T("Lost and unreachable objects");
+
+        // The tag prefix is a git ref name and never translated, so it travels as an
+        // argument rather than being concatenated into a translated fragment.
+        _hint.Text = TranslationService.TFormat(
+            key: null,
+            "Tick the objects you want to recover, then press \"Recover selected objects\" to create "
+            + "{0}* tags for them. A recovered object becomes reachable "
+            + "again, so it survives the next garbage collection.",
+            VerifyService.RecoveredTagPrefix);
+
+        Caption(_unreachable, T("Show unreachable objects (--unreachable)"));
+        ToolTip.SetTip(_unreachable, T(
+            "FormVerify/Unreachable.Text",
+            "Print out objects that exist but that aren't reachable from any of the reference nodes."));
+
+        Caption(_fullCheck, T("Full check (--full)"));
+        ToolTip.SetTip(_fullCheck, T(
+            "FormVerify/FullCheck.Text",
+            "Check not just objects in GIT_OBJECT_DIRECTORY, but also the ones found in alternate object pools."));
+
+        Caption(_noReflogs, T("Ignore reflogs (--no-reflogs)"));
+        ToolTip.SetTip(_noReflogs, T(
+            "FormVerify/NoReflogs.Text",
+            "Do not consider commits that are referenced only by an entry in a reflog to be reachable."));
+
+        // Upstream says "annotated tags"; the port's filter also keeps lightweight ones,
+        // so the caption is the port's and only the tooltip comes from upstream's id.
+        Caption(_showCommitsAndTags, T("Show commits and tags"));
+        ToolTip.SetTip(_showCommitsAndTags, T(
+            "FormVerify/ShowCommitsAndTags.toolTip", "To recover unreachable commits or annotated tags"));
+        Caption(_showOtherObjects, T("FormVerify/ShowOtherObjects.Text", "Show blobs and trees"));
+        ToolTip.SetTip(_showOtherObjects, T(
+            "FormVerify/ShowOtherObjects.toolTip",
+            "To recover contents of files once staged but mistakenly deleted"));
+
+        _headerCells[0].Text = string.Empty;
+        _headerCells[1].Text = T("FormVerify/columnDate.HeaderText", "Date");
+        _headerCells[2].Text = T("FormVerify/columnType.HeaderText", "Type");
+        _headerCells[3].Text = T("FormVerify/columnSubject.HeaderText", "Subject");
+        _headerCells[4].Text = T("FormVerify/columnAuthor.HeaderText", "Author");
+        _headerCells[5].Text = T("FormVerify/columnHash.HeaderText", "Hash");
+        _headerCells[6].Text = T("FormVerify/columnParent.HeaderText", "Parent");
+
+        // Not the shell's "Refresh" id: this button re-runs git fsck rather than
+        // reloading a view, and the two read differently once translated.
+        _rescan.Content = T("Rescan");
+        _selectAll.Content = T("Select all / none");
+        _recover.Content = T("FormVerify/btnRestoreSelectedObjects.Text", "Recover selected objects");
+        _createTag.Content = T("FormVerify/mnuLostObjectsCreateTag.Text", "Create tag") + "…";
+        _createBranch.Content = T("FormVerify/mnuLostObjectsCreateBranch.Text", "Create branch") + "…";
+        _saveToLostFound.Content = T("FormVerify/SaveObjects.Text", "Save objects to .git/lost-found");
+        Caption(_deleteTags, T("FormVerify/DeleteAllLostAndFoundTags.Text", "Delete all LOST_AND_FOUND tags"));
+        _prune.Content = T("FormVerify/Remove.Text", "Remove all dangling objects");
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
+
+        _viewItem.Header = T("FormVerify/mnuLostObjectView.Text", "View");
+        _copyHashItem.Header = T("FormVerify/copyHashToolStripMenuItem.Text", "Copy object hash");
+        _copyParentItem.Header = T("FormVerify/copyParentHashToolStripMenuItem.Text", "Copy parent hash");
+        _saveAsItem.Header = T("FormVerify/saveAsToolStripMenuItem.Text", "Save as…");
+
+        if (_previewIsPlaceholder)
+        {
+            _preview.Text = T("Select an object to preview it.");
+        }
+    }
+
+    // The Delete-tags button carries a TextBlock rather than a string (see its
+    // construction), so its caption cannot be written through Content.
+    private static void Caption(ContentControl control, string caption)
+    {
+        if (control.Content is TextBlock block)
+        {
+            block.Text = caption;
+            return;
+        }
+
+        control.Content = caption;
+    }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     /// <summary>Shows the dialog modally over <paramref name="owner"/>.</summary>
     public static async Task<bool> ShowAsync(Window owner, string repoPath)
@@ -318,34 +414,23 @@ public sealed class VerifyDialog : Theming.ZoomWindow
     // Shared geometry for the header and every row, so the columns line up.
     private static ColumnDefinitions RowColumns() => new("28,150,150,3*,140,110,110");
 
-    private static void AddHeader(Grid grid, int column, string caption, IBrush brush)
+    private static TextBlock AddHeader(Grid grid, int column, IBrush brush)
     {
         TextBlock cell = new()
         {
-            Text = caption,
             Foreground = brush,
             FontWeight = FontWeight.SemiBold,
         };
         Grid.SetColumn(cell, column);
         grid.Children.Add(cell);
+        return cell;
     }
 
-    private static CheckBox OptionBox(string caption, bool isChecked, IBrush foreground, string? tooltip)
+    private static CheckBox OptionBox(bool isChecked, IBrush foreground) => new()
     {
-        CheckBox box = new()
-        {
-            Content = caption,
-            IsChecked = isChecked,
-            Foreground = foreground,
-        };
-
-        if (tooltip is not null)
-        {
-            ToolTip.SetTip(box, tooltip);
-        }
-
-        return box;
-    }
+        IsChecked = isChecked,
+        Foreground = foreground,
+    };
 
     // NOTE: null-tolerant on purpose — Avalonia re-invokes the template with a null item
     // when it empties a recycled container (the M51 crash in BlameView).
@@ -412,7 +497,7 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         }
 
         SetBusy(true);
-        _status.Text = "Running git fsck…";
+        _status.Text = T("Running git fsck…");
 
         VerifyOptions options = CurrentOptions;
         VerifyScanResult result = await Task.Run(() => _service.Scan(_repoPath, options));
@@ -421,10 +506,16 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         _all = [.. result.Objects.Select(o => new LostObjectEntry(o))];
         ApplyFilter(cameFromCommitsBox: true, silent: true);
 
+        // git's own stderr is passed through untranslated — it is program output, not
+        // a caption of ours.
         _status.Text = result.Success
-            ? $"{result.Objects.Count} object(s) reported by git fsck; {_list.ItemCount} shown. "
-              + $"{tags} {VerifyService.RecoveredTagPrefix}* tag(s) in the repository."
-            : $"git fsck failed: {result.Output}";
+            ? TF(
+                "{0} object(s) reported by git fsck; {1} shown. {2} {3}* tag(s) in the repository.",
+                result.Objects.Count,
+                _list.ItemCount,
+                tags,
+                VerifyService.RecoveredTagPrefix)
+            : TF("git fsck failed: {0}", result.Output);
 
         _deleteTags.IsEnabled = tags > 0;
         SetBusy(false);
@@ -464,7 +555,7 @@ public sealed class VerifyDialog : Theming.ZoomWindow
 
         if (!silent)
         {
-            _status.Text = $"{shown.Count} of {_all.Count} object(s) shown.";
+            _status.Text = TF("{0} of {1} object(s) shown.", shown.Count, _all.Count);
         }
     }
 
@@ -489,7 +580,8 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         string content = await Task.Run(() => _service.ShowObject(_repoPath, hash));
         if (Selected?.Item.Hash == hash)
         {
-            _preview.Text = content.Length == 0 ? "(git show produced no output)" : content;
+            _previewIsPlaceholder = false;
+            _preview.Text = content.Length == 0 ? T("(git show produced no output)") : content;
         }
     }
 
@@ -509,7 +601,7 @@ public sealed class VerifyDialog : Theming.ZoomWindow
 
         // Rebind so the row check boxes redraw (see the M50 note in ApplyFilter).
         _list.ItemsSource = new List<LostObjectEntry>(list);
-        _status.Text = target ? $"{list.Count} object(s) ticked." : "Selection cleared.";
+        _status.Text = target ? TF("{0} object(s) ticked.", list.Count) : T("Selection cleared.");
     }
 
     // --- actions ----------------------------------------------------------
@@ -522,7 +614,7 @@ public sealed class VerifyDialog : Theming.ZoomWindow
 
         if (picked.Count == 0)
         {
-            _status.Text = "Select objects to restore.";
+            _status.Text = T("FormVerify/_selectLostObjectsToRestoreMessage.Text", "Select objects to restore.");
             return;
         }
 
@@ -530,15 +622,15 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         MaintenanceResult result = await Task.Run(() => _service.RecoverAsTags(_repoPath, picked));
         SetBusy(false);
 
-        _preview.Text = result.Output;
+        ShowOutput(result.Output);
         if (result.Success)
         {
             Changed = true;
         }
 
         _status.Text = result.Success
-            ? $"Recovered {picked.Count} object(s) as {VerifyService.RecoveredTagPrefix}* tags."
-            : "Recovery failed — see the pane above.";
+            ? TF("Recovered {0} object(s) as {1}* tags.", picked.Count, VerifyService.RecoveredTagPrefix)
+            : T("Recovery failed — see the pane above.");
 
         await RescanAsync();
     }
@@ -552,13 +644,17 @@ public sealed class VerifyDialog : Theming.ZoomWindow
 
         if (asBranch && !row.Item.CanBecomeBranch)
         {
-            _status.Text = "Only a commit can become a branch.";
+            _status.Text = T("Only a commit can become a branch.");
             return;
         }
 
-        string kind = asBranch ? "branch" : "tag";
+        // Two whole sentences per kind rather than one with a "branch"/"tag" hole:
+        // languages inflect the rest of the sentence around that noun, and a hole
+        // leaves the translator no way to follow.
         string? name = await PromptAsync(
-            $"Name of the recovery {kind} for {row.Item.ShortHash}:",
+            asBranch
+                ? TF("Name of the recovery branch for {0}:", row.Item.ShortHash)
+                : TF("Name of the recovery tag for {0}:", row.Item.ShortHash),
             $"{VerifyService.RecoveredTagPrefix}{row.Item.ShortHash}");
 
         if (name is not { Length: > 0 } chosen)
@@ -573,16 +669,18 @@ public sealed class VerifyDialog : Theming.ZoomWindow
             : _service.CreateTagAt(_repoPath, chosen, hash));
         SetBusy(false);
 
-        _preview.Text = result.Output;
+        ShowOutput(result.Output);
         if (result.Success)
         {
             Changed = true;
-            _status.Text = $"Created {kind} '{chosen}' at {row.Item.ShortHash}.";
+            _status.Text = asBranch
+                ? TF("Created branch '{0}' at {1}.", chosen, row.Item.ShortHash)
+                : TF("Created tag '{0}' at {1}.", chosen, row.Item.ShortHash);
             await RescanAsync();
         }
         else
         {
-            _status.Text = $"Could not create the {kind}.";
+            _status.Text = asBranch ? T("Could not create the branch.") : T("Could not create the tag.");
         }
     }
 
@@ -593,8 +691,10 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         MaintenanceResult result = await Task.Run(() => _service.SaveObjectsToLostFound(_repoPath, options));
         SetBusy(false);
 
-        _preview.Text = result.Output;
-        _status.Text = result.Success ? "Objects written to .git/lost-found." : "Saving to .git/lost-found failed.";
+        ShowOutput(result.Output);
+        _status.Text = result.Success
+            ? T("Objects written to .git/lost-found.")
+            : T("Saving to .git/lost-found failed.");
         await RescanAsync();
     }
 
@@ -604,16 +704,19 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         MaintenanceResult result = await Task.Run(() => _service.DeleteRecoveredTags(_repoPath));
         SetBusy(false);
 
-        _preview.Text = result.Output;
+        ShowOutput(result.Output);
         Changed = true;
-        _status.Text = $"{VerifyService.RecoveredTagPrefix}* tags removed.";
+        _status.Text = TF("{0}* tags removed.", VerifyService.RecoveredTagPrefix);
         await RescanAsync();
     }
 
     private async Task PruneAsync()
     {
         // Upstream confirms before `git prune` — it is irreversible.
-        if (!await ConfirmAsync("Are you sure you want to delete all dangling objects?\n\nThis cannot be undone."))
+        if (!await ConfirmAsync(
+            T("FormVerify/_removeDanglingObjectsQuestion.Text", "Are you sure you want to delete all dangling objects?")
+            + "\n\n"
+            + T("TranslatedStrings/_cannotBeUndone.Text", "This action cannot be undone.")))
         {
             return;
         }
@@ -622,9 +725,9 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         MaintenanceResult result = await Task.Run(() => _service.PruneDanglingObjects(_repoPath));
         SetBusy(false);
 
-        _preview.Text = result.Output;
+        ShowOutput(result.Output);
         Changed = true;
-        _status.Text = result.Success ? "Dangling objects pruned." : "git prune failed.";
+        _status.Text = result.Success ? T("Dangling objects pruned.") : T("git prune failed.");
         await RescanAsync();
     }
 
@@ -639,19 +742,20 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         {
             IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save the lost blob as",
+                Title = T("Save the lost blob as"),
                 SuggestedFileName = $"{row.Item.Hash}_LOST_FOUND.txt",
             });
 
             if (file?.TryGetLocalPath() is { Length: > 0 } path)
             {
+                // The service's own report, already a sentence; left as it comes.
                 MaintenanceResult result = await Task.Run(() => _service.SaveBlobAs(_repoPath, row.Item.Hash, path));
                 _status.Text = result.Output;
             }
         }
         catch (Exception ex)
         {
-            _status.Text = $"Could not save the blob: {ex.Message}";
+            _status.Text = TF("Could not save the blob: {0}", ex.Message);
         }
     }
 
@@ -665,11 +769,22 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         if (Clipboard is { } clipboard)
         {
             await clipboard.SetTextAsync(value);
-            _status.Text = $"Copied {value}.";
+            _status.Text = TF("Copied {0}.", value);
         }
     }
 
     // --- plumbing ---------------------------------------------------------
+
+    // git's output, verbatim. Also marks the preview pane as no longer holding the
+    // placeholder, so a later language switch cannot overwrite this report.
+    private void ShowOutput(string output)
+    {
+        _previewIsPlaceholder = false;
+        _preview.Text = output;
+    }
+
+    private static string TF(string englishFormat, params object?[] args)
+        => TranslationService.TFormat(key: null, englishFormat, args);
 
     private void SetBusy(bool busy)
     {
@@ -698,11 +813,11 @@ public sealed class VerifyDialog : Theming.ZoomWindow
     {
         TaskCompletionSource<bool> tcs = new();
 
-        Button yes = new() { Content = "Confirm", Margin = new Thickness(0, 0, 6, 0) };
-        Button no = new() { Content = "Cancel" };
+        Button yes = new() { Content = T("Confirm"), Margin = new Thickness(0, 0, 6, 0) };
+        Button no = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Confirm",
+            Title = T("Confirm"),
             Width = 400,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -729,11 +844,13 @@ public sealed class VerifyDialog : Theming.ZoomWindow
         TaskCompletionSource<string?> tcs = new();
 
         TextBox input = new() { Text = initial };
-        Button ok = new() { Content = "OK", Margin = new Thickness(0, 0, 6, 0) };
-        Button cancel = new() { Content = "Cancel" };
+        Button ok = new() { Content = T("TranslatedStrings/_okText.Text", "OK"), Margin = new Thickness(0, 0, 6, 0) };
+        Button cancel = new() { Content = T("TranslatedStrings/_cancelText.Text", "Cancel") };
         Theming.ZoomWindow dialog = new()
         {
-            Title = "Recover lost object",
+            // These two throw-away windows live for one interaction, so they are simply
+            // built in the language in force at the time; there is nothing to re-label.
+            Title = T("Recover lost object"),
             Width = 460,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
