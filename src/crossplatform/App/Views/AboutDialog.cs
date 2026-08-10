@@ -6,6 +6,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using GitCommands.Git;
+using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 
 namespace GitExtensions.Avalonia.Views;
@@ -26,12 +27,30 @@ public sealed class AboutDialog : Theming.ZoomWindow
 {
     private readonly TextBlock _gitVersion;
 
+    // Everything ApplyTranslations has to re-state. The info block is a run of
+    // "<label>: <value>" lines built in a row, so its labels are collected into one
+    // list instead of a field each: the list carries the XLIFF id next to the widget,
+    // which is what a per-field version would have had to duplicate anyway.
+    private readonly List<(TextBlock Block, string? Key, string English)> _infoLabels = [];
+    private readonly TextBlock _subtitle;
+    private readonly TextBlock _description;
+    private readonly TextBlock _versionValue;
+    private readonly TextBlock _buildValue;
+    private readonly TextBlock _licence;
+    private readonly TextBlock _warranty;
+    private readonly TextBlock _iconCredit;
+    private readonly Button _close;
+
+    // git's own version string, kept raw: the "not found" sentence around it is
+    // display text and has to be re-composed when the language changes, which is
+    // impossible once the two have been concatenated into the TextBlock.
+    private string _gitVersionText = string.Empty;
+
     public AboutDialog()
     {
         IBrush text = Resource("App.Text", "#DCDCDC");
         IBrush dim = Resource("App.TextDim", "#9B9B9B");
 
-        Title = "About Git Extensions";
         Width = 420;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -54,6 +73,10 @@ public sealed class AboutDialog : Theming.ZoomWindow
         }
 
         StackPanel titles = new() { VerticalAlignment = VerticalAlignment.Center };
+
+        // The product name is never translated — upstream marks its own copy of it
+        // _NO_TRANSLATE_ (FormAbout.Designer.cs) because a brand read in a foreign
+        // language stops identifying the program.
         titles.Children.Add(new TextBlock
         {
             Text = "Git Extensions",
@@ -61,20 +84,17 @@ public sealed class AboutDialog : Theming.ZoomWindow
             FontSize = 22,
             FontWeight = FontWeight.SemiBold,
         });
-        titles.Children.Add(new TextBlock
+        _subtitle = new TextBlock
         {
-            Text = "Avalonia / Linux port",
             Foreground = dim,
             FontSize = 13,
             Margin = new Thickness(0, 2, 0, 0),
-        });
+        };
+        titles.Children.Add(_subtitle);
         header.Children.Add(titles);
 
-        TextBlock description = new()
+        _description = new TextBlock
         {
-            Text = "A cross-platform graphical user interface for Git, "
-                 + "reusing the Git Extensions core logic on top of a native "
-                 + "Avalonia UI so it runs on Linux.",
             Foreground = text,
             FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
@@ -91,15 +111,28 @@ public sealed class AboutDialog : Theming.ZoomWindow
             TextWrapping = TextWrapping.Wrap,
         };
 
+        // Values first: the two computed ones are re-stated by ApplyTranslations
+        // because their "unknown" fallbacks are display text, while .NET / OS /
+        // Avalonia are runtime facts and proper names that stay as they are.
+        _versionValue = ValueBlock(text);
+        _buildValue = ValueBlock(text);
+
         StackPanel info = new() { Margin = new Thickness(0, 16, 0, 0), Spacing = 4 };
-        info.Children.Add(InfoLine("Version", ProductVersion(), text, dim));
-        info.Children.Add(InfoLine("Build", BuildDescription(), text, dim));
-        info.Children.Add(InfoLine("Git", _gitVersion, dim));
-        info.Children.Add(InfoLine(".NET", RuntimeInformation.FrameworkDescription, text, dim));
-        info.Children.Add(InfoLine("OS", RuntimeInformation.OSDescription, text, dim));
-        info.Children.Add(InfoLine("UI toolkit", "Avalonia", text, dim));
+        info.Children.Add(InfoLine(null, "Version", _versionValue, dim));
+        info.Children.Add(InfoLine(null, "Build", _buildValue, dim));
+
+        // "Git", ".NET" and "OS" are the names of the things themselves, not words;
+        // they are registered so the colon is drawn by the same code path, and their
+        // English literal is simply what every language shows.
+        info.Children.Add(InfoLine(null, "Git", _gitVersion, dim));
+        info.Children.Add(InfoLine(null, ".NET", ValueBlock(text, RuntimeInformation.FrameworkDescription), dim));
+        info.Children.Add(InfoLine(null, "OS", ValueBlock(text, RuntimeInformation.OSDescription), dim));
+        info.Children.Add(InfoLine(null, "UI toolkit", ValueBlock(text, "Avalonia"), dim));
 
         StackPanel credits = new() { Margin = new Thickness(0, 16, 0, 0), Spacing = 2 };
+
+        // Upstream's labelCopyright is _NO_TRANSLATE_ (FormAbout.Designer.cs:136) —
+        // the sentence is the team's own signature, so it stays English here too.
         credits.Children.Add(new TextBlock
         {
             Text = "Proudly presented by the Git Extensions team.",
@@ -107,13 +140,13 @@ public sealed class AboutDialog : Theming.ZoomWindow
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
         });
-        credits.Children.Add(new TextBlock
+        _licence = new TextBlock
         {
-            Text = "Licensed under the GNU General Public License.",
             Foreground = dim,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
-        });
+        };
+        credits.Children.Add(_licence);
 
         // The real copyright, read from the assembly rather than written out here:
         // CommonAssemblyInfo.cs carries [assembly: AssemblyCopyright(…)] and
@@ -137,29 +170,27 @@ public sealed class AboutDialog : Theming.ZoomWindow
         // no-warranty notice, which the port was dropping. "of FITNESS" is
         // upstream's own typo for "or FITNESS"; corrected here since this is
         // display text, not a string being matched.
-        credits.Children.Add(new TextBlock
+        _warranty = new TextBlock
         {
-            Text = "This program is distributed in the hope that it will be useful, "
-                 + "but WITHOUT ANY WARRANTY; without even the implied warranty of "
-                 + "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
             Foreground = dim,
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 0),
-        });
+        };
+        credits.Children.Add(_warranty);
 
         // Attribution required by the licence of the reused icon set. The URL is
         // upstream's verbatim string (FormAbout.cs:27, README.md:124): written without
         // its scheme it reads as a mangled address ("p.yusukekamiyamane.com" looks
         // truncated) and cannot be copy-pasted into a browser as-is.
-        credits.Children.Add(new TextBlock
+        _iconCredit = new TextBlock
         {
-            Text = "Some icons by Yusuke Kamiyamane (CCA3):",
             Foreground = dim,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 0),
-        });
+        };
+        credits.Children.Add(_iconCredit);
 
         // On its own line and NoWrap: on one line with the credit it wrapped straight
         // after "http://", which is exactly the mangled look this was fixing.
@@ -171,14 +202,13 @@ public sealed class AboutDialog : Theming.ZoomWindow
             TextWrapping = TextWrapping.NoWrap,
         });
 
-        Button close = new()
+        _close = new Button
         {
-            Content = "Close",
             IsDefault = true,
             IsCancel = true,
             MinWidth = 80,
         };
-        close.Click += (_, _) => Close();
+        _close.Click += (_, _) => Close();
 
         StackPanel buttons = new()
         {
@@ -186,11 +216,11 @@ public sealed class AboutDialog : Theming.ZoomWindow
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 20, 0, 0),
         };
-        buttons.Children.Add(close);
+        buttons.Children.Add(_close);
 
         StackPanel root = new() { Margin = new Thickness(20) };
         root.Children.Add(header);
-        root.Children.Add(description);
+        root.Children.Add(_description);
         root.Children.Add(info);
         root.Children.Add(credits);
         root.Children.Add(buttons);
@@ -203,7 +233,50 @@ public sealed class AboutDialog : Theming.ZoomWindow
         // window when nothing else has, then closes on Escape.
         DialogKeys.InstallEscapeClose(this);
 
+        ApplyTranslations();
+        TranslationService.LanguageChanged += OnLanguageChanged;
+        Closed += (_, _) => TranslationService.LanguageChanged -= OnLanguageChanged;
+
         _ = LoadGitVersionAsync();
+    }
+
+    // --- Translations -----------------------------------------------------
+
+    private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
+
+    private void ApplyTranslations()
+    {
+        Title = T("About Git Extensions");
+        _subtitle.Text = T("Avalonia / Linux port");
+        _description.Text = T(
+            "A cross-platform graphical user interface for Git, "
+            + "reusing the Git Extensions core logic on top of a native "
+            + "Avalonia UI so it runs on Linux.");
+
+        foreach ((TextBlock block, string? key, string english) in _infoLabels)
+        {
+            // The colon is punctuation of the layout, not of the caption, so it is
+            // appended here rather than baked into every translatable literal.
+            block.Text = T(key, english) + ":";
+        }
+
+        _versionValue.Text = ProductVersion();
+        _buildValue.Text = BuildDescription();
+        ShowGitVersion();
+
+        _licence.Text = T("Licensed under the GNU General Public License.");
+
+        // Upstream's own literal reads "MERCHANTABILITY of FITNESS" — a typo the port
+        // corrects on screen. The id is given explicitly so a translated catalogue is
+        // still found despite the two English texts differing by that one word.
+        _warranty.Text = T(
+            "FormAbout/label1.Text",
+            "This program is distributed in the hope that it will be useful, "
+            + "but WITHOUT ANY WARRANTY; without even the implied warranty of "
+            + "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.");
+
+        _iconCredit.Text = T("FormAbout/linkLabelIcons.Text", "Some icons by Yusuke Kamiyamane (CCA3)") + ":";
+        _close.Content = T("TranslatedStrings/_closeText.Text", "Close");
     }
 
     // GitVersion.Current shells out to `git --version`; do it off the UI thread and
@@ -221,10 +294,23 @@ public sealed class AboutDialog : Theming.ZoomWindow
         }
 
         await Dispatcher.UIThread.InvokeAsync(() =>
-            _gitVersion.Text = version.Length > 0
-                ? version
-                : $"not found (minimum: {GitVersion.LastSupportedVersion}, recommended: {GitVersion.LastRecommendedVersion})");
+        {
+            _gitVersionText = version;
+            ShowGitVersion();
+        });
     }
+
+    // git's version is data and shown verbatim; only the sentence that stands in for
+    // a missing git is display text, so it is composed here — through TFormat, so a
+    // translation can move the two version numbers around.
+    private void ShowGitVersion()
+        => _gitVersion.Text = _gitVersionText.Length > 0
+            ? _gitVersionText
+            : TranslationService.TFormat(
+                key: null,
+                "not found (minimum: {0}, recommended: {1})",
+                GitVersion.LastSupportedVersion,
+                GitVersion.LastRecommendedVersion);
 
     /// <summary>
     ///  The product version, taken from the assembly's informational version — which
@@ -234,7 +320,7 @@ public sealed class AboutDialog : Theming.ZoomWindow
     private static string ProductVersion()
         => typeof(AboutDialog).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
            ?? typeof(AboutDialog).Assembly.GetName().Version?.ToString()
-           ?? "unknown";
+           ?? T("unknown");
 
     /// <summary>
     ///  <c>&lt;sha&gt;</c> or <c>&lt;sha&gt; (Dirty)</c>, mirroring upstream's
@@ -247,9 +333,12 @@ public sealed class AboutDialog : Theming.ZoomWindow
         string? sha = Metadata("BuildGitSha");
         if (string.IsNullOrEmpty(sha))
         {
-            return "unknown (built outside a git checkout)";
+            return T("unknown (built outside a git checkout)");
         }
 
+        // "(Dirty)" is upstream's own marker in UserEnvironmentInformation and is
+        // reported in bug threads verbatim; keeping it English keeps those reports
+        // comparable across languages.
         return string.Equals(Metadata("BuildGitIsDirty"), "true", StringComparison.OrdinalIgnoreCase)
             ? sha + " (Dirty)"
             : sha;
@@ -264,31 +353,35 @@ public sealed class AboutDialog : Theming.ZoomWindow
     public static Task ShowAsync(Window owner)
         => new AboutDialog().ShowDialog(owner);
 
-    private static Control InfoLine(string label, string value, IBrush text, IBrush dim)
-        => InfoLine(
-            label,
-            new TextBlock
-            {
-                Text = value,
-                Foreground = text,
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-            },
-            dim);
-
-    private static Control InfoLine(string label, Control value, IBrush dim)
+    private static TextBlock ValueBlock(IBrush text, string? value = null) => new()
     {
-        StackPanel line = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
-        line.Children.Add(new TextBlock
+        Text = value,
+        Foreground = text,
+        FontSize = 12,
+        TextWrapping = TextWrapping.Wrap,
+    };
+
+    // Instance-level, unlike the previous static helper: the caption it builds has to
+    // be registered for re-labelling, and a static method has nowhere to register it.
+    private Control InfoLine(string? key, string english, Control value, IBrush dim)
+    {
+        TextBlock caption = new()
         {
-            Text = label + ":",
             Foreground = dim,
             FontSize = 12,
             Width = 80,
-        });
+        };
+        _infoLabels.Add((caption, key, english));
+
+        StackPanel line = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+        line.Children.Add(caption);
         line.Children.Add(value);
         return line;
     }
+
+    private static string T(string english) => TranslationService.T(english);
+
+    private static string T(string? key, string english) => TranslationService.T(key, english);
 
     private static IBrush Resource(string key, string fallback)
         => Application.Current?.Resources.TryGetValue(key, out object? value) == true && value is IBrush b
