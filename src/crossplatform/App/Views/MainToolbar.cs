@@ -231,6 +231,11 @@ public sealed class MainToolbar : UserControl
     // (and icon Images, so we can tint them) so UpdateState() can refresh badges
     // and colours in place without rebuilding the toolbar.
     private Button? _pushButton;
+
+    // Kept so UpdateState can hide it: upstream's UpdateFetchAllVisibility drops
+    // "Fetch all" with a single remote, and the button has to follow the drop-down
+    // entry it clones.
+    private Control? _fetchAllButton;
     private TextBlock? _pushCaption;
     private Image? _pushIcon;
     // Pull is a SPLIT button (as upstream's toolStripButtonPull is): _pullButton is
@@ -550,12 +555,28 @@ public sealed class MainToolbar : UserControl
                 BrowseCommand.QuickFetch),
             () => FetchRequested?.Invoke())));
 
-        // Upstream's second and third clones — "Fetch all" and "Fetch and prune all" —
-        // are NOT here, and deliberately so: upstream tells them apart by three
-        // distinct PNGs (one arrow, stacked arrows, stacked arrows with a red prune
-        // mark), while the port's icon set maps all three fetch actions onto the same
-        // glyph. Icon-only they would be three identical buttons in a row, so both
-        // stay where they already work, in the Pull drop-down two items to the right.
+        // Upstream's second and third clones. They used to be left out because all
+        // three fetch names resolved to the SAME glyph here, and three identical
+        // icon-only buttons in a row are worse than no buttons; Icons now draws a
+        // distinct FetchAll and FetchPruneAll, so the reason is gone.
+        //
+        // "Fetch all" follows upstream's UpdateFetchAllVisibility and disappears with
+        // a single remote (IsHiddenPullAction), where it does exactly what plain
+        // Fetch does. "Fetch and prune all" stays either way: pruning dead remote
+        // branches is meaningful against one remote too.
+        _fetchAllButton = IconOnly(MakeButton(PullIcon(GitPullAction.FetchAll),
+            T("FormBrowse/_pullFetchAll.Text", "Fetch all"),
+            T("FormBrowse/fetchAllToolStripMenuItem.ToolTipText",
+                "Fetch branches and tags from all remote repositories"),
+            () => RaisePull(GitPullAction.FetchAll)));
+        bar.AddItem(_fetchAllButton);
+
+        bar.AddItem(IconOnly(MakeButton(PullIcon(GitPullAction.FetchPruneAll),
+            T("FormBrowse/_pullFetchPruneAll.Text", "Fetch and prune all"),
+            T("FormBrowse/fetchPruneAllToolStripMenuItem.ToolTipText",
+                "Fetch branches and tags from all remote repositories and prune deleted remote branches"),
+            () => RaisePull(GitPullAction.FetchPruneAll))));
+
         bar.AddItem(IconOnly(MakeButton(PullIcon(GitPullAction.Merge),
             T("FormBrowse/_pullMerge.Text", "Pull - merge"),
             TipWithGesture(T("FormBrowse/_pullMerge.Text", "Pull - merge"), BrowseCommand.QuickPull),
@@ -666,6 +687,14 @@ public sealed class MainToolbar : UserControl
         if (state is not null)
         {
             _state = state;
+        }
+
+        // Same rule as the drop-down entry it clones — and re-evaluated here, not at
+        // build time, because the remote count only becomes known once a repository
+        // is loaded, and changes when a remote is added or removed.
+        if (_fetchAllButton is not null)
+        {
+            _fetchAllButton.IsVisible = !IsHiddenPullAction(GitPullAction.FetchAll);
         }
 
         IBrush text = Brush("App.Text", "#DCDCDC");

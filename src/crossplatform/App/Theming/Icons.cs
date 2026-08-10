@@ -134,6 +134,24 @@ internal static class Icons
     private const string Pull = "M5 20h14 M12 4v12 M7 11l5 5 5-5";
     private const string Fetch = "M4 20h4 M16 20h4 M12 3v13 M7 11l5 5 5-5";
 
+    // The three fetch variants upstream tells apart with three distinct PNGs, and
+    // which this set used to collapse onto Fetch — so the toolbar could not offer
+    // them as icon-only buttons without showing the same picture three times.
+    // Not Lucide: there is no "fetch all" in the library, so these are built from
+    // Fetch's own vocabulary (a down arrow landing on a split base) on the same
+    // 24x24 grid at stroke width 2. Plural is TWO arrows rather than a badge,
+    // because at 16 px a badge is three pixels and reads as dirt; prune is an x in
+    // the gap of the base, where nothing else is drawn, for the same reason.
+    private const string FetchAll =
+        "M3 20h6 M15 20h6 M8 5v9 M5 11l3 3 3-3 M16 5v9 M13 11l3 3 3-3";
+
+    private const string FetchPrune =
+        "M4 20h5 M12 3v10 M9 10l3 3 3-3 M16 17l4 4 M20 17l-4 4";
+
+    private const string FetchPruneAll =
+        "M2 20h6 M8 4v9 M5 10l3 3 3-3 M15 4v9 M12 10l3 3 3-3 "
+        + "M17 17l4 4 M21 17l-4 4";
+
     private const string Merge =
         "M3.5 6a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 M15.5 18a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 "
         + "M6 8.5v11.5 M15.5 18a9.5 9.5 0 0 0-9.5-9.5";
@@ -385,9 +403,9 @@ internal static class Icons
         ["Push"] = Push,
         ["Pull"] = Pull,
         ["PullFetch"] = Fetch,
-        ["PullFetchAll"] = Fetch,
-        ["PullFetchPrune"] = Fetch,
-        ["PullFetchPruneAll"] = Fetch,
+        ["PullFetchAll"] = FetchAll,
+        ["PullFetchPrune"] = FetchPrune,
+        ["PullFetchPruneAll"] = FetchPruneAll,
         ["PullMerge"] = Merge,
         ["PullRebase"] = Rebase,
         ["Merge"] = Merge,
