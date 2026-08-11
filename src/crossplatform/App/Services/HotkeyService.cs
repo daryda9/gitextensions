@@ -228,6 +228,15 @@ public sealed class HotkeyService
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
     private readonly Dictionary<BrowseCommand, HotkeyGesture> _bindings;
+
+    // The six per-control scopes, keyed by scope then by upstream command name. Held
+    // apart from _bindings because those are typed by enum and these are not: the
+    // window's command list is the port's own, the scopes' are upstream's tables.
+    private readonly Dictionary<HotkeyScope, Dictionary<string, HotkeyGesture>> _scoped = [];
+
+    // gesture -> command name, per scope, rebuilt with the bindings. A key press asks
+    // this and gets a command back, instead of every view comparing keys inline.
+    private readonly Dictionary<HotkeyScope, Dictionary<HotkeyGesture, string>> _scopedByGesture = [];
     private readonly Dictionary<BrowseCommand, Action> _actions = [];
     private readonly Dictionary<HotkeyGesture, BrowseCommand> _byGesture = [];
     private readonly string _path;
@@ -238,8 +247,17 @@ public sealed class HotkeyService
     {
         _path = ResolvePath();
         _bindings = Load();
+        LoadScoped();
         Reindex();
     }
+
+    /// <summary>
+    ///  The instance the whole app shares. The bindings live in ONE file and are read by
+    ///  views that are built long before (and far from) the window that owns the service,
+    ///  so a second instance would answer from a stale copy of the same file — which is
+    ///  exactly what "my hotkey did not take effect until I restarted" looks like.
+    /// </summary>
+    public static HotkeyService Shared { get; } = new();
 
     /// <summary>
     ///  Raised after <see cref="ApplyBindings"/> changed the map, on the caller's
@@ -285,6 +303,74 @@ public sealed class HotkeyService
     /// <see cref="Reindex"/> and <see cref="Save"/>.</summary>
     public IDictionary<BrowseCommand, HotkeyGesture> Bindings => _bindings;
 
+    /// <summary>The gesture bound to a scoped command, or null when cleared/unknown.</summary>
+    public HotkeyGesture? GestureFor(HotkeyScope scope, string command)
+        => _scoped.TryGetValue(scope, out Dictionary<string, HotkeyGesture>? map)
+           && map.TryGetValue(command, out HotkeyGesture gesture)
+            ? gesture
+            : null;
+
+    /// <summary>The gesture as it should read in a menu, for a scoped command.</summary>
+    public string? Display(HotkeyScope scope, string command) => GestureFor(scope, command)?.ToString();
+
+    /// <summary>
+    ///  Which command of <paramref name="scope"/> the key event stands for, or null.
+    ///  This is what replaced the inline key comparisons: a view asks once and switches
+    ///  on the answer, so the SAME handler obeys whatever the user configured.
+    /// </summary>
+    public string? Command(HotkeyScope scope, KeyEventArgs e)
+        => _scopedByGesture.TryGetValue(scope, out Dictionary<HotkeyGesture, string>? map)
+           && map.TryGetValue(new HotkeyGesture(e.Key, e.KeyModifiers), out string? command)
+            ? command
+            : null;
+
+    /// <summary>Every binding of a scope, in the table's own order (for the Settings page).</summary>
+    public IReadOnlyList<(string Command, HotkeyGesture? Gesture)> ScopeBindings(HotkeyScope scope)
+    {
+        if (!HotkeyScopes.All.TryGetValue(scope, out IReadOnlyDictionary<string, HotkeyGesture>? defaults))
+        {
+            return [];
+        }
+
+        List<(string, HotkeyGesture?)> rows = new(defaults.Count);
+        foreach (string command in defaults.Keys)
+        {
+            rows.Add((command, GestureFor(scope, command)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    ///  Replaces the bindings of one scope — a null gesture clears the command — then
+    ///  re-indexes, persists and raises <see cref="Changed"/>, exactly as
+    ///  <see cref="ApplyBindings"/> does for the window's own commands.
+    /// </summary>
+    public void ApplyScopeBindings(HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture?> bindings)
+    {
+        if (!_scoped.TryGetValue(scope, out Dictionary<string, HotkeyGesture>? map))
+        {
+            map = [];
+            _scoped[scope] = map;
+        }
+
+        foreach ((string command, HotkeyGesture? gesture) in bindings)
+        {
+            if (gesture is { } g)
+            {
+                map[command] = g;
+            }
+            else
+            {
+                map.Remove(command);
+            }
+        }
+
+        Reindex();
+        Save();
+        Changed?.Invoke();
+    }
+
     /// <summary>The gesture bound to a command, or null if the user cleared it.</summary>
     public HotkeyGesture? GestureFor(BrowseCommand command)
         => _bindings.TryGetValue(command, out HotkeyGesture g) ? g : null;
@@ -305,6 +391,18 @@ public sealed class HotkeyService
             // First writer wins, so a user override cannot silently shadow another
             // command; the duplicate is simply never reachable (as upstream does).
             _byGesture.TryAdd(gesture, command);
+        }
+
+        _scopedByGesture.Clear();
+        foreach ((HotkeyScope scope, Dictionary<string, HotkeyGesture> map) in _scoped)
+        {
+            Dictionary<HotkeyGesture, string> byGesture = [];
+            foreach ((string command, HotkeyGesture gesture) in map)
+            {
+                byGesture.TryAdd(gesture, command);
+            }
+
+            _scopedByGesture[scope] = byGesture;
         }
     }
 
@@ -350,6 +448,19 @@ public sealed class HotkeyService
             }
 
             Dictionary<string, string> flat = _bindings.ToDictionary(p => p.Key.ToString(), p => p.Value.ToString());
+
+            // The scoped entries share the file, under "Scope:Command" keys. One file,
+            // because they are one thing to the user — "my hotkeys" — and because a
+            // window command and a grid command can collide, which is only visible if
+            // both are in front of whoever reads it.
+            foreach ((HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture> defaults) in HotkeyScopes.All)
+            {
+                foreach (string command in defaults.Keys)
+                {
+                    HotkeyGesture? gesture = GestureFor(scope, command);
+                    flat[$"{scope}:{command}"] = gesture?.ToString() ?? string.Empty;
+                }
+            }
 
             // A command the user cleared is simply absent from _bindings, and an absent
             // entry means "take the default" on the next Load — so clearing would undo
@@ -414,6 +525,65 @@ public sealed class HotkeyService
         }
 
         return map;
+    }
+
+    // The scope tables, with any parseable "Scope:Command" entry of the file on top.
+    // Same contract as Load(): an empty string means the user cleared the binding.
+    private void LoadScoped()
+    {
+        foreach ((HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture> defaults) in HotkeyScopes.All)
+        {
+            _scoped[scope] = new Dictionary<string, HotkeyGesture>(defaults, StringComparer.Ordinal);
+        }
+
+        try
+        {
+            if (!File.Exists(_path))
+            {
+                return;
+            }
+
+            Dictionary<string, string>? flat =
+                JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_path), Options);
+            if (flat is null)
+            {
+                return;
+            }
+
+            foreach ((string name, string value) in flat)
+            {
+                int separator = name.IndexOf(':', StringComparison.Ordinal);
+                if (separator <= 0
+                    || !Enum.TryParse(name[..separator], ignoreCase: true, out HotkeyScope scope)
+                    || !_scoped.TryGetValue(scope, out Dictionary<string, HotkeyGesture>? map))
+                {
+                    continue;
+                }
+
+                string command = name[(separator + 1)..];
+                if (!map.ContainsKey(command)
+                    && !(HotkeyScopes.All.TryGetValue(scope, out IReadOnlyDictionary<string, HotkeyGesture>? defaults)
+                         && defaults.ContainsKey(command)))
+                {
+                    // A command this build does not have (an older/newer file): kept out
+                    // rather than resurrected, so it cannot shadow a live gesture.
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    map.Remove(command);
+                }
+                else if (HotkeyGesture.TryParse(value, out HotkeyGesture gesture))
+                {
+                    map[command] = gesture;
+                }
+            }
+        }
+        catch
+        {
+            // Missing/corrupt/unreadable → the defaults above.
+        }
     }
 
     // Same directory as ui-state.json (see UiStateService.ResolvePath).

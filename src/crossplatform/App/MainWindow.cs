@@ -123,7 +123,10 @@ public sealed class MainWindow : Theming.ZoomWindow
 
     // Keyboard map (command → gesture) + the window-level dispatcher. Defaults are
     // upstream's FormBrowse hotkeys; see InstallHotkeys for what each one runs.
-    private readonly HotkeyService _hotkeys = new();
+    // The one shared instance: the six per-control scopes are read by views that never
+    // see this window (the grid, the diff, the tree, the commit dialog), and a second
+    // instance would answer them from a stale copy of the same file.
+    private readonly HotkeyService _hotkeys = HotkeyService.Shared;
     private readonly RepositoryStateService _repositoryState = new();
     private readonly Views.RepositoryProgressBanner _progressBanner = new();
 
@@ -2482,9 +2485,6 @@ public sealed class MainWindow : Theming.ZoomWindow
     /// </summary>
     private bool IsGestureOwnedByFocusedView(BrowseCommand command, HotkeyGesture gesture)
     {
-        bool ctrl = gesture.Modifiers == KeyModifiers.Control;
-        bool alt = gesture.Modifiers == KeyModifiers.Alt;
-
         // The Console tab is a real PTY: while it has the focus it must receive the
         // keystrokes, control characters included. Only refresh and the focus-moving
         // commands stay global — otherwise there would be no way back out with the
@@ -2505,27 +2505,44 @@ public sealed class MainWindow : Theming.ZoomWindow
                 or BrowseCommand.FocusFilter);
         }
 
-        // BlameView now has its own find bar and go-to-line; without this the window
-        // swallows the gestures and switches to the Diff tab instead.
-        if (_blame.IsKeyboardFocusWithin)
+        // Everything else is now ASKED, not listed. This used to be three hard-coded key
+        // lists — one per view — which said the same thing as those views' own key
+        // handlers and could only drift away from them; and once the gestures became
+        // configurable they would have been wrong the moment anyone rebound one. A view
+        // owns exactly the gestures ITS scope binds.
+        if (_blame.IsKeyboardFocusWithin || _diff.IsKeyboardFocusWithin)
         {
-            return (ctrl && gesture.Key is Key.F or Key.G) || gesture.Key == Key.F3;
+            return OwnedBy(HotkeyScope.FileViewer, gesture)
+                || OwnedBy(HotkeyScope.RevisionDiff, gesture)
+
+                // Copying the path/patch is the diff's own Ctrl+C: not a hotkey with a
+                // table entry, so it has to be named here.
+                || (gesture.Modifiers == KeyModifiers.Control && gesture.Key == Key.C);
         }
 
-        // DiffView.OnKeyDown: Ctrl+F / Ctrl+G (find + go-to-line), F3 (next match),
-        // Ctrl+C (copy path or diff).
-        if (_diff.IsKeyboardFocusWithin)
-        {
-            return (ctrl && gesture.Key is Key.F or Key.G or Key.C) || gesture.Key == Key.F3;
-        }
-
-        // RevisionGridView.OnListKeyDown: Ctrl+C (copy hash), Ctrl+G (go to commit),
-        // Alt+↑/↓ (quick search), Alt+←/→ (navigation history, M47/F1), F3.
         if (_revisions.IsKeyboardFocusWithin)
         {
-            return (ctrl && gesture.Key is Key.C or Key.G)
-                || (alt && gesture.Key is Key.Up or Key.Down or Key.Left or Key.Right)
-                || gesture.Key == Key.F3;
+            return OwnedBy(HotkeyScope.RevisionGrid, gesture)
+                || (gesture.Modifiers == KeyModifiers.Control && gesture.Key is Key.C or Key.V);
+        }
+
+        if (_tree.IsKeyboardFocusWithin)
+        {
+            return OwnedBy(HotkeyScope.RepoObjectsTree, gesture);
+        }
+
+        return false;
+    }
+
+    // Whether a scope binds this gesture to one of its commands.
+    private bool OwnedBy(HotkeyScope scope, HotkeyGesture gesture)
+    {
+        foreach ((string _, HotkeyGesture? bound) in _hotkeys.ScopeBindings(scope))
+        {
+            if (bound == gesture)
+            {
+                return true;
+            }
         }
 
         return false;

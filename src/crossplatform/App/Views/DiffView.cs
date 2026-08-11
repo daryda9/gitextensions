@@ -878,27 +878,83 @@ public sealed class DiffView : UserControl
     {
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
 
-        // Ctrl+F / Ctrl+G open (and focus) the find bar; F3 walks the matches
-        // from anywhere in the view; Esc and Enter only act while the bar is up.
-        if (e.Key == Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        // TWO scopes meet in this view, exactly as upstream: the changed-file LIST is
+        // RevisionDiffControl and the patch pane is FileViewer, and the same F3 means
+        // different things in each. Which one answers is decided by the focus, which is
+        // upstream's rule too — there the two are separate controls in separate forms.
+        if (_files.IsKeyboardFocusWithin
+            && HotkeyService.Shared.Command(HotkeyScope.RevisionDiff, e) is { } fileCommand)
         {
-            OpenFindBar(focusGoto: false);
-            e.Handled = true;
-            return;
+            switch (fileCommand)
+            {
+                case "Blame":
+                    RaiseFileAction(BlameRequested);
+                    e.Handled = true;
+                    return;
+
+                case "ShowHistory":
+                    RaiseFileAction(FileHistoryRequested);
+                    e.Handled = true;
+                    return;
+
+                case "FilterFileInGrid":
+                    RaiseFileAction(FilterFileInGridRequested);
+                    e.Handled = true;
+                    return;
+
+                case "OpenWithDifftool":
+                    OpenSelectedInExternalDiffTool();
+                    e.Handled = true;
+                    return;
+            }
         }
 
-        if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        switch (HotkeyService.Shared.Command(HotkeyScope.FileViewer, e))
         {
-            OpenFindBar(focusGoto: true);
-            e.Handled = true;
-            return;
-        }
+            case "Find":
+                OpenFindBar(focusGoto: false);
+                e.Handled = true;
+                return;
 
-        if (e.Key == Key.F3)
-        {
-            StepMatch(shift ? -1 : +1);
-            e.Handled = true;
-            return;
+            case "GoToLine":
+                OpenFindBar(focusGoto: true);
+                e.Handled = true;
+                return;
+
+            case "FindNextOrOpenWithDifftool":
+                StepMatch(+1);
+                e.Handled = true;
+                return;
+
+            case "FindPrevious":
+                StepMatch(-1);
+                e.Handled = true;
+                return;
+
+            case "NextChange":
+                GoToNextChange();
+                e.Handled = true;
+                return;
+
+            case "PreviousChange":
+                GoToPreviousChange();
+                e.Handled = true;
+                return;
+
+            case "IncreaseNumberOfVisibleLines":
+                ChangeContext(+1);
+                e.Handled = true;
+                return;
+
+            case "DecreaseNumberOfVisibleLines":
+                ChangeContext(-1);
+                e.Handled = true;
+                return;
+
+            case "ShowEntireFile":
+                _entireFileButton.IsChecked = !_options.ShowEntireFile;
+                e.Handled = true;
+                return;
         }
 
         if (_findBar.IsVisible && e.Key == Key.Escape)

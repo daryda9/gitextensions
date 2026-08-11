@@ -1121,113 +1121,118 @@ public sealed class RevisionGridView : UserControl
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
         bool quickActive = _quickSearch.Length > 0;
 
+        // The gestures come from the RevisionGrid scope, not from this method: they used
+        // to be compared inline here, which made them upstream-faithful but impossible to
+        // reconfigure. Same defaults, now the user's to change.
+        switch (HotkeyService.Shared.Command(HotkeyScope.RevisionGrid, e))
+        {
+            case "SelectCurrentRevision":
+                SelectCurrentRevision();
+                e.Handled = true;
+                return;
+
+            // GoToParent and GoToFirstParent are one jump in this port: the parent
+            // navigation always takes ParentHashes[0]. Both names are offered because
+            // both exist upstream and a user may have bound either.
+            case "GoToParent":
+            case "GoToFirstParent":
+                GoToParent();
+                e.Handled = true;
+                return;
+
+            case "GoToChild":
+                GoToChild();
+                e.Handled = true;
+                return;
+
+            case "GoToCommit":
+                OpenGoToCommit();
+                e.Handled = true;
+                return;
+
+            case "GoToMergeBase":
+                GoToMergeBase();
+                e.Handled = true;
+                return;
+
+            case "ToggleBetweenArtificialAndHeadCommits":
+                ToggleBetweenArtificialAndHeadCommits();
+                e.Handled = true;
+                return;
+
+            case "RevisionFilter":
+                _ = ShowFilterDialogAsync();
+                e.Handled = true;
+                return;
+
+            case "ResetRevisionFilter":
+                ResetAllFilters();
+                e.Handled = true;
+                return;
+
+            case "ToggleHighlightSelectedBranch":
+                ToggleHighlightSelectedBranch();
+                e.Handled = true;
+                return;
+
+            case "ShowAllBranches":
+                ShowAllBranches();
+                e.Handled = true;
+                return;
+
+            case "ShowCurrentBranchOnly":
+                ShowCurrentBranchOnly();
+                e.Handled = true;
+                return;
+
+            case "ShowFilteredBranches":
+                ShowFilteredBranches();
+                e.Handled = true;
+                return;
+
+            case "ShowRemoteBranches":
+                ToggleShowRemoteBranches();
+                e.Handled = true;
+                return;
+
+            case "ToggleShowTags":
+                ToggleShowTags();
+                e.Handled = true;
+                return;
+
+            case "PrevQuickSearch":
+                QuickSearchPrevious();
+                e.Handled = true;
+                return;
+
+            case "NextQuickSearch":
+                QuickSearchNext();
+                e.Handled = true;
+                return;
+
+            case "NavigateBackward":
+                NavigateBack();
+                e.Handled = true;
+                return;
+
+            case "NavigateForward":
+                NavigateForward();
+                e.Handled = true;
+                return;
+        }
+
+        // Below: keys that are NOT hotkeys and must not become configurable — copying
+        // the selection, and the quick-search buffer's own editing keys. Rebinding
+        // Backspace or Esc inside a type-to-search would only be a way to break it.
         if (ctrl && !shift && !alt && e.Key == Key.C && _list.SelectedItem is RevisionRow row)
         {
             Copy(row.Hash);
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.C)
-        {
-            // SelectCurrentRevision.
-            SelectCurrentRevision();
             e.Handled = true;
         }
         else if (ctrl && !shift && !alt && e.Key == Key.V)
         {
             // The quick-search buffer accepts a paste (QuickSearchProvider.cs:67-72).
             _ = PasteIntoQuickSearchAsync();
-            e.Handled = true;
-        }
-        else if (ctrl && !shift && !alt && (e.Key == Key.P || e.Key == Key.Left))
-        {
-            // GoToParent (Ctrl+P) — Ctrl+← is upstream's GoToFirstParent, which in
-            // this port is the same jump: the parent navigation always takes
-            // ParentHashes[0].
-            GoToParent();
-            e.Handled = true;
-        }
-        else if (ctrl && !shift && !alt && e.Key == Key.N)
-        {
-            GoToChild();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.G)
-        {
-            OpenGoToCommit();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.K)
-        {
-            GoToMergeBase();
-            e.Handled = true;
-        }
-        else if (ctrl && !shift && !alt && e.Key == Key.OemBackslash)
-        {
-            ToggleBetweenArtificialAndHeadCommits();
-            e.Handled = true;
-        }
-        else if (ctrl && !shift && !alt && e.Key == Key.I)
-        {
-            // RevisionFilter: the real (git-side) filter dialog.
-            _ = ShowFilterDialogAsync();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.I)
-        {
-            ResetAllFilters();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.B)
-        {
-            ToggleHighlightSelectedBranch();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.A)
-        {
-            ShowAllBranches();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.U)
-        {
-            ShowCurrentBranchOnly();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.T)
-        {
-            ShowFilteredBranches();
-            e.Handled = true;
-        }
-        else if (ctrl && shift && !alt && e.Key == Key.R)
-        {
-            ToggleShowRemoteBranches();
-            e.Handled = true;
-        }
-        else if (ctrl && alt && !shift && e.Key == Key.T)
-        {
-            ToggleShowTags();
-            e.Handled = true;
-        }
-        else if (alt && !ctrl && e.Key == Key.Up)
-        {
-            // Quick-search previous (PrevQuickSearch).
-            QuickSearchPrevious();
-            e.Handled = true;
-        }
-        else if (alt && !ctrl && e.Key == Key.Down)
-        {
-            // Quick-search next (NextQuickSearch).
-            QuickSearchNext();
-            e.Handled = true;
-        }
-        else if (alt && !ctrl && e.Key == Key.Left)
-        {
-            // Navigation history — Alt+← / Alt+→ as in the original grid.
-            NavigateBack();
-            e.Handled = true;
-        }
-        else if (alt && !ctrl && e.Key == Key.Right)
-        {
-            NavigateForward();
             e.Handled = true;
         }
         else if (e.Key == Key.Enter && !quickActive && !ctrl && !alt
@@ -1237,7 +1242,6 @@ public sealed class RevisionGridView : UserControl
             Activate(activated);
             e.Handled = true;
         }
-        // --- quick-search navigation (only when the list itself is focused) ---
         else if (e.Key == Key.Enter && quickActive && !ctrl && !alt)
         {
             // Enter also advances to the next match while quick-searching.
@@ -1268,6 +1272,13 @@ public sealed class RevisionGridView : UserControl
     }
 
     // ---- translation ---------------------------------------------------------
+
+    // "<caption>   (Ctrl+P)", with the gesture as currently bound — and just the
+    // caption when the user has cleared it, rather than an empty pair of brackets.
+    private static string Gesture(string caption, string command)
+        => HotkeyService.Shared.Display(HotkeyScope.RevisionGrid, command) is { } shown
+            ? $"{caption}   ({shown})"
+            : caption;
 
     private static string T(string english) => TranslationService.T(english);
 
@@ -4284,7 +4295,9 @@ public sealed class RevisionGridView : UserControl
 
     // "Go to" menu: buttons to jump to the first parent / nearest child of the
     // current selection, plus a hash box to select an arbitrary commit. All three
-    // also work via keyboard (Ctrl+P, Ctrl+N, Ctrl+Shift+G).
+    // also work via keyboard. The gestures in the captions are READ from the hotkey
+    // table, not typed here: they are configurable now, and a hard-coded "(Ctrl+P)"
+    // would go on claiming a key the user has since given to something else.
     private Flyout BuildGoToFlyout()
     {
         StackPanel panel = new() { Spacing = 4, Margin = new Thickness(6), MinWidth = 190 };
@@ -4293,16 +4306,16 @@ public sealed class RevisionGridView : UserControl
 
         panel.Children.Add(SectionLabel(T("FormBrowse/navigateToolStripMenuItem.Text", "Navigate")));
 
-        Button parent = MakeMenuButton(string.Format(T("↑  {0}   (Ctrl+P)"),
-            T("RevisionGrid/GotoFirstParentCommit.Text", "First parent")));
+        Button parent = MakeMenuButton(Gesture(
+            "↑  " + T("RevisionGrid/GotoFirstParentCommit.Text", "First parent"), "GoToParent"));
         parent.Click += (_, _) =>
         {
             flyout.Hide();
             GoToParent();
         };
 
-        Button child = MakeMenuButton(string.Format(T("↓  {0}   (Ctrl+N)"),
-            T("RevisionGrid/GotoChildCommit.Text", "Nearest child")));
+        Button child = MakeMenuButton(Gesture(
+            "↓  " + T("RevisionGrid/GotoChildCommit.Text", "Nearest child"), "GoToChild"));
         child.Click += (_, _) =>
         {
             flyout.Hide();
@@ -4312,17 +4325,17 @@ public sealed class RevisionGridView : UserControl
         panel.Children.Add(parent);
         panel.Children.Add(child);
 
-        // Navigation history: the two directions of the jump stack (Alt+← / Alt+→).
-        Button back = MakeMenuButton(string.Format(T("←  {0}   (Alt+←)"),
-            T("RevisionGrid/NavigateBackward.Text", "Backward")));
+        // Navigation history: the two directions of the jump stack.
+        Button back = MakeMenuButton(Gesture(
+            "←  " + T("RevisionGrid/NavigateBackward.Text", "Backward"), "NavigateBackward"));
         back.Click += (_, _) =>
         {
             flyout.Hide();
             NavigateBack();
         };
 
-        Button forward = MakeMenuButton(string.Format(T("→  {0}   (Alt+→)"),
-            T("RevisionGrid/NavigateForward.Text", "Forward")));
+        Button forward = MakeMenuButton(Gesture(
+            "→  " + T("RevisionGrid/NavigateForward.Text", "Forward"), "NavigateForward"));
         forward.Click += (_, _) =>
         {
             flyout.Hide();

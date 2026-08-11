@@ -382,18 +382,27 @@ public sealed class StashPanel : UserControl
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
-        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        switch (Services.HotkeyService.Shared.Command(Services.HotkeyScope.Stash, e))
         {
-            return;
-        }
+            case "NextStash":
+                e.Handled = StepStash(next: true);
+                break;
 
-        if (e.Key == Key.N)
-        {
-            e.Handled = StepStash(next: true);
-        }
-        else if (e.Key == Key.P)
-        {
-            e.Handled = StepStash(next: false);
+            case "PreviousStash":
+                e.Handled = StepStash(next: false);
+                break;
+
+            case "Refresh":
+                // Upstream's FormStash.Command.Refresh, which the port had no key for at
+                // all: the panel could only be refreshed by reopening it. A panel with no
+                // repository yet has nothing to reload, and says so by ignoring the key.
+                if (_repoPath is { Length: > 0 } repo)
+                {
+                    LoadRepository(repo);
+                    e.Handled = true;
+                }
+
+                break;
         }
     }
 

@@ -1169,31 +1169,73 @@ public sealed class CommitDialog : Theming.ZoomWindow
                     return;
                 }
 
-                // Upstream's ToggleSelectionFilter hotkey (Ctrl+F). Upstream hides and
-                // shows the whole filter toolbar; here the boxes are always visible, so
-                // the toggle is "focus it" / "clear it and hand focus back to the
-                // list", which is what the hotkey is actually used for. Now that each
-                // list has its own box, the key acts on the pane the user is in — the
-                // staged one only while the focus really sits there.
-                if (e.Key == Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                // The Commit scope. Ctrl+Enter above stays hard-wired: it is the
+                // dialog's default action, not a command with an entry in a table.
+                switch (HotkeyService.Shared.Command(HotkeyScope.Commit, e))
                 {
-                    e.Handled = true;
-                    FileListPane pane = _stagedPane.FilterBox.IsFocused
-                        || _stagedList.IsKeyboardFocusWithin
-                        ? _stagedPane
-                        : _unstagedPane;
-                    if (pane.FilterBox.IsFocused)
+                    // Upstream's ToggleSelectionFilter hides and shows the whole filter
+                    // toolbar; here the boxes are always visible, so the toggle is
+                    // "focus it" / "clear it and hand focus back to the list", which is
+                    // what the hotkey is actually used for. Each list has its own box,
+                    // so the key acts on the pane the user is in — the staged one only
+                    // while the focus really sits there.
+                    case "ToggleSelectionFilter":
                     {
-                        pane.FilterBox.Text = string.Empty;
-                        pane.Timer.Stop();
-                        ApplyPaneFilter(pane);
-                        pane.List.Focus();
+                        e.Handled = true;
+                        FileListPane pane = _stagedPane.FilterBox.IsFocused
+                            || _stagedList.IsKeyboardFocusWithin
+                            ? _stagedPane
+                            : _unstagedPane;
+                        if (pane.FilterBox.IsFocused)
+                        {
+                            pane.FilterBox.Text = string.Empty;
+                            pane.Timer.Stop();
+                            ApplyPaneFilter(pane);
+                            pane.List.Focus();
+                        }
+                        else
+                        {
+                            pane.FilterBox.Focus();
+                            pane.FilterBox.SelectAll();
+                        }
+
+                        return;
                     }
-                    else
-                    {
-                        pane.FilterBox.Focus();
-                        pane.FilterBox.SelectAll();
-                    }
+
+                    case "FocusUnstagedFiles":
+                        _unstagedList.Focus();
+                        e.Handled = true;
+                        return;
+
+                    case "FocusStagedFiles":
+                        _stagedList.Focus();
+                        e.Handled = true;
+                        return;
+
+                    case "FocusSelectedDiff":
+                        _diffView.Focus();
+                        e.Handled = true;
+                        return;
+
+                    case "FocusCommitMessage":
+                        _messageBox.Focus();
+                        e.Handled = true;
+                        return;
+
+                    case "StageAll":
+                        StageAll();
+                        e.Handled = true;
+                        return;
+
+                    case "Refresh":
+                        Reload();
+                        e.Handled = true;
+                        return;
+
+                    case "CreateBranch":
+                        e.Handled = true;
+                        Async.Run(PromptCreateBranchAsync, "creating a branch");
+                        return;
                 }
             },
             RoutingStrategies.Tunnel);

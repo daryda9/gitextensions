@@ -118,11 +118,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // The pending edits: command → gesture, with null meaning "cleared". Applied in one
     // go, so Cancel really discards and a half-finished remapping never reaches the
     // running window.
-    private readonly Dictionary<BrowseCommand, HotkeyGesture?> _hotkeyDraft = [];
-    private readonly List<(BrowseCommand Command, TextBlock Name, Button Gesture)> _hotkeyRows = [];
+    // Keyed by SCOPE + command name, so the window's own commands (typed by enum) and
+    // the six per-control scopes (named by upstream's strings) live in one draft, one
+    // list of rows and one capture state. The Browse rows carry the enum's name.
+    private readonly Dictionary<(HotkeyScope Scope, string Command), HotkeyGesture?> _hotkeyDraft = [];
+    private readonly List<((HotkeyScope Scope, string Command) Id, TextBlock Name, Button Gesture)> _hotkeyRows = [];
 
     // The command whose next keystroke is being captured, if any.
-    private BrowseCommand? _capturing;
+    private (HotkeyScope Scope, string Command)? _capturing;
     private TextBlock _hotkeyWarning = null!;
 
     // Behaviour page, beyond the pull action.
@@ -429,7 +432,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         HotkeyService? hotkeys = null)
     {
         _hotkeysAreLive = hotkeys is not null;
-        _hotkeys = hotkeys ?? new HotkeyService();
+        _hotkeys = hotkeys ?? HotkeyService.Shared;
         _repoPath = repoPath;
         _currentPullAction = currentPullAction;
         _pullActionChanged = pullActionChanged;
@@ -1632,7 +1635,18 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // re-print the gestures in their captions. Cheap and local — no git, no reason
         // to leave the UI thread.
         StopCapture();
-        _hotkeys.ApplyBindings(_hotkeyDraft);
+        _hotkeys.ApplyBindings(_hotkeyDraft
+            .Where(p => p.Key.Scope == HotkeyScope.Browse)
+            .ToDictionary(p => Enum.Parse<BrowseCommand>(p.Key.Command), p => p.Value));
+
+        foreach (HotkeyScope scope in HotkeyScopes.All.Keys)
+        {
+            _hotkeys.ApplyScopeBindings(
+                scope,
+                _hotkeyDraft
+                    .Where(p => p.Key.Scope == scope)
+                    .ToDictionary(p => p.Key.Command, p => p.Value));
+        }
 
         // ---- Checkout default and commit-info toggles: files of their own, no
         // last-writer-wins hazard with the host's UiState. Saving the commit-info file
@@ -2023,9 +2037,20 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
     private Panel BuildHotkeysPage(IBrush text, IBrush dim)
     {
+        // Seven scopes in one page: the window's own commands first, then the six
+        // per-control ones. A page per scope would hide the thing worth seeing — that
+        // the same combination can mean two things depending on where the focus is.
         foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
         {
-            _hotkeyDraft[command] = _hotkeys.GestureFor(command);
+            _hotkeyDraft[(HotkeyScope.Browse, command.ToString())] = _hotkeys.GestureFor(command);
+        }
+
+        foreach (HotkeyScope scope in HotkeyScopes.All.Keys)
+        {
+            foreach ((string command, HotkeyGesture? gesture) in _hotkeys.ScopeBindings(scope))
+            {
+                _hotkeyDraft[(scope, command)] = gesture;
+            }
         }
 
         Button resetAll = new() { HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 110 };
@@ -2035,8 +2060,16 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             StopCapture();
             foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
             {
-                _hotkeyDraft[command] =
+                _hotkeyDraft[(HotkeyScope.Browse, command.ToString())] =
                     HotkeyService.Defaults.TryGetValue(command, out HotkeyGesture g) ? g : null;
+            }
+
+            foreach ((HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture> defaults) in HotkeyScopes.All)
+            {
+                foreach ((string command, HotkeyGesture gesture) in defaults)
+                {
+                    _hotkeyDraft[(scope, command)] = gesture;
+                }
             }
 
             RefreshHotkeyRows();
@@ -2051,41 +2084,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         };
 
         StackPanel rows = new() { Spacing = 2 };
-        foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
+        AddHotkeySection(rows, HotkeyScope.Browse, text,
+            [.. Enum.GetValues<BrowseCommand>().Select(c => c.ToString())]);
+        foreach ((HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture> defaults) in HotkeyScopes.All)
         {
-            BrowseCommand captured = command;
-
-            Button gesture = new() { MinWidth = 170, HorizontalContentAlignment = HorizontalAlignment.Center };
-            gesture.Click += (_, _) => StartCapture(captured);
-
-            Button clear = new() { MinWidth = 70, Margin = new Thickness(6, 0, 0, 0) };
-            Localize(clear, "HotkeysSettingsPage/btnClearHotkey.Text", "Clear");
-            clear.Click += (_, _) =>
-            {
-                StopCapture();
-                _hotkeyDraft[captured] = null;
-                RefreshHotkeyRows();
-            };
-
-            TextBlock name = new()
-            {
-                Text = captured.ToString(),
-                Foreground = text,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 10, 0),
-            };
-
-            Grid row = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
-            Grid.SetColumn(name, 0);
-            Grid.SetColumn(gesture, 1);
-            Grid.SetColumn(clear, 2);
-            row.Children.Add(name);
-            row.Children.Add(gesture);
-            row.Children.Add(clear);
-            rows.Children.Add(row);
-
-            _hotkeyRows.Add((captured, name, gesture));
+            AddHotkeySection(rows, scope, text, [.. defaults.Keys]);
         }
 
         // Recording listens on the window in the tunnelling phase, for the same reason
@@ -2101,7 +2104,10 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         string note = _hotkeysAreLive
             ? "Click a gesture, then press the combination to assign — Esc cancels, "
-                + "Backspace clears. Changes apply when you press OK or Apply."
+                + "Backspace clears. Changes apply when you press OK or Apply. A "
+                + "combination may be reused in different scopes: which one answers "
+                + "depends on what has the focus, and a focused view wins over the main "
+                + "window's own binding for the same combination."
             : "Click a gesture, then press the combination to assign — Esc cancels, "
                 + "Backspace clears. Changes are saved to hotkeys.json but only take "
                 + "effect at the next start, because this dialog was not given the "
@@ -2117,9 +2123,59 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             rows);
     }
 
-    private void StartCapture(BrowseCommand command)
+    // One scope: a heading, then a row per command.
+    private void AddHotkeySection(
+        StackPanel rows, HotkeyScope scope, IBrush text, IReadOnlyList<string> commands)
     {
-        _capturing = command;
+        rows.Children.Add(new TextBlock
+        {
+            Text = HotkeyScopes.Title(scope),
+            Foreground = text,
+            FontWeight = FontWeight.SemiBold,
+            Margin = new Thickness(0, rows.Children.Count == 0 ? 0 : 14, 0, 4),
+        });
+
+        foreach (string command in commands)
+        {
+            (HotkeyScope Scope, string Command) id = (scope, command);
+
+            Button gesture = new() { MinWidth = 170, HorizontalContentAlignment = HorizontalAlignment.Center };
+            gesture.Click += (_, _) => StartCapture(id);
+
+            Button clear = new() { MinWidth = 70, Margin = new Thickness(6, 0, 0, 0) };
+            Localize(clear, "HotkeysSettingsPage/btnClearHotkey.Text", "Clear");
+            clear.Click += (_, _) =>
+            {
+                StopCapture();
+                _hotkeyDraft[id] = null;
+                RefreshHotkeyRows();
+            };
+
+            TextBlock name = new()
+            {
+                Text = command,
+                Foreground = text,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 10, 0),
+            };
+
+            Grid row = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+            Grid.SetColumn(name, 0);
+            Grid.SetColumn(gesture, 1);
+            Grid.SetColumn(clear, 2);
+            row.Children.Add(name);
+            row.Children.Add(gesture);
+            row.Children.Add(clear);
+            rows.Children.Add(row);
+
+            _hotkeyRows.Add((id, name, gesture));
+        }
+    }
+
+    private void StartCapture((HotkeyScope Scope, string Command) id)
+    {
+        _capturing = id;
         RefreshHotkeyRows();
     }
 
@@ -2133,7 +2189,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     // into the gesture of the command being recorded.
     private void OnHotkeyCapture(object? sender, KeyEventArgs e)
     {
-        if (_capturing is not { } command)
+        if (_capturing is not { } id)
         {
             return;
         }
@@ -2157,37 +2213,55 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         if (e.Key == Key.Back)
         {
-            _hotkeyDraft[command] = null;
+            _hotkeyDraft[id] = null;
             StopCapture();
             return;
         }
 
-        _hotkeyDraft[command] = new HotkeyGesture(e.Key, e.KeyModifiers);
+        _hotkeyDraft[id] = new HotkeyGesture(e.Key, e.KeyModifiers);
         StopCapture();
     }
 
     // Re-labels every row from the draft and re-runs the duplicate check.
     private void RefreshHotkeyRows()
     {
-        // A gesture used by more than one command: whichever of them Reindex happens to
-        // see first would be the only one that works.
-        HashSet<HotkeyGesture> seen = [];
-        HashSet<HotkeyGesture> duplicates = [];
-        foreach (HotkeyGesture? gesture in _hotkeyDraft.Values)
+        // A clash matters WITHIN a scope — there, whichever command the lookup happens
+        // to see first is the only one that works. ACROSS scopes it is legitimate and
+        // intended: F3 is "next match" in the viewer and "open with difftool" in the file
+        // list, exactly as upstream. That includes the main window: it dispatches first,
+        // but it asks the focused view whether the gesture is one of ITS scope's before
+        // acting (MainWindow.IsGestureOwnedByFocusedView), so the overlap resolves by
+        // focus instead of by luck. Flagging those would have painted a dozen rows red
+        // on a default installation — which is exactly what the first version did.
+        Dictionary<HotkeyScope, HashSet<HotkeyGesture>> seen = [];
+        HashSet<(HotkeyScope, HotkeyGesture)> duplicates = [];
+
+        foreach (((HotkeyScope scope, string _), HotkeyGesture? gesture) in _hotkeyDraft)
         {
-            if (gesture is { } g && !seen.Add(g))
+            if (gesture is not { } g)
             {
-                duplicates.Add(g);
+                continue;
+            }
+
+            if (!seen.TryGetValue(scope, out HashSet<HotkeyGesture>? set))
+            {
+                set = [];
+                seen[scope] = set;
+            }
+
+            if (!set.Add(g))
+            {
+                duplicates.Add((scope, g));
             }
         }
 
         IBrush conflict = Resource("App.DiffRemoved", "#CE5C5C");
         IBrush normal = Resource("App.Text", "#DCDCDC");
 
-        foreach ((BrowseCommand command, TextBlock name, Button button) in _hotkeyRows)
+        foreach (((HotkeyScope Scope, string Command) id, TextBlock name, Button button) in _hotkeyRows)
         {
-            HotkeyGesture? gesture = _hotkeyDraft.GetValueOrDefault(command);
-            bool recording = _capturing == command;
+            HotkeyGesture? gesture = _hotkeyDraft.GetValueOrDefault(id);
+            bool recording = _capturing == id;
             button.Content = recording
                 ? TranslationService.T("HotkeysSettingsPage/lblPressKey.Text", "Press a key…")
                 : gesture?.ToString() ?? TranslationService.T("HotkeysSettingsPage/lblNone.Text", "None");
@@ -2195,7 +2269,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             // The command name carries the colour as well as the gesture button: a
             // focused or hovered button takes its foreground from the theme's own
             // template, which was swallowing the mark on the row just edited.
-            IBrush rowBrush = gesture is { } g2 && duplicates.Contains(g2) ? conflict : normal;
+            IBrush rowBrush = gesture is { } g2 && duplicates.Contains((id.Scope, g2)) ? conflict : normal;
             button.Foreground = rowBrush;
             name.Foreground = rowBrush;
         }
@@ -2209,9 +2283,9 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _hotkeyWarning.IsVisible = true;
         _hotkeyWarning.Text = string.Format(
             TranslationService.T(
-                "The same shortcut is assigned to more than one command ({0}). Only one of "
-                + "them will respond — give the others a different combination."),
-            string.Join(", ", duplicates.Select(d => d.ToString()).Order()));
+                "These shortcuts are assigned twice within the same scope ({0}). Only one "
+                + "of them will respond — give the others a different combination."),
+            string.Join(", ", duplicates.Select(d => d.Item2.ToString()).Distinct().Order()));
     }
 
     // ---- layout building blocks -------------------------------------------

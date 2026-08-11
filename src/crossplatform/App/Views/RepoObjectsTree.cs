@@ -306,22 +306,26 @@ public sealed class RepoObjectsTree : UserControl
         // so the gating (no deleting the current branch, no renaming a tag) is shared.
         _tree.KeyDown += (_, e) =>
         {
-            switch (e.Key)
+            // Enter is activation and stays a fixed key: it is what a tree DOES, not a
+            // command to bind. The other three come from the RepoObjectsTree scope.
+            if (e.Key == Key.Enter)
             {
-                case Key.Enter:
-                    OnActivate();
-                    e.Handled = true;
-                    break;
+                OnActivate();
+                e.Handled = true;
+                return;
+            }
 
-                case Key.Delete:
+            switch (HotkeyService.Shared.Command(HotkeyScope.RepoObjectsTree, e))
+            {
+                case "Delete":
                     e.Handled = OnDeleteSelected();
                     break;
 
-                case Key.F2:
+                case "Rename":
                     e.Handled = OnRenameSelected();
                     break;
 
-                case Key.F3:
+                case "Search":
                     SelectNextMatch();
                     e.Handled = true;
                     break;
