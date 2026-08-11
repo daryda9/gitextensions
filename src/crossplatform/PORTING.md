@@ -583,7 +583,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Commands ▸ Format patch
 - [x] Commands ▸ Apply patch
 - [x] Commands ▸ View patch file
-- [ ] Repository hosts (GitHub: fork / view-create PR / add upstream) — **SKIP**: realizzabile come plugin repository-host, fuori scope base
+- [x] Repository hosts (GitHub: fork / view-create PR / add upstream) — **CHIUSO in M159** (non più uno SKIP: servizio contro il REST v3, non un plugin)
 - [x] Plugins menu + Plugins settings (loader diretto + sample plugin + settings render)
 - [x] Tools ▸ Git bash / Git GUI / GitK (PuTTY N/A su Linux)
 - [x] Tools ▸ Git command log (legge core CommandLog)
@@ -712,7 +712,7 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 - [x] Reflog
 - [x] Blame / File history / Diff / Log
 - [x] Compare (working dir / difftool / BASE; branch da fare)
-- [ ] Repository-host (GitHub) ops — **SKIP**: come sopra (plugin host)
+- [x] Repository-host (GitHub) ops — **CHIUSO in M159**
 
 ### Packaging / distribuzione
 - [x] `.deb` self-contained (linux-x64) + `.desktop` + icona — `packaging/build-deb.sh`
@@ -3376,6 +3376,85 @@ visibile di suo, non serve altro.
 
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
+
+## M159 (2026-08-11, `d02d10076`) — il repository host GitHub: fork, pull request, link
+
+Era lo SKIP dichiarato più vecchio del giro. Upstream lo realizza come plugin MEF (`GitHub3`)
+appoggiato alla libreria `Git.hub`, che in questo albero **non è ripristinabile**: quindi è lo stesso
+insieme di funzioni scritto contro gli endpoint REST v3 documentati, e come **servizio** invece che
+come plugin — il port ha esattamente un host, e l'indirezione comprerebbe un punto di estensione che
+nessuno può estendere.
+
+**Cosa c'è**
+- `GitHubApi.cs` / `GitHubService.cs`: solo le chiamate che le tre finestre fanno davvero, tutte
+  asincrone e cancellabili (la finestra cancella il token quando si chiude), con la paginazione via
+  header `Link` e il messaggio d'errore di GitHub innestato nel testo mostrato. I remote sull'host si
+  riconoscono col `GitHostingRemoteParser` del core confrontato con l'host configurato, quindi una
+  installazione **GitHub Enterprise** passa per la stessa strada (`https://<host>/api/v3`).
+- Tre finestre: **Fork and clone** (`ForkAndCloneForm`), **Create pull request**
+  (`CreatePullRequestForm`), **View pull requests** (`ViewPullRequestsForm`), più **Add "upstream"
+  remote** (`AddUpstreamRemoteAsync`) nel menu GitHub — che non era più un segnaposto disabilitato.
+- **View in GitHub** nel menu contestuale della griglia (pagina del commit) e in quello del blame
+  (`/blame/<sha>/<file>#L<n>`, l'unico posto in cui l'host di upstream entra davvero in un menu). Una
+  voce per remote quando ce n'è più d'uno: un commit che sta nel fork e nel padre ha due pagine.
+- Il **commit dialog** offre le issue assegnate a te come template del messaggio, con le parole esatte
+  di upstream (`Fixes #n : titolo`), lette in background e solo se l'opzione è accesa.
+
+**Il token è trattato come una password.** Non sta in `app-settings.json` — è un file che la gente
+copia tra le macchine — ma va all'**helper di credenziali di git**, che su questa macchina è
+`git-credential-libsecret`, cioè il portachiavi del desktop, sotto l'host `api.github.com` (non
+`github.com`: sovrascrivere la voce che git usa per il push sarebbe una brutta sorpresa). La casella
+nelle Impostazioni è a **sola scrittura**: un token salvato non viene mai rimesso dentro un controllo.
+`git credential approve` accetta e dimentica quando non c'è nessun helper, quindi il valore viene
+**riletto** prima di dire dov'è finito, e il ripiego è un file leggibile solo dal proprietario — cosa
+che la pagina dice a voce alta, perché chi crede di avere il token nel portachiavi merita di sapere
+che è su disco. In assenza di tutto, si leggono `GITEXT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`.
+
+**Quattro scostamenti da upstream, ognuno un difetto suo**
+- **Create pull request chiede tutti e due i capi.** Upstream offre come destinazione solo i remote
+  che *non* sono tuoi e indovina la sorgente: un repository che possiedi e su cui pusci direttamente
+  non offre **nessuna** destinazione e la finestra si chiude con «please clone GitHub repository
+  before pull request». Qui sono quattro tendine, e l'`head` diventa `owner:branch` o il solo nome del
+  branch a seconda che i due capi siano repository diversi — che è ciò che l'API vuole nei due casi.
+- **View pull requests si apre senza token.** Leggere le pull request aperte di un progetto pubblico,
+  i loro diff e le conversazioni non richiede credenziali; rifiutarsi di mostrarle (il gate
+  `ConfigurationOk` di upstream) rende il port inutile a chi guarda un progetto su cui non ha un
+  account. Sono disabilitate le due azioni che le credenziali le vogliono davvero: commentare e
+  chiudere.
+- **Il diff arriva dal media type `.diff` dell'API**, non dal `diff_url` pubblico che upstream scarica:
+  quell'URL non porta credenziali e su un repository privato risponde 404, che si legge come «la pull
+  request non esiste».
+- **Il padre di un fork si legge alla selezione.** GitHub riempie `parent` solo su un repository
+  richiesto per nome — gli oggetti dentro un elenco o una ricerca no — quindi la casella «add
+  upstream remote» di upstream resta muta per tutto ciò che si raggiunge cercando.
+
+**Un difetto mio, visto a schermo e corretto**: i due capi della finestra Create pull request caricano
+i branch insieme e falliscono insieme per la stessa ragione; comparivano **due box d'errore identici
+impilati**. Ora il primo fallimento parla e il secondo tace, ma un cambio *deliberato* di remote torna
+a essere un tentativo nuovo che ha diritto di dirlo.
+
+**Verificato su Xvfb** (`XDG_CONFIG_HOME` isolato, config reale byte-identica prima e dopo), contro
+GitHub vero:
+- senza token, «View pull requests» su `upstream — gitextensions/gitextensions` elenca **28 pull
+  request aperte** con numero, titolo, autore, data e `head → base`; la prima si seleziona da sola, il
+  suo diff viene spezzato in **14 file** nella lista file del port con i glifi di stato e la patch è
+  colorata; «Close pull request» è grigio e la casella del commento dice perché;
+- la scheda **Conversation** mostra il corpo e la cronologia della richiesta;
+- su `origin — daryda9/gitextensions` (che non ne ha) la finestra dice «No open pull requests.»;
+- con un token **finto** nell'ambiente, «Fork and clone» apre e riporta la frase giusta: «GitHub
+  rejected the personal access token (Bad credentials). Check it in Settings ▸ GitHub.»;
+- «Create pull request» pre-riempie la descrizione dal `.github/PULL_REQUEST_TEMPLATE.md` **di questo
+  repository**;
+- il menu contestuale della griglia mostra **View in GitHub ▸ daryda9/gitextensions ·
+  gitextensions/gitextensions**, cioè i due remote veri;
+- senza token la finestra di richiesta offre la pagina dove GitHub il token lo crea.
+
+Non verificata a schermo una chiamata **autenticata riuscita**: non ho un token e quello dell'utente
+non si tocca. Tutto ciò che sta dopo l'autenticazione (fork, creazione PR, commento, chiusura) è
+scritto ma provato solo fino alla risposta 401 di GitHub.
+
+**Fuori**: la voce «GitHub» del menu non è più un segnaposto disabilitato, e il residuo del round
+resta **solo la colonna build status**.
 
 ## M158 (2026-08-11, `887523b52`) — i sei scope hotkey per controllo
 
