@@ -5670,20 +5670,24 @@ public sealed class RevisionGridView : UserControl
 
         foreach (string refName in row.RefNames)
         {
-            // Respect the remote/tag "View" toggles: hide remote-tracking or tag
-            // badges when the corresponding toggle is off, so badge display stays
-            // consistent with what the walk includes. (Kind is the same '/'/version
-            // heuristic used by RefBrush, so it is best-effort.)
-            if ((!_showRemotes && IsRemoteRef(refName)) || (!_showTags && IsTagRef(refName)))
+            // Kind comes from the ref listing git gave us, not from the shape of the
+            // name — see RefKindOf. Respect the remote/tag "View" toggles so what is
+            // badged stays consistent with what the walk includes.
+            char kind = RefKindOf(refName);
+            if ((!_showRemotes && kind == 'r') || (!_showTags && kind == 't'))
             {
                 continue;
             }
 
-            // Best-effort current-branch emphasis: on the HEAD row, a local branch
-            // ref (not remote, not tag) is the checked-out branch — render it bold
-            // with a small green ▶ marker, echoing the original GitExtensions look.
-            bool isCurrent = row.IsHead && !IsRemoteRef(refName) && !IsTagRef(refName);
-            Badge(BuildRefBadge(refName, isCurrent, view));
+            // The checked-out branch, marked the way the original marks it. It is THE
+            // branch HEAD is on, matched by name — not "any local branch on the HEAD
+            // row": with two branches on one commit only one of them is checked out,
+            // and upstream puts the marker on that one.
+            bool isCurrent = row.IsHead
+                && kind == 'b'
+                && _currentBranch.Length > 0
+                && string.Equals(refName, _currentBranch, StringComparison.Ordinal);
+            Badge(BuildRefBadge(refName, isCurrent, view, kind));
         }
 
         TextBlock subjectText = new()
@@ -5858,12 +5862,19 @@ public sealed class RevisionGridView : UserControl
     // remote-tracking branch, or tag — echoing the original GitExtensions look
     // (light background, 1px coloured border, coloured text). When isCurrent, the
     // pill is bold and prefixed by a small green ▶ marker for the checked-out branch.
-    private static Control BuildRefBadge(string refName, bool isCurrent = false, RevisionRowView? view = null)
+    private static Control BuildRefBadge(
+        string refName, bool isCurrent = false, RevisionRowView? view = null, char refKind = '\0')
     {
         // Both the outline and the glyphs, by REFERENCE, so a live theme switch
         // repaints the pill without rebuilding the row (ThemeManager mutates the
         // brushes in place).
-        IBrush kind = RefBrush(refName);
+        IBrush kind = refKind switch
+        {
+            'r' => B("App.RefRemote"),
+            't' => B("App.RefTag"),
+            'b' => B("App.RefBranch"),
+            _ => RefBrush(refName),
+        };
 
         Border pill = new()
         {
@@ -5875,16 +5886,17 @@ public sealed class RevisionGridView : UserControl
             BorderBrush = kind,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(9),
-            Padding = new Thickness(7, 0, 7, 1),
+            Padding = new Thickness(isCurrent ? 5 : 7, 0, 7, 1),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text = refName,
-                Foreground = kind,
-                FontSize = 11,
-                FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
-                VerticalAlignment = VerticalAlignment.Center,
-            },
+        };
+
+        TextBlock caption = new()
+        {
+            Text = refName,
+            Foreground = kind,
+            FontSize = 11,
+            FontWeight = isCurrent ? FontWeight.Bold : FontWeight.Normal,
+            VerticalAlignment = VerticalAlignment.Center,
         };
 
         // NOTE: the pill used to swap its backdrop to hard-coded opaque WHITE while its
@@ -5898,28 +5910,34 @@ public sealed class RevisionGridView : UserControl
 
         if (!isCurrent)
         {
+            pill.Child = caption;
             return pill;
         }
 
-        // ▶ triangle marker in green before the current-branch pill.
-        StackPanel wrap = new()
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 2,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        // The ▶ goes INSIDE the pill, which is where the original puts it
+        // (RevisionGridRefRenderer draws the arrow within the ref box, not next to it).
+        // The port had it outside, so the checked-out branch read as "an arrow, and
+        // then a branch" instead of as one marked label.
         TextBlock marker = new()
         {
             Text = "▶",
             Foreground = new SolidColorBrush(Color.FromRgb(0x3F, 0xAE, 0x5A)),
-            FontSize = 10,
+            FontSize = 9,
             FontWeight = FontWeight.Bold,
             VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0),
         };
         view?.TrackMarker(marker);
-        wrap.Children.Add(marker);
-        wrap.Children.Add(pill);
-        return wrap;
+
+        StackPanel inside = new()
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        inside.Children.Add(marker);
+        inside.Children.Add(caption);
+        pill.Child = inside;
+        return pill;
     }
 
     // Ref-kind heuristics (shared by badge coloring and the remote/tag toggles):
@@ -6613,6 +6631,24 @@ public sealed class RevisionGridView : UserControl
         return slots;
     }
 
+    /// <summary>
+    ///  What kind of ref a name is — <c>'b'</c> local branch, <c>'r'</c> remote-tracking,
+    ///  <c>'t'</c> tag — from the listing git gave us, falling back to the display
+    ///  heuristics only for a name the listing does not know yet (a walk can outrun the
+    ///  ref refresh).
+    ///
+    ///  <para><b>The heuristics are not good enough to decide with.</b> They read a
+    ///  slash as "remote" and a leading digit as "tag", so a perfectly ordinary local
+    ///  branch called <c>feat/PO-52-activation-ladder</c> was classified as remote —
+    ///  which is how the checked-out branch stopped getting its ▶ for anyone whose
+    ///  branch names contain a slash. They stay as the fallback, and nothing decides
+    ///  on them while the map has an answer.</para>
+    /// </summary>
+    private char RefKindOf(string refName)
+        => _refKinds.TryGetValue(refName, out char known)
+            ? known
+            : IsTagRef(refName) ? 't' : IsRemoteRef(refName) ? 'r' : 'b';
+
     // Splits the row's refs into local branches / remote branches / tags using the
     // kind map loaded with the repository; falls back to the badge heuristics for a
     // ref the map does not know (a walk can outrun the ref refresh).
@@ -6624,11 +6660,7 @@ public sealed class RevisionGridView : UserControl
 
         foreach (string name in row.RefNames)
         {
-            char kind = _refKinds.TryGetValue(name, out char known)
-                ? known
-                : IsTagRef(name) ? 't' : IsRemoteRef(name) ? 'r' : 'b';
-
-            switch (kind)
+            switch (RefKindOf(name))
             {
                 case 't': tags.Add(name); break;
                 case 'r': remote.Add(name); break;
@@ -7098,6 +7130,27 @@ public sealed class RevisionGridView : UserControl
 
     // Reloads the checked-out branch and the ref-kind map used by the menu's
     // predicates. Off the UI thread; failures leave the previous values in place.
+    // Whether two ref-kind maps say the same thing. Cheap enough to run on every
+    // refresh (a few hundred names) and it is what stops an unchanged listing from
+    // re-templating every visible row.
+    private static bool SameKinds(IReadOnlyDictionary<string, char> a, IReadOnlyDictionary<string, char> b)
+    {
+        if (a.Count != b.Count)
+        {
+            return false;
+        }
+
+        foreach ((string name, char kind) in a)
+        {
+            if (!b.TryGetValue(name, out char other) || other != kind)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private void RefreshRefContext()
     {
         string repo = _repoPath;
@@ -7130,12 +7183,27 @@ public sealed class RevisionGridView : UserControl
 
                 Dispatcher.UIThread.Post(() =>
                 {
+                    // The rows may already be on screen: this listing and the walk are
+                    // two independent background reads, and which one lands first is a
+                    // coin toss. Whoever is second has to say so, or the badges keep
+                    // whatever the earlier answer implied — which is how the ▶ went
+                    // missing after a checkout made OUTSIDE the app: the walk came back
+                    // with the new HEAD while `_currentBranch` was still the old branch,
+                    // and nothing rebuilt the rows once it caught up.
+                    bool changed = !string.Equals(_currentBranch, current, StringComparison.Ordinal)
+                        || !SameKinds(_refKinds, kinds);
+
                     _currentBranch = current;
                     _refKinds = kinds;
 
                     // The same listing feeds the "Filtered branches" ref picker, so
                     // it never runs a git call of its own.
                     SetRefCatalogue(catalogue);
+
+                    if (changed && _rows.Count > 0)
+                    {
+                        RefreshView();
+                    }
                 });
             }
             catch (Exception)
