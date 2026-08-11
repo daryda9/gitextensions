@@ -3377,6 +3377,33 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M163 (2026-08-11, `c59d1bf55`) — la tinta dell'autore lascia il blu su cui vive la selezione
+
+Segnalazione con screenshot: «in alcuni casi è poco visibile la linea selezionata». Riprodotto — e la
+riga della foto **non è quella selezionata**: è quella **sotto il puntatore**, diventata
+indistinguibile dalle vicine. Campionando i pixel dell'immagine dell'utente: `(31,39,54)` e
+`(40,48,65)` sono le due tinte d'autore di M162, `(32,51,63)` è `App.HoverRow`. Tre grigi-blu quasi
+identici, e in mezzo nessuno che dicesse «sono io quello attivo».
+
+**La causa è mia, di M162.** Tre delle sei cose che uno sfondo di riga può significare erano già
+la stessa tinta: `App.Accent` (tinta dell'autore), `App.AccentFill` (selezione) e `App.HoverRow`
+(un grigio-blu). Sdoppiare la tinta per salvare la striscia ha infilato l'hover **fra le due metà**.
+Misurato in CIE76 sulle quattro palette, la riga sotto il puntatore stava a **ΔE 2,8–8,1** da una riga
+d'autore — a 2,8 (classic scuro) **letteralmente lo stesso colore**.
+
+Ora la tinta si appoggia a un token nuovo e tematizzato, **`App.AuthoredTint`**, un viola che non
+appartiene a nessun altro stato, a **0,14** invece di 0,10 (il viola è più quieto di quei grigi e a un
+decimo si leggeva come una sbavatura). Seminato dalla tinta della pill delle note, l'unico colore
+registrato che non significa né stato né selezione.
+
+**Misurato di nuovo, stesso metodo**: hover a ΔE **7,1–12,1** da una riga d'autore, riga semplice a
+**10,2–11,7**, striscia dentro la tinta a **3,2–6,0** (stesso ordine di quella fuori), selezione a
+**42–89** da tutto. Testo sulla tinta sopra **7,4:1**. Controllato a schermo in scuro **e** in chiaro.
+
+Resta vicina una sola coppia — riga dispari non tinta contro riga pari tinta, ΔE **5,9** — che è
+l'ordine di grandezza della striscia stessa ed è comunque distinta anche dal nome dell'autore in
+grassetto.
+
 ## M162 (2026-08-11, `cc73616e2`) — l'evidenziazione dell'autore non mangia più la striscia
 
 Segnalazione dell'utente con screenshot: selezionando un commit in un repository che ha scritto
