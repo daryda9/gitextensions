@@ -3377,6 +3377,50 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M160 (2026-08-11, `1f8002abe`) — un colore nuovo a ogni nome di branch
+
+Segnalazione dell'utente, con screenshot: una colonna sola, tutta rosa, con dentro tre branch
+diversi (`feat/workspace-retention`, `revamping_UI_slice_0`, `develop`). «Vorrei che si vedessero
+colori differenti.»
+
+Ha ragione, ed è un limite **strutturale** della colorazione per lane — quella di upstream
+(`MulticolorBranches`) e quella del port fino a ora. Il colore segue la corsia, e la corsia può
+distinguere **solo ciò che distingue il DAG**: due branch che non hanno ancora divergiuto stanno
+nella stessa corsia, quindi una fila dritta di commit che porta tre nomi diversi esce come una linea
+sola di un colore solo. Fedele alla geometria e inutile a chi legge, che vede tre nomi e un colore.
+
+Ora, con l'opzione accesa (default), **un commit su cui punta un BRANCH inizia un colore nuovo**. Gli
+archi che arrivano da sopra tengono il colore che avevano, quindi il confine è esattamente sul commit
+che porta il nome, e il nodo con tutto ciò che sta sotto — i commit che quel tratto di storia possiede,
+fino al nome successivo — prendono il nuovo.
+
+**I tag non contano.** Un tag marca un punto, non una linea di sviluppo: trattarlo da branch
+ridipingerebbe la storia sotto ogni release. E la «branch-ità» si legge da `IGitRef.IsHead`/`IsRemote`,
+**non** si indovina dal nome — il nome non può rispondere: un branch locale può benissimo avere una
+barra dentro, che è esattamente il caso dello screenshot (`feat/workspace-retention`).
+
+**Conseguenza dichiarata**: contano anche i branch remoti. Se `origin/X` è indietro rispetto a `X`, il
+colore cambia sull'ultimo commit pubblicato — cioè sopra quella riga c'è quello che non hai ancora
+pushato. È informazione, non rumore, ma è un cambio di colore in più rispetto a chi si aspetta un
+tratto per nome locale.
+
+**Interruttore**: pagina *Revision graph*, rientrata sotto «Colour each branch of the graph
+differently» e **disabilitata insieme a quella** — con un colore solo non c'è niente da dividere, e
+una casella che non fa nulla sarebbe il pulsante finto di sempre.
+
+**Un difetto trovato verificando**: l'interruttore non cambiava niente fino al ricaricamento
+successivo. `BuildDisplayRows` ri-esegue la passata delle corsie **solo** quando ha righe artificiali
+da innestare e altrimenti restituisce la lista intatta, quindi su un working tree pulito il cambio di
+impostazione ridisegnava gli stessi segmenti. Ora la passata del grafo viene eseguita esplicitamente
+quando cambia un'impostazione che decide la **geometria** e non la pittura di una riga.
+
+**Verificato su Xvfb** con un repository costruito apposta (una fila dritta, tre branch a quote
+diverse), misurando i pixel della colonna del grafo:
+- acceso: rosa `(240,100,160)` da `feat/workspace-retention` in giù, azzurro `(120,180,230)` da
+  `revamping_UI_slice_0`, verde `(36,194,33)` da `develop`;
+- spento: `(240,100,160)` su tutte e tredici le righe, cioè il comportamento di prima;
+- **acceso e spento a caldo** da Apply, nei due versi, senza riavviare.
+
 ## M159 (2026-08-11, `d02d10076`) — il repository host GitHub: fork, pull request, link
 
 Era lo SKIP dichiarato più vecchio del giro. Upstream lo realizza come plugin MEF (`GitHub3`)
