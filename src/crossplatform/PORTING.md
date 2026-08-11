@@ -3377,6 +3377,41 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M164 (2026-08-11, `5effca45b`) — il ▶ marca il branch su cui sei davvero, e sta dentro la pill
+
+Segnalazione: «a volte non compare il simbolo di play, soprattutto se switcho commit esternamente al
+programma; inoltre nell'originale il play è integrato nel nome del branch». Sono **tre** difetti, uno
+per frase e mezzo.
+
+**1. Il tipo di ref veniva INDOVINATO dal nome.** `IsRemoteRef` = «contiene una barra»,
+`IsTagRef` = «inizia per cifra». Quindi un normalissimo branch locale chiamato
+`feat/PO-52-activation-ladder` **non era un branch locale** per quella regola: niente ▶, e per giunta
+la pill dipinta col colore dei remoti. È il caso esatto dello screenshot dell'utente — e il motivo per
+cui a lui «a volte» non compariva e a me sempre sì: `linux-avalonia-port` non ha barre.
+La griglia **caricava già i tipi veri da git** (`RefreshRefContext` → `_refKinds`), semplicemente non
+li consultava qui. Ora c'è un solo `RefKindOf`, e le euristiche restano **solo** come ripiego per un
+nome che l'elenco non ha ancora raggiunto.
+
+**2. Il marcatore andava a OGNI branch locale della riga di HEAD.** Con due branch sullo stesso commit
+solo uno è quello su cui sei: ora si confronta il nome col branch corrente, come fa l'originale. In
+**detached HEAD** nessuna pill è marcata — corretto, e l'anello attorno al nodo dice comunque dov'è
+HEAD.
+
+**3. «Soprattutto esternamente» era una corsa.** Il walk e l'elenco dei ref sono **due letture di
+background indipendenti** e chi arrivava secondo non diceva niente. Dopo un checkout fatto fuori
+dall'app il walk tornava col nuovo HEAD mentre il branch corrente era ancora quello vecchio, e nessuno
+ricostruiva le righe quando l'elenco si allineava. Ora l'elenco confronta ciò che ha trovato con ciò
+da cui le righe erano state costruite e, se differisce, rinfresca la vista.
+
+**E il ▶ entra nella pill**, dov'è nell'originale (`RevisionGridRefRenderer` disegna la freccia dentro
+il riquadro del ref). Prima stava accanto, quindi il branch corrente si leggeva come «una freccia, e
+poi un branch» invece che come **un'etichetta marcata**.
+
+**Verificato su Xvfb**: su `feat/workspace-retention` la pill è ora **verde** (branch locale) col ▶
+**dentro** e il nome in grassetto; `git checkout develop` **da shell**, con l'app aperta e senza
+toccarla, sposta il ▶ su `develop` in pochi secondi; con due branch sullo stesso commit solo quello
+corrente è marcato; in detached HEAD nessuno lo è e la barra di stato dice «(detached HEAD)».
+
 ## M163 (2026-08-11, `c59d1bf55`) — la tinta dell'autore lascia il blu su cui vive la selezione
 
 Segnalazione con screenshot: «in alcuni casi è poco visibile la linea selezionata». Riprodotto — e la
