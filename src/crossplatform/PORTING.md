@@ -3377,6 +3377,38 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M161 (2026-08-11, `219669815`) — scegliere se anche `origin/X` divide il colore di `X`
+
+Richiesta dell'utente subito dopo M160: «dammi anche la possibilità di scegliere se cambiare colore
+anche tra stesso branch locale e in origin». M160 trattava **ogni** branch remoto come un nome a sé,
+quindi un branch il cui `origin` era indietro prendeva due colori, voluto o no. Sono due domande
+diverse e ora hanno due risposte.
+
+- Un branch remoto **senza** corrispondente locale tiene il suo colore **sempre**: è il branch di
+  qualcun altro, o uno mai preso in locale, e disegnarlo come continuazione del tuo sarebbe falso.
+- `origin/X` accanto a un `X` locale è **lo stesso nome scritto due volte**. Il confine lì non separa
+  due linee di sviluppo: separa i commit **pushati** da quelli **non ancora pushati**. Cosa che vale
+  la pena vedere, e cosa diversa da «un colore per branch» — quindi casella propria, annidata sotto
+  quella per-branch e disabilitata insieme a lei, e **spenta di default**: «un colore per branch» non
+  deve dare in silenzio un secondo colore a ogni branch che ha un commit in attesa di uscire.
+
+Un commit che porta sia `X` sia `origin/X` conta **una volta sola**, come branch tip: il flag di
+mirror si alza solo quando lì non c'è già qualcosa con un nome proprio, così spegnere la nuova
+opzione non può togliere un confine che non le appartiene.
+
+Il tipo di ref resta letto da `IGitRef.IsHead`/`IsRemote`, e il corrispondente locale si cerca su
+`IGitRef.LocalName` — non su uno split di stringa, che sbaglierebbe `origin/feat/x`.
+
+**Verificato su Xvfb** con un repository apposta (`origin/revamping_UI_slice_0` **indietro di due**
+rispetto al locale, `develop` e `origin/develop` sullo stesso commit, `feat/workspace-retention` solo
+locale), misurando i pixel della colonna:
+- opzione spenta: **tre** colori — rosa, azzurro da `revamping_UI_slice_0` (che attraversa
+  `origin/revamping_UI_slice_0` senza cambiare), verde da `develop`;
+- opzione accesa: **quattro** — il tratto azzurro si ferma esattamente sui due commit non pushati e
+  da `origin/revamping_UI_slice_0` in giù parte il colore nuovo;
+- `develop` + `origin/develop` sullo stesso commit producono **un solo** confine in entrambi i casi;
+- accesa a caldo da Apply, senza riavviare.
+
 ## M160 (2026-08-11, `1f8002abe`) — un colore nuovo a ogni nome di branch
 
 Segnalazione dell'utente, con screenshot: una colonna sola, tutta rosa, con dentro tre branch
