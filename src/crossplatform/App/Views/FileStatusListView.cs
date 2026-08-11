@@ -1031,6 +1031,15 @@ public sealed class FileStatusListView : UserControl
 
     private void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        // The event stops HERE. SelectionChanged bubbles, so this list's selection —
+        // including the one Avalonia resets when Rebuild reassigns ItemsSource — reaches
+        // every ancestor that listens for one, and an ancestor TabControl reads it as
+        // "the tab changed". That is what crashed the app: the host reloaded the tab
+        // from inside Avalonia's selection update, which reassigned the source of the
+        // list being updated. Hosts hear about a file through SelectedFileChanged, which
+        // is raised below and says what they actually want to know.
+        e.Handled = true;
+
         if (_suppressSelection)
         {
             return;
@@ -1061,6 +1070,38 @@ public sealed class FileStatusListView : UserControl
     // Rebuilds the view rows (always a new list instance) and puts the selection
     // back on the same file, so filtering or collapsing never reloads a diff.
     private void Rebuild()
+    {
+        // Belt to the braces above: assigning ItemsSource from inside an assignment of
+        // ItemsSource throws, and the paths that can reach this method are many (attach,
+        // language switch, filter, grouping, a host reload). A nested call is dropped
+        // and re-run once the outer one has finished, so the last word still wins.
+        if (_rebuilding)
+        {
+            _rebuildAgain = true;
+            return;
+        }
+
+        _rebuilding = true;
+        try
+        {
+            RebuildCore();
+        }
+        finally
+        {
+            _rebuilding = false;
+        }
+
+        if (_rebuildAgain)
+        {
+            _rebuildAgain = false;
+            Rebuild();
+        }
+    }
+
+    private bool _rebuilding;
+    private bool _rebuildAgain;
+
+    private void RebuildCore()
     {
         DiffFileGroupMode mode = _options.GroupMode;
 

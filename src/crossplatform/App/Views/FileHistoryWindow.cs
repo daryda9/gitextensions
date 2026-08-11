@@ -130,7 +130,15 @@ public sealed class FileHistoryWindow : ZoomWindow
         // (FormFileHistory.cs:136). The port's Blame entry points go through the same
         // window, which is why the flag exists at all.
         _tabs.SelectedItem = showBlame ? _blameTab : _diffTab;
-        _tabs.SelectionChanged += (_, _) => LoadSelectedTab();
+        // Only the TAB's own selection, never a list's bubbled one — see the same guard
+        // in MainWindow for the crash it prevents.
+        _tabs.SelectionChanged += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, _tabs))
+            {
+                LoadSelectedTab();
+            }
+        };
 
         // Upstream's proportions, not even ones: splitContainer1 opens at
         // SplitterDistance 101 of 419, i.e. a quarter to the grid and three quarters to

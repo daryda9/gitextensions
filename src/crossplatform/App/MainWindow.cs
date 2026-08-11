@@ -264,7 +264,21 @@ public sealed class MainWindow : Theming.ZoomWindow
         };
 
         // Showing a lazily-loaded tab is what brings it up to date.
-        _bottom.SelectionChanged += (_, _) => LoadSelectedBottomTab();
+        //
+        // The SOURCE check is not decoration. SelectionChanged is a bubbling routed
+        // event, so the file list inside a tab raises one that arrives here as if the
+        // TAB had changed — and it arrives from inside Avalonia's own selection update,
+        // where reloading the tab reassigns ItemsSource on the very list being updated:
+        // "Cannot change source while update is in progress", a hard crash. Reported
+        // from a real session, then reproduced (Commit tab → pick another revision →
+        // click File tree).
+        _bottom.SelectionChanged += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, _bottom))
+            {
+                LoadSelectedBottomTab();
+            }
+        };
 
         // ---- right side: revision grid + bottom panel, with the commit-info panel
         // positioned relative to the grid (below / left / right). Built dynamically
