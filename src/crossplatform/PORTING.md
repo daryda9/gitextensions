@@ -3377,6 +3377,36 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M157 (2026-08-11, `57b9ba887`) — la selezione di una lista di file non è un cambio di scheda
+
+Crash segnalato dall'utente, con lo stack: `Cannot change source while update is in progress`,
+mentre si clicca una scheda in basso.
+
+**La catena.** `SelectionChanged` è un evento **routed che risale**. La lista dei file dentro una
+scheda ne alza uno — compreso quello che Avalonia genera azzerando la selezione quando `Rebuild`
+riassegna `ItemsSource` — e quell'evento arrivava all'handler del `TabControl` dell'host, che lo
+leggeva come «è cambiata la scheda» e ricaricava la scheda. Il ricaricamento riassegnava
+`ItemsSource` **proprio sulla lista che Avalonia stava ancora aggiornando**, da dentro il suo stesso
+update di selezione. Da qui l'eccezione.
+
+E da qui anche il perché serviva una sequenza precisa per vederlo: il ricaricamento fa qualcosa solo
+se la revisione caricata è vecchia. **Riprodotto prima di correggere**: scheda Commit → si sceglie
+un'altra revisione nella griglia → si clicca File tree.
+
+**Corretto su tutti e tre gli anelli**, perché ciascuno è sbagliato per conto suo:
+- `FileStatusListView` marca l'evento `Handled`: la selezione della sua lista **si ferma nel
+  controllo**. Gli host sanno del file da `SelectedFileChanged`, che dice quello che gli interessa
+  davvero.
+- `MainWindow` e `FileHistoryWindow` ricaricano solo se il `Source` dell'evento **è** il loro
+  `TabControl`, così nessun altro discendente può spacciarsi per un cambio di scheda.
+- `Rebuild` rifiuta di rientrare: una chiamata annidata viene scartata e rieseguita quando la
+  esterna ha finito, quindi l'ultima parola resta l'ultima e nessun percorso può annidare
+  l'assegnazione.
+
+Verificato dopo: la stessa sequenza non crasha, il File tree segue comunque una revisione scelta
+mentre era visibile un'altra scheda, il clic su un file carica la sua patch e l'intestazione di
+gruppo piega ancora.
+
 ## M156 (2026-08-11, `e6e1d669d`) — script utente, con gli hook Before/After che gli danno i denti
 
 L'ultima lacuna funzionale grossa del port. Upstream ha un intero `GitUI.ScriptsEngine`
