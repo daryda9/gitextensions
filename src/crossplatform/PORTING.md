@@ -3377,6 +3377,42 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M165 (2026-08-11, `d4a2a360e`) — i conflitti di puntatore dei submodule si risolvono dalla parte che scegli
+
+Domanda dell'utente: «esiste un modo per gestire i conflitti di puntatori dei submodule?». La risposta
+onesta era **no, e peggio di no**: il conflitto veniva elencato, i pulsanti c'erano, e **mentivano**.
+
+**La prova.** Un gitlink non ha blob, quindi `checkout-index --stage=N -- <sub>` non scrive niente
+**ed esce 0**. Il `git add` che seguiva metteva in indice il commit su cui il submodule si trovava
+**per caso sul disco**. Riprodotto su un conflitto vero (superprogetto con ours/base/theirs su tre
+commit diversi del submodule):
+
+```
+git checkout-index -f --stage=3 -- sub   # rc=0, non fa nulla
+git add -- sub                           # rc=0
+git ls-files -s sub  ->  160000 3afa696... 0  sub     # OURS, non theirs
+```
+
+«Prendi il loro» lasciava l'indice sul **nostro**, riportando successo. Una risposta sbagliata
+annunciata come giusta è peggio di un rifiuto.
+
+**La correzione.** L'entry di indice si scrive direttamente con
+`update-index --cacheinfo 160000,<sha>,<path>`, che registra il commit scelto **e** azzera le tre fasi
+in un colpo; poi il checkout del submodule viene spostato lì, perché un indice che dice un commit e un
+working tree che ne mostra un altro è esattamente lo stato che rende sporco il superprogetto appena si
+committa il merge. Se il submodule non può essere spostato (di solito: quel commit non è mai stato
+fetchato) la risoluzione **resta valida** e il messaggio dice cosa manca — il silenzio è la cosa che
+qui si sta correggendo.
+
+**Il dialogo smette di offrire ciò che non può funzionare**: merge tool disabilitato su un gitlink
+(non c'è testo da fondere), i tre «nomi» mostrano i tre **commit** invece dello stesso path tre volte,
+e la descrizione dice che il submodule punta a commit diversi invece di «il file è cambiato da
+entrambe le parti».
+
+**Verificato a schermo nei due versi**, ogni volta col submodule lasciato di proposito sul disco dalla
+parte **opposta** a quella scelta: «theirs» dà theirs, «ours» dà ours, sia in indice sia nel working
+tree, il conflitto sparisce e la banda passa a «Merge is currently in progress» con **Continue**.
+
 ## M164 (2026-08-11, `5effca45b`) — il ▶ marca il branch su cui sei davvero, e sta dentro la pill
 
 Segnalazione: «a volte non compare il simbolo di play, soprattutto se switcho commit esternamente al
