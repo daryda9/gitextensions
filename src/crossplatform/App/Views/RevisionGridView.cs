@@ -425,6 +425,7 @@ public sealed class RevisionGridView : UserControl
     // RecomputeAuthoredHighlight), and the tint it uses, resolved once per theme.
     private bool _authoredHighlightIsUseful;
     private IBrush? _authoredBrush;
+    private IBrush? _authoredAltBrush;
 
     // Set while ANY assignment to _list.ItemsSource is in flight — RebindRows' swap
     // (plus the selection it puts back) and Reload's unbind alike. Every assignment
@@ -1092,6 +1093,7 @@ public sealed class RevisionGridView : UserControl
     {
         _gridPrefs = new SettingsService().Load();
         _authoredBrush = null;
+        _authoredAltBrush = null;
         RecomputeAuthoredHighlight();
         _quickSearchTimer.Interval = TimeSpan.FromMilliseconds(_gridPrefs.RevisionGridQuickSearchTimeout);
 
@@ -1322,6 +1324,7 @@ public sealed class RevisionGridView : UserControl
     {
         // The authored tint is mixed from the palette, so it dies with the old theme.
         _authoredBrush = null;
+        _authoredAltBrush = null;
         RebindRows(preserveViewport: true);
     });
 
@@ -2830,25 +2833,31 @@ public sealed class RevisionGridView : UserControl
     // An artificial row (working directory / commit index) has no author, so it
     // clears the emphasis rather than blanking every row.
     /// <summary>
-    ///  The background of one row: the authored highlight first, then the alternating
-    ///  stripe, then the plain panel — upstream's order in
-    ///  <c>RevisionDataGridView.GetBackground</c>, where the authored colour WINS over
-    ///  the stripe, so a highlighted run of commits reads as one block.
+    ///  The background of one row: the alternating stripe, with the authored tint
+    ///  COMPOSED on top of it rather than replacing it.
+    ///
+    ///  <para>Upstream replaces (<c>RevisionDataGridView.GetBackground</c>: the authored
+    ///  colour wins over the stripe, so a highlighted run reads as one block), and so
+    ///  did this port. Reported by the user with a screenshot: selecting a commit in a
+    ///  repository they wrote most of turns a dozen consecutive rows into one flat
+    ///  slab — the highlight arrives and the row separation leaves with it, which is a
+    ///  bad trade when the run is long. Composing keeps both: the tint says "same
+    ///  author", the stripe still says where each row ends.</para>
     /// </summary>
     private IBrush RowBackground(RevisionRow row, int index)
     {
+        // App.Panel for both when the stripe is off: it is the plain row surface, and
+        // the alternate is the one that carries the tint.
+        bool alternate = _gridPrefs.GraphDrawAlternateBackColor && (index & 1) == 1;
+
         if (_authoredHighlightIsUseful
             && !IsArtificial(row)
             && string.Equals(row.Author, _highlightedAuthor, StringComparison.Ordinal))
         {
-            return AuthoredBackground();
+            return AuthoredBackground(alternate);
         }
 
-        // App.Panel for both when the stripe is off: it is the plain row surface, and
-        // the alternate is the one that carries the tint.
-        return !_gridPrefs.GraphDrawAlternateBackColor || (index & 1) == 0
-            ? B("App.Panel")
-            : B("App.PanelAlt");
+        return alternate ? B("App.PanelAlt") : B("App.Panel");
     }
 
     // The text of a row's tooltip: what the truncated columns cannot say.
@@ -2867,17 +2876,27 @@ public sealed class RevisionGridView : UserControl
     ///  column of rows wearing the hover colour reads as "everything is selected", which
     ///  is exactly how this landed the first time.
     /// </summary>
-    private IBrush AuthoredBackground()
+    /// <param name="alternate">
+    ///  Whether this is a striped row. The tint is mixed into the row's OWN base rather
+    ///  than into one shared colour, which is what keeps the stripe legible under it:
+    ///  both bases move the same tenth of the way towards the accent, so the difference
+    ///  between them survives at nine tenths of its strength.
+    /// </param>
+    private IBrush AuthoredBackground(bool alternate)
     {
-        if (_authoredBrush is not null)
+        if (alternate)
         {
-            return _authoredBrush;
+            return _authoredAltBrush ??= Tinted("App.PanelAlt");
         }
 
-        Color panel = B("App.Panel") is ISolidColorBrush p ? p.Color : Colors.Black;
+        return _authoredBrush ??= Tinted("App.Panel");
+    }
+
+    private static IBrush Tinted(string baseKey)
+    {
+        Color background = B(baseKey) is ISolidColorBrush b ? b.Color : Colors.Black;
         Color accent = B("App.Accent") is ISolidColorBrush a ? a.Color : Colors.SteelBlue;
-        _authoredBrush = new SolidColorBrush(Mix(panel, accent, 0.10));
-        return _authoredBrush;
+        return new SolidColorBrush(Mix(background, accent, 0.10));
     }
 
     private static Color Mix(Color from, Color to, double amount) => Color.FromRgb(
