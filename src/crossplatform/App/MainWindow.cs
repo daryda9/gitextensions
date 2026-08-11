@@ -1547,6 +1547,15 @@ public sealed class MainWindow : Theming.ZoomWindow
         _menu.ChangelogRequested += () => Surface(_externalTools.OpenUrl("https://github.com/gitextensions/gitextensions/releases"));
         _menu.DonateRequested += () => Surface(_externalTools.OpenUrl("https://opencollective.com/gitextensions"));
 
+        // ---- menu bar: GitHub. Fork-and-clone is the one entry that works with no
+        // repository open — it is how you get one — so it is not gated on _repoPath.
+        _menu.GitHubMenuOpening += () => _menu.SetGitHubState(
+            _repoPath is { Length: > 0 } repo && new GitHubService().IsRelevantTo(repo));
+        _menu.GitHubForkCloneRequested += () => _ = ShowGitHubForkCloneAsync();
+        _menu.GitHubCreatePullRequestRequested += () => _ = ShowGitHubCreatePullRequestAsync();
+        _menu.GitHubViewPullRequestsRequested += () => _ = ShowGitHubPullRequestsAsync();
+        _menu.GitHubAddUpstreamRequested += () => _ = AddGitHubUpstreamAsync();
+
         // ---- menu bar: the Repository dialogs, Git maintenance and the state gating
         _menu.RemotesRequested += () => _ = ShowRemotesAsync();
         _menu.RemoteOperationsRequested += () => _ = ShowRemoteOperationsAsync();
@@ -2761,6 +2770,87 @@ public sealed class MainWindow : Theming.ZoomWindow
         Title = string.IsNullOrEmpty(branch)
             ? $"{name} - {DefaultTitle}"
             : $"{name} ({branch}) - {DefaultTitle}";
+    }
+
+    /// <summary>
+    ///  "Fork and clone…". The only GitHub entry that does not need a repository open:
+    ///  a successful clone is loaded straight away, which is what upstream's
+    ///  <c>gitModuleChanged</c> callback does for its own fork/clone form.
+    /// </summary>
+    private async Task ShowGitHubForkCloneAsync()
+    {
+        string? cloned = await Views.GitHubForkCloneWindow.ShowAsync(this, new GitHubService());
+        if (cloned is { Length: > 0 })
+        {
+            LoadRepository(cloned);
+        }
+    }
+
+    private async Task ShowGitHubCreatePullRequestAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        await Views.GitHubCreatePullRequestWindow.ShowAsync(this, new GitHubService(), repo);
+    }
+
+    /// <summary>
+    ///  "View pull requests…". A refresh follows only when something was actually
+    ///  fetched: the window is also used just to read a diff, and refreshing the grid
+    ///  for that would throw away the user's place in it.
+    /// </summary>
+    private async Task ShowGitHubPullRequestsAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        if (await Views.GitHubPullRequestsWindow.ShowAsync(this, new GitHubService(), repo))
+        {
+            RefreshAll();
+        }
+    }
+
+    /// <summary>
+    ///  "Add \"upstream\" remote" — upstream's <c>AddUpstreamRemoteAsync</c>, which it
+    ///  offers from the same menu. It is a no-op in three cases (no repository of mine
+    ///  among the remotes, the repository is not a fork, the parent is already
+    ///  configured); each of them is reported rather than passed over in silence, which
+    ///  is what upstream does with its null return.
+    /// </summary>
+    private async Task AddGitHubUpstreamAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo)
+        {
+            return;
+        }
+
+        GitHubService service = new();
+        if (!await Views.GitHubDialogs.RequireTokenAsync(this, service))
+        {
+            return;
+        }
+
+        try
+        {
+            string? added = await service.AddUpstreamRemoteAsync(repo, CancellationToken.None);
+            if (added is null)
+            {
+                _statusBar.SetText(T(
+                    "Nothing to add: no fork of yours among the remotes, or its parent is already configured."));
+                return;
+            }
+
+            _statusBar.SetText(string.Format(T("Added the remote \"{0}\"."), added));
+            RefreshAll();
+        }
+        catch (Exception ex)
+        {
+            await Views.GitHubDialogs.ReportAsync(this, "GitHub", ex);
+        }
     }
 
     // "Remote repositories..." (Repository menu). The dialog existed but could only be

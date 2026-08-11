@@ -101,6 +101,11 @@ public sealed class BlameView : UserControl
     private readonly MenuItem _showChangesItem;
     private readonly MenuItem _copyMenuItem;
 
+    // "View in GitHub", and the separator that has to disappear with it. Built empty
+    // and refilled per repository — see RebuildViewInHostMenu.
+    private readonly MenuItem _viewInHostItem = new() { IsVisible = false };
+    private readonly Separator _viewInHostSeparator = new() { IsVisible = false };
+
     // The three switches that change what git blame is asked to compute
     // (BlameOptions); upstream carries the same three in FormFileHistory's View menu.
     private readonly MenuItem _ignoreWhitespaceItem;
@@ -274,6 +279,8 @@ public sealed class BlameView : UserControl
                 _ignoreWhitespaceItem,
                 _detectCopyInFileItem,
                 _detectCopyInAllItem,
+                _viewInHostSeparator,
+                _viewInHostItem,
             },
         };
         menu.Opening += (_, _) => UpdateMenuState();
@@ -552,6 +559,11 @@ public sealed class BlameView : UserControl
         _matchIndex = -1;
         _bandStarts = [];
         _shownFile = null;
+        if (!string.Equals(_repoPath, repoPath, StringComparison.Ordinal))
+        {
+            RebuildViewInHostMenu(repoPath);
+        }
+
         _repoPath = repoPath;
         _detailHash = null;
         _selectedParent = null;
@@ -1137,6 +1149,44 @@ public sealed class BlameView : UserControl
         _blamePreviousItem.Header = row is not null && row.CommitHash == _resolvedCommit
             ? ActualPreviousHeader
             : VisiblePreviousHeader;
+
+        // The one place upstream's repository host actually reaches into a context menu
+        // (IRepositoryHostPlugin.ConfigureContextMenu, called with the blame menu and a
+        // GitBlameContext). Same URL shape: /blame/<sha>/<file>#L<n>, so the browser
+        // lands on the very line that is selected here.
+        _viewInHostItem.IsVisible = _viewInHostItem.Items.Count > 0 && hasCommit;
+        _viewInHostSeparator.IsVisible = _viewInHostItem.IsVisible;
+    }
+
+    /// <summary>
+    ///  Fills the "View in GitHub" submenu, one entry per remote on the host. Called
+    ///  when the blamed repository changes rather than when the menu opens: adding
+    ///  items during <c>Opening</c> leaves the popup mis-measured, which is the rule the
+    ///  rest of this menu already follows.
+    /// </summary>
+    private void RebuildViewInHostMenu(string repoPath)
+    {
+        _viewInHostItem.Items.Clear();
+        _viewInHostItem.Header = TranslationService.TFormat(null, "View in {0}", "GitHub");
+
+        GitHubService service = new();
+        foreach (GitHubHostedRemote remote in service.GetHostedRemotes(repoPath))
+        {
+            GitHubHostedRemote captured = remote;
+            MenuItem entry = new() { Header = captured.Data.Replace("_", "__") };
+            entry.Click += (_, _) =>
+            {
+                BlameLineRow? row = Selected;
+                if (row is null || row.IsUncommitted || _shownFile is null)
+                {
+                    return;
+                }
+
+                new ExternalToolService().OpenUrl(
+                    service.BlameUrl(captured, row.CommitHash, _shownFile, row.LineNumber));
+            };
+            _viewInHostItem.Items.Add(entry);
+        }
     }
 
     private void BlameSelectedRevision()

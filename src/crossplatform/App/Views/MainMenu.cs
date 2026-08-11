@@ -105,6 +105,10 @@ public sealed class MainMenu : UserControl
     private MenuItem _repository = new();
     private MenuItem _commands = new();
 
+    // The GitHub menu. Kept as a field for the same reason as the three above: its
+    // entries are enabled per repository, and the host answers that on drop-down.
+    private MenuItem _github = new();
+
     // Every entry that can be greyed out, keyed by the *upstream designer name* of
     // the WinForms item it mirrors ("manageSubmodulesToolStripMenuItem"). Using
     // upstream's own names keeps the gating tables below diffable by eye against
@@ -265,6 +269,30 @@ public sealed class MainMenu : UserControl
     ///  every selection change needs nothing here.
     /// </summary>
     public event Action? CommandsMenuOpening;
+
+    // ---- GitHub
+    public event Action? GitHubForkCloneRequested;
+    public event Action? GitHubCreatePullRequestRequested;
+    public event Action? GitHubViewPullRequestsRequested;
+    public event Action? GitHubAddUpstreamRequested;
+
+    /// <summary>
+    ///  Raised just before the GitHub menu drops down, so the host can decide which of
+    ///  its entries make sense for the repository that is open. Answering it means
+    ///  reading the remotes, which is why it is not answered on every refresh.
+    /// </summary>
+    public event Action? GitHubMenuOpening;
+
+    /// <summary>
+    ///  Enables or disables the three entries that need a remote on the host. Called by
+    ///  the host from <see cref="GitHubMenuOpening"/>.
+    /// </summary>
+    public void SetGitHubState(bool hasHostedRemote)
+    {
+        Enable("gitHubCreatePullRequest", hasHostedRemote);
+        Enable("gitHubViewPullRequests", hasHostedRemote);
+        Enable("gitHubAddUpstream", hasHostedRemote);
+    }
 
     // ---- Help
     public event Action? AboutRequested;
@@ -699,14 +727,28 @@ public sealed class MainMenu : UserControl
         // the life of the window, like the language and style hooks above it.
         UserScriptService.Changed += OnUserScriptsChanged;
 
-        // GitHub: repository-host integration is out of scope for the Linux port,
-        // so this is a disabled placeholder kept for visual parity only.
-        MenuItem github = new() { Header = "_GitHub" };
-        github.Items.Add(new MenuItem
-        {
-            Header = T("FormBrowse/_noReposHostPluginLoaded.Text", "No repository host plugin loaded."),
-            IsEnabled = false,
-        });
+        // GitHub. Upstream builds this menu from whichever IRepositoryHostPlugin is
+        // loaded (FormBrowse.cs:_repositoryHostsToolStripMenuItem) and shows
+        // "No repository host plugin loaded." when there is none; the port has exactly
+        // one host, so the entries are fixed and the empty state cannot happen.
+        //
+        // Three of the four need a remote on the host, and that is not known until a
+        // repository is open — hence the gates, re-evaluated on drop-down like the
+        // Commands menu's.
+        _github = new MenuItem { Header = "_GitHub" };
+        _github.Items.Add(Item(
+            "ForkAndCloneForm/$this.Text", "Fork and clone…", null, () => GitHubForkCloneRequested?.Invoke()));
+        _github.Items.Add(new Separator());
+        _github.Items.Add(Gated("gitHubCreatePullRequest", Item(
+            "CreatePullRequestForm/$this.Text", "Create pull request…", null,
+            () => GitHubCreatePullRequestRequested?.Invoke())));
+        _github.Items.Add(Gated("gitHubViewPullRequests", Item(
+            "ViewPullRequestsForm/$this.Text", "View pull requests…", null,
+            () => GitHubViewPullRequestsRequested?.Invoke())));
+        _github.Items.Add(new Separator());
+        _github.Items.Add(Gated("gitHubAddUpstream", Item(
+            null, "Add \"upstream\" remote", null, () => GitHubAddUpstreamRequested?.Invoke())));
+        _github.SubmenuOpened += (_, _) => GitHubMenuOpening?.Invoke();
 
         _pluginSettings = new MenuItem { Header = T("FormBrowse/pluginSettingsToolStripMenuItem.Text", "Plugin settings") };
         _plugins = new MenuItem { Header = T("FormBrowse/pluginsToolStripMenuItem.Text", "_Plugins") };
@@ -744,7 +786,7 @@ public sealed class MainMenu : UserControl
         _bar = menu;
 
         _topLevel.Clear();
-        _topLevel.AddRange([start, _dashboard, _repository, navigate, view, _commands, github, _plugins, tools, help]);
+        _topLevel.AddRange([start, _dashboard, _repository, navigate, view, _commands, _github, _plugins, tools, help]);
 
         // The entries are handed to the bar and to the "…" ALREADY on the right side,
         // rather than all put on the bar and moved afterwards. See Distribute.

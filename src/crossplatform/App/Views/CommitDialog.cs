@@ -960,6 +960,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
         Reload();
         RefreshBranchCaption();
+        PrefetchGitHubIssues();
     }
 
     /// <summary>
@@ -3437,6 +3438,66 @@ public sealed class CommitDialog : Theming.ZoomWindow
         flyout.ShowAt(anchor);
     }
 
+    /// <summary>
+    ///  The issues assigned to the token's owner in one of this repository's GitHub
+    ///  remotes, or null while they have not been fetched (or were not asked for).
+    ///  Upstream's <c>IGitPluginForCommit</c> hook, which adds them as commit templates.
+    /// </summary>
+    private IReadOnlyList<GitHubIssue>? _githubIssues;
+
+    /// <summary>
+    ///  Fetches them ONCE, in the background, when the dialog opens. Upstream fetches
+    ///  on the PreCommit event, which is to say while the dialog is being built; a
+    ///  network round trip on that path is a dialog that opens late for a feature most
+    ///  users have off, so the port asks after the window is up and the menu shows what
+    ///  it has at the time.
+    /// </summary>
+    private void PrefetchGitHubIssues()
+    {
+        if (!_prefs.GitHubIssueCommitMessages)
+        {
+            return;
+        }
+
+        GitHubService service = new(_prefs);
+        if (!service.IsConfigured)
+        {
+            return;
+        }
+
+        string repo = _repoPath;
+        Async.Run(
+            async () =>
+            {
+                IReadOnlyList<GitHubHostedRemote> remotes = await Task.Run(() => service.GetHostedRemotes(repo));
+                if (remotes.Count == 0)
+                {
+                    return;
+                }
+
+                IReadOnlyList<GitHubIssue> issues;
+                try
+                {
+                    issues = await service.CreateClient().GetAssignedIssuesAsync(CancellationToken.None);
+                }
+                catch (GitHubApiException)
+                {
+                    // A bad token or an unreachable host must not put an error box in
+                    // front of someone who came here to write a commit message.
+                    return;
+                }
+
+                // Only the issues of a repository this checkout actually has a remote
+                // for: "fixes #12" means nothing if #12 belongs to another project.
+                _githubIssues = [.. issues
+                    .Where(i => remotes.Any(r =>
+                        string.Equals(r.Owner, i.Repository?.OwnerLogin, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(r.Repository, i.Repository?.Name, StringComparison.OrdinalIgnoreCase)))
+                    .Take(Math.Max(1, _prefs.GitHubIssueCommitMessageCount))];
+            },
+            "fetching the assigned GitHub issues");
+    }
+
     private async Task ShowTemplatesMenuAsync(Button anchor)
     {
         string repo = _repoPath;
@@ -3471,6 +3532,37 @@ public sealed class CommitDialog : Theming.ZoomWindow
                 MenuItem item = new() { Header = Escape($"{captured.Name}  ({captured.Source})") };
                 ToolTip.SetTip(item, captured.Path);
                 item.Click += (_, _) => ApplyTemplate(captured);
+                flyout.Items.Add(item);
+            }
+        }
+
+        // The GitHub issues assigned to me, offered as a message to start from —
+        // upstream's issue commit-message helper. Silent when the feature is off or the
+        // fetch found nothing: an empty section would be a promise this repository
+        // cannot keep.
+        if (_githubIssues is { Count: > 0 } issues)
+        {
+            flyout.Items.Add(new Separator());
+            foreach (GitHubIssue issue in issues)
+            {
+                GitHubIssue captured = issue;
+                MenuItem item = new()
+                {
+                    Header = Escape(string.Format(
+                        CultureInfo.CurrentCulture, "#{0}: {1}", captured.Number, captured.Title)),
+                };
+                item.Click += (_, _) =>
+                {
+                    // Upstream's exact wording (GetIssueDescription), so a message
+                    // written in either build closes the issue the same way.
+                    _messageBox.Text = string.Format(
+                        CultureInfo.CurrentCulture,
+                        "\nFixes #{0} : {1}\n\n{2}\n",
+                        captured.Number,
+                        captured.Title,
+                        captured.Body ?? string.Empty);
+                    _messageBox.Focus();
+                };
                 flyout.Items.Add(item);
             }
         }

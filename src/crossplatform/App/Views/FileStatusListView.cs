@@ -1244,7 +1244,7 @@ public sealed class FileStatusListView : UserControl
         string ext = dot > slash + 1 ? row.Name[dot..] : string.Empty;
 
         return ext.Length == 0
-            ? new DiffFileListBuilder.GroupLabel(" none", T("(no extension)"))
+            ? new DiffFileListBuilder.GroupLabel("\0none", T("(no extension)"))
             : new DiffFileListBuilder.GroupLabel(ext.ToLowerInvariant(), "*" + ext.ToLowerInvariant());
     }
 

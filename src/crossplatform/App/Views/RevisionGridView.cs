@@ -1516,6 +1516,11 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
+        // Which of this repository's remotes are on the GitHub host, answered ONCE per
+        // repository rather than on every right-click: the answer costs a `git remote
+        // -v` and changes only when the remotes do, which is a reload away.
+        _gitHubRemotes = null;
+
         Reload();
     }
 
@@ -6243,8 +6248,58 @@ public sealed class RevisionGridView : UserControl
         Rule(other, ctx => true);
         Add(other);
 
+        // "View in GitHub" — upstream's IRepositoryHostPlugin.ConfigureContextMenu,
+        // which it only ever calls for the BLAME menu. The commit page is at least as
+        // useful from here: it is where the pull request, the checks and the review
+        // conversation live, none of which the local repository knows about.
+        //
+        // One entry per hosted remote when there is more than one: a commit that exists
+        // in a fork and in its parent has two pages, and only the reader knows which
+        // one they meant.
+        MenuItem view = new() { Header = TranslationService.TFormat(null, "View in {0}", "GitHub") };
+        Separator viewSeparator = new();
+        _menuRules.Add(ctx =>
+        {
+            IReadOnlyList<GitHubHostedRemote> remotes = GitHubRemotes();
+            view.IsVisible = remotes.Count > 0 && !ctx.Artificial && ctx.SingleCommit;
+            viewSeparator.IsVisible = view.IsVisible;
+            if (!view.IsVisible)
+            {
+                return;
+            }
+
+            view.Items.Clear();
+            GitHubService service = new();
+            foreach (GitHubHostedRemote remote in remotes)
+            {
+                GitHubHostedRemote captured = remote;
+                MenuItem entry = new() { Header = captured.Data.Replace("_", "__") };
+                entry.Click += (_, _) =>
+                {
+                    if (_menuRow is { } row)
+                    {
+                        new ExternalToolService().OpenUrl(service.CommitUrl(captured, row.Hash));
+                    }
+                };
+                view.Items.Add(entry);
+            }
+        });
+        Add(viewSeparator);
+        Add(view);
+
         return items;
     }
+
+    /// <summary>
+    ///  This repository's remotes that live on the configured GitHub host, computed on
+    ///  first use and kept until the repository changes.
+    /// </summary>
+    private IReadOnlyList<GitHubHostedRemote> GitHubRemotes()
+        => _gitHubRemotes ??= _repoPath.Length == 0
+            ? []
+            : new GitHubService().GetHostedRemotes(_repoPath);
+
+    private IReadOnlyList<GitHubHostedRemote>? _gitHubRemotes;
 
     // The Copy submenu: hash / short hash / message / author / dates / refs, each
     // over the whole selection like the original's CopyContextMenuItem.

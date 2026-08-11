@@ -346,6 +346,32 @@ public sealed class AppPreferences
 
     /// <summary>Interface point size; 0 = the theme's own.</summary>
     public double UiFontSize { get; set; }
+
+    /// <summary>
+    ///  The GitHub host the repository-host integration talks to
+    ///  (<c>GitHub3Plugin.GitHubHost</c>, default <c>github.com</c>). Anything else is
+    ///  taken to be a GitHub Enterprise install, whose API lives at
+    ///  <c>https://&lt;host&gt;/api/v3</c>.
+    ///
+    ///  <para>The token is deliberately NOT here: see <see cref="GitHubTokenStore"/>.
+    ///  This file is plain JSON that people copy between machines.</para>
+    /// </summary>
+    public string GitHubHost { get; set; } = "github.com";
+
+    /// <summary>
+    ///  Offer the issues assigned to you as commit-message templates
+    ///  (<c>GitHub3Plugin.IssueCommitMessageHelperEnabled</c>, default on upstream —
+    ///  off here, because upstream's plugin is only loaded when the user enables it,
+    ///  whereas this integration is always present and would otherwise make an
+    ///  unasked-for network call the first time the commit dialog opens).
+    /// </summary>
+    public bool GitHubIssueCommitMessages { get; set; }
+
+    /// <summary>
+    ///  How many assigned issues that helper offers
+    ///  (<c>GitHub3Plugin.IssueCommitMessageHelperMaxCount</c>, default 10).
+    /// </summary>
+    public int GitHubIssueCommitMessageCount { get; set; } = 10;
 }
 
 /// <summary>Reads/writes <see cref="AppPreferences"/>, tolerating a missing or
@@ -501,6 +527,28 @@ public sealed class SettingsService
         {
             s.AutoPopStashAfterPull = "Ask";
         }
+
+        // A blank host would build the URL "https:///api/v3"; a host with a scheme or a
+        // path in it would build a nonsense one. Only the bare name is kept.
+        s.GitHubHost = s.GitHubHost?.Trim().TrimEnd('/') ?? string.Empty;
+        int scheme = s.GitHubHost.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0)
+        {
+            s.GitHubHost = s.GitHubHost[(scheme + 3)..];
+        }
+
+        int slash = s.GitHubHost.IndexOf('/', StringComparison.Ordinal);
+        if (slash >= 0)
+        {
+            s.GitHubHost = s.GitHubHost[..slash];
+        }
+
+        if (s.GitHubHost.Length == 0)
+        {
+            s.GitHubHost = "github.com";
+        }
+
+        s.GitHubIssueCommitMessageCount = Math.Clamp(s.GitHubIssueCommitMessageCount, 1, 100);
 
         return s;
     }

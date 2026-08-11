@@ -185,6 +185,16 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly ComboBox _monospaceFont;
     private readonly TextBox _monospaceFontSize;
 
+    // ---- GitHub page. The token is NOT one of these fields in the usual sense: the
+    // box is write-only. It starts empty whatever is stored, typing into it replaces
+    // the stored token, and leaving it empty changes nothing — so the token never has
+    // to be rendered, copied into a control's Text, or written to app-settings.json.
+    private readonly TextBox _githubHost = new() { MinWidth = 260, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBox _githubToken = new() { PasswordChar = '•', MinWidth = 360, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBlock _githubTokenNote = new() { FontSize = 11, TextWrapping = TextWrapping.Wrap };
+    private readonly CheckBox _githubIssueMessages = new();
+    private readonly TextBox _githubIssueCount = NumberBox();
+
     // ---- Scripts page: the user scripts and their editor. The list is edited in place
     // and only written on OK/Apply, so Cancel really cancels.
     private readonly ListBox _scriptList = new() { MinHeight = 150 };
@@ -393,6 +403,11 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private const string DashboardText = "Dashboard and paths";
     private const string ScriptsKey = "ScriptsSettingsPage/$this.Text";
     private const string ScriptsText = "Scripts";
+
+    // No trans-unit to borrow: upstream's GitHub settings live in the plugin's own
+    // generated settings page, which has no translated caption of its own.
+    private const string GitHubKey = null;
+    private const string GitHubText = "GitHub";
 
     // The events a script can be bound to, in the order upstream's combo lists them.
     // Tokens are the names of UserScriptEvent, so the file stays readable.
@@ -1050,6 +1065,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
 
         Panel scriptsPanel = BuildScriptsPage(text, dim);
 
+        Panel githubPanel = BuildGitHubPage(text, dim);
+
         Panel hotkeysPanel = BuildHotkeysPage(text, dim);
 
         // Category order — the left list is built from the same sequence below, so the
@@ -1066,6 +1083,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _pages.Add(stashPanel);
         _pages.Add(dashboardPanel);
         _pages.Add(scriptsPanel);
+        _pages.Add(githubPanel);
         _pages.Add(appearancePanel);
 
         Grid rightPane = new();
@@ -1111,6 +1129,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         categories.Items.Add(CategoryItem(StashKey, StashText));
         categories.Items.Add(CategoryItem(DashboardKey, DashboardText));
         categories.Items.Add(CategoryItem(ScriptsKey, ScriptsText));
+        categories.Items.Add(CategoryItem(GitHubKey, GitHubText));
         categories.Items.Add(CategoryItem(AppearanceKey, AppearanceText));
         categories.SelectionChanged += (_, _) =>
         {
@@ -1368,6 +1387,14 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             SettingsService.ShorteningStrategies, prefs.ShorteningRecentRepoPathStrategy);
         _truncatePathMethod.SelectedIndex = TokenIndex(
             SettingsService.TruncateMethods, prefs.TruncatePathMethod);
+
+        _githubHost.Text = prefs.GitHubHost;
+        _githubIssueMessages.IsChecked = prefs.GitHubIssueCommitMessages;
+        _githubIssueCount.Text = prefs.GitHubIssueCommitMessageCount.ToString(CultureInfo.InvariantCulture);
+
+        // The box stays empty on purpose; only the note says whether a token exists.
+        _githubToken.Text = string.Empty;
+        RefreshGitHubTokenNote();
 
         // Scripts: their own file, edited in place and written on OK/Apply.
         _scripts.Clear();
@@ -1693,6 +1720,25 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         int uiFontSize = Number(_uiFontSize, 0, 40);
         int monospaceFontSize = Number(_monospaceFontSize, 0, 40);
 
+        string githubHost = (_githubHost.Text ?? string.Empty).Trim();
+        bool githubIssues = _githubIssueMessages.IsChecked == true;
+        int githubIssueCount = Number(_githubIssueCount, 10, 100);
+
+        // The token is stored HERE, not in the block below: it goes to the credential
+        // helper rather than into AppPreferences, and it must be written before the note
+        // is refreshed. Emptying the box is not "erase" — that is the Forget button —
+        // so an Apply the user did not mean cannot cost them their token.
+        string githubToken = (_githubToken.Text ?? string.Empty).Trim();
+        if (githubToken.Length > 0)
+        {
+            GitHubTokenStore.Storage where = GitHubTokenStore.Save(
+                new GitHubService(new AppPreferences { GitHubHost = githubHost }).ApiHost, githubToken);
+            GitHubService.ForgetLogin();
+            _githubToken.Text = string.Empty;
+            _githubTokenNote.Text = GitHubTokenStore.Describe(
+                new GitHubService(new AppPreferences { GitHubHost = githubHost }).ApiHost, where);
+        }
+
         // Copied out on the UI thread: the save below runs off it, and _scripts keeps
         // being edited as long as this dialog is open (Apply does not close it).
         List<UserScript> scripts = [.. _scripts];
@@ -1736,6 +1782,9 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.MonospaceFontFamily = monospaceFont;
             prefs.UiFontSize = uiFontSize;
             prefs.MonospaceFontSize = monospaceFontSize;
+            prefs.GitHubHost = githubHost;
+            prefs.GitHubIssueCommitMessages = githubIssues;
+            prefs.GitHubIssueCommitMessageCount = githubIssueCount;
             settings.Save(prefs);
 
             // Saving raises UserScriptService.Changed, which is what puts a new script in
@@ -1837,6 +1886,130 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     ///  with the rest of the dialog, so Cancel really cancels — upstream writes each
     ///  field straight into its store.</para>
     /// </summary>
+    /// <summary>
+    ///  The GitHub page — the port of the settings <c>GitHub3Plugin.GetSettings</c>
+    ///  yields: the host, the personal access token, the two links to GitHub's token
+    ///  pages, and the commit-message issue helper.
+    ///
+    ///  <para>The token box is <b>write-only</b>. A stored token is never put back into
+    ///  it: the page says where it is kept and whether it works, which is everything a
+    ///  user needs, while a password rendered into a control is one screenshot away
+    ///  from being public. Upstream shows it in clear.</para>
+    /// </summary>
+    private Panel BuildGitHubPage(IBrush text, IBrush dim)
+    {
+        Localize(
+            _githubIssueMessages,
+            null,
+            "Offer the issues assigned to me as commit-message templates");
+
+        _githubToken.Watermark = TranslationService.T("Paste a token here to store it");
+
+        Button create = new() { Content = TranslationService.T("Create a token on GitHub…") };
+        create.Click += (_, _) => new ExternalToolService().OpenUrl(GitHubForSettings().NewTokenUrl);
+
+        Button manage = new()
+        {
+            Content = TranslationService.T("Manage my tokens…"),
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        manage.Click += (_, _) => new ExternalToolService().OpenUrl(GitHubForSettings().ManageTokensUrl);
+
+        Button check = new()
+        {
+            Content = TranslationService.T("Check the stored token"),
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        check.Click += (_, _) => Async.Run(CheckGitHubTokenAsync, "checking the GitHub token");
+
+        Button forget = new()
+        {
+            Content = TranslationService.T("Forget the stored token"),
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        forget.Click += (_, _) =>
+        {
+            GitHubTokenStore.Erase(GitHubForSettings().ApiHost);
+            GitHubService.ForgetLogin();
+            _githubToken.Text = string.Empty;
+            RefreshGitHubTokenNote();
+        };
+
+        WrapPanel buttons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            ItemSpacing = 0,
+            LineSpacing = 6,
+            Children = { create, manage, check, forget },
+        };
+
+        _githubTokenNote.Foreground = dim;
+
+        return CategoryPanel(
+            GitHubKey, GitHubText,
+            null, "Fork, pull requests and \"view in GitHub\" links. The token is a password: "
+                + "it is handed to git's credential helper — the desktop keyring — and never "
+                + "written into the settings file.",
+            text,
+            dim,
+            Field(
+                null,
+                "Host",
+                _githubHost,
+                dim,
+                "github.com, or the host name of a GitHub Enterprise install — whose API is "
+                    + "then read from https://<host>/api/v3."),
+            Field(null, "Personal access token", _githubToken, dim),
+            _githubTokenNote,
+            buttons,
+            _githubIssueMessages,
+            Field(
+                null,
+                "How many issues to offer",
+                _githubIssueCount,
+                dim,
+                "The helper asks GitHub the first time the commit dialog's template menu is "
+                    + "opened, and only while the box above is ticked."));
+    }
+
+    /// <summary>The service for the host currently TYPED in the box, so the buttons and
+    /// the note follow an edit that has not been applied yet.</summary>
+    private GitHubService GitHubForSettings()
+        => new(new AppPreferences { GitHubHost = (_githubHost.Text ?? string.Empty).Trim() });
+
+    private void RefreshGitHubTokenNote()
+    {
+        GitHubService service = GitHubForSettings();
+        (string? token, GitHubTokenStore.Storage from) = GitHubTokenStore.Read(service.ApiHost);
+        _githubTokenNote.Text = token is null
+            ? GitHubTokenStore.Describe(service.ApiHost, GitHubTokenStore.Storage.None)
+            : GitHubTokenStore.Describe(service.ApiHost, from);
+    }
+
+    private async Task CheckGitHubTokenAsync()
+    {
+        GitHubService service = GitHubForSettings();
+        if (!service.IsConfigured)
+        {
+            _githubTokenNote.Text = TranslationService.T("There is no token to check.");
+            return;
+        }
+
+        _githubTokenNote.Text = TranslationService.T("Asking GitHub…");
+        try
+        {
+            GitHubUser user = await service.CreateClient().GetCurrentUserAsync(CancellationToken.None);
+            _githubTokenNote.Text = TranslationService.TFormat(
+                null, "The token works: {0} on {1}.", user.Login, service.Host);
+        }
+        catch (Exception ex)
+        {
+            _githubTokenNote.Text = ex is GitHubApiException
+                ? ex.Message
+                : $"{ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
     private Panel BuildScriptsPage(IBrush text, IBrush dim)
     {
         foreach ((UserScriptEvent _, string label) in ScriptEvents)
