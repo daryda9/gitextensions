@@ -455,10 +455,14 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
         // "Open in <tool>" / "Merge" act on one file, exactly as upstream disables
         // them for a multi-selection (SetAvailableCommands, :824-830).
+        // A submodule pointer has no text to merge: what conflicts is which COMMIT the
+        // superproject records, so the merge tool has nothing to open and the answer is
+        // always one of the two sides. Offering the tool would open it on an empty file.
+        bool mergeable = single is not null && !single.IsSubmodule;
         bool toolUsable = _mergeTool is not null && !_busy;
-        _openInTool.IsEnabled = toolUsable && single is not null;
-        _merge.IsEnabled = toolUsable && single is not null;
-        _startMergetool.IsEnabled = toolUsable && _conflicts.Count > 0;
+        _openInTool.IsEnabled = toolUsable && mergeable;
+        _merge.IsEnabled = toolUsable && mergeable;
+        _startMergetool.IsEnabled = toolUsable && _conflicts.Any(e => !e.IsSubmodule);
         _rescan.IsEnabled = !_busy;
         _reset.IsEnabled = !_busy;
 
@@ -492,6 +496,18 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _description.Text = Describe(single);
 
         string deleted = T("FormResolveConflicts/_deleted.Text", "deleted");
+
+        // For a submodule the three "names" are all the same path, which says nothing.
+        // The commit each side points at is the whole conflict, so that is what is shown.
+        if (single.IsSubmodule)
+        {
+            string none = T("FormResolveConflicts/_noBase.Text", "no base");
+            _ourName.Text = single.Ours.ShortSha ?? deleted;
+            _baseName.Text = single.Base.ShortSha ?? none;
+            _theirName.Text = single.Theirs.ShortSha ?? deleted;
+            return;
+        }
+
         _ourName.Text = single.Ours.Exists ? single.Ours.Path : deleted;
         _baseName.Text = single.Base.Exists
             ? single.Base.Path
@@ -511,6 +527,23 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         // Rebase swaps which git side is the "local" one (upstream :782-784).
         string local = _inRebase ? TheirsWord : OursWord;
         string remote = _inRebase ? OursWord : TheirsWord;
+
+        // A submodule conflict is not "the file changed on both sides": nothing about
+        // the superproject's content is in dispute, only which commit of the submodule
+        // it should record. Upstream says none of this — its switch falls through to
+        // whatever the label said before — and the wording matters here, because the
+        // right move is to look at the two commits and pick, not to merge anything.
+        if (entry.IsSubmodule)
+        {
+            return string.Format(
+                T("The submodule \"{0}\" points at different commits locally ({1}: {2}) and remotely ({3}: {4}). "
+                  + "Choose the side to record; the submodule is checked out there as well."),
+                entry.Path,
+                local,
+                entry.Ours.ShortSha ?? T("FormResolveConflicts/_deleted.Text", "deleted"),
+                remote,
+                entry.Theirs.ShortSha ?? T("FormResolveConflicts/_deleted.Text", "deleted"));
+        }
 
         return entry.Kind switch
         {

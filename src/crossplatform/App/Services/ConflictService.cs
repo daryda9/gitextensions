@@ -73,6 +73,13 @@ public sealed record ConflictSide(bool Exists, string? Path, string? Sha, string
 
     /// <summary>The stage's object id abbreviated to 8 characters, or null when absent.</summary>
     public string? ShortSha => Sha is { Length: >= 8 } ? Sha[..8] : Sha;
+
+    /// <summary>
+    ///  Whether this stage is a <b>gitlink</b> — mode 160000, i.e. a submodule
+    ///  pointer rather than a file. There is no blob behind it: what conflicts is
+    ///  which commit of the submodule the superproject records.
+    /// </summary>
+    public bool IsSubmodule => Mode == "160000";
 }
 
 /// <summary>
@@ -97,7 +104,15 @@ public sealed record ConflictEntry(string Path, ConflictSide Base, ConflictSide 
     ///  The merge tool cannot do anything useful otherwise, so the view offers
     ///  the side-picking actions instead.
     /// </summary>
-    public bool CanThreeWayMerge => Base.Exists && Ours.Exists && Theirs.Exists;
+    public bool CanThreeWayMerge => Base.Exists && Ours.Exists && Theirs.Exists && !IsSubmodule;
+
+    /// <summary>
+    ///  True when the conflicting path is a submodule pointer. Any stage answering
+    ///  is enough: a path cannot be a gitlink on one side and a file on the other
+    ///  without git having reported a type change, which lands here too and is
+    ///  better treated as a submodule than as a file that cannot be merged.
+    /// </summary>
+    public bool IsSubmodule => Base.IsSubmodule || Ours.IsSubmodule || Theirs.IsSubmodule;
 
     /// <summary>The stage for <paramref name="choice"/>.</summary>
     public ConflictSide Side(ConflictChoice choice) => choice switch
@@ -404,6 +419,11 @@ public sealed class ConflictService
             return new ConflictActionResult(rm.ExitedSuccessfully, rm.AllOutput);
         }
 
+        if (entry.IsSubmodule)
+        {
+            return ChooseSubmoduleSide(module, repoPath, entry, choice);
+        }
+
         GitArgumentBuilder checkoutArgs = new("checkout-index")
         {
             "-f",
@@ -418,6 +438,75 @@ public sealed class ConflictService
         }
 
         return Stage(module, quoted);
+    }
+
+    /// <summary>
+    ///  Resolves a <b>submodule pointer</b> conflict to one side.
+    ///
+    ///  <para><b>The file path cannot do this.</b> A gitlink has no blob, so
+    ///  <c>checkout-index --stage=N</c> writes nothing and — this is the part that
+    ///  matters — <b>exits 0</b>. The <c>git add</c> that followed then staged whatever
+    ///  commit the submodule happened to be checked out at on disk, which is usually
+    ///  "ours" whichever button was pressed. Measured on a real conflict: choosing
+    ///  THEIRS left the index at ours, reported as success. A wrong answer announced as
+    ///  a right one is worse than a refusal, and this is what that was.</para>
+    ///
+    ///  <para>The index entry is therefore written directly with
+    ///  <c>update-index --cacheinfo 160000,&lt;sha&gt;,&lt;path&gt;</c>, which both records
+    ///  the chosen commit and clears the three conflict stages in one step. The
+    ///  submodule's own checkout is then moved to match, because an index that says one
+    ///  commit and a work tree that shows another is exactly the state that makes the
+    ///  superproject look dirty the moment the merge is committed.</para>
+    ///
+    ///  <para>If that second step fails — most often because the chosen commit was
+    ///  never fetched into the submodule — the resolution still stands and the message
+    ///  says what is left to do. Silently succeeding is the thing being fixed here; the
+    ///  half-done case has to speak.</para>
+    /// </summary>
+    private static ConflictActionResult ChooseSubmoduleSide(
+        GitModule module, string repoPath, ConflictEntry entry, ConflictChoice choice)
+    {
+        ConflictSide side = entry.Side(choice);
+        if (side.Sha is not { Length: > 0 } sha)
+        {
+            return new ConflictActionResult(false, $"The {choice} side records no commit for {entry.Path}.");
+        }
+
+        GitArgumentBuilder args = new("update-index")
+        {
+            "--cacheinfo",
+            $"160000,{sha},{entry.Path}",
+        };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        if (!result.ExitedSuccessfully)
+        {
+            return new ConflictActionResult(false, result.AllOutput);
+        }
+
+        string submodulePath = Path.Combine(repoPath, entry.Path);
+        if (!Directory.Exists(Path.Combine(submodulePath, ".git")) && !File.Exists(Path.Combine(submodulePath, ".git")))
+        {
+            // Not initialised: the pointer is resolved and there is no work tree to
+            // move, which is a complete answer for a submodule nobody has cloned.
+            return new ConflictActionResult(
+                true, $"{entry.Path} now points at {side.ShortSha} (the submodule is not initialised here).");
+        }
+
+        GitModule submodule = GitContext.CreateModule(submodulePath);
+        GitArgumentBuilder checkout = new("checkout")
+        {
+            "--force",
+            sha,
+        };
+        ExecutionResult moved = submodule.GitExecutable.Execute(checkout, throwOnErrorExit: false);
+
+        return moved.ExitedSuccessfully
+            ? new ConflictActionResult(true, $"{entry.Path} now points at {side.ShortSha}.")
+            : new ConflictActionResult(
+                true,
+                $"{entry.Path} now points at {side.ShortSha} in the index, but the submodule could not be "
+                    + $"checked out there — fetch it and run `git checkout {side.ShortSha}` inside it.\n\n"
+                    + moved.AllOutput);
     }
 
     /// <summary>
