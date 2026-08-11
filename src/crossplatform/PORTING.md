@@ -3377,6 +3377,42 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M158 (2026-08-11, `887523b52`) — i sei scope hotkey per controllo
+
+Upstream lega i tasti **per form/controllo**, non per applicazione: lo stesso F3 è «prossima
+occorrenza» nel visualizzatore e «apri col difftool» nella lista dei file, e decide **il focus**. Il
+port aveva solo lo scope della finestra (`BrowseCommand`); ogni altra superficie confrontava i tasti
+inline, quindi quei gesti **non erano riconfigurabili affatto**.
+
+Ora sei scope, coi nomi e i default di upstream: `RevisionGrid`, `FileViewer`, `RevisionDiff`,
+`RepoObjectsTree`, `Commit`, `Stash`. Le view **chiedono al servizio cosa significa un tasto**
+invece di confrontarlo, quindi gli stessi handler obbediscono a ciò che l'utente configura, e la
+pagina Hotkeys delle Impostazioni ha una sezione per scope.
+
+**Solo i comandi che il port esegue davvero** sono elencati: 19 dei 45 di upstream nella griglia, 9
+su 21 nel visualizzatore, 4 su 25 nella lista dei file, 3 su 5 nell'albero, 8 su 18 nel commit,
+3 su 3 nello stash. Ogni tabella dice cosa è rimasto fuori e perché. Legare un tasto a un'azione che
+il port non ha sarebbe il pulsante finto che questo giro continua a rifiutare.
+
+**Due cose sono cadute fuori da sé, ed erano difetti a loro volta:**
+- La regola «questo gesto è del controllo che ha il focus» di `MainWindow` erano **tre elenchi di
+  tasti cablati** che ripetevano gli handler di quelle view e potevano solo divergere da loro — e
+  sarebbero diventati sbagliati al primo tasto riassegnato. Ora **chiede allo scope**. Anche il
+  dispatch dentro la scheda Diff va per focus: la lista dei file prende `RevisionDiff`, il pannello
+  della patch prende `FileViewer`, come upstream.
+- La tendina «Go to» della griglia stampava `(Ctrl+P)` come **testo letterale**. Ora legge il
+  binding vivo, e non stampa nulla se l'utente l'ha cancellato.
+
+**Un errore mio, visto a schermo e corretto**: la prima versione dell'avviso di conflitto segnalava
+anche le sovrapposizioni con la finestra principale, e su un'installazione di default dipingeva di
+rosso una dozzina di righe. È sbagliato: la finestra dispaccia per prima ma **chiede alla view col
+focus** se il gesto è del suo scope, quindi la sovrapposizione si risolve per focus e non per caso.
+L'avviso segnala ora solo i doppioni **dentro** uno scope.
+
+**Verificato su Xvfb**: con `GoToParent` spostato su Ctrl+J e `NavigateBackward` cancellato, la
+tendina legge «First parent (Ctrl+J)» e «Backward» senza gesto, Ctrl+J naviga davvero, e un
+`RevisionFilter` cancellato non risponde più a Ctrl+I.
+
 ## M157 (2026-08-11, `57b9ba887`) — la selezione di una lista di file non è un cambio di scheda
 
 Crash segnalato dall'utente, con lo stack: `Cannot change source while update is in progress`,
