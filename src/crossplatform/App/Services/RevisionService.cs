@@ -461,14 +461,27 @@ public sealed record RevisionRow(
     public bool HasNotes { get; init; }
 
     /// <summary>
-    ///  True when a BRANCH points at this commit — local or remote-tracking, never a
-    ///  tag or a stash. Read from <c>IGitRef.IsHead</c>/<c>IsRemote</c>, not guessed
-    ///  from the name: a local branch may well contain a slash.
+    ///  True when a branch with a name of its OWN points at this commit: a local
+    ///  branch, or a remote-tracking branch with no local counterpart. Never a tag or a
+    ///  stash. Read from <c>IGitRef.IsHead</c>/<c>IsRemote</c>, not guessed from the
+    ///  name: a local branch may well contain a slash.
     ///
     ///  <para>Used by the graph builder to start a new colour here when
-    ///  <c>ColourPerBranch</c> is on — see <see cref="RevisionService.BuildGraph"/>.</para>
+    ///  <c>colourPerBranch</c> is on — see <see cref="RevisionService.BuildGraph"/>.</para>
     /// </summary>
     public bool IsBranchTip { get; init; }
+
+    /// <summary>
+    ///  True when the only branch pointing here is a remote-tracking one whose LOCAL
+    ///  branch also exists — <c>origin/X</c> alongside <c>X</c>.
+    ///
+    ///  <para>That is the same name twice, so a colour change here does not separate two
+    ///  branches: it separates the part of one branch that is pushed from the part that
+    ///  is not. A useful thing to see and a different thing to mean, which is why it has
+    ///  its own setting instead of riding along with
+    ///  <see cref="IsBranchTip"/>.</para>
+    /// </summary>
+    public bool IsMirrorBranchTip { get; init; }
 
     /// <summary>Ref names joined for inline display, e.g. "[main] [origin/main] [v1.0]".</summary>
     public string RefsDisplay
@@ -879,6 +892,13 @@ public sealed class RevisionService
                 AuthorEmail = revision.AuthorEmail ?? string.Empty,
                 HasNotes = commitsWithNotes.Contains(hash),
                 IsBranchTip = metadata.BranchTips.Contains(hash),
+
+                // Only when nothing with a name of its own is here too: origin/X sitting
+                // on the same commit as X is already a branch tip, and calling it a
+                // mirror as well would make the "also split at origin/X" setting able to
+                // remove a colour boundary that has nothing to do with it.
+                IsMirrorBranchTip = !metadata.BranchTips.Contains(hash)
+                    && metadata.MirrorBranchTips.Contains(hash),
                 IsHead = headHash.Length > 0 && hash.Equals(headHash, StringComparison.OrdinalIgnoreCase),
             });
         }
@@ -910,9 +930,14 @@ public sealed class RevisionService
     ///  that has its own branch name is drawn in its own colour even when it shares one
     ///  lane with the branch above it. See <see cref="BuildGraph"/>.
     /// </param>
+    /// <param name="colourAtRemoteMirror">
+    ///  Also start one at <c>origin/X</c> when the local <c>X</c> exists, which draws
+    ///  the pushed and unpushed halves of one branch in two colours. Inert while
+    ///  <paramref name="colourPerBranch"/> is off.
+    /// </param>
     public static IReadOnlyList<RevisionRow> BuildRevisionGraph(
-        IReadOnlyList<RevisionRow> rows, bool colourPerBranch = false)
-        => BuildGraph(rows as List<RevisionRow> ?? [.. rows], colourPerBranch);
+        IReadOnlyList<RevisionRow> rows, bool colourPerBranch = false, bool colourAtRemoteMirror = false)
+        => BuildGraph(rows as List<RevisionRow> ?? [.. rows], colourPerBranch, colourAtRemoteMirror);
 
     /// <summary>
     ///  Re-links a <c>--follow</c> walk into the chain it actually is: each row's
@@ -978,7 +1003,8 @@ public sealed class RevisionService
         string HeadHash,
         Dictionary<ObjectId, List<string>> RefsByCommit,
         HashSet<string> CommitsWithNotes,
-        HashSet<string> BranchTips);
+        HashSet<string> BranchTips,
+        HashSet<string> MirrorBranchTips);
 
     // Returns the cached metadata for the repository, re-reading it when the walk
     // restarts, when the repository changed, or when nothing is cached yet.
@@ -1025,14 +1051,39 @@ public sealed class RevisionService
         // Build an ObjectId -> ref-names lookup so we can show branches/tags inline.
         Dictionary<ObjectId, List<string>> refsByCommit = [];
 
-        // The commits that are the tip of a BRANCH — local or remote-tracking, never a
-        // tag or a stash. Read from IGitRef.IsHead/IsRemote rather than from the name,
-        // because the name cannot answer it: a local branch called
-        // "feat/workspace-retention" has a slash, and a tag can be called anything.
+        // The commits that are the tip of a BRANCH, split in two because the graph
+        // colours them differently:
+        //
+        //  * branchTips — a DISTINCT name: a local branch, or a remote-tracking branch
+        //    with no local counterpart (someone else's branch, or one never checked
+        //    out). These always deserve a colour of their own.
+        //
+        //  * mirrorTips — a remote-tracking branch whose local branch also exists, i.e.
+        //    `origin/X` next to `X`. That is the SAME name twice, and when the remote is
+        //    behind, colouring there does not separate two branches: it separates the
+        //    pushed part of one branch from the unpushed part. Useful, but a different
+        //    idea, so it has its own setting.
+        //
+        // Ref kind is read from IGitRef.IsHead/IsRemote, never guessed from the name:
+        // the name cannot answer it — a local branch may be called
+        // "feat/workspace-retention", and a tag may be called anything.
         HashSet<string> branchTips = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> mirrorTips = new(StringComparer.OrdinalIgnoreCase);
         try
         {
-            foreach (IGitRef gitRef in module.GetRefs(RefsFilter.NoFilter))
+            // Materialised: whether a remote branch is a mirror depends on the LOCAL
+            // branches, which may come later in the enumeration.
+            List<IGitRef> refs = [.. module.GetRefs(RefsFilter.NoFilter)];
+            HashSet<string> localBranches = new(StringComparer.Ordinal);
+            foreach (IGitRef gitRef in refs)
+            {
+                if (gitRef.IsHead && !gitRef.IsTag && !gitRef.IsStash)
+                {
+                    localBranches.Add(gitRef.LocalName);
+                }
+            }
+
+            foreach (IGitRef gitRef in refs)
             {
                 if (gitRef.ObjectId.IsZero || gitRef.ObjectId.IsArtificial)
                 {
@@ -1047,9 +1098,19 @@ public sealed class RevisionService
 
                 names.Add(gitRef.Name);
 
-                if (!gitRef.IsTag && !gitRef.IsStash && (gitRef.IsHead || gitRef.IsRemote))
+                if (gitRef.IsTag || gitRef.IsStash)
                 {
-                    branchTips.Add(gitRef.ObjectId.ToString());
+                    continue;
+                }
+
+                string hash = gitRef.ObjectId.ToString();
+                if (gitRef.IsRemote && localBranches.Contains(gitRef.LocalName))
+                {
+                    mirrorTips.Add(hash);
+                }
+                else if (gitRef.IsHead || gitRef.IsRemote)
+                {
+                    branchTips.Add(hash);
                 }
             }
         }
@@ -1060,7 +1121,7 @@ public sealed class RevisionService
 
         // Commits carrying a git note. Loaded with a SINGLE `git notes list` for the
         // whole repository (not one call per row) so the indicator column is cheap.
-        return new RepoMetadata(headHash, refsByCommit, LoadNotes(module), branchTips);
+        return new RepoMetadata(headHash, refsByCommit, LoadNotes(module), branchTips, mirrorTips);
     }
 
     /// <summary>
@@ -1183,8 +1244,16 @@ public sealed class RevisionService
     ///  next branch name — take the new one. Tags do not count: a tag marks a point, not
     ///  a line of development, and treating one as a branch would repaint the history
     ///  below every release.</para>
+    ///
+    ///  <para><b><paramref name="colourAtRemoteMirror"/></b> extends that to
+    ///  <c>origin/X</c> when the local <c>X</c> exists. It is a separate answer to a
+    ///  separate question: there the two names are the SAME branch, so the boundary does
+    ///  not divide two lines of development — it divides the commits that have been
+    ///  pushed from the ones that have not. Worth seeing, and not what "a colour per
+    ///  branch" means, so it is not folded into it.</para>
     /// </summary>
-    private static IReadOnlyList<RevisionRow> BuildGraph(List<RevisionRow> input, bool colourPerBranch)
+    private static IReadOnlyList<RevisionRow> BuildGraph(
+        List<RevisionRow> input, bool colourPerBranch, bool colourAtRemoteMirror)
     {
         List<string?> lanes = [];
 
@@ -1222,7 +1291,8 @@ public sealed class RevisionService
                 // starts: give it a colour of its own. Only on the INHERITED path — a
                 // lane that had no descendant already took a fresh colour above, and
                 // burning a second one would just skip a hue in the cycle.
-                if (colourPerBranch && row.IsBranchTip)
+                if (colourPerBranch
+                    && (row.IsBranchTip || (colourAtRemoteMirror && row.IsMirrorBranchTip)))
                 {
                     nodeColor = nextColor++;
                 }

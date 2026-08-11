@@ -1074,11 +1074,12 @@ public sealed class RevisionGridView : UserControl
     private void OnAppSettingsChanged() => Dispatcher.UIThread.Post(() =>
     {
         bool colouredPerBranch = ColourPerBranch;
+        bool colouredAtMirror = ColourAtRemoteMirror;
         ReadGridPreferences();
 
         // Per-branch colouring is decided by the lane pass, not by the row template, so
-        // it is the one of these settings a rebind cannot show.
-        if (ColourPerBranch != colouredPerBranch)
+        // these are the settings here a rebind cannot show.
+        if (ColourPerBranch != colouredPerBranch || ColourAtRemoteMirror != colouredAtMirror)
         {
             RefreshGraph();
             return;
@@ -1106,6 +1107,12 @@ public sealed class RevisionGridView : UserControl
     ///  rebuild differently for no visible reason.
     /// </summary>
     private bool ColourPerBranch => _gridPrefs.MulticolorBranches && _gridPrefs.GraphColorPerBranch;
+
+    /// <summary>
+    ///  Whether the split also happens at <c>origin/X</c> when the local <c>X</c>
+    ///  exists. Only meaningful while the split happens at all.
+    /// </summary>
+    private bool ColourAtRemoteMirror => ColourPerBranch && _gridPrefs.GraphColorAtRemoteMirror;
 
     /// <summary>
     ///  The height of a revision row, per app style: <see cref="Metrics.Density.RowHeight"/>
@@ -1506,7 +1513,7 @@ public sealed class RevisionGridView : UserControl
         // Re-run the layout over the combined list so the artificial nodes get real
         // lanes and the edge to HEAD is routed like any other, instead of being drawn
         // over lanes the layout has already given to somebody else.
-        return RevisionService.BuildRevisionGraph(display, ColourPerBranch);
+        return RevisionService.BuildRevisionGraph(display, ColourPerBranch, ColourAtRemoteMirror);
     }
 
     /// <summary>
@@ -1766,6 +1773,7 @@ public sealed class RevisionGridView : UserControl
         // Read on the UI thread and captured: the graph is rebuilt on the pool below,
         // and _gridPrefs is replaced wholesale whenever the settings change.
         bool colourPerBranch = ColourPerBranch;
+        bool colourAtRemoteMirror = ColourAtRemoteMirror;
 
         if (restart && !preserveView)
         {
@@ -1828,7 +1836,7 @@ public sealed class RevisionGridView : UserControl
                     ? RevisionService.ChainFollowedHistory(merged)
                     : merged;
 
-                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(forGraph, colourPerBranch);
+                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(forGraph, colourPerBranch, colourAtRemoteMirror);
 
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -2632,7 +2640,8 @@ public sealed class RevisionGridView : UserControl
         // tree changed nothing at all until the next reload (seen on screen, and the
         // reason this method exists rather than a plain RefreshView).
         List<RevisionRow> commits = [.. _rows.Skip(_artificialCount)];
-        _rows = BuildDisplayRows(RevisionService.BuildRevisionGraph(commits, ColourPerBranch));
+        _rows = BuildDisplayRows(
+            RevisionService.BuildRevisionGraph(commits, ColourPerBranch, ColourAtRemoteMirror));
         RefreshView();
     }
 

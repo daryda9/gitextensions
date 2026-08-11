@@ -223,6 +223,24 @@ public sealed class AppPreferences
     public bool GraphColorPerBranch { get; set; } = true;
 
     /// <summary>
+    ///  Also start a new colour at <c>origin/X</c> when the local <c>X</c> exists, so
+    ///  the pushed and the unpushed part of one branch are drawn in two colours.
+    ///  Default OFF.
+    ///
+    ///  <para>Kept apart from <see cref="GraphColorPerBranch"/> because it answers a
+    ///  different question. There, two names mean two lines of development. Here they
+    ///  are the SAME branch written twice, so the boundary does not separate branches —
+    ///  it separates what has been pushed from what has not. Off by default for the same
+    ///  reason: "a colour per branch" should not silently give a second colour to every
+    ///  branch that has a commit waiting to go out.</para>
+    ///
+    ///  <para>A remote branch with NO local counterpart is unaffected: that is a name of
+    ///  its own and always gets its colour, or someone else's branches would be drawn as
+    ///  a continuation of yours.</para>
+    /// </summary>
+    public bool GraphColorAtRemoteMirror { get; set; }
+
+    /// <summary>
     ///  Straighten a lane that shifts by one column between two rows, so the line meets
     ///  its other half instead of kinking (<c>AppSettings.StraightenGraphDiagonals</c>,
     ///  default on).
