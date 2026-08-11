@@ -3377,6 +3377,27 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M162 (2026-08-11, `cc73616e2`) — l'evidenziazione dell'autore non mangia più la striscia
+
+Segnalazione dell'utente con screenshot: selezionando un commit in un repository che ha scritto
+quasi tutto lui, una dozzina di righe consecutive diventa **una lastra piatta**. L'evidenziazione
+arriva e la separazione fra le righe se ne va con lei — pessimo scambio proprio quando il tratto è
+lungo, cioè quando l'evidenziazione servirebbe.
+
+La tinta dell'autore ora si **compone** con lo sfondo alternato invece di sostituirlo: la base
+**propria** di ogni riga (`App.Panel` o `App.PanelAlt`) viene spostata dello stesso decimo verso
+l'accento, quindi la differenza fra le due sopravvive a nove decimi della sua forza mentre entrambe si
+leggono come tinte. Upstream sostituisce (`RevisionDataGridView.GetBackground` fa vincere il colore
+dell'autore sulla striscia) e così faceva anche il port.
+
+**Misurato a schermo, tema scuro**: righe normali alternate `(28,29,33)` / `(38,39,45)`, delta
+`(10,10,12)`; righe dell'autore ora alternate `(31,39,54)` / `(40,48,65)`, delta `(9,9,11)` — e le due
+coppie stanno chiaramente distanti fra loro. Prima erano **un colore solo**, `(31,39,54)`, per tutto
+il tratto.
+
+Resta in piedi la regola di M153bis: sopra nove righe su dieci che combaciano l'evidenziazione si
+tira indietro del tutto, perché marcare tutta la griglia non marca niente.
+
 ## M161 (2026-08-11, `219669815`) — scegliere se anche `origin/X` divide il colore di `X`
 
 Richiesta dell'utente subito dopo M160: «dammi anche la possibilità di scegliere se cambiare colore
