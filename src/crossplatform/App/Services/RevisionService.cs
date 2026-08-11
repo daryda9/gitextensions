@@ -460,6 +460,16 @@ public sealed record RevisionRow(
     /// </summary>
     public bool HasNotes { get; init; }
 
+    /// <summary>
+    ///  True when a BRANCH points at this commit — local or remote-tracking, never a
+    ///  tag or a stash. Read from <c>IGitRef.IsHead</c>/<c>IsRemote</c>, not guessed
+    ///  from the name: a local branch may well contain a slash.
+    ///
+    ///  <para>Used by the graph builder to start a new colour here when
+    ///  <c>ColourPerBranch</c> is on — see <see cref="RevisionService.BuildGraph"/>.</para>
+    /// </summary>
+    public bool IsBranchTip { get; init; }
+
     /// <summary>Ref names joined for inline display, e.g. "[main] [origin/main] [v1.0]".</summary>
     public string RefsDisplay
         => RefNames.Count == 0 ? string.Empty : string.Join(" ", RefNames.Select(r => $"[{r}]"));
@@ -868,6 +878,7 @@ public sealed class RevisionService
             {
                 AuthorEmail = revision.AuthorEmail ?? string.Empty,
                 HasNotes = commitsWithNotes.Contains(hash),
+                IsBranchTip = metadata.BranchTips.Contains(hash),
                 IsHead = headHash.Length > 0 && hash.Equals(headHash, StringComparison.OrdinalIgnoreCase),
             });
         }
@@ -894,8 +905,14 @@ public sealed class RevisionService
     ///  (which is also what keeps the artificial "working directory" / "index" rows and
     ///  the lane lines correct as the history grows).
     /// </summary>
-    public static IReadOnlyList<RevisionRow> BuildRevisionGraph(IReadOnlyList<RevisionRow> rows)
-        => BuildGraph(rows as List<RevisionRow> ?? [.. rows]);
+    /// <param name="colourPerBranch">
+    ///  Start a new colour at every commit a branch points at, so a stretch of history
+    ///  that has its own branch name is drawn in its own colour even when it shares one
+    ///  lane with the branch above it. See <see cref="BuildGraph"/>.
+    /// </param>
+    public static IReadOnlyList<RevisionRow> BuildRevisionGraph(
+        IReadOnlyList<RevisionRow> rows, bool colourPerBranch = false)
+        => BuildGraph(rows as List<RevisionRow> ?? [.. rows], colourPerBranch);
 
     /// <summary>
     ///  Re-links a <c>--follow</c> walk into the chain it actually is: each row's
@@ -960,7 +977,8 @@ public sealed class RevisionService
     private sealed record RepoMetadata(
         string HeadHash,
         Dictionary<ObjectId, List<string>> RefsByCommit,
-        HashSet<string> CommitsWithNotes);
+        HashSet<string> CommitsWithNotes,
+        HashSet<string> BranchTips);
 
     // Returns the cached metadata for the repository, re-reading it when the walk
     // restarts, when the repository changed, or when nothing is cached yet.
@@ -1006,6 +1024,12 @@ public sealed class RevisionService
 
         // Build an ObjectId -> ref-names lookup so we can show branches/tags inline.
         Dictionary<ObjectId, List<string>> refsByCommit = [];
+
+        // The commits that are the tip of a BRANCH — local or remote-tracking, never a
+        // tag or a stash. Read from IGitRef.IsHead/IsRemote rather than from the name,
+        // because the name cannot answer it: a local branch called
+        // "feat/workspace-retention" has a slash, and a tag can be called anything.
+        HashSet<string> branchTips = new(StringComparer.OrdinalIgnoreCase);
         try
         {
             foreach (IGitRef gitRef in module.GetRefs(RefsFilter.NoFilter))
@@ -1022,6 +1046,11 @@ public sealed class RevisionService
                 }
 
                 names.Add(gitRef.Name);
+
+                if (!gitRef.IsTag && !gitRef.IsStash && (gitRef.IsHead || gitRef.IsRemote))
+                {
+                    branchTips.Add(gitRef.ObjectId.ToString());
+                }
             }
         }
         catch
@@ -1031,7 +1060,7 @@ public sealed class RevisionService
 
         // Commits carrying a git note. Loaded with a SINGLE `git notes list` for the
         // whole repository (not one call per row) so the indicator column is cheap.
-        return new RepoMetadata(headHash, refsByCommit, LoadNotes(module));
+        return new RepoMetadata(headHash, refsByCommit, LoadNotes(module), branchTips);
     }
 
     /// <summary>
@@ -1139,8 +1168,23 @@ public sealed class RevisionService
     ///    continuous branch. Each lane carries an edge identity instead, allocated
     ///    when the lane is newly occupied and inherited when it merely continues.</item>
     ///  </list>
+    ///
+    ///  <para><b><paramref name="colourPerBranch"/></b> — a port addition, and the
+    ///  answer to a real complaint. Lane colouring can only distinguish what the DAG
+    ///  distinguishes: two branches that have not diverged yet share one lane, so a
+    ///  straight run of commits carrying three different branch names is drawn as one
+    ///  unbroken line in one colour. That is faithful to the geometry and useless to
+    ///  the reader, who can see three names and one colour.</para>
+    ///
+    ///  <para>With the flag on, a commit a BRANCH points at starts a new colour
+    ///  (<see cref="RevisionRow.IsBranchTip"/>). The edges arriving from above keep the
+    ///  colour they had, so the boundary is exactly at the named commit, and the node
+    ///  and everything below it — the commits that stretch of history owns, down to the
+    ///  next branch name — take the new one. Tags do not count: a tag marks a point, not
+    ///  a line of development, and treating one as a branch would repaint the history
+    ///  below every release.</para>
     /// </summary>
-    private static IReadOnlyList<RevisionRow> BuildGraph(List<RevisionRow> input)
+    private static IReadOnlyList<RevisionRow> BuildGraph(List<RevisionRow> input, bool colourPerBranch)
     {
         List<string?> lanes = [];
 
@@ -1173,6 +1217,15 @@ public sealed class RevisionService
             else
             {
                 nodeColor = colors[nodeLane];
+
+                // A branch points here, so this is where that branch's own history
+                // starts: give it a colour of its own. Only on the INHERITED path — a
+                // lane that had no descendant already took a fresh colour above, and
+                // burning a second one would just skip a hue in the cycle.
+                if (colourPerBranch && row.IsBranchTip)
+                {
+                    nodeColor = nextColor++;
+                }
             }
 
             // Every lane that was waiting for this commit ends here (children merge in).

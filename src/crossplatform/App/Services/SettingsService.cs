@@ -205,6 +205,24 @@ public sealed class AppPreferences
     public bool MulticolorBranches { get; set; } = true;
 
     /// <summary>
+    ///  Start a new graph colour at every commit a BRANCH points at, so a stretch of
+    ///  history that carries its own branch name is drawn in its own colour even when
+    ///  it shares a lane with the branch above it. Default on.
+    ///
+    ///  <para><b>No upstream counterpart.</b> Upstream's <c>MulticolorBranches</c> —
+    ///  and this port until now — colours by LANE, which can only distinguish what the
+    ///  DAG distinguishes: two branches that have not diverged share one lane, so a
+    ///  straight run of commits carrying three different branch names comes out as one
+    ///  unbroken line in one colour. Faithful to the geometry, useless to the reader,
+    ///  who can see three names and one colour.</para>
+    ///
+    ///  <para>Inert while <see cref="MulticolorBranches"/> is off: there is only one
+    ///  colour then, and dividing a line into segments of the same colour would be a
+    ///  setting with no effect.</para>
+    /// </summary>
+    public bool GraphColorPerBranch { get; set; } = true;
+
+    /// <summary>
     ///  Straighten a lane that shifts by one column between two rows, so the line meets
     ///  its other half instead of kinking (<c>AppSettings.StraightenGraphDiagonals</c>,
     ///  default on).

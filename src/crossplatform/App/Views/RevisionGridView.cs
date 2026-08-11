@@ -1073,7 +1073,17 @@ public sealed class RevisionGridView : UserControl
     // viewport is preserved: the user changed an appearance, not the set of rows.
     private void OnAppSettingsChanged() => Dispatcher.UIThread.Post(() =>
     {
+        bool colouredPerBranch = ColourPerBranch;
         ReadGridPreferences();
+
+        // Per-branch colouring is decided by the lane pass, not by the row template, so
+        // it is the one of these settings a rebind cannot show.
+        if (ColourPerBranch != colouredPerBranch)
+        {
+            RefreshGraph();
+            return;
+        }
+
         RefreshView();
     });
 
@@ -1088,6 +1098,14 @@ public sealed class RevisionGridView : UserControl
         // static, and a per-cell settings read would cost one file check per row.
         RevisionGraphControl.Multicolor = _gridPrefs.MulticolorBranches;
     }
+
+    /// <summary>
+    ///  Whether the graph starts a new colour at every branch tip. Inert while the
+    ///  palette is off: with one colour there is nothing to divide, and asking the
+    ///  builder to allocate identities nobody can see would only make the graph
+    ///  rebuild differently for no visible reason.
+    /// </summary>
+    private bool ColourPerBranch => _gridPrefs.MulticolorBranches && _gridPrefs.GraphColorPerBranch;
 
     /// <summary>
     ///  The height of a revision row, per app style: <see cref="Metrics.Density.RowHeight"/>
@@ -1488,7 +1506,7 @@ public sealed class RevisionGridView : UserControl
         // Re-run the layout over the combined list so the artificial nodes get real
         // lanes and the edge to HEAD is routed like any other, instead of being drawn
         // over lanes the layout has already given to somebody else.
-        return RevisionService.BuildRevisionGraph(display);
+        return RevisionService.BuildRevisionGraph(display, ColourPerBranch);
     }
 
     /// <summary>
@@ -1745,6 +1763,10 @@ public sealed class RevisionGridView : UserControl
         int generation = _loadGeneration;
         _loadingPage = true;
 
+        // Read on the UI thread and captured: the graph is rebuilt on the pool below,
+        // and _gridPrefs is replaced wholesale whenever the settings change.
+        bool colourPerBranch = ColourPerBranch;
+
         if (restart && !preserveView)
         {
             // A silent refresh keeps the real status line: flashing "Loading…" over
@@ -1806,7 +1828,7 @@ public sealed class RevisionGridView : UserControl
                     ? RevisionService.ChainFollowedHistory(merged)
                     : merged;
 
-                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(forGraph);
+                IReadOnlyList<RevisionRow> graphed = RevisionService.BuildRevisionGraph(forGraph, colourPerBranch);
 
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -2593,6 +2615,25 @@ public sealed class RevisionGridView : UserControl
         // The row SET is unchanged — only how each row is drawn — so the user must
         // keep looking at the same commits, still selected.
         RebindRows(preserveViewport: true);
+    }
+
+    /// <summary>
+    ///  <see cref="RefreshView"/> for a setting that changes the GRAPH rather than the
+    ///  painting of a row: the lane and colour pass runs before any row is built, so a
+    ///  rebind alone would redraw the same segments and the change would only appear at
+    ///  the next reload. Same row set, same viewport, same selection — the geometry is
+    ///  simply recomputed first.
+    /// </summary>
+    private void RefreshGraph()
+    {
+        // The lane pass is run HERE and not left to BuildDisplayRows: that one only
+        // re-runs it when it has artificial rows to splice in, and returns the list
+        // untouched otherwise — which is why toggling the setting on a clean working
+        // tree changed nothing at all until the next reload (seen on screen, and the
+        // reason this method exists rather than a plain RefreshView).
+        List<RevisionRow> commits = [.. _rows.Skip(_artificialCount)];
+        _rows = BuildDisplayRows(RevisionService.BuildRevisionGraph(commits, ColourPerBranch));
+        RefreshView();
     }
 
     // Recomputes, from the loaded rows, the reachability sets used by the two

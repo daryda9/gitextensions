@@ -160,6 +160,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private readonly CheckBox _nonRelativesTextGray;
     private readonly CheckBox _alternateRowColor;
     private readonly CheckBox _multicolorBranches;
+    private readonly CheckBox _colorPerBranch;
     private readonly CheckBox _straightenDiagonals;
     private readonly TextBox _straightenLimit;
     private readonly CheckBox _highlightAuthored;
@@ -910,6 +911,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _nonRelativesTextGray = new CheckBox();
         _alternateRowColor = new CheckBox();
         _multicolorBranches = new CheckBox();
+        _colorPerBranch = new CheckBox();
         _straightenDiagonals = new CheckBox();
         _highlightAuthored = new CheckBox();
         _gridTooltips = new CheckBox();
@@ -925,6 +927,16 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             _multicolorBranches,
             "DetailedSettingsPage/chkMulticolorBranches.Text",
             "Colour each branch of the graph differently");
+        Localize(
+            _colorPerBranch,
+            null,
+            "…and start a new colour at every branch name");
+
+        // Only meaningful while there IS a palette, and the checkbox says so by going
+        // grey rather than by silently doing nothing.
+        _multicolorBranches.IsCheckedChanged += (_, _) =>
+            _colorPerBranch.IsEnabled = _multicolorBranches.IsChecked == true;
+
         Localize(
             _straightenDiagonals,
             "DetailedSettingsPage/chkStraightenGraphDiagonals.Text",
@@ -948,6 +960,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             text,
             dim,
             _multicolorBranches,
+            Indented(_colorPerBranch),
             _alternateRowColor,
             _highlightAuthored,
             _nonRelativesTextGray,
@@ -1366,6 +1379,8 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         _nonRelativesTextGray.IsChecked = prefs.GraphDrawNonRelativesTextGray;
         _alternateRowColor.IsChecked = prefs.GraphDrawAlternateBackColor;
         _multicolorBranches.IsChecked = prefs.MulticolorBranches;
+        _colorPerBranch.IsChecked = prefs.GraphColorPerBranch;
+        _colorPerBranch.IsEnabled = prefs.MulticolorBranches;
         _straightenDiagonals.IsChecked = prefs.StraightenGraphDiagonals;
         _straightenLimit.Text = prefs.StraightenGraphSegmentsLimit.ToString(CultureInfo.InvariantCulture);
         _highlightAuthored.IsChecked = prefs.HighlightAuthoredRevisions;
@@ -1701,6 +1716,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         bool textGray = _nonRelativesTextGray.IsChecked == true;
         bool alternateRows = _alternateRowColor.IsChecked == true;
         bool multicolor = _multicolorBranches.IsChecked == true;
+        bool colorPerBranch = _colorPerBranch.IsChecked == true;
         bool straighten = _straightenDiagonals.IsChecked == true;
         int straightenLimit = Number(_straightenLimit, 80, 10_000);
         bool highlightAuthored = _highlightAuthored.IsChecked == true;
@@ -1764,6 +1780,7 @@ public sealed class SettingsWindow : Theming.ZoomWindow
             prefs.GraphDrawNonRelativesTextGray = textGray;
             prefs.GraphDrawAlternateBackColor = alternateRows;
             prefs.MulticolorBranches = multicolor;
+            prefs.GraphColorPerBranch = colorPerBranch;
             prefs.StraightenGraphDiagonals = straighten;
             prefs.StraightenGraphSegmentsLimit = straightenLimit;
             prefs.HighlightAuthoredRevisions = highlightAuthored;
@@ -2578,6 +2595,17 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         && value >= 0
             ? Math.Min(value, max)
             : fallback;
+
+    /// <summary>
+    ///  A control shifted right, for a sub-option that only means something while the
+    ///  one above it is on. The indent is the whole affordance: it says "this belongs
+    ///  to that" without a group box, which is what every other page here avoids.
+    /// </summary>
+    private static Control Indented(Control control)
+    {
+        control.Margin = new Thickness(22, -8, 0, 0);
+        return control;
+    }
 
     private Control Field(string? labelKey, string labelText, Control editor, IBrush dim)
     {
