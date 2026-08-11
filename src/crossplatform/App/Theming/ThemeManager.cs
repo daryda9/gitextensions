@@ -37,6 +37,7 @@ public static class ThemeManager
         "App.RepoStateClean", "App.RepoStateDirty", "App.RepoStateDirtySubmodules",
         "App.RepoStateMixed", "App.RepoStateStaged", "App.RepoStateUntrackedOnly",
         "App.RefPillBg", "App.RefBranch", "App.RefRemote", "App.RefTag", "App.RefNote",
+        "App.AuthoredTint",
         "App.Link",
         "App.HoverRow", "App.Hover", "App.Pressed", "App.BorderStrong",
         "App.IconGreen", "App.IconRed", "App.IconBlue",
@@ -197,6 +198,7 @@ public static class ThemeManager
         // read, and it clears ΔE 48 from the nearest of the other three refs under
         // normal, deuteranope AND protanope simulation.
         ["App.RefNote"] = Color.Parse("#9B8FD6"),
+        ["App.AuthoredTint"] = Color.Parse("#9B8FD6"),
         ["App.RefBranch"] = Color.Parse("#5FBF6B"),
         ["App.RefRemote"] = Color.Parse("#EE908A"),
         ["App.RefTag"] = Color.Parse("#D9A226"),
@@ -332,6 +334,7 @@ public static class ThemeManager
         // read, and it clears ΔE 48 from the nearest of the other three refs under
         // normal, deuteranope AND protanope simulation.
         ["App.RefNote"] = Color.Parse("#5A2D8A"),
+        ["App.AuthoredTint"] = Color.Parse("#5A2D8A"),
         ["App.RefBranch"] = Color.Parse("#256B29"),
         ["App.RefRemote"] = Color.Parse("#A83226"),
         ["App.RefTag"] = Color.Parse("#7E5800"),
@@ -567,6 +570,7 @@ public static class ThemeManager
         // read, and it clears ΔE 48 from the nearest of the other three refs under
         // normal, deuteranope AND protanope simulation.
         ["App.RefNote"] = Color.Parse("#9B8FD6"),
+        ["App.AuthoredTint"] = Color.Parse("#9B8FD6"),
         ["App.RefBranch"] = Color.Parse("#49B656"),
         ["App.RefRemote"] = Color.Parse("#EC837D"),
         ["App.RefTag"] = Color.Parse("#CC9924"),
@@ -740,6 +744,7 @@ public static class ThemeManager
         // read, and it clears ΔE 48 from the nearest of the other three refs under
         // normal, deuteranope AND protanope simulation.
         ["App.RefNote"] = Color.Parse("#5A2D8A"),
+        ["App.AuthoredTint"] = Color.Parse("#5A2D8A"),
         ["App.RefBranch"] = Color.Parse("#256A29"),
         ["App.RefRemote"] = Color.Parse("#A93226"),
         ["App.RefTag"] = Color.Parse("#7B5600"),

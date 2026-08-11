@@ -2871,10 +2871,22 @@ public sealed class RevisionGridView : UserControl
     }
 
     /// <summary>
-    ///  The authored-row tint: the panel colour nudged a tenth of the way towards the
-    ///  accent. NOT <c>App.HoverRow</c>, which is what the pointer paints — a whole
-    ///  column of rows wearing the hover colour reads as "everything is selected", which
-    ///  is exactly how this landed the first time.
+    ///  The authored-row tint: the row's own base nudged towards <c>App.AuthoredTint</c>,
+    ///  a violet that belongs to no other state.
+    ///
+    ///  <para><b>It used to lean on the accent, and that was wrong twice over.</b> The
+    ///  accent is blue, the selection fill is blue and <c>App.HoverRow</c> is a blue-grey:
+    ///  three of the six things a row background can mean were the same hue, and once
+    ///  M162 split the tint in two to keep the stripe, the hover landed between them.
+    ///  Measured in CIE76 over the four palettes, the hovered row was ΔE 2.8–8.1 from an
+    ///  authored row — at 2.8 (dark classic) literally the same colour, which is how a
+    ///  user ends up asking why they cannot see which row is selected: the row under
+    ///  their pointer looked exactly like the fifteen tinted ones around it.</para>
+    ///
+    ///  <para>Off the blue axis the same measurement gives ΔE 7.1–12.1 from the hover
+    ///  and 10.2–11.7 from the plain row, while the stripe inside the tint keeps ΔE
+    ///  3.2–6.0 — the same order as the stripe outside it — and the selection still
+    ///  stands 42–89 away from everything. Text on the tint stays above 7.4:1.</para>
     /// </summary>
     /// <param name="alternate">
     ///  Whether this is a striped row. The tint is mixed into the row's OWN base rather
@@ -2895,8 +2907,11 @@ public sealed class RevisionGridView : UserControl
     private static IBrush Tinted(string baseKey)
     {
         Color background = B(baseKey) is ISolidColorBrush b ? b.Color : Colors.Black;
-        Color accent = B("App.Accent") is ISolidColorBrush a ? a.Color : Colors.SteelBlue;
-        return new SolidColorBrush(Mix(background, accent, 0.10));
+        Color tint = B("App.AuthoredTint") is ISolidColorBrush a ? a.Color : Color.FromRgb(0x9B, 0x8F, 0xD6);
+
+        // 0.14, not the 0.10 the accent used: violet is a quieter hue against these
+        // greys, and at a tenth it read as a smudge rather than as a colour.
+        return new SolidColorBrush(Mix(background, tint, 0.14));
     }
 
     private static Color Mix(Color from, Color to, double amount) => Color.FromRgb(
