@@ -1348,7 +1348,39 @@ public sealed class RevisionGridView : UserControl
             EndQuickSearch();
             e.Handled = true;
         }
+        else if (e.Key == Key.Escape && !ctrl && !shift && !alt
+            && _list.SelectedItems is { Count: > 0 })
+        {
+            // Esc lets go of the selection — asked for explicitly, and NOT what the
+            // original does: upstream's Escape on this grid only hides the tooltip
+            // (RevisionGridControl.ProcessHotkey:914), and a commit is released there
+            // with Ctrl+click on the selected row. That gesture works here too; this is
+            // a second way to reach the same state, which the port has because the
+            // state itself is now something the grid can announce (SelectionCleared,
+            // M169).
+            //
+            // AFTER the quick-search branch above, never before it: while a
+            // type-to-search is running Esc belongs to the search, exactly as it does
+            // upstream, and unpicking the row the search just found would undo the
+            // search's own result.
+            ClearSelection();
+            e.Handled = true;
+        }
     }
+
+    /// <summary>
+    ///  Drops the selection, leaving no row picked — the state the grid is born in.
+    /// </summary>
+    /// <remarks>
+    ///  Assigning <c>SelectedIndex = -1</c> rather than emptying <c>SelectedItems</c>:
+    ///  the list is <see cref="SelectionMode.Multiple"/>, so clearing the collection
+    ///  raises one change per removed row, and each one costs the host the announcement
+    ///  work of a selection that is on its way out anyway. The single assignment empties
+    ///  the model in one batch — from which <c>SelectionChanged</c> is raised inside the
+    ///  <c>SelectionModel</c> update, which is why the re-template it triggers has to be
+    ///  deferred (see <c>_inSelectionChanged</c>).
+    /// </remarks>
+    public void ClearSelection() => _list.SelectedIndex = -1;
 
     // ---- translation ---------------------------------------------------------
 
