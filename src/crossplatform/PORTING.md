@@ -3418,6 +3418,61 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M166 (2026-08-12, `e73e0a5e7`) — una sola lingua per la chrome, e meno linee a disegnarla
+
+Richiesta dell'utente con due screenshot, il proprio e uno di VS Code: «vorrei rendere le linee di
+separazione più minimal, unificare i colori in modo che abbiano uno stile simile a VS Code».
+
+**Il problema non era il colore delle linee.** Misurato prima di toccare: `App.Border` sul pannello
+modern scuro sta a **1,58:1**, cioè esattamente dove sta la linea di VS Code (`panel.border` a ~1,5:1).
+Era il **numero** delle linee, il loro **spessore**, e il fatto che tre strisce disegnassero i propri
+pulsanti in tre modi diversi.
+
+**Le tre copie della barra.** La toolbar principale usa `Theming/BarButtonStyles` dal M77; la toolbar
+del diff e quella della lista dei file ne portavano una **copia privata** ciascuna, e le copie erano
+derivate: hover su `App.PanelAlt` (una superficie **più scura** della barra, quindi il pulsante sotto
+il puntatore si legge come un buco invece che come un rilievo) e stato agganciato riempito
+`App.Selection` con contorno `App.Accent`. L'albero del repository non ne usava nessuna, quindi i suoi
+sei filtri di categoria cadevano sulla chrome di Fluent: **sei scatole blu sature** nel pannello di
+sinistra, la cosa più rumorosa dello schermo e l'unico punto dell'app che dicesse «agganciato» così.
+Tutte e tre installano ora la stessa. Lo stato agganciato è `App.Pressed`, neutro, a **2,23:1** dalla
+barra scura e **1,90:1** da quella chiara.
+
+**Gli stati hanno perso il contorno.** Hover, pressione e aggancio si distinguono dal riposo per il
+**solo riempimento**. Il contorno non aggiungeva nulla che il riempimento non dicesse già — un
+pulsante a riposo non ne ha, quindi non era lui a dire dove fosse il pulsante — e su una fila di
+pulsantini disegnava un rettangolo intorno a ciascuno appena il puntatore lo attraversava.
+
+**Le linee doppie.** Nella lista dei file la toolbar chiudeva con la propria riga, e il contorno della
+casella di filtro cominciava **3 px sotto**: due capelli paralleli, misurati a `y=692`/`y=695` e
+`y=716`/`y=720`. Le tre barre impilate lì (toolbar, ricerca, filtro) dipingono tutte `App.Toolbar`,
+quindi una riga fra loro divide una superficie da se stessa: ora chiude solo l'ultima, che è sempre
+visibile.
+
+**Gli splitter erano linee spesse quattro.** Quattro viste (diff, file tree, blame, stash) davano al
+`GridSplitter` `Background = App.Border`. Un `GridSplitter` deve essere ~4 px per essere afferrabile,
+quindi il confine veniva disegnato **quattro volte più spesso** di ogni altra linea dell'app. Il
+dialogo di commit era già stato corretto a mano per questo motivo (M107). Nuovo `Theming/PaneSplitter`:
+la presa resta 4 px e trasparente, e una `Border` da 1 px nella stessa cella — aggiunta prima e non
+sensibile al puntatore — dice dov'è la cucitura.
+
+**La scheda selezionata non è più una scatola.** Erano quattro segnali insieme: riempimento
+`App.Selection`, contorno `App.Accent` su tre lati, barra accento da 2 px, testo pieno in SemiBold —
+cioè un rettangolo blu per ogni pannello, in una finestra che non ha altri rettangoli blu. Ne restano
+tre, ognuno indipendente e misurato: la barra accento legge **4,96:1** sulla striscia scura e
+**6,05:1** su quella chiara (il 3:1 che WCAG 1.4.11 chiede a un indicatore non testuale), l'inchiostro
+passa da `App.TextDim` ad `App.Text`, il peso va a SemiBold. Il riempimento diventa quello del **corpo**
+(`App.Panel`, 1,08:1 dalla striscia) ed è di proposito il segnale più debole: dice «stesso foglio del
+contenuto», non «sono io» — che è come VS Code separa una scheda attiva da una di sfondo.
+
+**Non toccato di proposito.** La famiglia **Classic** tiene la sua chrome: «Classic» significa il look
+pre-M77, e le sue schede e i suoi pulsanti sono quella scelta lì. E le **icone** restano bicolori: VS
+Code le ha monocrome, ma quelle sono le icone di Git Extensions e la richiesta parlava di linee e
+colori della chrome — se le si vuole monocrome è una decisione a parte.
+
+**Verificato a schermo** su Xvfb con `XDG_CONFIG_HOME` isolato, scuro e chiaro, su griglia, diff, file
+tree e blame.
+
 ## M165 (2026-08-11, `d4a2a360e`) — i conflitti di puntatore dei submodule si risolvono dalla parte che scegli
 
 Domanda dell'utente: «esiste un modo per gestire i conflitti di puntatori dei submodule?». La risposta
