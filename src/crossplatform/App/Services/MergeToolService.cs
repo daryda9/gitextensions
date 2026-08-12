@@ -365,6 +365,15 @@ public sealed class MergeToolService
     /// </summary>
     internal static IReadOnlyList<string> SplitLines(string text)
     {
+        // An empty file has NO lines, not one empty line. Split would say
+        // otherwise, and the difference is visible: comparing an added file
+        // against the side where it does not exist drew a phantom "removed blank
+        // line" under the additions.
+        if (text.Length == 0)
+        {
+            return [];
+        }
+
         string[] lines = text.Replace("\r\n", "\n").Split('\n');
         return lines.Length > 1 && lines[^1].Length == 0 ? lines[..^1] : lines;
     }

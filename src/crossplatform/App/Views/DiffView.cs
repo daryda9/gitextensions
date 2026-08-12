@@ -118,6 +118,7 @@ public sealed class DiffView : UserControl
     private readonly CopyPathsMenuItem _copyPathItem;
     private readonly MenuItem _blameItem;
     private readonly MenuItem _historyItem;
+    private readonly MenuItem _compareHereItem;
     private readonly MenuItem _difftoolItem;
     private readonly MenuItem _compareWorkingDirItem;
     private readonly MenuItem _copyDiffItem;
@@ -245,6 +246,8 @@ public sealed class DiffView : UserControl
         _blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
         _historyItem = new MenuItem();
         _historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
+        _compareHereItem = new MenuItem();
+        _compareHereItem.Click += (_, _) => _ = CompareSelectedHereAsync();
         _difftoolItem = new MenuItem();
         _difftoolItem.Click += (_, _) => OpenSelectedInExternalDiffTool();
         _compareWorkingDirItem = new MenuItem();
@@ -280,6 +283,7 @@ public sealed class DiffView : UserControl
                 _blameItem,
                 _historyItem,
                 new Separator(),
+                _compareHereItem,
                 _difftoolItem,
                 _compareWorkingDirItem,
             },
@@ -805,6 +809,7 @@ public sealed class DiffView : UserControl
         _copyPathItem.ApplyTranslations();
         _blameItem.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
         _historyItem.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
+        _compareHereItem.Header = T("Compare side by side…");
         _difftoolItem.Header = T("FileStatusList/tsmiOpenWithDifftool.Text", "Open in external difftool");
         _compareWorkingDirItem.Header = T(
             "RevisionGridControl/compareToWorkingDirectoryMenuItem.Text", "Compare file to working directory");
@@ -1075,6 +1080,78 @@ public sealed class DiffView : UserControl
         }
     }
 
+    /// <summary>
+    ///  Opens the two sides of the current comparison in the port's own
+    ///  side-by-side window (<see cref="DiffToolWindow"/>).
+    ///
+    ///  <para>Needs no <c>diff.tool</c>, which is the point: on a machine with
+    ///  nothing configured this is the only entry here that does anything. The
+    ///  external difftool keeps its own item right below.</para>
+    ///
+    ///  <para>Both versions are read off the UI thread through the same revision
+    ///  resolution "Copy old/new version" uses, so a rename, a range comparison and
+    ///  the artificial index rows all land on the right blobs. A side that does not
+    ///  exist — an added or deleted file — reads as empty rather than failing:
+    ///  comparing a file against nothing is a legitimate thing to want to see.</para>
+    /// </summary>
+    private async Task CompareSelectedHereAsync()
+    {
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        (string? leftRev, string leftPath) = ResolveSide(row, newVersion: false);
+        (string? rightRev, string rightPath) = ResolveSide(row, newVersion: true);
+
+        string repoPath = _repoPath;
+        string encoding = _options.EncodingName;
+        bool histogram = _viewerPrefs.UseHistogramDiffAlgorithm;
+
+        _status.Text = F(T("Comparing {0}…"), row.Name);
+
+        try
+        {
+            string left = await ReadSideAsync(repoPath, leftRev, leftPath, encoding);
+            string right = await ReadSideAsync(repoPath, rightRev, rightPath, encoding);
+
+            string? error = await DiffToolWindow.ShowAsync(
+                TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("No window"),
+                repoPath,
+                row.Name,
+                Label(leftRev, leftPath),
+                Label(rightRev, rightPath),
+                left,
+                right,
+                histogram);
+
+            _status.Text = error ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _status.Text = F(T("Compare error: {0}"), ex.Message);
+        }
+
+        static string Label(string? rev, string path)
+            => rev is null ? $"{path} — working tree" : $"{path} @ {rev}";
+    }
+
+    // An absent side is empty, not an error: "git show" fails for a path that does
+    // not exist at that revision, which is exactly the added/deleted case.
+    private static async Task<string> ReadSideAsync(
+        string repoPath, string? rev, string path, string encoding)
+    {
+        try
+        {
+            return await Task.Run(
+                () => ExtendedDiffTextService.GetFileTextAsync(repoPath, rev, path, encoding));
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
+
     // Fire-and-forget: launch the configured external difftool for the selected
     // file. The launch itself runs off the UI thread and the core runs the tool
     // detached, so neither call blocks; only a config error is surfaced (status).
@@ -1128,6 +1205,43 @@ public sealed class DiffView : UserControl
     private void CopyDiffText() => CopyToClipboard(_currentDiffText);
 
     /// <summary>
+    ///  Which revision and path one side of the current comparison is.
+    ///
+    ///  <para>Shared by "Copy old/new version" and by the built-in comparison
+    ///  window, because they are the same question asked twice and the answer is
+    ///  not obvious: the working tree has no revision, the "old" side of a single
+    ///  commit is its first parent, a rename's old side lives under its old path,
+    ///  and the artificial rows have real sides that are not commits — "Working
+    ///  directory" is (index → disk) and "Commit index" is (HEAD → index), where
+    ///  <c>":"</c> is git's own name for the index copy of a path.</para>
+    /// </summary>
+    private (string? Rev, string Path) ResolveSide(DiffFileRow row, bool newVersion)
+    {
+        bool workingTree = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree;
+
+        if (!_forceWorkingTreeCompare && IsArtificialMode)
+        {
+            bool index = _mode == CompareMode.Index;
+            return (
+                newVersion ? (index ? ":" : null) : (index ? "HEAD" : ":"),
+                newVersion ? row.Name : row.OldName ?? row.Name);
+        }
+
+        if (newVersion)
+        {
+            return (workingTree ? null : _commitHash, row.Name);
+        }
+
+        return (
+            _mode == CompareMode.Range
+                ? _baseHash ?? _commitHash
+                : workingTree
+                    ? _commitHash
+                    : _commitHash + "^",
+            row.OldName ?? row.Name);
+    }
+
+    /// <summary>
     ///  The original's "Copy new version" / "Copy old version": the whole file as
     ///  it is on one side of the comparison, not the patch. Which revision that is
     ///  depends on the comparison shown — the working tree has no revision, and the
@@ -1140,38 +1254,7 @@ public sealed class DiffView : UserControl
             return;
         }
 
-        bool workingTree = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree;
-
-        string? rev;
-        string path;
-
-        // The artificial rows have real sides, they are just not commits:
-        // "Working directory" is (index -> disk), "Commit index" is (HEAD -> index).
-        // ":" is git's own name for the index copy of a path (":<path>").
-        if (!_forceWorkingTreeCompare && IsArtificialMode)
-        {
-            bool index = _mode == CompareMode.Index;
-            rev = newVersion
-                ? (index ? ":" : null)
-                : (index ? "HEAD" : ":");
-            path = newVersion ? row.Name : row.OldName ?? row.Name;
-        }
-        else if (newVersion)
-        {
-            rev = workingTree ? null : _commitHash;
-            path = row.Name;
-        }
-        else
-        {
-            rev = _mode == CompareMode.Range
-                ? _baseHash ?? _commitHash
-                : workingTree
-                    ? _commitHash
-                    : _commitHash + "^";
-
-            // A rename's old side lives under its old path.
-            path = row.OldName ?? row.Name;
-        }
+        (string? rev, string path) = ResolveSide(row, newVersion);
 
         string repoPath = _repoPath;
         string encoding = _options.EncodingName;
@@ -2268,6 +2351,7 @@ public sealed class DiffView : UserControl
         // listening; here the host decides by subscribing or not.
         _filterFileInGridItem.IsVisible = FilterFileInGridRequested is not null;
         _filterFileInGridItem.IsEnabled = hasFile;
+        _compareHereItem.IsEnabled = hasCommitObject;
         _difftoolItem.IsEnabled = hasCommitObject;
         _compareWorkingDirItem.IsEnabled = hasCommitObject;
     }
