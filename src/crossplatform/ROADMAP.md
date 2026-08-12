@@ -26,11 +26,14 @@ Stato dei riferimenti: agosto 2026. Le fonti sono in fondo.
 
 | | |
 |---|---|
+| **M174** | **Difftool affiancato interno.** «Compare side by side…» nel menu dei file: `git diff --no-index -U0` fa il diff, l'allineamento viene dagli header di hunk, i numeri di riga vengono dall'allineamento e non dal documento. Non serve `diff.tool`. |
+| **M173** | **Collaudo del merge su conflitti veri** (5431 righe, UTF-8, CRLF, senza newline finale): due difetti trovati e chiusi. |
 | **M172** | **Editor di merge a tre vie interno.** `git merge-file --diff3` fa il merge, `MergeToolService` lo trasforma in chunk tipizzati, `MergeToolWindow` mostra LOCAL / BASE / REMOTE in sola lettura e il risultato modificabile sotto. Con `merge.tool` vuoto i pulsanti esterni sono disabilitati e **Merge funziona lo stesso**. kdiff3 resta dov'era. |
 
-È il primo mattone dell'indipendenza, ed è anche l'infrastruttura su cui
-appoggiare quasi tutto il resto di questo documento: il modello a chunk e il
-pannello editabile sono già lì.
+I due mattoni dell'indipendenza sono posati: conflitti e confronto si fanno in
+casa, e in entrambi i casi **il motore resta git** — `merge-file` e `diff`. Sono
+anche l'infrastruttura su cui appoggiare buona parte del resto di questo
+documento: pannelli allineati, evidenziatori e modello a chunk sono già lì.
 
 ---
 
@@ -40,7 +43,6 @@ Ordine di valore decrescente. La stima è di sforzo, non di calendario.
 
 | # | Voce | Perché | Sforzo | Appoggia su |
 |---|---|---|---|---|
-| 1.1 | **Difftool interno** (confronto a due vie fra due revisioni di un file, affiancate) | Oggi il confronto affiancato passa da `git difftool`, cioè di nuovo da un programma esterno. È lo stesso caso d'uso del merge senza la terza colonna. | M | `MergeToolWindow`, `DiffService` |
 | 1.2 | **Diff parola per parola / carattere per carattere** dentro la riga | Su una riga cambiata di due caratteri il diff per righe fa perdere tempo. È il motivo per cui la gente apre comunque un tool esterno. | M | `DiffView`, colorizer esistenti |
 | 1.3 | **Merge dei conflitti sui submodule** con scelta del commit in una lista | Oggi la risoluzione è per lati (M-precedenti): funziona, ma non fa vedere *cosa c'è in mezzo* fra i due commit. | M | `ConflictService.ChooseSubmoduleSide` |
 | 1.4 | **Diff di immagini** (affiancate, sovrapposte, differenza) | Nessun tool esterno per i PNG. Piccolo, molto visibile. | S | nuovo |
@@ -154,7 +156,7 @@ nell'impianto.
 
 ## 4. Ordine proposto
 
-1. **1.1 difftool interno** — chiude l'indipendenza, riusa M172.
+1. ~~**1.1 difftool interno**~~ — **fatto (M174)**.
 2. **2.1 palette dei comandi** — costo basso, resa altissima, `HotkeyService` è già lì.
 3. **3.1.2 messaggio di commit con IA** — porta dentro tutta l'infrastruttura IA sul caso più innocuo.
 4. **1.2 diff intra-riga** — toglie l'ultimo motivo per aprire un tool esterno.
