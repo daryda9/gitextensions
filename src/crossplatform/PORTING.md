@@ -3418,6 +3418,30 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M168 (2026-08-12, `3378cba7d`) — una striscia di schede sta sulla superficie a cui appartiene
+
+Segnalazione con screenshot: «qui il colore di sfondo di Commit ecc è diverso da quello subito sotto,
+rendi tutto flat». Misurato sull'immagine: la striscia legge `#141518` (`App.Window`), tutto ciò che
+sta sotto legge `#1C1D21` (`App.Panel`) — **uno scalino intero**. La striscia delle schede di
+repository aveva la stessa cucitura al contrario: `App.PanelAlt` sopra un corpo `App.Panel`.
+
+**Entrambe dipingono ora `App.Panel`**, cioè la superficie di ciò su cui stanno: una striscia è una
+fila di etichette sul pannello, non una mensola attraverso la finestra.
+
+**Non si perde niente.** Dal M166 la scheda selezionata è marcata dalla barra accento da 2 px,
+dall'inchiostro pieno e dal peso — nessuno dei tre ha bisogno che la striscia sia di un colore diverso
+dal corpo. La scheda di repository attiva tiene la sua riga accento sul bordo **superiore**
+(verificato a pixel: `(59,130,246)` a `y=156-157`, non era sparita, il mio primo campionamento
+partiva semplicemente troppo in basso).
+
+**L'hover di una scheda non selezionata si deriva ora da `App.Panel`.** Derivandolo ancora da
+`App.Window` l'eco del puntatore sarebbe stata **uno scalino sotto** il terreno su cui atterra, che si
+legge come un buco nella striscia invece che come un rilievo — lo stesso errore che il M166 ha
+corretto sui pulsanti di barra.
+
+**Verificato a schermo**, scuro e chiaro: striscia e corpo campionano lo stesso valore in entrambi
+(`(28,29,33)` e `(253,253,253)`), e i marcatori di attivo si leggono ancora.
+
 ## M167 (2026-08-12, `d51a8ae69`) — la cucitura fra due pannelli ha un colore suo, più sottile
 
 Seguito immediato del M166, con uno screenshot di VS Code e la frase «voglio uno stile di linea
