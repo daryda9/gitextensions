@@ -3418,6 +3418,42 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M169 (2026-08-12, `fbe0a7e7e`) — lasciare andare un commit non porta più giù l'app
+
+Segnalazione: «quando apro una repo e clicco su una commit, non ho più la possibilità di deselezionare
+la commit; nella repo originale, se premo esc mi fa la deselezione?».
+
+**Prima la domanda, verificata nel sorgente dell'originale**: no. `RevisionGridControl.ProcessHotkey`
+(`:914`) intercetta `Keys.Escape` **solo per nascondere il tooltip**, e l'Escape di
+`QuickSearchProvider` (`:102`) annulla la ricerca rapida. Nessuno dei due tocca la selezione. Nel
+Windows la selezione si lascia con **Ctrl+clic** sulla riga selezionata, che è il comportamento
+standard di un `DataGridView` in multi-selezione.
+
+**Poi il fatto**: nel port Ctrl+clic non era «rifiutato», **faceva crashare il processo**.
+`InvalidOperationException: Cannot change source while update is in progress`.
+
+**La catena**, che è la stessa forma fatale del M157 un anello più in là: svuotare la selezione cambia
+l'autore evidenziato → un autore diverso ri-templatizza **tutte** le righe → ri-templatizzare assegna
+`ItemsSource` → e tutto questo gira **dentro** il batch del `SelectionModel` da cui Avalonia alza
+`SelectionChanged`. La guardia `_rebinding` che già esisteva conosceva solo i batch che **questa vista
+apre da sé**; un batch aperto dal puntatore le passava accanto. Nuovo flag `_inSelectionChanged` a
+chiudere l'altra metà, e `RebindRows` rimanda alla stessa passata differita (Background, coalescente)
+che aveva già.
+
+**La seconda metà della stessa segnalazione.** Tolto il crash, la griglia restava vuota **e non diceva
+niente**: i tre eventi esistenti (`RevisionSelected`, `RangeSelected`, `ArtificialRevisionSelected`)
+portano tutti qualcosa, quindi «non è selezionato niente» era uno stato che l'host **non poteva sapere**
+— e i pannelli sotto continuavano a descrivere il commit appena lasciato. Nuovo evento
+`SelectionCleared`, e `MainWindow` risponde con lo stesso `ResetBottomPanes` che esegue al cambio di
+repository: quello che descrivevano non è più selezionato, è la stessa situazione.
+
+**Verificato a schermo** su Xvfb: seleziona → Ctrl+clic → pannelli vuoti (`No commit selected.`) e
+processo vivo; riseleziona → il commit si carica; stessa sequenza con la scheda Diff davanti, che
+svuota anche lista file e patch. **Zero eccezioni** nel log della sessione.
+
+**Non aggiunto**: Escape come scorciatoia di deselezione. Sarebbe una feature inedita (§4) e la regola
+è che non parte di iniziativa mia — si fa se la chiedi.
+
 ## M168 (2026-08-12, `3378cba7d`) — una striscia di schede sta sulla superficie a cui appartiene
 
 Segnalazione con screenshot: «qui il colore di sfondo di Commit ecc è diverso da quello subito sotto,
