@@ -3418,6 +3418,53 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M174 (2026-08-12, `67270c30c`) — difftool affiancato interno (feature INEDITA)
+
+Secondo mattone dell'indipendenza, dopo il M172. Il menu contestuale dei file nel pannello diff ha ora
+**«Compare side by side…»** sopra «Open in external difftool», che resta intatto. Non serve nessun
+`diff.tool`: su una macchina senza niente configurato è **l'unica voce lì dentro che fa qualcosa**.
+
+**Il diff è di git, come il merge.** Le due versioni finiscono in file temporanei e si confrontano con
+`git diff --no-index -U0`; di quell'uscita si leggono **solo gli header di hunk** e da quelli si
+costruisce l'allineamento. `--no-index` e non un diff fra revisioni per due motivi: è lo stesso
+percorso qualunque sia il lato (un commit, il working tree, o niente affatto — file aggiunto o
+cancellato), e tiene questa classe fuori dal problema dei rename, che il chiamante ha già risolto.
+`-U0` perché il contesto qui non serve: la vista mostra il file intero, quindi ogni riga fuori da un
+hunk è contesto per costruzione. Dentro l'hunk i due lati vengono **appaiati riga per riga**, così una
+riga cambiata sta di fronte alla riga da cui è cambiata — che è il motivo per cui si guardano due
+pannelli invece di una patch.
+
+**I numeri di riga vengono dall'allineamento, non dal documento.** I pannelli sono riempiti di righe
+fantoccio per restare allineati, quindi la numerazione dell'editor conterebbe l'imbottitura e
+sarebbe in disaccordo con il file. `AlignedLineNumberMargin` disegna i numeri veri e su una riga
+fantoccio **non scrive niente**: una riga che esiste da un lato solo non ha un numero dall'altro, e
+inventarglielo sarebbe una bugia su dove abita.
+
+Rifattorizzato `ResolveSide` in `DiffView`: la domanda «quale revisione e quale path è questo lato»
+la facevano già «Copy old/new version», ed è la stessa. Non è banale — il working tree non ha
+revisione, il lato vecchio di un commit singolo è il suo primo genitore, il lato vecchio di un rename
+vive sotto il vecchio path, e le righe artificiali hanno lati veri che non sono commit (`:` è il nome
+che git dà alla copia nell'indice).
+
+**Due difetti trovati provandolo, non ragionandoci.**
+
+1. **La finestra non aveva via d'uscita**: nessun pulsante, nessun Escape. Su una finestra di sola
+   lettura serve più che su una modale — l'unica uscita era il window manager, e sotto Xvfb (o per
+   chi non guarda la barra del titolo) non c'era proprio. Aggiunto **Close** con `IsCancel`.
+2. **Un file vuoto veniva spezzato in una riga vuota invece che in nessuna riga.** Confrontando un
+   file *aggiunto* contro il lato dove non esiste compariva una finta «riga vuota rimossa» sotto le
+   aggiunte. Corretto in `MergeToolService.SplitLines`, che serve entrambi gli strumenti.
+
+**Verificato a schermo** su clone usa-e-getta: `MainWindow.cs` fra un commit e il suo genitore —
+8 differenze, allineamento corretto, numeri di riga corretti su entrambi i lati (1181–1219 a schermo),
+▲▼ che portano da «1 di 8» a «4 di 8» con **i due pannelli che scorrono insieme**; un file **aggiunto**
+— dieci righe verdi a destra, dieci fantoccio a sinistra, nessuna riga fantasma; Escape chiude.
+Zero eccezioni. Build `--no-incremental`: `Avvisi: 0 / Errori: 0`.
+
+**Non coperto**: file binari (il confronto li tratterebbe come testo), e l'intestazione del lato
+sinistro di un file aggiunto continua a nominare la revisione richiesta (`<sha>^`) anche quando quella
+revisione non esiste — il pannello vuoto lo dice, ma l'etichetta non lo dice.
+
 ## M173 (2026-08-12, `373619bb0`) — collaudo dell'editor di merge su conflitti veri, e i due difetti che ha scoperto
 
 Il M172 era stato provato **solo** su un fixture sintetico: 40 righe ASCII, LF, due conflitti puliti.
