@@ -3418,6 +3418,43 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M171 (2026-08-12, `04b8a0cff`) — il primo clic su un commit mette a fuoco la griglia
+
+Segnalazione con due screenshot: «la prima volta che clicco la linea non ha i contorni bianchi, quando
+riclicco escono». Campionati entrambi: primo clic `#2F57AA` senza alone, secondo `#215BDD` con un
+rettangolo `#BACCF4` sopra e sotto. Sono la selezione **INATTIVA** e quella **ATTIVA** — il visual di
+riga legge il focus da tastiera vero sia per il riempimento sia per il rettangolo di focus — quindi la
+griglia dopo il primo clic **non aveva davvero il focus**.
+
+**La causa è il rebind, non il clic.** Il clic mette a fuoco la `ListBoxItem`; la selezione cambia
+l'autore evidenziato; un autore diverso ri-templatizza tutte le righe, cosa che **distrugge e ricrea i
+contenitori** — e con loro se ne va quello che aveva il focus.
+
+**Dimostrato dai due casi che lo incastrano**, non dedotto: cliccare una **seconda riga con lo stesso
+autore** dà il focus **al primo clic** (non ri-templatizza niente), e un **Esc** — che azzera l'autore
+— rimette il clic successivo nello stato senza focus. Riprodotto in entrambi i versi.
+
+**Il ripristino puntava al controllo sbagliato.** Una `ListBox` **non è focusabile**, lo sono le sue
+`ListBoxItem`: `_list.Focus()` era quasi un no-op ovunque comparisse. Nuovo `FocusSelectedRow`, che
+mette a fuoco il **contenitore della riga selezionata** e ripiega sulla lista solo se quel contenitore
+non è realizzato; ci passa ora anche `SelectIndex`, differito a `Loaded` perché `ScrollIntoView` ha
+appena chiesto la riga e il contenitore non esiste prima del layout successivo.
+
+**Rimette in funzione anche ciò che una griglia a fuoco sa FARE**, non solo come appare: con il focus
+fuori dalla lista le **frecce non muovevano niente** e la **type-to-search non partiva**, perché
+entrambe sono alzate sull'elemento a fuoco. Sono esattamente le due anomalie annotate nel M170 come
+«da guardare a parte»: stessa radice, chiuse qui.
+
+**Verificato a schermo**: primo clic → riempimento accento **e** alone; due `Down` → la selezione
+scende di due righe; digitare → compare l'adorner `quick-search: re…`; **Esc dismette la ricerca e
+TIENE la selezione**, il secondo Esc la lascia andare — la precedenza che nel M170 potevo solo
+argomentare dal codice, ora esercitata davvero.
+
+**Trappola del banco di prova, annotata**: la ricerca rapida scade dopo 4 s
+(`RevisionGridQuickSearchTimeout`). Un primo tentativo con `sleep` fra i tasti aveva fatto sembrare
+rotta la precedenza: era il buffer già scaduto, non il codice. I tasti della sequenza vanno inviati
+senza pause.
+
 ## M170 (2026-08-12, `7ef074bd2`) — Esc lascia andare il commit selezionato
 
 Richiesto esplicitamente dopo il M169, e **dichiarato per quello che è: una feature INEDITA** (§4).
