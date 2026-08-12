@@ -3418,6 +3418,46 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M167 (2026-08-12, `d51a8ae69`) — la cucitura fra due pannelli ha un colore suo, più sottile
+
+Seguito immediato del M166, con uno screenshot di VS Code e la frase «voglio uno stile di linea
+sottile come questo». Nel M166 avevo scritto che il colore della linea era «già giusto» perché
+`App.Border` sta a 1,58:1 e quella di VS Code a ~1,5:1: **quel ~1,5 era a memoria**. Misurato sullo
+screenshot vero, la linea di VS Code è **1 px `#2B2B2B`** e legge **1,16:1** sulla superficie
+dell'editor e **1,25:1** su quella del pannello. La mia era **mezza volta più forte**.
+
+**Due lavori, due token — come li tiene il riferimento** (`panel.border` `#2B2B2B` contro
+`menu.border` `#454545`):
+
+- **`App.Rule`** è la **cucitura dentro una finestra**: una toolbar e la lista sotto, due colonne ai
+  lati di uno splitter, la striscia delle schede e il corpo.
+- **`App.Border`** resta il **bordo di una cosa**: la carta di un flyout che galleggia sopra il
+  contenuto, la scatola attorno a un gruppo in un dialogo, il contorno che è l'**unica** cosa a dire
+  dove si può scrivere.
+
+**I valori.** `App.Rule` = `#2A2B32` (modern scuro) e `#E8E8EC` (modern chiaro): **1,19:1** e
+**1,20:1** sul pannello, 1,30 e 1,10 sulla finestra. È la stessa forbice del riferimento — un colore
+solo, letto contro l'una o l'altra delle due superfici che di volta in volta divide. Verificato
+campionando i pixel resi, non il sorgente: `(42,43,50)` e `(232,232,236)` sullo schermo.
+
+**Classic tiene `App.Rule` = `App.Border`.** Non per pigrizia: la sua `App.Toolbar` è `#333337`, cioè
+**più chiara** della riga assottigliata (`#323236`), quindi lì la linea non si attenuerebbe — **sparirebbe**
+su ogni toolbar della famiglia. E «Classic» significa il look pre-M77, la stessa decisione ferma che
+nel M166 ha lasciato stare le sue schede e i suoi pulsanti.
+
+**Venticinque punti strutturali** passano a `App.Rule` — righe di chiusura delle barre, separatori
+verticali delle toolbar, riga di ridimensionamento delle colonne della griglia, cuciture degli
+splitter — più **l'ultimo splitter dipinto rimasto**, quello del log dei comandi, che la passata del
+M166 non aveva visto: ora usa anche lui `Theming/PaneSplitter`.
+
+**Le caselle di testo NON sono passate**, di proposito. Il loro contorno non è una cucitura: è la sola
+cosa che dice dove si può scrivere, e su modern `App.Toolbar` **è** `App.Panel`, quindi un campo senza
+contorno non avrebbe nessun confine. Restano dove stavano (`App.Border` a 1,58:1 per il filtro della
+lista file, `App.BorderStrong` a 3:1 per la ricerca dell'albero e il filtro rapido della griglia).
+**Conseguenza da sapere**: adesso i contorni dei campi sono le linee più forti sullo schermo, perché
+tutto il resto è sceso. Se si vogliono assottigliare anche quelli è una decisione a parte — un campo
+vuoto con solo il segnaposto diventa vago, e va deciso guardandolo.
+
 ## M166 (2026-08-12, `e73e0a5e7`) — una sola lingua per la chrome, e meno linee a disegnarla
 
 Richiesta dell'utente con due screenshot, il proprio e uno di VS Code: «vorrei rendere le linee di
