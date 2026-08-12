@@ -3418,6 +3418,57 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M172 (2026-08-12, `d978b46c7`) — editor di merge a tre vie interno (feature INEDITA)
+
+Richiesto esplicitamente: «renderci indipendenti da software esterni come kdiff3». **Feature INEDITA
+per la regola del §4**: l'upstream non ha nessuna finestra del genere, si limita da sempre a lanciare
+`git mergetool`. Lo strumento esterno **non viene toccato**: «Open in \<tool\>» e «Start mergetool»
+restano dove erano, il pulsante **Merge** ora apre l'editor interno.
+
+**Il merge resta di git.** I tre stage dell'indice finiscono in file temporanei e li macina
+`git merge-file --diff3`, cioè lo stesso motore che usa `git merge` su un file. `MergeToolService`
+aggiunge solo la **struttura**: rilegge i blocchi di marker e li restituisce come chunk tipizzati.
+Riscrivere diff3 a mano avrebbe messo accanto a quella di git una seconda risposta, leggermente
+diversa, per il resto della vita del progetto. `--diff3` e non i marker a due vie: senza la base si
+vedono due versioni e non si capisce chi ha **aggiunto** e chi ha **tolto**.
+
+**Il documento È il modello.** Il pannello del risultato contiene i marker veri di git; ogni pulsante
+riscrive il blocco su cui si trova e il contatore «Conflitto n di m» viene **ri-derivato scansionando
+il testo dopo ogni battuta**. Per questo la modifica a mano e i pulsanti convivono senza un passo di
+riconciliazione: un modello tenuto accanto al testo dovrebbe indovinare cosa significa per lui una
+modifica arbitraria, questo non può sbagliare. L'unica aggiunta al formato di git è il suffisso `#n`
+sul marker di apertura, che lega il blocco alla regione da cui viene nei tre pannelli di riferimento
+e sparisce insieme al blocco appena il conflitto è chiuso.
+
+**Il buco che la prova a mano ha aperto, e la sua chiusura.** Rompendo il solo marker di apertura
+(`<x<<<<<<` battuto a mano) la scansione — volutamente severa — non vede più un conflitto e la
+finestra annunciava «tutti i conflitti risolti» sopra un file che conteneva ancora `|||||||`,
+`=======` e `>>>>>>>`. È l'unica risposta sbagliata che questa finestra non può dare. Aggiunto
+`CountStrayMarkers`: le righe di marker che non appartengono a nessun blocco completo vengono contate
+e riportate («3 leftover marker line(s) belong to no conflict»), il pulsante degrada a «Save anyway».
+
+Layout: LOCAL / BASE / REMOTE in sola lettura in alto, il risultato modificabile sotto — il pannello
+in cui si scrive è quello su cui l'occhio deve finire. Highlight con `IBackgroundRenderer` e non con
+un line transformer: un blocco di conflitto contiene righe vuote e un transformer colora solo
+caratteri, quindi avrebbe bucato il blocco in mezzo.
+
+**Verificato a schermo** (Xvfb :196, `XDG_CONFIG_HOME` isolato, repo fixture con 2 conflitti + 1 riga
+auto-mergiata):
+
+- «Take LOCAL» sul primo conflitto → contatore da «1 di 2» a «1 di 1», i tre pannelli si riposizionano
+  da soli sulla riga 20 in tutti e tre i file;
+- «Take REMOTE» sul secondo → «All conflicts resolved» in verde, il pulsante diventa
+  «Save and mark resolved»;
+- salvato: `git status --short` dà `M  app.py` (staged), `git ls-files --unmerged` **vuoto**, zero
+  marker nel file, la riga auto-mergiata (`line 30 main only`) è al suo posto e la newline finale
+  è conservata (`…line 40\n`);
+- «Both: L → R» concatena le due versioni e il conflitto successivo scala di una riga;
+- **con `merge.tool` e `merge.guitool` vuoti**: «Open in mergetool» e «Start mergetool» disabilitati
+  con il loro messaggio, **Merge abilitato** — che è tutto il punto dell'indipendenza;
+- zero eccezioni nei log delle tre sessioni.
+
+Build `--no-incremental`: `Avvisi: 0 / Errori: 0`.
+
 ## M171 (2026-08-12, `04b8a0cff`) — il primo clic su un commit mette a fuoco la griglia
 
 Segnalazione con due screenshot: «la prima volta che clicco la linea non ha i contorni bianchi, quando
