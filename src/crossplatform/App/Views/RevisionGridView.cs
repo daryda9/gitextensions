@@ -450,6 +450,18 @@ public sealed class RevisionGridView : UserControl
     //    halves of that loop.
     private bool _rebinding;
 
+    // Set while THE WIDGET'S OWN selection update is running — a click, a Ctrl+click,
+    // an arrow key — as opposed to _rebinding, which covers the batch this view starts
+    // itself. Both are fatal to the same assignment, and only one of them was guarded.
+    //
+    // Avalonia raises SelectionChanged from inside SelectionModel's batch update
+    // whatever opened it, so a handler that assigns ItemsSource throws the same
+    // "Cannot change source while update is in progress" whether the batch came from
+    // RebindRows or from the pointer. A CTRL+CLICK THAT CLEARED THE LAST SELECTED ROW
+    // took the process down for exactly this reason: emptying the selection changes the
+    // highlighted author, and a changed author re-templates every row.
+    private bool _inSelectionChanged;
+
     // A rebind asked for while one was already in flight. It cannot run now (see
     // above), so it is coalesced into a single deferred pass at Background priority
     // — after the in-flight assignment, and after the layout it triggers.
@@ -554,6 +566,19 @@ public sealed class RevisionGridView : UserControl
     ///  index rows are not commits and cannot be an end, or a member, of a range.</para>
     /// </summary>
     public event Action<IReadOnlyList<string>>? RangeSelected;
+
+    /// <summary>
+    ///  Raised when the selection becomes EMPTY — a Ctrl+click that unpicks the last
+    ///  selected row, which is how the original lets go of a commit (its grid is a
+    ///  multi-select <c>DataGridView</c>; upstream's Escape only hides the tooltip,
+    ///  <c>RevisionGridControl.ProcessHotkey</c>).
+    ///
+    ///  <para>It exists because "nothing is selected" is a state the host has to be
+    ///  told about, not one it can infer: the other three events all carry something,
+    ///  so a grid that went empty simply stopped talking and the panes below kept
+    ///  describing the commit the user had just released.</para>
+    /// </summary>
+    public event Action? SelectionCleared;
 
     /// <summary>Raised when the artificial "Working directory" row is clicked.</summary>
     public event Action? WorkingDirectorySelected;
@@ -899,6 +924,22 @@ public sealed class RevisionGridView : UserControl
                 return;
             }
 
+            // Everything below runs INSIDE the widget's selection batch, where an
+            // ItemsSource assignment is fatal (see _inSelectionChanged). Anything that
+            // wants to re-template rows from here is deferred by RebindRows instead.
+            _inSelectionChanged = true;
+            try
+            {
+                OnSelectionChanged();
+            }
+            finally
+            {
+                _inSelectionChanged = false;
+            }
+        };
+
+        void OnSelectionChanged()
+        {
             // The author of the selected revision is emphasised on every row that
             // shares it; a change of author re-templates the rows (see D7).
             UpdateAuthorHighlight();
@@ -947,8 +988,19 @@ public sealed class RevisionGridView : UserControl
             else
             {
                 _announcedRange = null;
+
+                // Nothing selected at all — a Ctrl+click that unpicked the last row.
+                // The panes below still hold the commit that WAS selected, so the host
+                // is told to empty them; without this the grid says "nothing" and the
+                // diff, detail, tree and GPG tabs go on describing a commit the user
+                // has just let go of.
+                if (_list.SelectedItems is null or { Count: 0 })
+                {
+                    _announcedHash = null;
+                    SelectionCleared?.Invoke();
+                }
             }
-        };
+        }
 
         // Keyboard shortcuts of the grid (see OnListKeyDown). Registered
         // TUNNELLING, and with handledEventsToo: the ListBox's own class handler runs
@@ -2349,10 +2401,11 @@ public sealed class RevisionGridView : UserControl
     /// </summary>
     private void RebindRows(bool preserveViewport)
     {
-        if (_rebinding)
+        if (_rebinding || _inSelectionChanged)
         {
-            // Re-entered from a SelectionChanged raised by an ItemsSource assignment
-            // that has not finished yet. Assigning again now is the fatal case
+            // Re-entered from a SelectionChanged that is still inside its selection
+            // batch — this view's own ItemsSource assignment, or the widget's own
+            // response to a click. Assigning again now is the fatal case
             // documented on _rebinding, so the request is remembered instead and run
             // once, later. Background priority (not Send/Normal) so it lands after
             // the current assignment AND the layout pass it schedules — the same

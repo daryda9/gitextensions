@@ -1118,6 +1118,11 @@ public sealed class MainWindow : Theming.ZoomWindow
     {
         _revisions.RevisionSelected += OnRevisionSelected;
         _revisions.RangeSelected += OnRangeSelected;
+
+        // Letting go of the selection puts the panes back to the state they are born
+        // in — the same reset a repository switch performs, and for the same reason:
+        // what they were describing is no longer selected.
+        _revisions.SelectionCleared += ResetBottomPanes;
         // The two artificial top rows both open the commit dialog on the repo.
         _revisions.WorkingDirectorySelected += () =>
         {
