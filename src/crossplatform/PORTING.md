@@ -3418,6 +3418,78 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M176 (2026-08-13, `897dfd07f`) — schede: due checkout distinti a colpo d'occhio (feature INEDITA)
+
+Segnalato: due cloni dello stesso progetto usati in parallelo hanno **gli stessi submodule**, quindi
+le loro schede si confondono. Chiesto «un meccanismo di colori e/o il nome della cartella padre».
+
+**Il nome della cartella padre c'era già**: `BuildLabels` allunga l'etichetta un segmento alla volta
+finché i percorsi in collisione non si separano (regola di VS Code), e infatti a schermo si legge
+`work/api`, `work/api/externals`, `review/api`, `review/api/externals`. Il punto è che **la differenza
+cade in mezzo** a due stringhe altrimenti identiche: si legge, non si vede.
+
+Aggiunta quindi la **pastiglia del checkout**: 3px di colore all'inizio di ogni scheda, uguale per
+tutte le schede dello stesso clone. Il checkout è il **working tree più esterno** sopra il percorso
+della scheda — il superprogetto di un submodule, o il repository stesso — trovato risalendo gli
+antenati in cerca di un `.git`, **file o cartella**, perché quello di un submodule è un file (testarlo
+solo come cartella avrebbe mancato esattamente il caso per cui la classe esiste). Solo filesystem:
+la risposta non può cambiare mentre la scheda è aperta, quindi un processo git per scheda per
+ridisegno non comprerebbe niente. `WorkspaceRoot` mette in cache per la vita del processo.
+
+**Spenta quando non dice niente.** Con un solo checkout aperto tutte le schede avrebbero lo stesso
+colore, cioè decorazione: non si dipinge nulla finché non compare un secondo checkout. È la stessa
+regola che seguono già le etichette — disambigua ciò che è ambiguo e lascia stare il resto. I colori
+vengono dalle tinte icona della palette, quindi seguono il tema, e l'ordine è quello di prima
+comparsa nella striscia, non un hash del percorso che cambierebbe rinominando una cartella.
+
+**Verificato a schermo** con due cloni veri di un repo con submodule: quattro schede, pastiglia
+**blu** sulle due di `work`, **ambra** sulle due di `review`; riaprendo con il solo `work` le pastiglie
+**spariscono** e le etichette tornano corte (`api`, `externals`). Zero eccezioni.
+
+## M175 (2026-08-13, `b2977ecc1`) — la scelta nel merge è uno stato, non una modifica a senso unico
+
+Segnalato usando lo strumento: «quando seleziono uno dei tasti non mi dà più la possibilità di
+scegliere le alternative». Vero, ed era un difetto di **progetto**, non un bug: la prima versione
+sostituiva il blocco di marker con il testo scelto, e così **distruggeva la regione** — le altre due
+versioni sparivano dal documento e la decisione era definitiva. Uno strumento di merge in cui il primo
+clic è finale non è uno strumento di merge.
+
+**Cosa fanno gli altri** (ricerca fatta prima di toccare il codice, e convergono): la decisione è
+sempre **rivedibile**. In kdiff3 i pulsanti A/B/C *selezionano le sorgenti* del conflitto e se ne può
+scegliere più di una; negli editor a tre pannelli le azioni per blocco («accetta questo lato»,
+«accetta entrambi») si possono rieseguire per cambiare risposta, e il pannello del risultato resta
+comunque un editor vero. Un altro schema ricorrente è il **controllo per conflitto messo dov'è il
+conflitto** (nel margine o sopra il blocco), non una barra globale che agisce su «quello corrente».
+
+**Nuovo modello.** Ogni conflitto è una `Region` che **resta viva** per tutta la vita della finestra,
+delimitata da due `TextAnchor` che il documento sposta da solo a ogni modifica. Scegliere un lato
+riscrive il testo *fra* le ancore e la regione è ancora lì, con dentro tutte e tre le versioni, pronta
+a ricevere un'altra risposta. Scegliere il lato già mostrato **rimette il conflitto**, così una
+decisione si disfa con lo stesso gesto con cui è stata presa. Le ancore hanno
+`MovementType` `BeforeInsertion` sull'inizio e `AfterInsertion` sulla fine: la sostituzione cancella
+il tratto (le due ancore collassano) e il testo nuovo viene inserito lì, con l'inizio che gli resta
+davanti e la fine che viene portata dall'altra parte.
+
+**Il documento resta la verità.** Niente registra cosa è stato scelto: la scelta è **dedotta**
+confrontando il testo fra le ancore con le versioni che la regione porta con sé, dopo ogni modifica.
+Per questo scrivere dentro una regione già risolta la marca «modificata a mano» senza alcuna
+contabilità, e una modifica a mano che riproduce un lato viene semplicemente mostrata come quel lato.
+
+**Cosa mancava rispetto agli strumenti affermati, e ora c'è**: stato per conflitto visibile **dov'è il
+conflitto** (margine con barra colorata e nome di quel che contiene: CONFLICT / LOCAL / REMOTE / BASE /
+L → R / R → L / EDITED); pulsanti che **riportano** lo stato del conflitto corrente invece di limitarsi
+a sparare; salto al **prossimo conflitto che nessuno ha ancora deciso**; «All LOCAL»/«All REMOTE» sui
+soli indecisi (un'azione di massa che sovrascrivesse risposte deliberate sarebbe un modo per perdere
+lavoro); «Restore conflict»; contatore *risolti su totale*; e il **cursore** che decide su quale
+conflitto agiscono i pulsanti, che è l'aspettativa che un editor crea ovunque.
+
+**Verificato a schermo**: LOCAL → REMOTE cambia davvero idea (margine, colore, toggle e contatore
+seguono); premere di nuovo il lato attivo rimette il blocco di marker e riporta il contatore a
+«0 di 2 decisi»; «All LOCAL» decide entrambi; digitare dentro una regione la marca **EDITED** in viola
+e nessun toggle resta acceso; «Take LOCAL» dopo EDITED ripristina il testo canonico; salvato →
+`ls-files --unmerged` vuoto, zero marker. Zero eccezioni. Build `--no-incremental`: `Avvisi: 0 /
+Errori: 0`.
+
 ## M174 (2026-08-12, `67270c30c`) — difftool affiancato interno (feature INEDITA)
 
 Secondo mattone dell'indipendenza, dopo il M172. Il menu contestuale dei file nel pannello diff ha ora
