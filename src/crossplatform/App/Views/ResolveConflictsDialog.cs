@@ -73,6 +73,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     private readonly TextBlock _baseName;
     private readonly TextBlock _theirName;
 
+    private readonly MenuItem _ctxMergeHere = new();
     private readonly MenuItem _ctxOpenInTool = new();
     private readonly MenuItem _ctxMarkResolved = new();
     private readonly MenuItem _ctxChooseOurs = new();
@@ -202,7 +203,12 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
             HorizontalContentAlignment = HorizontalAlignment.Center,
             Content = IconText.Header("Merge", T("FormResolveConflicts/merge.Text", "Merge")),
         };
-        _merge.Click += (_, _) => OpenSelectedInMergeTool();
+
+        // The Merge button opens the port's OWN editor (MergeToolWindow), not the
+        // external tool: it is the one action that works on a machine with nothing
+        // installed. The external tool keeps both of its buttons in the column on
+        // the right, so nothing is taken away from a user who prefers kdiff3.
+        _merge.Click += (_, _) => _ = MergeSelectedHereAsync();
 
         Grid infoRow = new()
         {
@@ -461,11 +467,16 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         bool mergeable = single is not null && !single.IsSubmodule;
         bool toolUsable = _mergeTool is not null && !_busy;
         _openInTool.IsEnabled = toolUsable && mergeable;
-        _merge.IsEnabled = toolUsable && mergeable;
+
+        // The built-in editor needs no configured tool, so it stays available when
+        // merge.tool is unset — which on a fresh Linux box is the normal case, and
+        // was until now the case where this window could do nothing but pick sides.
+        _merge.IsEnabled = !_busy && mergeable && single is { CanThreeWayMerge: true };
         _startMergetool.IsEnabled = toolUsable && _conflicts.Any(e => !e.IsSubmodule);
         _rescan.IsEnabled = !_busy;
         _reset.IsEnabled = !_busy;
 
+        _ctxMergeHere.IsEnabled = _merge.IsEnabled;
         _ctxOpenInTool.IsEnabled = _openInTool.IsEnabled;
         _ctxMarkResolved.IsEnabled = !_busy && selected.Count > 0;
         _ctxChooseOurs.IsEnabled = !_busy && selected.Count > 0;
@@ -586,6 +597,11 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
     private void BuildContextMenu()
     {
+        _ctxMergeHere.Header = T("Merge here…");
+        ToolTip.SetTip(_ctxMergeHere, T("Open the built-in three-way merge editor"));
+        _ctxMergeHere.InputGesture = new KeyGesture(Key.M);
+        _ctxMergeHere.Click += (_, _) => _ = MergeSelectedHereAsync();
+
         _ctxOpenInTool.Header = OpenInToolCaption();
         _ctxOpenInTool.Click += (_, _) => OpenSelectedInMergeTool();
 
@@ -632,6 +648,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         {
             ItemsSource = new List<Control>
             {
+                _ctxMergeHere,
                 _ctxOpenInTool,
                 _ctxMarkResolved,
                 new Separator(),
@@ -795,6 +812,53 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         ConflictChoice.Ours => T("FormResolveConflicts/_chooseLocalFileFailedText.Text", "Choose local file failed.") + " {0}",
         _ => T("FormResolveConflicts/_chooseRemoteFileFailedText.Text", "Choose remote file failed.") + " {0}",
     };
+
+    /// <summary>
+    ///  Opens the built-in three-way editor on the selected file. The window is
+    ///  modal on this dialog: <c>git mergetool</c> is launched detached because an
+    ///  external process must never freeze the app, but this editor <i>is</i> the
+    ///  app, and letting the list be reset underneath it would be a way to lose an
+    ///  edit rather than a convenience.
+    ///
+    ///  <para>The list rescans afterwards whether or not the file was saved: the
+    ///  editor stages on save, so a resolved path has to disappear from the list,
+    ///  and a cancelled merge costs one cheap <c>ls-files</c>.</para>
+    /// </summary>
+    private async Task MergeSelectedHereAsync()
+    {
+        ConflictEntry? entry = SingleSelection();
+        if (entry is null || _busy)
+        {
+            return;
+        }
+
+        if (!entry.CanThreeWayMerge)
+        {
+            _status.Text = Describe(entry) + " "
+                + T("Use the right-click menu to choose a side; there is no three-way merge to run.");
+            return;
+        }
+
+        SetBusy(true);
+        try
+        {
+            (bool resolved, string? error) = await MergeToolWindow.ShowAsync(this, _repoPath, entry);
+            _status.Text = error
+                ?? (resolved
+                    ? string.Format(T("{0} merged and staged."), entry.Path)
+                    : string.Format(T("{0} was left unresolved."), entry.Path));
+        }
+        catch (Exception ex)
+        {
+            _status.Text = ex.Message;
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        await ReloadAsync();
+    }
 
     private async Task MarkSelectedResolvedAsync()
     {
