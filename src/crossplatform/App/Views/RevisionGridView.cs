@@ -2469,7 +2469,13 @@ public sealed class RevisionGridView : UserControl
             ? items.OfType<RevisionRow>().Select(r => r.Hash).ToList()
             : [];
         Vector offset = _scroll?.Offset ?? default;
-        bool hadFocus = _list.IsKeyboardFocusWithin;
+
+        // IsFocused as well as IsKeyboardFocusWithin: the two are not the same control.
+        // Keyboard focus in this list lives on a ListBoxItem, so IsKeyboardFocusWithin
+        // is what a clicked row sets — but a restore that landed on the ListBox itself
+        // (see FocusSelectedRow's fallback) only sets IsFocused, and losing the flag on
+        // the next rebind would drop focus out of the grid for good.
+        bool hadFocus = _list.IsKeyboardFocusWithin || _list.IsFocused;
 
         // A FRESH collection instance, not _rows itself: re-assigning the very same
         // instance lets the virtualizing panel keep its realized containers (their
@@ -2530,10 +2536,44 @@ public sealed class RevisionGridView : UserControl
 
                 if (hadFocus)
                 {
-                    _list.Focus();
+                    FocusSelectedRow();
                 }
             },
             DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    ///  Puts keyboard focus back on the SELECTED ROW's container, falling back to the
+    ///  list itself only when that container is not realized.
+    /// </summary>
+    /// <remarks>
+    ///  <para><b>Why not simply <c>_list.Focus()</c>.</b> A <see cref="ListBox"/> is not
+    ///  a focusable control — its <see cref="ListBoxItem"/>s are — so focusing the list
+    ///  is close to a no-op, and every caller that did it was quietly leaving the grid
+    ///  unfocused. That is what "the first click on a commit draws no white outline"
+    ///  was: the click focuses the clicked item, the author highlight it triggers
+    ///  re-templates every row (a rebind destroys and recreates the containers), the
+    ///  focused container goes with them, and the restore aimed at the wrong control.
+    ///  The row then painted its INACTIVE selection — a calmer blue, no focus
+    ///  rectangle — because both of those read the real focus (see the row visual's
+    ///  Sync). A second click looked like it "fixed" it only because the author was
+    ///  already highlighted by then, so nothing re-templated and the focus survived.</para>
+    ///
+    ///  <para>It also restores what a focused grid can DO, not only how it looks: with
+    ///  focus outside the list the arrow keys move nothing and type-to-search never
+    ///  starts, because both are raised on the focused element.</para>
+    /// </remarks>
+    private void FocusSelectedRow()
+    {
+        int index = _list.SelectedIndex;
+        if (index >= 0
+            && _list.ContainerFromIndex(index) is Control container
+            && container.Focus())
+        {
+            return;
+        }
+
+        _list.Focus();
     }
 
     // Runs the single rebind that was coalesced while another one was in flight.
@@ -5247,7 +5287,12 @@ public sealed class RevisionGridView : UserControl
 
         _list.SelectedIndex = index;
         _list.ScrollIntoView(_rows[index]);
-        _list.Focus();
+
+        // The row, not the list (see FocusSelectedRow). Posted at Loaded priority
+        // because ScrollIntoView has only just asked for the row: its container does
+        // not exist until the layout pass that follows, and focusing before that would
+        // fall through to the list-level no-op.
+        Dispatcher.UIThread.Post(FocusSelectedRow, DispatcherPriority.Loaded);
     }
 
     private static TextBlock SectionLabel(string text)
