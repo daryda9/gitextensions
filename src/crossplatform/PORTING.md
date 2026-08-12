@@ -530,6 +530,47 @@ sorgenti via glob; a un certo punto il multi-target potrebbe essere più pulito.
 
 ---
 
+## 4. Sviluppi futuri **su richiesta** — feature INEDITE
+
+Cose che il port **potrebbe** fare e che **l'originale Windows non fa**. Non sono lacune di parità —
+la coda di parità è esaurita e i suoi residui stanno altrove (§ *Fuori scope* in `HANDOFF.md`): queste
+sono **aggiunte**.
+
+**Regole per questa lista, non negoziabili:**
+- **Nessuna voce si inizia di propria iniziativa.** Si fanno quando l'utente le chiede. Una voce qui
+  non è un TODO: è una proposta motivata, in attesa.
+- **Quando si consegnano, va detto che sono inedite.** Non c'è un comportamento upstream a cui
+  appellarsi se la scelta di design risulta sbagliata, quindi l'utente deve sapere che sta guardando
+  un'invenzione e non un porting.
+- Ogni voce dice anche **cosa va deciso prima di scrivere codice**, perché è lì che una feature inedita
+  si rompe.
+
+### 4.1 — Fondere il submodule dal superprogetto
+*(proposta nata da M165, 11/08/2026 — conflitti di puntatore dei submodule)*
+
+**Cosa manca.** Oggi un conflitto di puntatore si risolve **scegliendo una delle due parti** (M165), che
+è tutto ciò che fa anche l'originale. Manca la terza risposta, che è quella che serve davvero quando
+tutti e due i rami hanno fatto lavoro utile dentro il submodule: *«non voglio né X né Y, voglio X
+mergiato con Y»*. Oggi — e in upstream — si esce dall'app, si apre il submodule come repository a sé,
+si fa il merge lì dentro e si torna a fare `git add sub`.
+
+**Forma minima.** Dal dialogo dei conflitti: **«apri questo submodule in una scheda»**. Il port ha già
+le schede multi-repository (M131/M145) e il submodule è già navigabile dall'albero, quindi il pezzo
+mancante è **solo il ponte** dal conflitto alla scheda. Costo basso, valore già alto: la strada
+manuale diventa una strada dentro l'app.
+
+**Forma piena.** Dentro quella scheda, un invito a mergiare i due commit in conflitto — che il
+superprogetto **già conosce**: sono lo stage 2 e lo stage 3 dell'indice — e, al ritorno, registrare il
+risultato con lo stesso `update-index --cacheinfo 160000,<sha>,<path>` di M165.
+
+**Da decidere PRIMA di iniziare** (nessuna delle due ha una risposta upstream da copiare):
+1. cosa succede se il merge **dentro** il submodule va a sua volta in conflitto — il dialogo dei
+   conflitti si annida, o quello del superprogetto si mette in attesa?
+2. cosa registrare se l'utente **chiude la scheda a metà**: il puntatore resta in conflitto (e il
+   lavoro fatto nel submodule resta lì), oppure si registra il commit di merge appena creato?
+
+---
+
 ## Parità con Git Extensions
 
 > **Iterazione: 19 / 20** · parità **98.1%** (157/160 voci `[x]`, invariata:

@@ -866,6 +866,27 @@ infine A/B con e senza fix.
   link "View in GitHub", come servizio contro il REST v3 invece che come plugin.
 - **Colonna build status**: richiede integrazione con un build-server/CI. **È l'ultima voce.**
 
+### Sviluppi futuri **su richiesta** — feature INEDITE (non esistono in upstream)
+
+Roba che il port potrebbe fare e che **l'originale Windows non fa**. Non sono lacune di parità:
+sono aggiunte. Nessuna va iniziata di propria iniziativa — si fanno **quando l'utente le chiede**, e
+il fatto che siano inedite va detto quando si consegnano, perché non c'è un comportamento upstream a
+cui appellarsi se la scelta di design risulta sbagliata.
+
+- **Fondere il submodule dal superprogetto** *(proposta nata da M165, 11/08/2026)*. Oggi un conflitto
+  di puntatore si risolve **scegliendo una delle due parti** (M165), che è tutto ciò che fa anche
+  l'originale. Manca la terza risposta: *«non voglio né X né Y, voglio X mergiato con Y»*. Nell'originale
+  si esce dall'app, si apre il submodule come repository a sé, si fa il merge lì dentro e si torna a
+  fare `git add sub`.
+  Forma minima proposta: dal dialogo dei conflitti, **«apri questo submodule in una scheda»** — il port
+  ha già le schede multi-repository (M131/M145) e il submodule è già navigabile dall'albero, quindi il
+  pezzo mancante è solo il ponte dal conflitto alla scheda. Forma piena: dentro quella scheda, un
+  invito a mergiare i due commit in conflitto (che il superprogetto conosce: stage 2 e stage 3), e al
+  ritorno registrare il risultato con lo stesso `update-index --cacheinfo` di M165.
+  **Da valutare prima di iniziare**: cosa succede se il merge dentro il submodule a sua volta va in
+  conflitto (annidamento del dialogo), e cosa registrare se l'utente chiude la scheda a metà. Nessuna
+  delle due ha una risposta upstream da copiare.
+
 ---
 
 ## 5. Prompt pronto per riprendere
@@ -887,6 +908,10 @@ Materiale noto e già motivato, dietro le priorità:
   **build status** (serve un build server). Chiusi da allora, e da non riaprire come «rinviati»:
   il **repository-host GitHub** (M159), gli **script utente** (M156), le **~35 impostazioni**
   senza consumatore (M151–M155), i **6 scope hotkey** oltre a `FormBrowse` (M158).
+- **Sviluppi futuri SU RICHIESTA, feature inedite** (§4 di questo file e §4 di `PORTING.md`):
+  proposte che l'originale **non ha**. **Non si iniziano di propria iniziativa** — solo se l'utente
+  le chiede — e quando si consegnano va detto che sono inedite. Al momento una voce: **fondere il
+  submodule dal superprogetto** (nata da M165).
 - **Note estetiche aperte, piccole**: le **icone ambra** del file picker managed non sono
   sovrascrivibili (prova strutturale in M70) e stonano in tema chiaro; la pill **note** del grafo è un
   chip scuro in tema chiaro (5,34:1, passa AA); la coppia scura **string↔comment** della sintassi
