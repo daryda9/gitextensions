@@ -3418,6 +3418,44 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M173 (2026-08-12, `373619bb0`) — collaudo dell'editor di merge su conflitti veri, e i due difetti che ha scoperto
+
+Il M172 era stato provato **solo** su un fixture sintetico: 40 righe ASCII, LF, due conflitti puliti.
+Questo giro l'ha messo su materiale vero — clone usa-e-getta del repo, `MainWindow.cs` (5431 righe,
+8 conflitti fra cui **riga 1** e **ultima riga**), `PORTING.md` (8502 righe, UTF-8 italiano),
+un file CRLF con `* -text` in `.gitattributes` e uno **senza newline finale**.
+
+**Difetto 1 — la newline finale aggiunta di sua iniziativa.** Un file scritto apposta senza newline
+finale (quello di cui git dice «\ No newline at end of file») ne riceveva una al salvataggio. La causa
+non era il salvataggio ma **da dove leggeva il flag**: dall'output di `git merge-file`, che termina
+*sempre* la sua uscita — deve, il `>>>>>>>` di chiusura ha bisogno di una riga sua. Misurato e non
+supposto: tre file che finiscono tutti senza newline danno un merge che finisce `> t.txt\n`. Il flag
+ora si legge dal **nostro blob**. Prova finale: risolto prendendo LOCAL ovunque, `git status` è
+**completamente pulito**, cioè il risultato è byte per byte il file locale, newline assente compresa.
+
+**Difetto 2 — il `=======` isolato scambiato per detrito.** Sette segni di uguale sotto un titolo sono
+Markdown valido (heading setext) e i documenti di questo progetto sono Markdown: un file così avrebbe
+mostrato un allarme «marker avanzati» falso. Ora un `=======` non appaiato conta **solo se c'è altro
+detrito accanto**; i marker non ambigui contano da soli. Il caso vero — marker di apertura rotto a
+mano, `|||||||`/`=======`/`>>>>>>>` orfani — continua a dire «3 leftover marker line(s)», verificato.
+
+**La misura di prestazione che ha smentito la mia ipotesi.** La scansione gira a ogni battuta, e
+sospettavo fosse lei a far arrancare i file grandi. Misurato sotto Xvfb: **300 battute si assestano in
+3,7 s su 5431 righe e in 3,1 s su 40 righe**. La dimensione del file vale quindi ~2 ms a battuta, il
+resto è il banco di prova e il rendering dell'editor; la forma vecchia — ~27 000 lookup e allocazioni
+per carattere — misurava **gli stessi 3,7 s**. La scansione è stata riscritta lo stesso (una passata
+con `NextLine`, caratteri letti in posto, appaiamento sulle sole righe di marker), ma **come
+assicurazione, non come correzione di un rallentamento osservato**: è la versione che smetterebbe di
+scalare per prima. Annotato così perché la conclusione opposta era quella che stavo per scrivere.
+
+**Esito del collaudo.** Quattro file risolti dall'editor, `ls-files --unmerged` vuoto, zero marker
+residui, accenti (`città però`) intatti nel round trip UTF-8, CRLF conservati (60 CRLF, **0 LF
+isolati**), conflitti su riga 1 e su ultima riga gestiti, zero eccezioni nei log. Build
+`--no-incremental`: `Avvisi: 0 / Errori: 0`.
+
+**Non coperto**: un file Markdown con heading setext *e* un conflitto vero nello stesso file — il caso
+che la correzione 2 rende innocuo, ma che non è stato eseguito perché nel repo non esiste un file così.
+
 ## M172 (2026-08-12, `d978b46c7`) — editor di merge a tre vie interno (feature INEDITA)
 
 Richiesto esplicitamente: «renderci indipendenti da software esterni come kdiff3». **Feature INEDITA
