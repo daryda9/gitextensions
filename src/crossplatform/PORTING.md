@@ -3418,6 +3418,38 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M170 (2026-08-12, `7ef074bd2`) — Esc lascia andare il commit selezionato
+
+Richiesto esplicitamente dopo il M169, e **dichiarato per quello che è: una feature INEDITA** (§4).
+L'originale **non** lo fa — il suo Escape sulla griglia nasconde solo il tooltip
+(`RevisionGridControl.ProcessHotkey:914`) e il commit si lascia con Ctrl+clic sulla riga selezionata,
+che qui funziona dal M169. Questa è una **seconda strada allo stesso stato**, possibile ora che quello
+stato è qualcosa che la griglia sa annunciare (`SelectionCleared`).
+
+**Messo DOPO il ramo della ricerca rapida sullo stesso tasto**, mai prima: mentre è in corso una
+type-to-search l'Escape appartiene alla ricerca — è esattamente così che lo lega upstream
+(`QuickSearchProvider.OnPreviewKeyDown`) — e sfilare la riga che la ricerca ha appena trovato
+disferebbe il risultato della ricerca stessa. A garantirlo è **l'ordine della catena `else if`**, non
+una condizione che può divergere col tempo.
+
+`ClearSelection` assegna `SelectedIndex = -1` invece di svuotare `SelectedItems`: la lista è
+multi-selezione, quindi svuotare la collezione alzerebbe **un cambiamento per riga rimossa** e
+costerebbe all'host un annuncio per ciascuna. Un'assegnazione, un batch — differito dalla guardia del
+M169 come ogni altro.
+
+**Verificato a schermo** su Xvfb: seleziona un commit → Esc → nessuna riga selezionata e pannelli a
+`No commit selected.`.
+
+**Il dettaglio dell'ambiente, che vale per ogni prova da tastiera futura**: sotto Xvfb **senza window
+manager** il focus X è `PointerRoot`, e Avalonia non consegna i tasti al controllo cliccato finché non
+si imposta esplicitamente `set_input_focus` sulla finestra. Senza quel passo l'Escape sembrava non
+fare niente — non era il codice.
+
+**Osservazione emersa provando, NON corretta qui**: con il focus impostato correttamente, due `Down`
+sulla griglia non spostano la selezione e digitare una lettera non fa partire la ricerca rapida. Può
+essere una conseguenza di `SelectionMode.Multiple` (in cui le frecce muovono il focus e non la
+selezione) oppure un difetto vero. È fuori dalla richiesta e non l'ho toccato: va guardato a parte.
+
 ## M169 (2026-08-12, `fbe0a7e7e`) — lasciare andare un commit non porta più giù l'app
 
 Segnalazione: «quando apro una repo e clicco su una commit, non ho più la possibilità di deselezionare
