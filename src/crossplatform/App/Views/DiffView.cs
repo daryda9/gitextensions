@@ -371,7 +371,11 @@ public sealed class DiffView : UserControl
         _editor.AddHandler(PointerWheelChangedEvent, OnDiffWheel, RoutingStrategies.Tunnel);
 
         // ---- diff toolbar (mirrors the Windows diff viewer's right-hand strip) ----
-        AddToolbarStyles();
+        // The shared bar look, not a copy of it. This strip carried its own since M107
+        // and had drifted: hover on App.PanelAlt (a surface DARKER than the bar, so the
+        // button read as a hole) and a checked state filled App.Selection and outlined
+        // App.Accent — a blue box no other strip in the app draws.
+        Theming.BarButtonStyles.Apply(Styles);
 
         // Tooltips are not passed here: every one of them is (re-)applied by
         // ApplyTranslations, which also runs on a language switch.
@@ -632,7 +636,6 @@ public sealed class DiffView : UserControl
         GridSplitter splitter = new()
         {
             Width = 4,
-            Background = B("App.Border"),
             ResizeDirection = GridResizeDirection.Columns,
         };
         Grid.SetColumn(splitter, 1);
@@ -640,7 +643,7 @@ public sealed class DiffView : UserControl
         Grid.SetColumn(diffPane, 2);
 
         split.Children.Add(filesHost);
-        split.Children.Add(splitter);
+        Theming.PaneSplitter.Add(split, splitter);
         split.Children.Add(diffPane);
 
         DockPanel root = new() { Background = B("App.Window") };
@@ -1780,46 +1783,6 @@ public sealed class DiffView : UserControl
 
     // ---------------------------------------------------------------- toolbar
 
-    // Flat toolbar chrome: the Fluent templates paint a button's background
-    // through their inner ContentPresenter, so style that part directly.
-    private void AddToolbarStyles()
-    {
-        IBrush hover = B("App.PanelAlt");
-        IBrush border = B("App.Border");
-        IBrush selection = B("App.Selection");
-
-        // Each style is "difftool" plus zero or more pseudo-classes; they must be
-        // chained as separate Class(...) calls (a single "a:b" string would be read
-        // as one class name and never match).
-        void Chrome<T>(string[] pseudo, IBrush background, IBrush stroke)
-            where T : TemplatedControl =>
-            Styles.Add(new Style(x =>
-            {
-                Selector s = x.OfType<T>().Class("difftool");
-                foreach (string cls in pseudo)
-                {
-                    s = s.Class(cls);
-                }
-
-                return s.Template().OfType<ContentPresenter>().Name("PART_ContentPresenter");
-            })
-            {
-                Setters =
-                {
-                    new Setter(ContentPresenter.BackgroundProperty, background),
-                    new Setter(ContentPresenter.BorderBrushProperty, stroke),
-                    new Setter(ContentPresenter.CornerRadiusProperty, new CornerRadius(3)),
-                },
-            });
-
-        Chrome<Button>([], Brushes.Transparent, Brushes.Transparent);
-        Chrome<Button>([":pointerover"], hover, border);
-        Chrome<ToggleButton>([], Brushes.Transparent, Brushes.Transparent);
-        Chrome<ToggleButton>([":pointerover"], hover, border);
-        Chrome<ToggleButton>([":checked"], selection, B("App.Accent"));
-        Chrome<ToggleButton>([":checked", ":pointerover"], selection, B("App.Accent"));
-    }
-
     // The caption is always a glyph, never a translated word; the tooltip is set
     // separately by ApplyTranslations so a language switch can revisit it.
     private Button ToolButton(string glyph, Action? onClick)
@@ -1841,7 +1804,7 @@ public sealed class DiffView : UserControl
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        button.Classes.Add("difftool");
+        button.Classes.Add(Theming.BarButtonStyles.Class);
 
         if (onClick is not null)
         {
@@ -1877,7 +1840,7 @@ public sealed class DiffView : UserControl
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        button.Classes.Add("difftool");
+        button.Classes.Add(Theming.BarButtonStyles.Class);
         button.IsCheckedChanged += (_, _) => onChanged(button.IsChecked == true);
 
         return button;

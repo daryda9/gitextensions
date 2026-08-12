@@ -292,6 +292,13 @@ public sealed class RepoObjectsTree : UserControl
         // fields when it opens, so seeding them here is all the restore needs.
         RestoreFilterPrefs();
 
+        // The bar look shared with every other strip (Theming/BarButtonStyles). Without
+        // it the six category toggles fell through to Fluent's own ToggleButton chrome,
+        // whose checked state is App.Selection filled and App.BorderStrong outlined —
+        // six saturated blue boxes in the left panel, the loudest thing on screen and
+        // the only place in the app that said "latched" that way.
+        BarButtonStyles.Apply(Styles);
+
         _tree = new TreeView
         {
             Background = Brushes.Transparent,
@@ -432,6 +439,7 @@ public sealed class RepoObjectsTree : UserControl
             Margin = new Thickness(0, 0, 1, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        button.Classes.Add(BarButtonStyles.Class);
         ToolTip.SetTip(button, tip);
         button.Click += (_, _) => onClick();
         return button;
@@ -452,6 +460,7 @@ public sealed class RepoObjectsTree : UserControl
             Margin = new Thickness(0, 0, 1, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        toggle.Classes.Add(BarButtonStyles.Class);
         ToolTip.SetTip(toggle, tip);
         toggle.Click += (_, _) =>
         {

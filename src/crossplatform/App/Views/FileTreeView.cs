@@ -252,7 +252,6 @@ public sealed class FileTreeView : UserControl
         GridSplitter splitter = new()
         {
             Width = 4,
-            Background = B("App.Border"),
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
 
@@ -272,7 +271,7 @@ public sealed class FileTreeView : UserControl
         Grid.SetColumn(splitter, 1);
         Grid.SetColumn(right, 2);
         root.Children.Add(treeHost);
-        root.Children.Add(splitter);
+        Theming.PaneSplitter.Add(root, splitter);
         root.Children.Add(right);
 
         Content = root;

@@ -46,16 +46,14 @@ internal static class BarButtonStyles
     /// </summary>
     internal static void Apply(Styles styles)
     {
-        IBrush border = Brush("App.Border", "#3F3F46");
-
         // App.Hover / App.Pressed, not App.PanelAlt / App.Panel: those two are DARKER
         // than a bar, so a button under the pointer reads as a hole punched in it
         // instead of a lift.
         IBrush hover = Brush("App.Hover", "#444448");
         IBrush pressed = Brush("App.Pressed", "#555558");
 
-        Add<Button>(styles, hover, pressed, border);
-        Add<ToggleButton>(styles, hover, pressed, border);
+        Add<Button>(styles, hover, pressed);
+        Add<ToggleButton>(styles, hover, pressed);
     }
 
     /// <summary>The class an action button must carry to get the look below.</summary>
@@ -157,26 +155,33 @@ internal static class BarButtonStyles
         return style;
     }
 
-    private static void Add<T>(Styles styles, IBrush hover, IBrush pressed, IBrush border)
+    // The three live states differ from rest by their FILL ALONE — no outline is added
+    // on hover, press or latch. The outline was doing no work the fill was not already
+    // doing (a button at rest has none, so it never told the user where the button was),
+    // and on a strip of adjacent small buttons it drew a rectangle around each one the
+    // moment the pointer crossed it. The fills carry it on their own: App.Pressed reads
+    // 2.23:1 against the modern dark bar and 1.90:1 against the light one, App.Hover
+    // 1.69 / 1.54:1 — the level a toolbar's own hover and active fills sit at.
+    private static void Add<T>(Styles styles, IBrush hover, IBrush pressed)
         where T : TemplatedControl
     {
         styles.Add(Presenter<T>(null, new Setter(ContentPresenter.BackgroundProperty, Fade(hover)),
             new Setter(Animatable.TransitionsProperty, new Transitions()),
             new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent),
-            new Setter(ContentPresenter.CornerRadiusProperty, new CornerRadius(3))));
+            new Setter(ContentPresenter.CornerRadiusProperty, Metrics.Radius.SmCorner)));
 
         styles.Add(Presenter<T>(":pointerover",
             new Setter(ContentPresenter.BackgroundProperty, hover),
-            new Setter(ContentPresenter.BorderBrushProperty, border)));
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
 
         styles.Add(Presenter<T>(":pressed",
             new Setter(ContentPresenter.BackgroundProperty, pressed),
-            new Setter(ContentPresenter.BorderBrushProperty, border)));
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
 
         // Only a ToggleButton has it, but the selector costs nothing on the others.
         styles.Add(Presenter<T>(":checked",
             new Setter(ContentPresenter.BackgroundProperty, pressed),
-            new Setter(ContentPresenter.BorderBrushProperty, border)));
+            new Setter(ContentPresenter.BorderBrushProperty, Brushes.Transparent)));
     }
 
     // The Fluent template paints a button's chrome through its inner ContentPresenter,

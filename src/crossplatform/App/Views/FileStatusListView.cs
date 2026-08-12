@@ -203,7 +203,11 @@ public sealed class FileStatusListView : UserControl
             Setters = { new Setter(ContentPresenter.BackgroundProperty, B("App.Selection")) },
         });
 
-        AddToolbarStyles();
+        // The shared bar look (Theming/BarButtonStyles), not the private copy this
+        // view carried: that copy hovered on App.PanelAlt and drew a checked toggle as
+        // an App.Selection box outlined in App.Accent, so the three grouping buttons
+        // were saturated blue while the identical buttons on the main toolbar were not.
+        Theming.BarButtonStyles.Apply(Styles);
 
         // ---- toolbar ----
         _collapseGroupsButton = IconButton("CollapseAll", "⊟", CollapseOrExpandGroups);
@@ -228,11 +232,14 @@ public sealed class FileStatusListView : UserControl
         });
         splitContent.Children.Add(_groupMenuButton);
 
+        // No box around the pair: the main toolbar's own split buttons (MainToolbar's
+        // shell and push hosts) are a transparent host holding body, divider and arrow,
+        // and these two were the only ones drawing a permanent outlined rectangle —
+        // two boxes in a row of otherwise bare icons.
         _asTreeSplit = new Border
         {
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(3),
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
             Child = splitContent,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(1, 0),
@@ -257,9 +264,8 @@ public sealed class FileStatusListView : UserControl
 
         _findSplit = new Border
         {
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(3),
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
             Child = findSplitContent,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(1, 0),
@@ -288,11 +294,14 @@ public sealed class FileStatusListView : UserControl
         _toolbar.Children.Add(_byStatusButton);
         _toolbar.Children.Add(_findSplit);
 
+        // No closing line of its own. The three bars stacked here — this one, the find
+        // row and the filter row — all paint App.Toolbar, so a rule between them divides
+        // one surface from itself; and the filter row's TextBox carries its own outline
+        // 3 px below, which is what put two parallel hairlines a hair apart under this
+        // strip. The filter row, which is always visible, closes the stack for all three.
         _toolbarBar = new Border
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(0, 0, 0, 1),
             Child = _toolbar,
         };
 
@@ -380,11 +389,10 @@ public sealed class FileStatusListView : UserControl
         findRow.Children.Add(_findBox);
         findRow.Children.Add(_findClearButton);
 
+        // Same as _toolbarBar: no rule of its own, the filter row below closes the stack.
         _findBar = new Border
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
-            BorderThickness = new Thickness(0, 0, 0, 1),
             Child = findRow,
             IsVisible = false,
         };
@@ -1614,43 +1622,6 @@ public sealed class FileStatusListView : UserControl
 
     // ----------------------------------------------------------- toolbar chrome
 
-    // Flat toolbar chrome: the Fluent templates paint a button's background
-    // through their inner ContentPresenter, so style that part directly.
-    private void AddToolbarStyles()
-    {
-        IBrush hover = B("App.PanelAlt");
-        IBrush border = B("App.Border");
-        IBrush selection = B("App.Selection");
-
-        void Chrome<T>(string[] pseudo, IBrush background, IBrush stroke)
-            where T : TemplatedControl =>
-            Styles.Add(new Style(x =>
-            {
-                Selector s = x.OfType<T>().Class("filestatustool");
-                foreach (string cls in pseudo)
-                {
-                    s = s.Class(cls);
-                }
-
-                return s.Template().OfType<ContentPresenter>().Name("PART_ContentPresenter");
-            })
-            {
-                Setters =
-                {
-                    new Setter(ContentPresenter.BackgroundProperty, background),
-                    new Setter(ContentPresenter.BorderBrushProperty, stroke),
-                    new Setter(ContentPresenter.CornerRadiusProperty, new CornerRadius(3)),
-                },
-            });
-
-        Chrome<Button>([], Brushes.Transparent, Brushes.Transparent);
-        Chrome<Button>([":pointerover"], hover, border);
-        Chrome<ToggleButton>([], Brushes.Transparent, Brushes.Transparent);
-        Chrome<ToggleButton>([":pointerover"], hover, border);
-        Chrome<ToggleButton>([":checked"], selection, B("App.Accent"));
-        Chrome<ToggleButton>([":checked", ":pointerover"], selection, B("App.Accent"));
-    }
-
     // An icon button that degrades to a glyph when the icon is missing from the
     // reused Windows resources.
     private Button IconButton(string? icon, string glyph, Action onClick)
@@ -1665,7 +1636,7 @@ public sealed class FileStatusListView : UserControl
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        button.Classes.Add("filestatustool");
+        button.Classes.Add(Theming.BarButtonStyles.Class);
         button.Click += (_, _) => onClick();
 
         return button;
@@ -1683,7 +1654,7 @@ public sealed class FileStatusListView : UserControl
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        button.Classes.Add("filestatustool");
+        button.Classes.Add(Theming.BarButtonStyles.Class);
 
         button.IsCheckedChanged += (_, _) =>
         {

@@ -424,7 +424,6 @@ public sealed class BlameView : UserControl
         GridSplitter splitter = new()
         {
             ResizeDirection = GridResizeDirection.Rows,
-            Background = B("App.Border"),
             Height = 4,
         };
 
@@ -445,7 +444,7 @@ public sealed class BlameView : UserControl
         Grid.SetRow(linesHost, 5);
         root.Children.Add(topBar);
         root.Children.Add(_detail);
-        root.Children.Add(splitter);
+        Theming.PaneSplitter.Add(root, splitter);
         root.Children.Add(_findBar);
         root.Children.Add(_headerHost);
         root.Children.Add(linesHost);

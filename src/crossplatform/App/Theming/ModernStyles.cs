@@ -872,10 +872,10 @@ public static class ModernStyles
         SolidColorBrush? text = P(app, "App.Text");
         SolidColorBrush? textDim = P(app, "App.TextDim");
         SolidColorBrush? accent = P(app, "App.Accent");
-        SolidColorBrush? selection = P(app, "App.Selection");
+        SolidColorBrush? body = P(app, "App.Panel");
 
         if (window is null || border is null || text is null
-            || textDim is null || accent is null || selection is null)
+            || textDim is null || accent is null || body is null)
         {
             return styles;
         }
@@ -885,7 +885,6 @@ public static class ModernStyles
         // themes. Hover must stay quieter than the selected fill — it is a pointer
         // echo, not a second selection.
         SolidColorBrush stripHover = Derived(window, text, 0.08);
-        SolidColorBrush selectionHover = Derived(selection, text, 0.10);
 
         // The RESTING values of the three properties this template cross-fades, each
         // one its own arrival colour at alpha 0. See Faded: Brushes.Transparent here
@@ -928,26 +927,39 @@ public static class ModernStyles
         styles.Add(hover);
 
         // ---- selected --------------------------------------------------------------
-        // Four independent signals, none of them a hairline: the App.Selection fill,
-        // the App.Accent border on three sides, the 2px accent bar in its own row, and
-        // full-strength ink at SemiBold. App.Text on App.Selection measures 13.9:1
-        // (light) and 10.4:1 (dark); the accent border's OUTER edge, which is what
-        // locates the tab against the strip, measures 3.95:1 on App.Window light and
-        // 3.72:1 dark — the same 3:1 floor the focus ring was held to.
+        // The selected tab is the PAGE, drawn one row higher: it takes the body's own
+        // App.Panel fill, so it reads as the front sheet running into the content under
+        // it, and the 2px App.Accent bar in its own row marks which sheet that is. No
+        // outline: an App.Accent rectangle around a filled App.Selection tab made every
+        // pane header a saturated blue box, four of them stacked down a window that has
+        // no other blue box in it.
+        //
+        // The three signals that remain are each independent and each measurable: the
+        // accent bar reads 4.96:1 against the strip's App.Window in the dark family and
+        // 6.05:1 in the light one, well clear of the 3:1 WCAG 1.4.11 asks of a non-text
+        // indicator; the ink goes from App.TextDim to full-strength App.Text; and the
+        // weight goes to SemiBold. The fill change (App.Window -> App.Panel, 1.08:1
+        // dark / 1.09:1 light) is
+        // deliberately the WEAKEST of them — it is the "same sheet as the body" cue, not
+        // the marker — which is exactly how VS Code separates an active tab from a
+        // background one.
         //
         // The focus ring stays distinct because it is a different SHAPE in a different
         // layer: a 2px accent rectangle with an App.Text halo, drawn all the way round
-        // the tab by the adorner layer, over a tab that is already filled or not.
+        // the tab by the adorner layer.
         Style selected = new(x => x.OfType<TabItem>().Class(":selected"));
-        selected.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, selection));
-        selected.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, accent));
+        selected.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, body));
+        selected.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, Faded(border)));
         selected.Setters.Add(new Setter(TemplatedControl.ForegroundProperty, text));
         selected.Setters.Add(new Setter(TemplatedControl.FontWeightProperty, Metrics.Text.ActiveWeight));
         styles.Add(selected);
 
+        // Hover on the tab that is ALREADY selected does nothing but lift the fill by
+        // the same step an unselected tab gets, so the pointer still echoes without the
+        // tab changing what it says.
         Style selectedHover = new(x => x.OfType<TabItem>().Class(":selected").Class(":pointerover"));
-        selectedHover.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, selectionHover));
-        selectedHover.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, accent));
+        selectedHover.Setters.Add(new Setter(TemplatedControl.BackgroundProperty, Derived(body, text, 0.06)));
+        selectedHover.Setters.Add(new Setter(TemplatedControl.BorderBrushProperty, Faded(border)));
         styles.Add(selectedHover);
 
         // The marker at rest: App.Accent at alpha 0 (see Faded and the template).

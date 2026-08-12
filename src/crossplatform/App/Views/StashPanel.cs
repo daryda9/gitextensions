@@ -336,9 +336,9 @@ public sealed class StashPanel : UserControl
         Grid.SetColumn(diffHost, 4);
 
         split.Children.Add(listPanel);
-        split.Children.Add(Splitter(1));
+        Theming.PaneSplitter.Add(split, Splitter(1));
         split.Children.Add(filesHost);
-        split.Children.Add(Splitter(3));
+        Theming.PaneSplitter.Add(split, Splitter(3));
         split.Children.Add(diffHost);
 
         DockPanel root = new();
@@ -364,7 +364,6 @@ public sealed class StashPanel : UserControl
         GridSplitter splitter = new()
         {
             Width = 4,
-            Background = B("App.Border"),
             ResizeDirection = GridResizeDirection.Columns,
         };
         Grid.SetColumn(splitter, column);
