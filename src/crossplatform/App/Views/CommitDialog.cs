@@ -690,7 +690,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _gutterBorder = new Border
         {
             Child = _gutterScroll,
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderBrush = Brush("App.Rule", Brushes.Gray),
             BorderThickness = new Thickness(0, 0, 1, 0),
             ClipToBounds = true,
         };
@@ -3839,7 +3839,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         return new Border
         {
             Background = Brush("App.Panel", Brushes.Black),
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderBrush = Brush("App.Rule", Brushes.Gray),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = StyleDensity.BarButtonWide,
             ClipToBounds = true,

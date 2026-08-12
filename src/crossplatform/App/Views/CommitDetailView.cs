@@ -215,7 +215,7 @@ public sealed class CommitDetailView : UserControl
         Border separator = new()
         {
             Height = 1,
-            Background = B("App.Border"),
+            Background = B("App.Rule"),
             Margin = new Thickness(14, 0, 14, 0),
         };
 

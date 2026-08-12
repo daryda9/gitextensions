@@ -161,7 +161,6 @@ public sealed class OutputView : UserControl
         {
             Height = 4,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Background = Brush("App.Border", Brushes.Gray),
             ResizeDirection = GridResizeDirection.Rows,
         };
 
@@ -169,7 +168,7 @@ public sealed class OutputView : UserControl
         Grid.SetRow(splitter, 1);
         Grid.SetRow(_detailScroll, 2);
         split.Children.Add(_items);
-        split.Children.Add(splitter);
+        Theming.PaneSplitter.Add(split, splitter);
         split.Children.Add(_detailScroll);
 
         DockPanel root = new() { Background = Brush("App.Window", Brushes.DimGray) };

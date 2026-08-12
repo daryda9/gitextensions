@@ -152,7 +152,7 @@ public sealed class GpgView : UserControl
         return new Border
         {
             Background = B("App.Panel"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = grid,
         };

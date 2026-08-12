@@ -41,7 +41,7 @@ internal static class PaneSplitter
 
         Border rule = new()
         {
-            Background = Icons.Tint("App.Border") ?? SolidColorBrush.Parse("#3F3F46"),
+            Background = Icons.Tint("App.Rule") ?? SolidColorBrush.Parse("#3F3F46"),
             Width = vertical ? 1 : double.NaN,
             Height = vertical ? double.NaN : 1,
             HorizontalAlignment = vertical ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,

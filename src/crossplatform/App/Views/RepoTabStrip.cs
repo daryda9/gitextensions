@@ -128,7 +128,7 @@ public sealed class RepoTabStrip : UserControl
         Content = new Border
         {
             Background = B("App.PanelAlt"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = _scroll,
         };
@@ -630,7 +630,7 @@ public sealed class RepoTabStrip : UserControl
         Border root = new()
         {
             // The 1px rule on the right is the separator between two tabs.
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 1, 0),
             // MinHeight, never Height: at the "Large" UI size the label is taller than
             // any fixed row would be, and a clipped repository name is unreadable.

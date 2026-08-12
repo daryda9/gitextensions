@@ -146,7 +146,7 @@ public sealed class FileContentView : UserControl
 
         _gutterBorder = new Border
         {
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderBrush = Brush("App.Rule", Brushes.Gray),
             BorderThickness = new Thickness(0, 0, 1, 0),
             Child = _gutterScroll,
             IsVisible = false,
@@ -167,7 +167,7 @@ public sealed class FileContentView : UserControl
         Border statusBar = new()
         {
             Background = Brush("App.Toolbar", Brushes.DimGray),
-            BorderBrush = Brush("App.Border", Brushes.Gray),
+            BorderBrush = Brush("App.Rule", Brushes.Gray),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = _status,
         };

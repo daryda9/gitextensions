@@ -1083,7 +1083,7 @@ public sealed class RepositoryProgressBanner : UserControl
         {
             IsVisible = false,
             Background = Brush("App.Panel", "#252526"),
-            BorderBrush = Brush("App.Border", "#3F3F46"),
+            BorderBrush = Brush("App.Rule", "#3F3F46"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(0, 4),
             Child = row,

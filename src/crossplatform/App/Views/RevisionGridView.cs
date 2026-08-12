@@ -845,7 +845,7 @@ public sealed class RevisionGridView : UserControl
         Border searchBar = new()
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(10, 6, 10, 6),
             Child = bar,
@@ -5303,7 +5303,7 @@ public sealed class RevisionGridView : UserControl
         return new Border
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(0, 3, 0, 3),
             Child = grid,
@@ -5337,7 +5337,7 @@ public sealed class RevisionGridView : UserControl
             Width = 1,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Stretch,
-            Fill = B("App.Border"),
+            Fill = B("App.Rule"),
         };
 
         Border handle = new()
@@ -5357,7 +5357,7 @@ public sealed class RevisionGridView : UserControl
         };
 
         handle.PointerEntered += (_, _) => rule.Fill = B("App.Accent");
-        handle.PointerExited += (_, _) => rule.Fill = B("App.Border");
+        handle.PointerExited += (_, _) => rule.Fill = B("App.Rule");
 
         double startWidth = 0;
         double startX = 0;

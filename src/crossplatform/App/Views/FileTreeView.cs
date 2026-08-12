@@ -232,7 +232,7 @@ public sealed class FileTreeView : UserControl
         Border statusBar = new()
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = _status,
         };

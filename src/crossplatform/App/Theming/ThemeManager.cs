@@ -27,7 +27,7 @@ public static class ThemeManager
     // Resource keys used across the app (see the B(...) helpers in the views).
     private static readonly string[] Keys =
     [
-        "App.Window", "App.Panel", "App.PanelAlt", "App.Toolbar", "App.Border",
+        "App.Window", "App.Panel", "App.PanelAlt", "App.Toolbar", "App.Border", "App.Rule",
         "App.Text", "App.TextDim", "App.Accent", "App.AccentFill", "App.Selection", "App.GraphGreen",
         "App.Control", "App.Foreground", "App.PanelBackground",
         "App.DiffAdded", "App.DiffRemoved",
@@ -59,6 +59,14 @@ public static class ThemeManager
         ["App.PanelAlt"] = Color.Parse("#2D2D30"),
         ["App.Toolbar"] = Color.Parse("#333337"),
         ["App.Border"] = Color.Parse("#3F3F46"),
+
+        // DELIBERATELY the same value as App.Border in the Classic family, which is
+        // the pre-M77 look and keeps its own line weight — the same standing decision
+        // that left Classic's tabs and bar buttons alone. It cannot take the modern
+        // seam anyway: App.Toolbar is LIGHTER than the rule there (#333337 against a
+        // #323236 that would land at 1.20:1 on App.Panel), so a thinned line would
+        // vanish on every toolbar in the family rather than merely quieten.
+        ["App.Rule"] = Color.Parse("#3F3F46"),
         ["App.Text"] = Color.Parse("#DCDCDC"),
         ["App.TextDim"] = Color.Parse("#9B9B9B"),
         ["App.Accent"] = Color.Parse("#007ACC"),
@@ -258,6 +266,9 @@ public static class ThemeManager
         ["App.PanelAlt"] = Color.Parse("#ECECEC"),
         ["App.Toolbar"] = Color.Parse("#E4E4E4"),
         ["App.Border"] = Color.Parse("#C4C4C4"),
+
+        // Classic keeps its own line weight here too, see the dark block.
+        ["App.Rule"] = Color.Parse("#C4C4C4"),
         ["App.Text"] = Color.Parse("#1E1E1E"),
         ["App.TextDim"] = Color.Parse("#6A6A6A"),
         ["App.Accent"] = Color.Parse("#007ACC"),
@@ -411,6 +422,21 @@ public static class ThemeManager
         // downward. Classic keeps its own #333337 bar: that band IS the 2015 look.
         ["App.Toolbar"] = Color.Parse("#1C1D21"),
         ["App.Border"] = Color.Parse("#3C3E47"),
+
+        // The SEAM between two panes of one window — a toolbar and the list under it,
+        // two columns either side of a splitter — as opposed to App.Border, which is
+        // the EDGE OF A THING: a flyout card floating over the content, a box drawn
+        // round a group in a dialog. VS Code keeps the same two apart for the same
+        // reason (panel.border #2B2B2B against menu.border #454545), and measuring a
+        // screenshot of it is where these numbers come from: its seam reads 1.16:1 on
+        // the editor surface and 1.25:1 on the panel one. App.Border was drawing them
+        // at 1.58:1 here — a third again as strong as the reference — which is what
+        // "make the lines thinner" turned out to mean once measured.
+        //
+        // 1.19:1 on App.Panel and on App.Toolbar (the same value in this family),
+        // 1.30:1 on App.Window, 1.06:1 on App.PanelAlt. The spread is the reference's
+        // own: one colour read against whichever of two surfaces it happens to divide.
+        ["App.Rule"] = Color.Parse("#2A2B32"),
 
         // Text 8.90 -> 10.34:1, TextDim 4.39 -> 4.70:1, each against the worst of the
         // six surfaces it lands on. TextDim used to fail AA on the diff tints (4.39).
@@ -654,6 +680,10 @@ public static class ThemeManager
         // 4.67 -> 5.29:1).
         ["App.Toolbar"] = Color.Parse("#FDFDFD"),
         ["App.Border"] = Color.Parse("#C2C2CB"),
+
+        // Light half of the seam (see the dark block). 1.20:1 on App.Panel and
+        // App.Toolbar, 1.10:1 on App.Window, 1.03:1 on App.PanelAlt.
+        ["App.Rule"] = Color.Parse("#E8E8EC"),
 
         // Text 12.87 -> 13.27:1, TextDim 4.17 -> 4.67:1 on the worst of the six
         // surfaces. TextDim failed AA on the removed-line tint before (4.17).

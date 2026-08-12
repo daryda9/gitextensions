@@ -368,7 +368,7 @@ public sealed class MainToolbar : UserControl
     public MainToolbar()
     {
         IBrush toolbar = Brush("App.Toolbar", "#333337");
-        IBrush border = Brush("App.Border", "#3F3F46");
+        IBrush border = Brush("App.Rule", "#3F3F46");
 
         Background = toolbar;
 
@@ -437,7 +437,7 @@ public sealed class MainToolbar : UserControl
     /// </summary>
     private void Build()
     {
-        IBrush border = Brush("App.Border", "#3F3F46");
+        IBrush border = Brush("App.Rule", "#3F3F46");
 
         // Stale descriptors would keep the discarded controls (and their captions)
         // alive in the overflow menu.

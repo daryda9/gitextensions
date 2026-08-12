@@ -1102,7 +1102,7 @@ public sealed class DashboardView : UserControl
         return new Border
         {
             Background = B("App.PanelAlt"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(16, 14, 16, 14),
             Child = panel,

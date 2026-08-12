@@ -363,7 +363,7 @@ public sealed class BlameView : UserControl
         _findBar = new Border
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = findPanel,
             IsVisible = false,
@@ -416,7 +416,7 @@ public sealed class BlameView : UserControl
         {
             // App.Border, not Brushes.Gray: the rest of the file is themed and a
             // fixed #808080 rule reads as a hard line on the light panel.
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = BuildHeader(),
         };

@@ -522,7 +522,7 @@ public sealed class DiffView : UserControl
         Border toolbarBar = new()
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = toolbar,
         };
@@ -565,7 +565,7 @@ public sealed class DiffView : UserControl
         _findBar = new Border
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = findPanel,
             IsVisible = false,
@@ -1850,7 +1850,7 @@ public sealed class DiffView : UserControl
     {
         Width = 1,
         Margin = new Thickness(3, 4),
-        Background = B("App.Border"),
+        Background = B("App.Rule"),
     };
 
     // The gear menu: the same options as the toolbar, plus the zoom commands.

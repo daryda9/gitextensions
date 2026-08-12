@@ -228,7 +228,7 @@ public sealed class FileStatusListView : UserControl
         {
             Width = 1,
             Margin = new Thickness(0, 4),
-            Background = B("App.Border"),
+            Background = B("App.Rule"),
         });
         splitContent.Children.Add(_groupMenuButton);
 
@@ -258,7 +258,7 @@ public sealed class FileStatusListView : UserControl
         {
             Width = 1,
             Margin = new Thickness(0, 4),
-            Background = B("App.Border"),
+            Background = B("App.Rule"),
         });
         findSplitContent.Children.Add(_findMenuButton);
 
@@ -349,7 +349,7 @@ public sealed class FileStatusListView : UserControl
         Border filterBar = new()
         {
             Background = B("App.Toolbar"),
-            BorderBrush = B("App.Border"),
+            BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = filterRow,
         };
@@ -1692,6 +1692,6 @@ public sealed class FileStatusListView : UserControl
     {
         Width = 1,
         Margin = new Thickness(3, 4),
-        Background = B("App.Border"),
+        Background = B("App.Rule"),
     };
 }
