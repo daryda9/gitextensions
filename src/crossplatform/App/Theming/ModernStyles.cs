@@ -867,14 +867,13 @@ public static class ModernStyles
     {
         Styles styles = [];
 
-        SolidColorBrush? window = P(app, "App.Window");
         SolidColorBrush? border = P(app, "App.Border");
         SolidColorBrush? text = P(app, "App.Text");
         SolidColorBrush? textDim = P(app, "App.TextDim");
         SolidColorBrush? accent = P(app, "App.Accent");
         SolidColorBrush? body = P(app, "App.Panel");
 
-        if (window is null || border is null || text is null
+        if (border is null || text is null
             || textDim is null || accent is null || body is null)
         {
             return styles;
@@ -884,7 +883,12 @@ public static class ModernStyles
         // same rule the rest of this file uses, so it inverts by itself between
         // themes. Hover must stay quieter than the selected fill — it is a pointer
         // echo, not a second selection.
-        SolidColorBrush stripHover = Derived(window, text, 0.08);
+        //
+        // Derived from App.PANEL, not App.Window: the strips these tabs live on now
+        // paint the body's own surface (MainWindow's _bottom, RepoTabStrip), so a hover
+        // computed off App.Window would be a step away from the ground it lands on and
+        // would read as a hole rather than a lift on the darker family.
+        SolidColorBrush stripHover = Derived(body, text, 0.08);
 
         // The RESTING values of the three properties this template cross-fades, each
         // one its own arrival colour at alpha 0. See Faded: Brushes.Transparent here

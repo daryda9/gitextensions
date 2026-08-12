@@ -127,7 +127,12 @@ public sealed class RepoTabStrip : UserControl
 
         Content = new Border
         {
-            Background = B("App.PanelAlt"),
+            // Same flattening as the pane tabs below (MainWindow's _bottom): the strip
+            // takes the surface of what it sits over instead of App.PanelAlt, so the
+            // repository tabs are a row of labels on the window rather than a raised
+            // band across it. The active tab keeps its accent bar, which is what marks
+            // it now that its App.Panel fill matches the strip.
+            Background = B("App.Panel"),
             BorderBrush = B("App.Rule"),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = _scroll,

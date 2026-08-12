@@ -257,7 +257,12 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         _bottom = new TabControl
         {
-            Background = (IBrush)Application.Current!.Resources["App.Window"]!,
+            // App.Panel, the surface every one of these panes paints: the strip used to
+            // sit on App.Window, one step darker, so the row of tab labels was a band of
+            // its own laid over the pane it belongs to. The selected tab is marked by
+            // its accent bar, its ink and its weight (see ModernStyles.BuildTabItem),
+            // none of which needs the strip to be a different colour from the body.
+            Background = (IBrush)Application.Current!.Resources["App.Panel"]!,
             ClipToBounds = true,
             Items =
             {
