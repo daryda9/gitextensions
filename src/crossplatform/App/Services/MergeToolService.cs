@@ -55,7 +55,8 @@ public sealed record MergeDocument(
     IReadOnlyList<string> TheirsLines,
     IReadOnlyList<MergeChunk> Chunks,
     Encoding Encoding,
-    bool UseCrLf)
+    bool UseCrLf,
+    bool EndsWithNewline)
 {
     /// <summary>How many regions still need a decision.</summary>
     public int ConflictCount => Chunks.Count(c => c.Kind == MergeChunkKind.Conflict);
@@ -173,7 +174,21 @@ public sealed class MergeToolService
                 SplitLines(encoding.GetString(File.ReadAllBytes(theirs))),
                 Parse(SplitLines(merged)),
                 encoding,
-                UseCrLf: DominantEolIsCrLf(ourBytes)), null);
+                UseCrLf: DominantEolIsCrLf(ourBytes),
+
+                // Whether the file ends in a newline is a property of the FILE, not
+                // a convention to impose: one deliberately written without a final
+                // newline (git says "\ No newline at end of file" about it) has to
+                // come back out that way, or every merge of it adds a line nobody
+                // asked for.
+                //
+                // Read from OUR blob and not from the merged text, because
+                // git merge-file always terminates its output — it has to, the
+                // closing ">>>>>>>" needs a line of its own — so the merged text
+                // says "yes" even when the file said no. Measured, not assumed:
+                // merging three files that all end without a newline gives output
+                // ending "> t.txt\n".
+                EndsWithNewline: ourBytes.Length == 0 || ourBytes[^1] == (byte)'\n'), null);
         }
         catch (Exception ex)
         {
@@ -205,10 +220,9 @@ public sealed class MergeToolService
             string normalised = text.Replace("\r\n", "\n");
 
             // SplitLines dropped the trailing newline when the document was built,
-            // so the editor never shows it and cannot be blamed for its absence:
-            // it is restored here, which is what every other tool writing this file
-            // would do.
-            if (normalised.Length > 0 && !normalised.EndsWith('\n'))
+            // so the editor never shows it and cannot be blamed for its absence.
+            // It is restored here ONLY if the file had one: see EndsWithNewline.
+            if (document.EndsWithNewline && normalised.Length > 0 && !normalised.EndsWith('\n'))
             {
                 normalised += "\n";
             }
