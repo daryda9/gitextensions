@@ -537,9 +537,11 @@ public sealed class RepoTabStrip : UserControl
         // the shortest text that still tells a tab apart depends on its neighbours (see
         // BuildLabels), so no tab can compute its own.
         IReadOnlyList<string> labels = BuildLabels(_tabs);
+        IReadOnlyList<(IBrush? Colour, string? Root)> checkouts = BuildCheckouts(_tabs);
         for (int i = 0; i < _tabs.Count; i++)
         {
-            Visual(_tabs[i]).Apply(ReferenceEquals(_tabs[i], _active), labels[i]);
+            Visual(_tabs[i]).Apply(
+                ReferenceEquals(_tabs[i], _active), labels[i], checkouts[i].Colour, checkouts[i].Root);
         }
 
         IsVisible = _tabs.Count > 0;
@@ -610,12 +612,24 @@ public sealed class RepoTabStrip : UserControl
             Close(entry);
         };
 
+        // The checkout chip. Zero width until Sync decides there is more than one
+        // checkout open: a colour that is always on says nothing, and the strip's
+        // whole labelling rule is "disambiguate only what is ambiguous".
+        Border checkout = new()
+        {
+            Width = 0,
+            Height = 12,
+            CornerRadius = Metrics.Radius.SmCorner,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsVisible = false,
+        };
+
         StackPanel row = new()
         {
             Orientation = Orientation.Horizontal,
             Spacing = Metrics.Space.Xs,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { label, close },
+            Children = { checkout, label, close },
         };
 
         // Row 0 is the 2px accent rule of the active tab; it owns its own layout row so
@@ -644,7 +658,7 @@ public sealed class RepoTabStrip : UserControl
         };
         ToolTip.SetTip(root, entry.Path);
 
-        TabVisual visual = new(entry, root, accent, label, close);
+        TabVisual visual = new(entry, root, accent, label, close, checkout);
 
         root.PointerEntered += (_, _) => visual.SetHover(true);
         root.PointerExited += (_, _) => visual.SetHover(false);
@@ -792,6 +806,70 @@ public sealed class RepoTabStrip : UserControl
         string name = System.IO.Path.GetFileName(trimmed);
         return name.Length > 0 ? name : (path.Length > 0 ? path : "?");
     }
+
+    /// <summary>
+    ///  Which checkout each tab belongs to, as a colour and the checkout's path.
+    ///
+    ///  <para><b>The case this answers</b>: two clones of one project open side by
+    ///  side, each with the same submodules. Their submodule tabs carry the same
+    ///  folder name, and although <see cref="BuildLabels"/> lengthens the label
+    ///  until the two paths differ, the difference lands in the MIDDLE of two
+    ///  otherwise identical strings — which is read, not seen. A colour shared by
+    ///  every tab of one checkout is seen.</para>
+    ///
+    ///  <para><b>Off unless it says something.</b> With a single checkout open every
+    ///  tab would get the same colour, which is decoration, so nothing is painted
+    ///  until a second checkout appears. Same rule the labels follow: disambiguate
+    ///  what is ambiguous and leave the rest alone.</para>
+    ///
+    ///  <para>The colour follows the order a checkout first appears in the strip,
+    ///  from the palette's own icon hues, so it moves with the theme and does not
+    ///  depend on a hash of a path that would change when the folder is renamed.</para>
+    /// </summary>
+    private static IReadOnlyList<(IBrush? Colour, string? Root)> BuildCheckouts(List<RepoTabEntry> tabs)
+    {
+        string[] roots = new string[tabs.Count];
+        List<string> order = [];
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            roots[i] = Services.WorkspaceRoot.Of(tabs[i].Path);
+            if (!order.Contains(roots[i], StringComparer.Ordinal))
+            {
+                order.Add(roots[i]);
+            }
+        }
+
+        List<(IBrush?, string?)> result = new(tabs.Count);
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            if (order.Count < 2)
+            {
+                result.Add((null, null));
+                continue;
+            }
+
+            int index = order.IndexOf(roots[i]);
+            string? shown = string.Equals(roots[i], tabs[i].Path.TrimEnd('/', '\\'), StringComparison.Ordinal)
+                ? null
+                : roots[i];
+            result.Add((B(CheckoutKeys[index % CheckoutKeys.Length]), shown));
+        }
+
+        return result;
+    }
+
+    // Icon hues rather than literals: they are already chosen to be distinguishable
+    // from each other and readable in both themes, and ThemeManager recolours the
+    // brush instances in place when the theme changes.
+    private static readonly string[] CheckoutKeys =
+    [
+        "App.IconBlue",
+        "App.IconAmber",
+        "App.IconPurple",
+        "App.IconGreen",
+        "App.IconCyan",
+        "App.IconRed",
+    ];
 
     /// <summary>
     ///  The text of every tab, in strip order. Two tabs the eye cannot tell apart are two
@@ -971,7 +1049,8 @@ public sealed class RepoTabStrip : UserControl
         Border root,
         Border accent,
         TextBlock label,
-        Button close)
+        Button close,
+        Border checkout)
     {
         private bool _hovered;
         private bool _active;
@@ -994,15 +1073,24 @@ public sealed class RepoTabStrip : UserControl
             Paint();
         }
 
-        internal void Apply(bool active, string text)
+        internal void Apply(bool active, string text, IBrush? checkoutColour, string? checkoutPath)
         {
             _active = active;
             label.Text = text;
+
+            // A chip only when the strip holds more than one checkout, and the
+            // checkout named on the tooltip only when it is not the tab itself —
+            // on a plain repository tab the path is already the whole answer.
+            checkout.IsVisible = checkoutColour is not null;
+            checkout.Width = checkoutColour is null ? 0 : 3;
+            checkout.Background = checkoutColour ?? Brushes.Transparent;
             // Italic IS the preview state — the one visual difference the user has to
             // read at a glance before double-clicking makes it permanent.
             label.FontStyle = entry.Pinned ? FontStyle.Normal : FontStyle.Italic;
             label.FontWeight = active ? Metrics.Text.ActiveWeight : Metrics.Text.BodyWeight;
-            ToolTip.SetTip(root, entry.Path);
+            ToolTip.SetTip(root, checkoutPath is null
+                ? entry.Path
+                : entry.Path + "\n" + TranslationService.T("in checkout:") + " " + checkoutPath);
             Paint();
         }
 
