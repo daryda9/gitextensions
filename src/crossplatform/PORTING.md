@@ -3418,6 +3418,115 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M189 (2026-08-13, `de5aac366`) — un solo rilevatore di immagini, ed etichette che smettono di nominare una revisione inesistente
+
+Due debiti **prodotti dall'audit** di M186–M188.
+
+Esistevano **due risposte** alla domanda «questi byte sono un'immagine»: una nel diff e una gemella nel
+pannello di rifiuto guidato del merge, e solo la prima era stata appena stretta. Due risposte a una
+domanda sola sono un bug che aspetta, quindi la gemella è stata **eliminata** invece che tenuta in
+sincrono per sempre. Quella superstite ritorna il **nome** del formato e il booleano è costruito sopra:
+il merge tool ha bisogno del nome, il diff solo di sì/no, e la cosa condivisa deve essere la più
+informativa. L'allineamento **allarga in silenzio** i test del merge tool, che erano più deboli: GIF era
+`GIF8` e BMP era `BM`, quindi un file di testo che inizia per `BMW` veniva offerto come immagine nel
+dialogo dei conflitti e adesso no.
+
+Secondo: un file **aggiunto** era etichettato `<sha>^ ↔ <sha>`, nominando a sinistra una revisione che
+non è mai esistita — e solo la finestra, una volta aperta, ammetteva che il lato non c'era. Ora lo dice
+**l'etichetta**, e simmetricamente per un file cancellato. Corretto **alla fonte**: l'unico punto che
+decide *cos'è* un lato ora porta anche *se c'è*, quindi banner, voce di menu, intestazioni del confronto
+affiancato e finestra immagini sono migliorati insieme, invece di rattoppare un singolo punto di stampa.
+
+## M188 (2026-08-13, `16fa5815e`) — la firma ICO era abbastanza larga da prendere dati qualunque
+
+Le firme immagine erano riconosciute **dai byte**, ma solo PNG e JPEG erano mai stati visti a schermo.
+Provando gli altri è venuto fuori che il test ICO era troppo debole: due byte a zero, un `1` little
+endian e un contatore sono la forma di moltissimi record binari, ed è **letteralmente** il picture
+start code MPEG.
+
+Ora valida anche la prima voce della directory — riservato a zero, non più di un color plane, offset
+dell'immagine che non può cadere dentro la directory — lo stesso standard che il test BMP già teneva.
+Una scansione di ~1,3 milioni di file su questa macchina **non** ha prodotto nessun falso positivo
+reale con la regola vecchia, quindi non si corregge un bug visto sul campo; ma un frame MPEG
+costruito, un record binario e un'icona troncata passavano tutti e ora nessuno passa, mentre 63 `.ico`
+veri e 5 senza estensione continuano a passare. WEBP, GIF e BMP verificati e lasciati stare: sono le
+firme che usa libmagic, e il limite basso del BMP è stato provato con un file `BITMAPCOREHEADER`
+esattamente sul confine. Tutti e cinque i formati **decodificano**, quindi non c'era niente da ritirare.
+
+## M187 (2026-08-13, `6cc9bf960`) — rerere diceva che un conflitto era già risolto quando non lo era
+
+rerere era stato provato **solo su conflitti di merge**, mentre il caso per cui esiste è il **rebase**.
+Provarlo lì ha trovato un difetto che col rebase non c'entrava niente.
+
+Siccome git **tronca `MERGE_RR`** dopo un replay e non nomina più il path, «rerere ha già risolto
+questi» era dedotto dall'albero di lavoro come «path unmerged senza marker di conflitto». Ma un
+conflitto **binario** non ha righe di marker per definizione, e nemmeno uno di **sole permessi**:
+entrambi venivano annunciati come già risolti, cioè si diceva all'utente di smettere di preoccuparsi di
+un conflitto che nessuno aveva toccato. La deduzione ora esige un conflitto che rerere **avrebbe
+potuto** produrre (niente gitlink, due lati presenti, blob diversi) e rifiuta i file con un NUL.
+
+**I testi erano anche più sicuri di quanto sia git.** Il rebase lungo da manuale — tre commit che
+riscrivono la stessa riga — **non riapplica niente**: dopo il primo passo la risoluzione diventa il
+nuovo *ours*, quindi il secondo passo è una forma che git non ha mai registrato. Quello che riapplica
+davvero è **lo stesso conflitto che ricorre**, ed è ciò che la UI dichiara adesso, dimostrato su tre
+file con lo stesso scontro (passo 1 registra, passi 2 e 3 riusano).
+
+Misurati durante un rebase fermo e **identici** al merge: i tre sottocomandi, `MERGE_RR` e il suo
+troncamento, `forget`, `autoupdate` e la git dir. Quindi nessun metodo ha bisogno di un ramo per il
+rebase; ne aveva bisogno solo la lingua — più il tooltip di `forget`, che diceva «solo durante un merge
+conflittuale»: la condizione nel codice era già giusta, ma la frase suonava come «non fa per te»
+proprio all'utente che ne aveva più bisogno. Un passo di rebase risolto **interamente** da rerere non
+apre nemmeno questa finestra e prosegue staged senza essere visto: ora l'avviso di `autoupdate` lo dice.
+
+## M186 (2026-08-13, `c93585de8`) — marcature intra-riga nel risultato, e una modalità che resta (feature INEDITA)
+
+Due debiti dichiarati quando l'editor di merge è stato costruito.
+
+La modalità intra-riga tornava a `LOCAL ↔ REMOTE` a ogni avvio, perché chi l'aveva scritta non aveva il
+permesso di toccare un servizio di preferenze. Ora è persistita accanto alle altre preferenze di vista,
+salvata **per nome e non per indice**: un indice è un fatto sull'ordine di una combo, non sulla scelta.
+Un valore sconosciuto ricade sul default, mai su «off», che sembrerebbe un difetto.
+
+Il pannello del risultato era l'unico senza marcature, ed è **il pannello che si guarda mentre si
+decide**. Una regola sola per tutti e quattro i pannelli: *marca dove stanno ora le righe di LOCAL e
+REMOTE, qualunque cosa ce le abbia messe*. Dentro un conflitto aperto i due lati sono marcati fra loro;
+presa una scelta, il lato tenuto è marcato contro ciò che la modalità nomina — il lato scartato, oppure
+la base. Lasciati **volutamente** senza marcature: una regione che tiene BASE (è il riferimento che
+entrambe le letture misurano; marcarla significherebbe dare due risposte nello stesso posto) e una
+regione scritta a mano (accoppiare testo arbitrario con una versione è un'ipotesi, ridisegnata a ogni
+tasto).
+
+## M185 (2026-08-13, `f9ad54703`) — il diff intra-riga non dice più «non è cambiato niente»
+
+Il motore non aveva **nessuna** suite di regressione — il pezzo più facile da rompere in silenzio,
+perché un'euristica cambiata non fa fallire nessuna build e si nota a occhio, su una riga, per caso.
+Scriverne una ha trovato **due difetti veri alla prima esecuzione**.
+
+**Testo spostato riportato come nessuna modifica.** `Refine` tosava testa e coda comuni dei due span
+superstiti **come se stessero agli stessi offset** in entrambe le righe; se un token si è solo spostato,
+i due span contengono lo stesso testo a offset diversi, si annullano a vicenda, e il motore risponde
+«niente da evidenziare» pur dichiarando che le righe differiscono. Il fuzz ci sbatteva **111 volte su
+4000**: tocca ogni riordino di token. La premessa vera di `Refine` non è «gli span si somigliano» ma
+«tutto ciò che sta **fuori** dai due span è già identico», e ora due confronti ordinali la **verificano**
+invece di assumerla. Un diff a caratteri del residuo sarebbe quadratico e la precisione in più si
+applicherebbe **solo** agli input che questo test scarta — quelli in cui lo span largo a parola è la
+risposta onesta, perché il testo si è mosso e un «dove» più stretto non esiste. `foo`→`foobar` passa il
+test alla lettera.
+
+**Confine di span dentro una surrogate pair**, che il contratto della classe vieta per iscritto. Le
+guardie di coda testavano `IsHighSurrogate` dove la forma pericolosa è una **low** con la sua high
+dentro lo span: non scattavano mai sul caso vero, e quando scattavano allargavano lo span su una high
+spaiata. Tutti e quattro i confini passano ora da un helper che **nomina la garanzia**, verificato su
+**entrambe** le stringhe — nel punto di taglio i due testi differiscono, e uno può finire a metà coppia
+dove l'altro no.
+
+La suite (`Tests/InlineDiffRegression/`, `dotnet run --project …`, uscita 0 = verde) porta i casi, gli
+**invarianti** — span ordinati, dentro i limiti, mai a metà coppia, e il testo **fuori** dagli span
+identico sui due lati, che è quello che dimostra che il diff non mente — e un fuzz a seed fisso.
+Porta anche l'invariante nuovo che questo lavoro è costato: **zero span su due righe che differiscono è
+l'unica risposta che non può mai essere vera**. Fuzz esteso a 70 000 coppie: zero violazioni. Nessuna
+amnistia lasciata: niente quarantene, niente baseline.
+
 ## M184 (2026-08-13, `88a2e0d4c`) — una scheda lunga perde il percorso, mai il nome della repo
 
 Segnalato con screenshot: `pluma_orchestrator/ai-server/core/…`. L'ellissi di fine riga è la regola
