@@ -345,9 +345,7 @@ public sealed class ImageDiffWindow : ZoomWindow
 
         Control body = side.Image is { } bitmap
             ? Viewport(Layer(bitmap, opacity: 1), bitmap.PixelSize)
-            : Message(side.Absent
-                ? T("This version does not exist.")
-                : T("Not a decodable image") + ": " + (side.Error ?? T("unknown format")) + ".");
+            : Message(side.Absent ? T("This version does not exist.") : Undecodable(side));
         Grid.SetRow(body, 1);
         grid.Children.Add(body);
         return grid;
@@ -647,6 +645,33 @@ public sealed class ImageDiffWindow : ZoomWindow
     }
 
     /// <summary>
+    ///  The comparison as the window needs it: whatever happens inside, a
+    ///  <see cref="DiffResult"/> comes out.
+    ///
+    ///  <para>The caller is <see cref="Async.OffUi"/>, which reports a fault to the
+    ///  console and then never calls back — so an exception in the pass below would not
+    ///  merely lose the difference, it would leave the pane saying "Comparing pixel by
+    ///  pixel…" until the window is closed. A decoder this port has never met must
+    ///  produce a sentence, not a spinner.</para>
+    /// </summary>
+    private static DiffResult Difference(ImageSide left, ImageSide right)
+    {
+        try
+        {
+            return Subtract(left, right);
+        }
+        catch (Exception ex)
+        {
+            return new DiffResult(
+                null,
+                0,
+                0,
+                false,
+                TranslationService.T("The difference could not be computed") + ": " + ex.Message + ".");
+        }
+    }
+
+    /// <summary>
     ///  The per-pixel comparison, run on the thread pool: a 16 megapixel pass is a few
     ///  hundred milliseconds and three large buffers, neither of which belongs on the UI
     ///  thread.
@@ -657,7 +682,7 @@ public sealed class ImageDiffWindow : ZoomWindow
     ///  single channel is invisible when drawn at its true magnitude, and finding those
     ///  is the entire purpose of this mode.</para>
     /// </summary>
-    private static DiffResult Difference(ImageSide left, ImageSide right)
+    private static DiffResult Subtract(ImageSide left, ImageSide right)
     {
         Bitmap? one = left.Image;
         Bitmap? two = right.Image;
@@ -762,22 +787,49 @@ public sealed class ImageDiffWindow : ZoomWindow
     ///  The bitmap's pixels as tightly packed Bgra8888, whatever the file's own format
     ///  was: the decoder may hand back a palette or a 24-bit surface, and the comparison
     ///  needs one predictable layout.
+    ///
+    ///  <para><b>Not every decoded bitmap can be read directly.</b> Skia keeps some
+    ///  surfaces in a colour type Avalonia has no <see cref="PixelFormat"/> for — a
+    ///  16-bit-per-channel greyscale PNG comes back as Skia's <c>Gray8</c>, whose
+    ///  <see cref="Bitmap.Format"/> is <see langword="null"/> — and
+    ///  <see cref="Bitmap.CopyPixels(ILockedFramebuffer, AlphaFormat)"/> throws
+    ///  <see cref="NotSupportedException"/> for exactly those. Measured, not assumed:
+    ///  before this fallback existed, the difference mode over a 16-bit greyscale PNG
+    ///  left the pane on "Comparing pixel by pixel…" for ever, with the exception
+    ///  visible only in the console. Drawing the bitmap once through the renderer
+    ///  converts it — the render target is Bgra8888 by construction — which is slower
+    ///  than a copy but only happens for the surfaces that cannot be copied.</para>
     /// </summary>
     private static byte[] Pixels(Bitmap bitmap)
     {
         PixelSize size = bitmap.PixelSize;
         WriteableBitmap scratch = new(size, bitmap.Dpi, PixelFormat.Bgra8888, AlphaFormat.Unpremul);
-        using ILockedFramebuffer fb = scratch.Lock();
-        bitmap.CopyPixels(fb, AlphaFormat.Unpremul);
-
-        byte[] buffer = new byte[size.Width * size.Height * 4];
-        int stride = size.Width * 4;
-        for (int y = 0; y < size.Height; y++)
+        using (ILockedFramebuffer fb = scratch.Lock())
         {
-            Marshal.Copy(fb.Address + (y * fb.RowBytes), buffer, y * stride, stride);
-        }
+            try
+            {
+                bitmap.CopyPixels(fb, AlphaFormat.Unpremul);
+            }
+            catch (NotSupportedException)
+            {
+                using RenderTargetBitmap converted = new(size, bitmap.Dpi);
+                using (DrawingContext context = converted.CreateDrawingContext())
+                {
+                    context.DrawImage(bitmap, new Rect(0, 0, size.Width, size.Height));
+                }
 
-        return buffer;
+                converted.CopyPixels(fb, AlphaFormat.Unpremul);
+            }
+
+            byte[] buffer = new byte[size.Width * size.Height * 4];
+            int stride = size.Width * 4;
+            for (int y = 0; y < size.Height; y++)
+            {
+                Marshal.Copy(fb.Address + (y * fb.RowBytes), buffer, y * stride, stride);
+            }
+
+            return buffer;
+        }
     }
 
     private void UpdateInfo()
@@ -842,10 +894,28 @@ public sealed class ImageDiffWindow : ZoomWindow
 
         if (side.Image is not { } bitmap)
         {
-            return side.Title + ": " + T("not decodable") + ", " + Bytes(side.ByteCount);
+            return side.Title + ": " + T("not decodable")
+                + (side.Format is null ? string.Empty : " (" + side.Format + ")")
+                + ", " + Bytes(side.ByteCount);
         }
 
-        return side.Title + ": " + Dimensions(bitmap.PixelSize) + ", " + Bytes(side.ByteCount);
+        return side.Title + ": " + Dimensions(bitmap.PixelSize) + ", " + Bytes(side.ByteCount)
+            + (side.Contents is null ? string.Empty : ", " + side.Contents);
+    }
+
+    /// <summary>
+    ///  Why a side that is there could not be shown. Names the format when the bytes
+    ///  announce one, because "this ICO could not be decoded" points at the file while a
+    ///  bare decoder message points at nothing; and says so plainly when they announce
+    ///  none, since that is the honest answer for the SVG or the TIFF this window is
+    ///  occasionally handed.
+    /// </summary>
+    private string Undecodable(ImageSide side)
+    {
+        string reason = side.Error ?? T("the decoder gave no reason");
+        return side.Format is { } format
+            ? string.Format(CultureInfo.CurrentCulture, T("This {0} could not be decoded"), format) + ": " + reason + "."
+            : T("These bytes are not an image this window can decode") + ": " + reason + ".";
     }
 
     private static string Dimensions(PixelSize size)
@@ -862,22 +932,217 @@ public sealed class ImageDiffWindow : ZoomWindow
     {
         if (bytes is null)
         {
-            return new ImageSide(title, 0, null, true, null);
+            return new ImageSide(title, 0, null, true, null, null, null);
         }
+
+        // The same sniffer the diff view used to decide whether to offer this window at
+        // all (ImageFormats is the only one in the port). Here it is not a decision but a
+        // NAME: it turns "Unable to load bitmap from provided data" into "this JPEG could
+        // not be decoded", which is the difference between a user suspecting the viewer
+        // and a user suspecting the file.
+        string? format = ImageFormats.Detect(bytes);
 
         try
         {
             using MemoryStream stream = new(bytes);
             Bitmap bitmap = new(stream);
-            return new ImageSide(title, bytes.Length, bitmap, false, null);
+            return new ImageSide(title, bytes.Length, bitmap, false, null, format, Contents(bytes, format));
         }
         catch (Exception ex)
         {
             // Anything the platform decoder refuses lands here — SVG, an exotic TIFF, a
             // truncated file. It is a normal outcome of "diff this binary file", not a
             // failure of the window, so it is carried as text instead of thrown.
-            return new ImageSide(title, bytes.Length, null, false, ex.Message);
+            return new ImageSide(title, bytes.Length, null, false, ex.Message, format, null);
         }
+    }
+
+    /// <summary>
+    ///  What the container holds beyond the one picture that got decoded, or
+    ///  <see langword="null"/> when it holds nothing more.
+    ///
+    ///  <para><b>Why this exists.</b> Three of the formats this window is offered for are
+    ///  containers, and the renderer silently takes one image out of them: an .ico with
+    ///  six sizes is shown at whichever size Skia picked (measured: the largest, whatever
+    ///  the directory order — 256×256 for an icon whose first entry is 16×16), and an
+    ///  animated GIF or WEBP is shown as its first frame with nothing to distinguish it
+    ///  from a still. The window cannot decode the other entries, and an image diff has
+    ///  no business growing a frame player; what it can do is stop presenting a part as
+    ///  the whole. Hence one clause in the information bar, from the bytes themselves —
+    ///  the decoder is not asked, because it is precisely the decoder's silence that is
+    ///  the problem.</para>
+    /// </summary>
+    private static string? Contents(byte[] bytes, string? format)
+    {
+        List<string> parts = [];
+
+        int count = format switch
+        {
+            "ICO" => IcoEntries(bytes),
+            "GIF" => GifFrames(bytes),
+            "WEBP" => WebpFrames(bytes),
+            "PNG" => ApngFrames(bytes),
+            _ => 1,
+        };
+
+        if (count > 1)
+        {
+            parts.Add(string.Format(
+                CultureInfo.CurrentCulture,
+                format == "ICO"
+                    ? TranslationService.T("one of {0} sizes in the file")
+                    : TranslationService.T("frame 1 of {0}"),
+                count));
+        }
+
+        // A 16-bit PNG is decoded to 8 bits per channel and the low byte is DISCARDED —
+        // measured: two such files differing in the low byte of every single pixel come
+        // out of the decoder byte-identical, and the difference mode then reports "0
+        // pixels differ" about two files git has just told the user are different. The
+        // window cannot show what the renderer threw away; it can refuse to let that
+        // zero pass as the whole truth.
+        if (format == "PNG" && bytes.Length > 24 && bytes[24] > 8)
+        {
+            parts.Add(TranslationService.T("16 bits per channel, compared at 8"));
+        }
+
+        return parts.Count == 0 ? null : string.Join(", ", parts);
+    }
+
+    /// <summary>Images in an ICO directory, from the count the header declares.</summary>
+    private static int IcoEntries(byte[] bytes)
+        => bytes.Length < 6 ? 1 : bytes[4] | (bytes[5] << 8);
+
+    /// <summary>
+    ///  Frames in a GIF, by walking the block structure rather than by counting 0x2C
+    ///  bytes: an image descriptor's introducer is an ordinary byte value that occurs all
+    ///  over compressed data, and a frame count that is wrong is worse than none.
+    /// </summary>
+    private static int GifFrames(byte[] bytes)
+    {
+        int at = 13;
+        if (bytes.Length <= at)
+        {
+            return 1;
+        }
+
+        // A global colour table, when present, sits between the screen descriptor and the
+        // first block; its size is encoded in the low three bits of the flags byte.
+        if ((bytes[10] & 0x80) != 0)
+        {
+            at += 3 * (1 << ((bytes[10] & 0x07) + 1));
+        }
+
+        int frames = 0;
+        while (at < bytes.Length)
+        {
+            byte block = bytes[at++];
+            if (block == 0x3B)
+            {
+                break;
+            }
+
+            if (block == 0x21)
+            {
+                // Extension: a label, then sub-blocks. Nothing here needs to know which
+                // extension it is; the loop only has to step over it.
+                at++;
+                at = SkipSubBlocks(bytes, at);
+                continue;
+            }
+
+            if (block != 0x2C)
+            {
+                break;
+            }
+
+            frames++;
+            if (at + 9 > bytes.Length)
+            {
+                break;
+            }
+
+            byte flags = bytes[at + 8];
+            at += 9;
+            if ((flags & 0x80) != 0)
+            {
+                at += 3 * (1 << ((flags & 0x07) + 1));
+            }
+
+            at++;                       // LZW minimum code size
+            at = SkipSubBlocks(bytes, at);
+        }
+
+        return Math.Max(1, frames);
+    }
+
+    /// <summary>Steps over a run of GIF data sub-blocks, ending on the zero terminator.</summary>
+    private static int SkipSubBlocks(byte[] bytes, int at)
+    {
+        while (at < bytes.Length && bytes[at] != 0)
+        {
+            at += bytes[at] + 1;
+        }
+
+        return at + 1;
+    }
+
+    /// <summary>
+    ///  Frames in a WEBP, from the ANMF chunks of the RIFF container. A still WEBP has a
+    ///  single VP8/VP8L chunk and no ANMF at all.
+    /// </summary>
+    private static int WebpFrames(byte[] bytes)
+    {
+        int frames = 0;
+        int at = 12;
+        while (at + 8 <= bytes.Length)
+        {
+            uint size = BitConverter.ToUInt32(bytes, at + 4);
+            if (bytes[at] == (byte)'A' && bytes[at + 1] == (byte)'N' && bytes[at + 2] == (byte)'M' && bytes[at + 3] == (byte)'F')
+            {
+                frames++;
+            }
+
+            // Chunk payloads are padded to an even length, and the pad byte is not counted
+            // in the size field: forgetting it desynchronises the walk after one odd chunk.
+            at += 8 + (int)size + ((size & 1) == 0 ? 0 : 1);
+        }
+
+        return Math.Max(1, frames);
+    }
+
+    /// <summary>
+    ///  Frames of an animated PNG, from the <c>acTL</c> chunk. A plain PNG has none, and
+    ///  the renderer shows an APNG as its still image — the same half-truth as a GIF.
+    /// </summary>
+    private static int ApngFrames(byte[] bytes)
+    {
+        int at = 8;
+        while (at + 12 <= bytes.Length)
+        {
+            int length = (bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3];
+            if (length < 0)
+            {
+                break;
+            }
+
+            if (bytes[at + 4] == (byte)'a' && bytes[at + 5] == (byte)'c' && bytes[at + 6] == (byte)'T' && bytes[at + 7] == (byte)'L'
+                && at + 12 <= bytes.Length)
+            {
+                return (bytes[at + 8] << 24) | (bytes[at + 9] << 16) | (bytes[at + 10] << 8) | bytes[at + 11];
+            }
+
+            // acTL is required to precede IDAT, so there is no reason to walk the pixel
+            // data of every ordinary PNG looking for a chunk that cannot be there.
+            if (bytes[at + 4] == (byte)'I' && bytes[at + 5] == (byte)'D' && bytes[at + 6] == (byte)'A' && bytes[at + 7] == (byte)'T')
+            {
+                break;
+            }
+
+            at += 12 + length;
+        }
+
+        return 1;
     }
 
     private ToggleButton ModeButton(string caption, ViewMode mode)
@@ -953,7 +1218,9 @@ public sealed class ImageDiffWindow : ZoomWindow
         int ByteCount,
         Bitmap? Image,
         bool Absent,
-        string? Error);
+        string? Error,
+        string? Format,
+        string? Contents);
 }
 
 /// <summary>
