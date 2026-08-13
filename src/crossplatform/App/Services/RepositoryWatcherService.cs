@@ -491,7 +491,12 @@ public sealed class RepositoryWatcherService : IDisposable
     /// </summary>
     internal static bool IsWorkTreeNoise(string fullPath)
     {
-        string name = Path.GetFileName(fullPath);
+        // Windows reports these paths with backslashes, so every separator-sensitive
+        // test below runs on a slash-normalised copy — as IsGitDirNoise already does.
+        // Without it none of them matched on Windows and the whole of .git was
+        // classified as ordinary work-tree churn.
+        string path = fullPath.Replace('\\', '/');
+        string name = Path.GetFileName(path);
 
         // A nested .git (submodule) and its index lock: GitStatusMonitor skips both.
         if (name is ".git")
@@ -499,11 +504,11 @@ public sealed class RepositoryWatcherService : IDisposable
             return true;
         }
 
-        if (Contains(fullPath, "/.git/"))
+        if (Contains(path, "/.git/"))
         {
             // Inside a nested repository: only the interesting files matter, and
             // the same git-dir rules decide.
-            return IsGitDirNoise(fullPath);
+            return IsGitDirNoise(path);
         }
 
         return IsTempName(name);
@@ -567,12 +572,23 @@ public sealed class RepositoryWatcherService : IDisposable
     private static bool Contains(string haystack, string needle)
         => haystack.Contains(needle, StringComparison.Ordinal);
 
+    // Containment test on the NATIVE separator, and case-insensitively on Windows.
+    // The first version compared slash-separated, case-sensitive strings, so on
+    // Windows ".git" never looked like it was under the work tree: the git dir got a
+    // second watcher of its own (every event twice) and, worse, OnWorkTreeEvent
+    // stopped routing .git writes through the git-dir noise filter — so every loose
+    // object, lock file and FETCH_HEAD our own refresh writes scheduled another
+    // refresh, which is the self-reloading window reported on Windows.
     private static bool IsUnder(string path, string root)
     {
-        string p = Path.GetFullPath(path).TrimEnd('/');
-        string r = Path.GetFullPath(root).TrimEnd('/');
-        return p.Equals(r, StringComparison.Ordinal)
-            || p.StartsWith(r + "/", StringComparison.Ordinal);
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        string p = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        string r = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        return p.Equals(r, comparison)
+            || p.StartsWith(r + Path.DirectorySeparatorChar, comparison);
     }
 
     // ---- debounce ----------------------------------------------------------------
