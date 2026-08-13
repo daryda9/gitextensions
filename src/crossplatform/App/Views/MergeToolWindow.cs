@@ -99,10 +99,12 @@ public sealed class MergeToolWindow : ZoomWindow
     private readonly RangeHighlighter _theirsHighlighter = new();
 
     private readonly Dictionary<MergeChoice, ToggleButton> _choiceButtons = [];
+    private readonly ComboBox _inlineMode;
     private readonly TextBlock _counter;
     private readonly TextBlock _status;
     private readonly Button _save;
     private readonly Button _restore;
+    private readonly Button _trivial;
 
     private readonly Dictionary<int, (LineRange Ours, LineRange Base, LineRange Theirs)> _sources = [];
 
@@ -185,6 +187,40 @@ public sealed class MergeToolWindow : ZoomWindow
             [ToolTip.TipProperty] = T("Put the marker block back, undoing the choice made here"),
         };
         _restore.Click += (_, _) => Apply(MergeChoice.Conflict);
+
+        _trivial = new Button
+        {
+            Padding = Metrics.Density.ButtonPadding,
+        };
+        _trivial.Click += (_, _) => ResolveTrivial();
+
+        _inlineMode = new ComboBox
+        {
+            ItemsSource = new[]
+            {
+                T("Inline: LOCAL ↔ REMOTE"),
+                T("Inline: each side ↔ BASE"),
+                T("Inline: off"),
+            },
+            SelectedIndex = 0,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Padding = Metrics.Density.ButtonPadding,
+            [ToolTip.TipProperty] = T(
+                "Mark, inside the lines of the current conflict, the characters that actually differ. "
+                    + "LOCAL ↔ REMOTE shows what the two sides disagree about; each side ↔ BASE shows what "
+                    + "each of them changed."),
+        };
+
+        // The mode is read back out of the combo when the marks are rebuilt, so
+        // there is nothing to keep in step here beyond asking for a rebuild.
+        _inlineMode.SelectionChanged += (_, _) =>
+        {
+            if (Current() is Region region)
+            {
+                Reveal(region);
+            }
+        };
 
         Button cancel = new()
         {
@@ -289,6 +325,7 @@ public sealed class MergeToolWindow : ZoomWindow
             Spacing = Metrics.Space.Xs,
             Children =
             {
+                _trivial,
                 ToolButton(T("All LOCAL"), T("Take our version in every conflict nobody has decided yet"),
                     () => ApplyToUndecided(MergeChoice.Ours)),
                 ToolButton(T("All REMOTE"), T("Take their version in every conflict nobody has decided yet"),
@@ -309,6 +346,12 @@ public sealed class MergeToolWindow : ZoomWindow
             ColumnDefinitions = new ColumnDefinitions("*,Auto"),
             Margin = new Thickness(0, Metrics.Space.Xs, 0, 0),
         };
+
+        // Beside the counter and not among the action buttons above: it changes
+        // what the panes SHOW, it never changes what the file will contain, and
+        // mixing the two kinds of control is how a merge tool gets clicked wrong.
+        bottom.Children.Add(_inlineMode);
+
         Grid.SetColumn(_counter, 1);
         bottom.Children.Add(_counter);
 
@@ -563,6 +606,36 @@ public sealed class MergeToolWindow : ZoomWindow
         GoTo(_current);
     }
 
+    /// <summary>
+    ///  Settles every conflict <see cref="TrivialConflict"/> could classify and
+    ///  nobody has answered yet.
+    ///
+    ///  <para><b>Only on the button.</b> Nothing is classified away when the file
+    ///  opens: the window would then present, as the merge, a document the user
+    ///  never agreed to, and the one thing a merge tool sells is that what is on
+    ///  screen is what will be committed. Pressing the button is the consent; the
+    ///  count in its caption is what is being consented to.</para>
+    ///
+    ///  <para>It goes through <see cref="Replace"/> — the same call a click on
+    ///  "Take LOCAL" makes — precisely so that nothing special happened: each
+    ///  region is left holding a side, its choice is re-derived from the text like
+    ///  everyone else's, and it can be sent back to the marker block one at a time.
+    ///  A shortcut that wrote the document behind the regions' backs would buy
+    ///  nothing and cost the undo.</para>
+    /// </summary>
+    private void ResolveTrivial()
+    {
+        foreach (Region region in _regions.Where(r => r.Choice == MergeChoice.Conflict).ToList())
+        {
+            if (region.Proposal is MergeChoice choice)
+            {
+                Replace(region, TextFor(region, choice));
+            }
+        }
+
+        GoTo(_current);
+    }
+
     private void Replace(Region region, string text)
     {
         TextDocument doc = _result.Document;
@@ -751,6 +824,8 @@ public sealed class MergeToolWindow : ZoomWindow
 
     private void Reveal(Region region)
     {
+        BuildInlineMarks(region);
+
         if (_sources.TryGetValue(region.Id, out (LineRange Ours, LineRange Base, LineRange Theirs) source))
         {
             Show(_oursPane, _oursHighlighter, source.Ours);
@@ -785,6 +860,196 @@ public sealed class MergeToolWindow : ZoomWindow
         }
     }
 
+    // ------------------------------------------------------------ intra-line marks
+
+    /// <summary>
+    ///  Rebuilds the intra-line marks for the conflict now being shown.
+    ///
+    ///  <para><b>What is expensive here is not this.</b> Only the pairing is built:
+    ///  a line of one side is told which line of the other it is to be compared
+    ///  with, and nothing is diffed. The character diff itself is run by the
+    ///  renderer, for the lines actually on screen, and cached until the next
+    ///  rebuild — a conflict of ten thousand lines therefore costs ten thousand
+    ///  dictionary entries and a handful of diffs, not ten thousand diffs.</para>
+    ///
+    ///  <para><b>BASE is never marked itself.</b> In the "each side ↔ BASE" mode
+    ///  the base pane is the thing both sides are measured against, so marking it
+    ///  would have to show two answers at once in one pane — the LOCAL story and
+    ///  the REMOTE one — which is exactly the rainbow this feature is meant to
+    ///  avoid. The two changed pictures are drawn where they belong, each in its
+    ///  own pane and in that pane's own colour.</para>
+    /// </summary>
+    private void BuildInlineMarks(Region region)
+    {
+        _oursHighlighter.Inline.Clear();
+        _baseHighlighter.Inline.Clear();
+        _theirsHighlighter.Inline.Clear();
+
+        if (_inlineMode.SelectedIndex is not (SidesMode or BaseMode)
+            || !_sources.TryGetValue(region.Id, out (LineRange Ours, LineRange Base, LineRange Theirs) source))
+        {
+            return;
+        }
+
+        MergeChunk chunk = region.Chunk;
+
+        if (_inlineMode.SelectedIndex == SidesMode)
+        {
+            // One ink for both panes: the statement is "these two lines disagree
+            // HERE", and it is a single statement about a pair, not two.
+            _oursHighlighter.Inline.SetInk(SidesInk);
+            _theirsHighlighter.Inline.SetInk(SidesInk);
+            Pair(chunk.Ours, source.Ours, _oursHighlighter.Inline, chunk.Theirs, source.Theirs, _theirsHighlighter.Inline);
+            return;
+        }
+
+        // Against the base the two answers are independent, so each pane speaks in
+        // its own header colour — which is also what tells this mode apart from the
+        // other one at a glance, without reading the combo box.
+        _oursHighlighter.Inline.SetInk(OursInk);
+        _theirsHighlighter.Inline.SetInk(TheirsInk);
+        Pair(chunk.Base, source.Base, null, chunk.Ours, source.Ours, _oursHighlighter.Inline);
+        Pair(chunk.Base, source.Base, null, chunk.Theirs, source.Theirs, _theirsHighlighter.Inline);
+    }
+
+    private const int SidesMode = 0;
+    private const int BaseMode = 1;
+
+    // Same three colours the window already speaks in: the amber of a conflict for
+    // the LOCAL↔REMOTE reading, and each side's header colour for the ↔BASE one.
+    private static readonly Color SidesInk = Color.FromRgb(0xE0, 0xA7, 0x3C);
+    private static readonly Color OursInk = Color.FromRgb(0x6A, 0xC7, 0x76);
+    private static readonly Color TheirsInk = Color.FromRgb(0x5B, 0x9C, 0xFF);
+
+    /// <summary>
+    ///  Tells each line of one side which line of the other it will be compared
+    ///  with, and hands the pairs to the panes' overlays.
+    ///
+    ///  <para>A version whose lines could not be located in its file (an empty
+    ///  side, or a repeated block the forward scan gave up on) is skipped whole:
+    ///  the line numbers would be a guess, and a mark drawn on the wrong line is
+    ///  worse than no mark.</para>
+    /// </summary>
+    private static void Pair(
+        IReadOnlyList<string> left, LineRange leftRange, InlineOverlay? leftOverlay,
+        IReadOnlyList<string> right, LineRange rightRange, InlineOverlay? rightOverlay)
+    {
+        if (leftRange.Length != left.Count || rightRange.Length != right.Count)
+        {
+            return;
+        }
+
+        foreach ((int l, int r) in Align(left, right))
+        {
+            leftOverlay?.Add(leftRange.Start + l, left[l], right[r], selfIsLeft: true);
+            rightOverlay?.Add(rightRange.Start + r, left[l], right[r], selfIsLeft: false);
+        }
+    }
+
+    // Budget for the line alignment table. A conflict is a handful of lines in
+    // practice; past this the pairing would cost more than the marks are worth,
+    // and the fallback below is still correct, only less generous.
+    private const int MaxAlignCells = 64 * 64;
+
+    /// <summary>
+    ///  Which line of <paramref name="left"/> is to be read against which line of
+    ///  <paramref name="right"/>. Identical lines are left out: they have nothing
+    ///  to mark.
+    ///
+    ///  <para><b>The pairing rule</b>, which is the whole difficulty of this
+    ///  feature. Equal line counts are not enough to pair by position — a side that
+    ///  inserted a line at the top would then have every line compared with the
+    ///  wrong one, and the panes would fill with marks that mean nothing. So the two
+    ///  line lists are first <i>aligned</i> on the lines they have in common (a
+    ///  longest-common-subsequence walk, the same idea a line diff uses). Between
+    ///  two such anchors sit a run of <c>a</c> unmatched left lines and a run of
+    ///  <c>b</c> unmatched right lines: when <c>a == b</c> they are paired by
+    ///  position, which is the only pairing the evidence supports, and when
+    ///  <c>a != b</c> <b>nothing in that run is paired at all</b>. Lines appear and
+    ///  disappear there, and any guess about which line replaced which would be a
+    ///  guess the user cannot check.</para>
+    ///
+    ///  <para>Past the size budget the table is not built and the two sides are
+    ///  paired by position only if they have the same number of lines — the same
+    ///  rule, restricted to the one case where the alignment could not have found
+    ///  anything better.</para>
+    /// </summary>
+    private static List<(int Left, int Right)> Align(IReadOnlyList<string> left, IReadOnlyList<string> right)
+    {
+        List<(int Left, int Right)> pairs = [];
+        int n = left.Count;
+        int m = right.Count;
+        if (n == 0 || m == 0)
+        {
+            return pairs;
+        }
+
+        if ((long)n * m > MaxAlignCells)
+        {
+            if (n == m)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    pairs.Add((i, i));
+                }
+            }
+
+            return pairs;
+        }
+
+        int[,] lcs = new int[n + 1, m + 1];
+        for (int i = n - 1; i >= 0; i--)
+        {
+            for (int j = m - 1; j >= 0; j--)
+            {
+                lcs[i, j] = string.Equals(left[i], right[j], StringComparison.Ordinal)
+                    ? lcs[i + 1, j + 1] + 1
+                    : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+            }
+        }
+
+        int x = 0;
+        int y = 0;
+        int leftRun = 0;
+        int rightRun = 0;
+
+        while (x < n && y < m)
+        {
+            if (string.Equals(left[x], right[y], StringComparison.Ordinal))
+            {
+                Flush(leftRun, x, rightRun, y);
+                x++;
+                y++;
+                leftRun = x;
+                rightRun = y;
+            }
+            else if (lcs[x + 1, y] >= lcs[x, y + 1])
+            {
+                x++;
+            }
+            else
+            {
+                y++;
+            }
+        }
+
+        Flush(leftRun, n, rightRun, m);
+        return pairs;
+
+        void Flush(int leftFrom, int leftTo, int rightFrom, int rightTo)
+        {
+            if (leftTo - leftFrom != rightTo - rightFrom)
+            {
+                return;
+            }
+
+            for (int i = 0; i < leftTo - leftFrom; i++)
+            {
+                pairs.Add((leftFrom + i, rightFrom + i));
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- counters
 
     private void UpdateCounter()
@@ -801,7 +1066,16 @@ public sealed class MergeToolWindow : ZoomWindow
                 _current + 1,
                 total,
                 decided,
-                Describe(Current()?.Choice ?? MergeChoice.Conflict));
+                Describe(Current()?.Choice ?? MergeChoice.Conflict))
+                + (Current() is { Chunk.Trivial: not TrivialKind.None } shown
+                    // Said here and not only in the margin because this is where the
+                    // user looks before pressing a side: knowing WHY a conflict is
+                    // harmless is what makes the automatic answer checkable rather
+                    // than something to take on faith.
+                    ? " — " + TrivialText.Sentence(shown.Chunk.Trivial)
+                    : string.Empty);
+
+        UpdateTrivialButton();
 
         bool clean = undecided == 0 && _strays == 0;
         _counter.Foreground = clean
@@ -834,6 +1108,34 @@ public sealed class MergeToolWindow : ZoomWindow
         }
 
         _restore.IsEnabled = _regions.Count > 0 && active != MergeChoice.Conflict;
+    }
+
+    /// <summary>
+    ///  Keeps the trivial-resolution button honest: it offers only what it can
+    ///  still do — conflicts that are classifiable AND unanswered — and it says
+    ///  how many that is, because a bulk action whose extent is invisible until
+    ///  after the click is a bulk action nobody presses twice.
+    /// </summary>
+    private void UpdateTrivialButton()
+    {
+        List<Region> pending =
+            [.. _regions.Where(r => r.Choice == MergeChoice.Conflict && r.Proposal is not null)];
+
+        _trivial.IsEnabled = pending.Count > 0;
+        _trivial.Content = pending.Count == 0
+            ? T("Resolve trivial")
+            : string.Format(CultureInfo.CurrentCulture, T("Resolve trivial ({0})"), pending.Count);
+
+        ToolTip.SetTip(_trivial, pending.Count == 0
+            ? T("No conflict left where the two sides say the same thing in a different spelling")
+            : string.Format(
+                CultureInfo.CurrentCulture,
+                T("{0} conflict(s) differ only in {1}. They are settled the way a manual choice would "
+                    + "settle them, so each one can still be reopened afterwards."),
+                pending.Count,
+                string.Join(
+                    T(", "),
+                    pending.Select(r => TrivialText.Short(r.Chunk.Trivial)).Distinct())));
     }
 
     private static string Describe(MergeChoice choice) => choice switch
@@ -1018,6 +1320,61 @@ internal sealed class Region(int id, MergeChunk chunk, TextAnchor start, TextAnc
 
     /// <summary>What the region currently holds. Derived, never remembered.</summary>
     public MergeChoice Choice { get; set; } = MergeChoice.Conflict;
+
+    /// <summary>
+    ///  The choice this conflict's triviality proposes, or <c>null</c> when the
+    ///  two sides genuinely disagree and only the user may answer.
+    /// </summary>
+    public MergeChoice? Proposal => Chunk.Proposed switch
+    {
+        TrivialResolution.Ours => MergeChoice.Ours,
+        TrivialResolution.Theirs => MergeChoice.Theirs,
+        _ => null,
+    };
+
+    /// <summary>
+    ///  Whether the region is currently holding the side its triviality proposed.
+    ///
+    ///  <para>Derived like everything else here, which has a consequence worth
+    ///  stating: a trivial conflict the user answered <i>by hand</i> with the same
+    ///  side is shown the same way. That is right — the mark says "this region
+    ///  holds a side that provably lost nothing", not "a button put it there" —
+    ///  and it is what keeps the flag from needing a memory that a later hand edit
+    ///  could invalidate.</para>
+    /// </summary>
+    public bool SettledAsTrivial => Proposal is MergeChoice proposal && Choice == proposal;
+}
+
+/// <summary>
+///  The words the window uses for <see cref="TrivialKind"/>. Kept here and not in
+///  the service because a classification is a fact and a wording is an interface:
+///  the service must stay sayable in any language the UI later grows.
+/// </summary>
+internal static class TrivialText
+{
+    /// <summary>What fits in the margin beside a region.</summary>
+    public static string Short(TrivialKind kind) => kind switch
+    {
+        TrivialKind.LineEnding => T("line endings"),
+        TrivialKind.TrailingWhitespace => T("trailing spaces"),
+        TrivialKind.Whitespace => T("spacing"),
+        TrivialKind.BlankLines => T("blank lines"),
+        TrivialKind.OneSideUnchanged => T("one side unchanged"),
+        _ => string.Empty,
+    };
+
+    /// <summary>What the counter line says, in full.</summary>
+    public static string Sentence(TrivialKind kind) => kind switch
+    {
+        TrivialKind.LineEnding => T("both sides are the same text, only the line endings differ"),
+        TrivialKind.TrailingWhitespace => T("both sides are the same text, only spaces at the end of lines differ"),
+        TrivialKind.Whitespace => T("both sides are the same text, only the spacing differs"),
+        TrivialKind.BlankLines => T("both sides are the same text, only blank lines differ"),
+        TrivialKind.OneSideUnchanged => T("one side did not change anything here"),
+        _ => string.Empty,
+    };
+
+    private static string T(string english) => TranslationService.T(english);
 }
 
 /// <summary>
@@ -1192,6 +1549,16 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
     private const double BarWidth = 4;
     private const double Gap = 4;
 
+    // The widest note the margin can be asked to draw, used to reserve room. A
+    // literal rather than a scan of the regions: the width must not change while
+    // the user works, or the text would shift sideways as conflicts are answered.
+    private const string WidestNote = " ✓one side unchanged";
+
+    // Deliberately not one of the choice colours: the note answers a different
+    // question ("why was this safe?") from the bar beside it ("what does it
+    // hold?"), and painting them alike would read as one statement.
+    private static readonly IBrush TrivialInk = new SolidColorBrush(Color.FromRgb(0x37, 0xB6, 0xC9));
+
     private Typeface _typeface = Typeface.Default;
     private double _emSize = 10;
 
@@ -1205,7 +1572,7 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
 
         _typeface = new Typeface(view.GetValue(TextBlock.FontFamilyProperty));
         _emSize = Math.Max(view.GetValue(TextBlock.FontSizeProperty) - 2, 8);
-        return new Size(BarWidth + Gap + Format("CONFLICT").Width + Gap, 0);
+        return new Size(BarWidth + Gap + Format("CONFLICT").Width + Format(WidestNote).Width + Gap, 0);
     }
 
     /// <inheritdoc/>
@@ -1268,6 +1635,21 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
             FormattedText label = Format(ChoicePalette.Label(region.Choice));
             label.SetForegroundBrush(bar);
             context.DrawText(label, new Point(BarWidth + Gap, start));
+
+            if (region.Chunk.Trivial == TrivialKind.None)
+            {
+                continue;
+            }
+
+            // The tick is what tells a region settled by triviality from one the
+            // user weighed: both may end up holding LOCAL, and only one of the two
+            // was decided by an argument the machine can make. Before the button is
+            // pressed the same note appears without the tick, as a promise of what
+            // "Resolve trivial" would do here.
+            FormattedText note = Format(
+                (region.SettledAsTrivial ? " ✓" : " ·") + TrivialText.Short(region.Chunk.Trivial));
+            note.SetForegroundBrush(TrivialInk);
+            context.DrawText(note, new Point(BarWidth + Gap + label.Width, start));
         }
     }
 
@@ -1283,9 +1665,91 @@ public readonly record struct LineRange(int Start, int Length)
 }
 
 /// <summary>
+///  The intra-line marks of one reference pane: which line is read against which,
+///  and the characters that differ between them.
+///
+///  <para><b>The pairing is pushed in, the diff is pulled out.</b> The window knows
+///  which lines belong together and says so once per conflict; the character diff
+///  is only run when a line is asked about, which the renderer does for the lines
+///  on screen, and the answer is kept until the next <see cref="Clear"/>. So
+///  scrolling a conflict pays for what is visible and repainting pays for
+///  nothing.</para>
+///
+///  <para>The cache needs no document listener: the three reference panes are
+///  read-only and their text never changes for the life of the window. What does
+///  change is which conflict is shown and which comparison was asked for, and both
+///  of those go through <see cref="Clear"/>.</para>
+/// </summary>
+internal sealed class InlineOverlay
+{
+    private readonly Dictionary<int, (string Left, string Right, bool SelfIsLeft)> _pairs = [];
+    private readonly Dictionary<int, IReadOnlyList<InlineSpan>> _cache = [];
+
+    /// <summary>Fill of a marked stretch, or <c>null</c> when marking is off.</summary>
+    public IBrush? Fill { get; private set; }
+
+    /// <summary>Outline of a marked stretch: what makes a one-character mark visible.</summary>
+    public IPen? Edge { get; private set; }
+
+    /// <summary>Forgets every pairing, every cached diff and the ink.</summary>
+    public void Clear()
+    {
+        _pairs.Clear();
+        _cache.Clear();
+        Fill = null;
+        Edge = null;
+    }
+
+    /// <summary>Sets the colour this pane marks in.</summary>
+    public void SetInk(Color color)
+    {
+        // Translucent enough that the wash of the conflict and the text under it
+        // both survive: the mark says "look closer here", it does not replace the
+        // line's own colour. The outline carries the mark when the fill alone would
+        // be too faint to see — a single changed character.
+        Fill = new SolidColorBrush(color, 0.34);
+        Edge = new Pen(new SolidColorBrush(color, 0.85), 1);
+    }
+
+    /// <summary>Records that <paramref name="line"/> of this pane is read against its counterpart.</summary>
+    public void Add(int line, string left, string right, bool selfIsLeft)
+        => _pairs[line] = (left, right, selfIsLeft);
+
+    /// <summary>
+    ///  The stretches to mark on <paramref name="line"/>. Empty when the line has
+    ///  no counterpart, when the two are identical, or when the engine judged the
+    ///  two lines too far apart for marking to help — a rewritten line is read as a
+    ///  rewritten line, not as a chain of boxes.
+    /// </summary>
+    public IReadOnlyList<InlineSpan> Spans(int line)
+    {
+        if (_cache.TryGetValue(line, out IReadOnlyList<InlineSpan>? cached))
+        {
+            return cached;
+        }
+
+        if (!_pairs.TryGetValue(line, out (string Left, string Right, bool SelfIsLeft) pair))
+        {
+            return [];
+        }
+
+        InlineDiffResult result = InlineDiff.Compare(pair.Left, pair.Right);
+        IReadOnlyList<InlineSpan> spans = !result.Highlight
+            ? []
+            : pair.SelfIsLeft ? result.Left : result.Right;
+
+        _cache[line] = spans;
+        return spans;
+    }
+}
+
+/// <summary>
 ///  Paints one range of lines in a reference pane — the version of the current
-///  conflict that pane is showing. Same reason as <see cref="RegionHighlighter"/>
-///  for being a renderer and not a transformer.
+///  conflict that pane is showing — and, inside those lines, the characters that
+///  differ from the version it is being compared with. Same reason as
+///  <see cref="RegionHighlighter"/> for being a renderer and not a transformer,
+///  and here it is not a nicety: a conflict routinely contains blank lines, and a
+///  line transformer cannot colour a line that has no characters.
 /// </summary>
 internal sealed class RangeHighlighter : IBackgroundRenderer
 {
@@ -1293,6 +1757,9 @@ internal sealed class RangeHighlighter : IBackgroundRenderer
 
     /// <summary>The lines to wash; a zero-length range paints nothing.</summary>
     public LineRange Range { get; set; }
+
+    /// <summary>The intra-line marks drawn on top of the wash.</summary>
+    public InlineOverlay Inline { get; } = new();
 
     /// <inheritdoc/>
     public KnownLayer Layer => KnownLayer.Background;
@@ -1318,6 +1785,49 @@ internal sealed class RangeHighlighter : IBackgroundRenderer
                 Wash,
                 new Rect(0, visual.VisualTop - textView.VerticalOffset,
                     Math.Max(textView.Bounds.Width, 0), visual.Height));
+
+            // Drawn after the wash of the same line and never instead of it: the
+            // line stays part of its conflict, the mark only says where to look.
+            DrawInline(textView, drawingContext, visual.FirstDocumentLine, number);
+        }
+    }
+
+    private void DrawInline(TextView textView, DrawingContext context, DocumentLine line, int number)
+    {
+        if (Inline.Fill is not IBrush fill)
+        {
+            return;
+        }
+
+        IReadOnlyList<InlineSpan> spans = Inline.Spans(number);
+        if (spans.Count == 0)
+        {
+            return;
+        }
+
+        BackgroundGeometryBuilder builder = new() { AlignToWholePixels = true, CornerRadius = 2 };
+        foreach (InlineSpan span in spans)
+        {
+            // Clamped rather than trusted: the spans are offsets into the string the
+            // window paired this line with, and a pane whose file moved under us
+            // would otherwise index past the end of the line.
+            int start = Math.Clamp(span.Start, 0, line.Length);
+            int end = Math.Clamp(span.End, start, line.Length);
+            if (end == start)
+            {
+                continue;
+            }
+
+            builder.AddSegment(textView, new TextSegment
+            {
+                StartOffset = line.Offset + start,
+                EndOffset = line.Offset + end,
+            });
+        }
+
+        if (builder.CreateGeometry() is Geometry geometry)
+        {
+            context.DrawGeometry(fill, Inline.Edge, geometry);
         }
     }
 }
