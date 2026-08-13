@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using GitCommands.Remotes;
 
 namespace GitExtensions.Avalonia.Services;
@@ -232,18 +233,42 @@ public static class GitHubTokenStore
     /// <summary>
     ///  Runs one <c>git credential &lt;verb&gt;</c> and returns its stdout.
     ///
-    ///  <para><c>GIT_TERMINAL_PROMPT=0</c> and an empty askpass are not optional: a
-    ///  <c>fill</c> for a host nothing has stored would otherwise try to ASK, and a GUI
-    ///  app has no terminal to ask on — it would simply hang until the timeout.</para>
+    ///  <para><b>This must never be able to ask the user anything.</b> A <c>fill</c> here
+    ///  is a LOOKUP — "is a token stored?" — and "no" is a perfectly good answer that the
+    ///  callers all handle. Three separate switches are needed to hold that line, because
+    ///  git can prompt in three different ways:</para>
+    ///
+    ///  <list type="bullet">
+    ///   <item><description><c>GIT_TERMINAL_PROMPT=0</c> — git's own terminal prompt, which
+    ///    a GUI app has no terminal to answer.</description></item>
+    ///   <item><description>an empty <c>GIT_ASKPASS</c>/<c>SSH_ASKPASS</c> — the external
+    ///    prompt program.</description></item>
+    ///   <item><description><c>credential.interactive=false</c> — the CREDENTIAL HELPER's
+    ///    own UI, which the two above do not touch at all.</description></item>
+    ///  </list>
+    ///
+    ///  <para>That third one was missing, and it is the one that matters on Windows. The
+    ///  helper there is Git Credential Manager, which ACQUIRES credentials rather than
+    ///  merely looking them up: asked for a host it has nothing for, it opened its
+    ///  "Connect to GitHub" sign-in window and waited. Since this ran synchronously on
+    ///  the UI thread, the app stopped responding and Windows killed it — logged as
+    ///  "Application Hang", reported as a crash. It happened on merely OPENING settings,
+    ///  in a repository whose remote was Bitbucket over SSH and which had no business
+    ///  with GitHub at all. Linux never showed it: git-credential-libsecret answers
+    ///  "not found" and says nothing.</para>
     /// </summary>
     private static string RunCredential(string verb, string apiHost, string? password)
     {
+        // How long a helper may take before it is presumed wedged. Generous: on Windows
+        // the helper is a .NET program and costs ~100 ms just to start.
+        const int TimeoutMs = 5000;
+
         try
         {
             ProcessStartInfo psi = new()
             {
                 FileName = "git",
-                Arguments = "credential " + verb,
+                Arguments = "-c credential.interactive=false credential " + verb,
                 WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -254,10 +279,28 @@ public static class GitHubTokenStore
             psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
             psi.Environment["GIT_ASKPASS"] = string.Empty;
             psi.Environment["SSH_ASKPASS"] = string.Empty;
+
+            // The pre-config way of saying credential.interactive=false, for a helper
+            // older than that setting. Ignored by versions that read the config.
+            psi.Environment["GCM_INTERACTIVE"] = "never";
             GitEnvironment.ApplyDiagnosticLocale(psi.Environment);
 
             using Process process = new() { StartInfo = psi };
+
+            // Both pipes are drained by events, started before anything is written. The
+            // previous shape — write stdin, then ReadToEnd — made the timeout below
+            // unreachable, because ReadToEnd returns only when the child closes stdout:
+            // a helper sitting on its own dialog blocked here forever and the 5 s guard
+            // never ran. Draining stderr matters for the mirror-image reason: a helper
+            // that fills a pipe nobody reads blocks on the write and never exits.
+            StringBuilder stdout = new();
+            process.OutputDataReceived += (_, e) => Append(stdout, e.Data);
+            process.ErrorDataReceived += (_, e) => { };
+
             process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
             process.StandardInput.NewLine = "\n";
             process.StandardInput.WriteLine("protocol=https");
             process.StandardInput.WriteLine("host=" + apiHost);
@@ -272,20 +315,37 @@ public static class GitHubTokenStore
             process.StandardInput.WriteLine();
             process.StandardInput.Close();
 
-            string output = process.StandardOutput.ReadToEnd();
-            if (!process.WaitForExit(5000))
+            if (!process.WaitForExit(TimeoutMs))
             {
                 process.Kill(entireProcessTree: true);
                 return string.Empty;
             }
 
-            return process.ExitCode == 0 ? output : string.Empty;
+            // The overload above returns as soon as the process is gone; this one also
+            // waits for the redirected readers to finish, so stdout is complete below.
+            process.WaitForExit();
+
+            return process.ExitCode == 0 ? stdout.ToString() : string.Empty;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {
             // No git on the PATH, or it could not be started: the caller treats that as
             // "nothing stored", which is exactly right.
             return string.Empty;
+        }
+    }
+
+    // The callback fires per line, with a null to mark the end of the stream.
+    private static void Append(StringBuilder target, string? line)
+    {
+        if (line is null)
+        {
+            return;
+        }
+
+        lock (target)
+        {
+            target.AppendLine(line);
         }
     }
 }

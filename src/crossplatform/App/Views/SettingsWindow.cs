@@ -2004,13 +2004,33 @@ public sealed class SettingsWindow : Theming.ZoomWindow
     private GitHubService GitHubForSettings()
         => new(new AppPreferences { GitHubHost = (_githubHost.Text ?? string.Empty).Trim() });
 
+    /// <summary>
+    ///  Updates the "where is the token kept" line, off the UI thread.
+    ///
+    ///  <para>Reading it starts <c>git credential fill</c>, and this runs while the
+    ///  settings window is being populated. Synchronously, that put a process launch on
+    ///  the UI thread — ~100 ms on Windows even when the helper answers immediately, and
+    ///  unbounded when it did not: an interactive helper waiting on its own dialog froze
+    ///  the whole app until Windows killed it. The helper can no longer ask
+    ///  (<c>RunCredential</c>), but a lookup that costs a process still does not belong
+    ///  on the thread that has to paint the window.</para>
+    /// </summary>
     private void RefreshGitHubTokenNote()
     {
-        GitHubService service = GitHubForSettings();
-        (string? token, GitHubTokenStore.Storage from) = GitHubTokenStore.Read(service.ApiHost);
-        _githubTokenNote.Text = token is null
-            ? GitHubTokenStore.Describe(service.ApiHost, GitHubTokenStore.Storage.None)
-            : GitHubTokenStore.Describe(service.ApiHost, from);
+        string apiHost = GitHubForSettings().ApiHost;
+
+        Async.Run(
+            async () =>
+            {
+                (string? token, GitHubTokenStore.Storage from) =
+                    await Task.Run(() => GitHubTokenStore.Read(apiHost)).ConfigureAwait(true);
+
+                // Back on the UI thread: Async.Run awaits with the context captured.
+                _githubTokenNote.Text = GitHubTokenStore.Describe(
+                    apiHost,
+                    token is null ? GitHubTokenStore.Storage.None : from);
+            },
+            "reading where the GitHub token is stored");
     }
 
     private async Task CheckGitHubTokenAsync()
