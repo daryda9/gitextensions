@@ -3418,6 +3418,74 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M191 (2026-08-13, `8e43a7574`) — modificare la lista dei passi del rebase dalla barra
+
+Parità con `FormRebase.cs:304` (`Edit todo`, cioè `git rebase --edit-todo`). Il port non ne aveva
+l'equivalente: un rebase si poteva solo continuare, saltare o abbandonare — mai **redirigere**.
+
+**La trappola dell'editor, di nuovo.** `--edit-todo` apre `core.editor`, e sulla PTY del port questo
+significa un editor a schermo intero dentro una casella che terminale non è: è il difetto di M183, la
+cui regola dice *un comando lanciato sulla PTY deve essere esplicitamente privo di editor*. Entrambe le
+direzioni passano quindi da un `GIT_SEQUENCE_EDITOR` **scriptato** (la forma di `CommitEditService`).
+La lettura è una modifica nulla, così è **git** a fornire la presentazione — le sue abbreviazioni, gli
+oggetti dei commit, la legenda — ed è git a interpretare e installare la modifica: **questo port non
+valida un formato che non possiede**, e un rifiuto viene mostrato alla lettera con le modifiche ancora
+a schermo.
+
+Ripiego trovato sul campo: quando la todo è **già** invalida git si rifiuta persino di aprirla (analizza
+prima la lista vecchia), cioè proprio lo stato che `--edit-todo` esiste per riparare. La lettura ricade
+allora sul file `git-rebase-todo`, lo dichiara, e la **scrittura passa comunque da git**.
+
+**Un'assunzione sbagliata del port, corretta.** Il pulsante deve comparire solo per un rebase davvero
+interattivo — e scoprire cosa significa ha mostrato che il port sbagliava: git scrive
+`rebase-merge/interactive` **anche per un `git rebase` normale**, e persino `git status` lo chiama
+interattivo. Il port trattava quindi come interattivo **ogni** rebase col backend di merge. Il marcatore
+che discrimina davvero è il fratello `drop_redundant_commits`, scritto solo quando il flag interattivo
+**non** era esplicito — misurato in entrambe le direzioni. Falso negativo dichiarato:
+`rebase -i --empty=drop` scrive lo stesso marcatore e perde il pulsante, cioè sbaglia verso l'offrire
+meno.
+
+**La conferma sulla lista svuotata dice il fatto misurato, non la legenda di git.** La legenda dice «il
+rebase verrà annullato», ma è vero solo per la lista scritta all'inizio: a metà rebase una todo svuotata
+**non annulla**, ferma il rebase dov'è e tiene quello che è già stato rifatto (dimostrato su un clone
+usa-e-getta). `squash` come primo passo è bloccato **solo** nel caso in cui git rifiuta davvero (niente
+ancora rifatto): altrimenti è una richiesta legittima.
+
+**Verificato a schermo**: todo grezza prima e dopo, riordino + rimozione + `fixup` applicati, `Continue`
+fino a «Successfully rebased», e il pulsante **assente** in un rebase non interattivo e a rebase finito.
+
+## M190 (2026-08-13, `8031b41a7`) — un rebase adesso chiede prima di riscrivere la storia
+
+Upstream mostra `FormRebase` prima di partire; il port **partiva diretto** da una voce di menu,
+portandosi dietro il solo autostash globale. Tutte le altre opzioni di upstream erano perdute, e
+l'ingresso più pericoloso era il più silenzioso: riscrivere la storia senza far vedere cosa sta per
+succedere.
+
+La finestra porta ora `Interactive`, `Autosquash` (viva solo con interactive), `Auto stash`,
+`Rebase merges`, `Ignore date`, `Committer date is author date`, il ref **onto** e un **intervallo**
+specifico di commit, con le **esclusioni reciproche di upstream riprodotte** (`FormRebase.cs:214-235`)
+invece che reinventate. Un miglioramento voluto rispetto a upstream: una spunta che si disabilita viene
+anche **tolta**, così l'anteprima del comando non può dichiarare un flag che verrà scartato — upstream
+la lasciava spuntata e contava sul costruttore degli argomenti per ignorarla in silenzio.
+
+**`--preserve-merges` non è stato copiato.** git 2.43 risponde `fatal: --preserve-merges was replaced by
+--rebase-merges`: l'etichetta di upstream nomina un flag che su questa piattaforma **non può girare**.
+La spunta manda quello vivo ed è etichettata per quello. Il core condiviso non è stato toccato: espone
+già `SupportRebaseMerges`.
+
+**Autostash** diventa una scelta **per singolo rebase**, seminata dall'impostazione e riscritta in essa
+come fa upstream (`FormRebase.cs:327`), invece di un globale che l'utente non vede nel momento in cui
+conta.
+
+**Tutti e tre gli ingressi** — pannello dei branch, griglia dei commit, albero a sinistra — aprono ora
+la stessa finestra col ref selezionato precompilato. La domanda «sei sicuro» della griglia è sparita:
+una finestra che mostra il comando che sta per lanciare è una conferma migliore di un sì/no. Il vecchio
+`RebaseOnto` silenzioso, rimasto senza chiamanti, è stato rimosso.
+
+**Verificato a schermo**: comando generato per ogni combinazione provata, rebase semplice, `--onto` con
+intervallo (`s1` scartato), conflitto che si ferma e `Continue` che chiude, `Annulla` che non lancia
+niente, autostash che mette via e ripristina, e le due finestre aperte da ingressi diversi identiche.
+
 ## M189 (2026-08-13, `de5aac366`) — un solo rilevatore di immagini, ed etichette che smettono di nominare una revisione inesistente
 
 Due debiti **prodotti dall'audit** di M186–M188.
