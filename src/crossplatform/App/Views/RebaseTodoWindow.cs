@@ -60,9 +60,12 @@ public sealed class RebaseTodoWindow : Theming.ZoomWindow
     private readonly Button _apply;
     private readonly Button _cancel;
 
-    // How many steps git listed when the window opened, so the summary can say how many
-    // commits the current edit would leave behind.
-    private int _initialCount;
+    // How many of the steps git listed when the window opened were COMMIT steps — not how
+    // many rows there were. The two differ by every exec/label/reset/merge/update-ref line,
+    // and a --rebase-merges todo is mostly those: the 18-step todo measured on the field had
+    // 4 commits in it. Counting rows made "take out one exec" report "1 commit will not be
+    // in the rebased branch", which is false and is exactly the sentence a user acts on.
+    private int _initialCommits;
 
     // Commands already replayed. Zero means a squash/fixup at the head of the list has
     // nothing to meld into and git will refuse it — see Validate.
@@ -93,9 +96,17 @@ public sealed class RebaseTodoWindow : Theming.ZoomWindow
 
         TextBlock intro = new()
         {
+            // The three verbs are the WHOLE vocabulary, and saying so is the only way the
+            // window can be told apart from an editor that lost the user's text: a step
+            // cannot be added — not here and not in git's own todo editor either, because the
+            // list is the plan the rebase already made and nothing outside it is loaded. The
+            // second sentence is the other half of the same honesty: a row taken out is only
+            // recoverable while the window is open, which makes Cancel the undo.
             Text = T("These steps have not been replayed yet. Change what each one does, put them in "
-                + "another order, or take one out — then Apply hands the list back to git, which "
-                + "checks it and installs it. Nothing is replayed until you use Continue."),
+                + "another order, or take one out — those three are all git's todo allows; no step "
+                + "can be added to it. Cancel puts every row back, but a row taken out is gone once "
+                + "you Apply, which hands the list to git to check and install. Nothing is replayed "
+                + "until you use Continue."),
             Foreground = dim,
             FontSize = Metrics.Text.Caption,
             TextWrapping = TextWrapping.Wrap,
@@ -346,9 +357,20 @@ public sealed class RebaseTodoWindow : Theming.ZoomWindow
     private static string Describe(string command) => command switch
     {
         "pick" => T("replay this commit as it is."),
-        "reword" => T("replay it, then stop to rewrite its message."),
+
+        // Measured, not assumed: git asks a message editor for reword and squash, and this
+        // port answers that editor for git (GIT_EDITOR=true in RebaseSessionService) because
+        // the alternative on a PTY is a full-screen vi inside a text box that hangs the
+        // process dialog. So the message is NOT offered. Followed to the end on git 2.43 with
+        // no editor in the environment: a reword of "topic A" produced a commit still called
+        // "topic A", and a squash produced git's default concatenation, "topic B\n\ntopic C".
+        // Saying "you get to write the combined message" was therefore a promise the port
+        // breaks silently, on the one thing that is invisible until it is already lost.
+        "reword" => T("replay it — but its message comes through UNCHANGED: Continue answers "
+            + "git's message editor for you. Use 'Reword commit…' on the result afterwards."),
         "edit" => T("replay it, then stop so you can amend the commit itself."),
-        "squash" => T("melt it into the step above; you get to write the combined message."),
+        "squash" => T("melt it into the step above. The combined message is git's default — "
+            + "both messages, one after the other — and is not offered for editing."),
         "fixup" => T("melt it into the step above and throw ITS message away — the step above keeps its own."),
         "drop" => T("do not replay it. The commit will not be in the branch."),
         _ => string.Empty,
@@ -447,7 +469,7 @@ public sealed class RebaseTodoWindow : Theming.ZoomWindow
                     _steps.Add(step);
                 }
 
-                _initialCount = todo.Steps.Count;
+                _initialCommits = todo.Steps.Count(s => s.IsCommitStep);
                 _doneSteps = todo.DoneSteps;
                 _fromStorage = todo.FromStorage;
                 _list.SelectedIndex = _steps.Count > 0 ? 0 : -1;
@@ -489,7 +511,7 @@ public sealed class RebaseTodoWindow : Theming.ZoomWindow
                 T("The list is empty.\n\nThe rebase will end at the commit it is stopped on, and the "
                     + "{0} remaining commits will not be in the branch. This is not an abort: what has "
                     + "already been replayed stays. The dropped commits survive only in the reflog."),
-                _initialCount),
+                _initialCommits),
             T("FormRebase/btnEditTodo.Text", "Edit todo...")))
         {
             return;
@@ -556,7 +578,13 @@ public sealed class RebaseTodoWindow : Theming.ZoomWindow
 
     private void UpdateSummary()
     {
-        int dropped = _initialCount - _steps.Count + _steps.Count(s => s.Command == "drop");
+        // What the user loses is measured in COMMITS, so both terms are commit counts: the
+        // ones that arrived, minus the ones still on their way into the branch. A commit
+        // leaves the branch two ways and they must count once each — its row was taken out,
+        // or its row still reads 'drop'. Rows that are not commits (exec, label, reset,
+        // merge, update-ref) cancel out of both terms, which is the point.
+        int kept = _steps.Count(s => s.IsCommitStep && s.Command != "drop");
+        int dropped = _initialCommits - kept;
 
         string counted = TranslationService.TPlural(null, "{0} step left.", "{0} steps left.", _steps.Count);
 

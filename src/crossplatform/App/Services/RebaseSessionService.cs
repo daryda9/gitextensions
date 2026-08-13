@@ -34,10 +34,20 @@ public sealed record RebaseCommandResult(bool Success, string Output);
 ///  that became empty. <c>rebase.c</c> chooses that only when the interactive flag was
 ///  <i>not</i> given explicitly (an explicit <c>-i</c> stops on such a commit instead), so
 ///  its <b>absence</b> is the recorded trace of <c>-i</c>. Verified on the field, both
-///  ways: <c>rebase -i</c> → no such file; <c>rebase main</c> → file present.
-///  The one false negative is <c>rebase -i --empty=drop</c>, which asks for both; it costs
-///  a wording change and hides the Edit-todo button, i.e. it fails towards offering less,
-///  never towards offering a command that would not work.</para>
+///  ways: <c>rebase -i</c> → no such file; <c>rebase main</c> → file present.</para>
+///
+///  <para><b>Re-measured on git 2.43.0</b>, every flavour, marker files listed straight out
+///  of <c>rebase-merge</c> while stopped on a conflict. <c>interactive</c> is present in all
+///  six, which is the whole point; <c>drop_redundant_commits</c> is what varies:
+///  <c>rebase main</c> → present; <c>rebase -i main</c> → absent;
+///  <c>rebase -x cmd main</c> → absent; <c>rebase -i --autosquash main</c> → absent;
+///  <c>rebase -i --empty=drop main</c> → present; <c>rebase --rebase-merges main</c> →
+///  present. The discriminator therefore still holds, and the two false negatives are
+///  <c>-i --empty=drop</c> (which asks for both) and <c>--rebase-merges</c> without
+///  <c>-i</c> (which builds a todo the user never asked to see). Both cost a wording change
+///  and hide the Edit-todo button, i.e. they fail towards offering less, never towards
+///  offering a command that would not work — and in the <c>--rebase-merges</c> case the
+///  hidden button is one whose list the user did not write anyway.</para>
 /// </param>
 /// <param name="PendingSteps">
 ///  Commands still listed in <c>git-rebase-todo</c> — the steps <c>--edit-todo</c> would
