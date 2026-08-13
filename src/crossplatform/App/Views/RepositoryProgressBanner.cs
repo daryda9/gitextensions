@@ -93,6 +93,7 @@ public sealed class RepositoryProgressBanner : UserControl
     // adds the same ResolveButton / ContinueButton / AbortButton instances for both) —
     // which of them are up, and what they run, depends on the operation.
     private readonly StackPanel _sessionButtons;
+    private readonly Button _editTodo;
     private readonly Button _resolve;
     private readonly Button _continue;
     private readonly Button _skipStep;
@@ -167,6 +168,15 @@ public sealed class RepositoryProgressBanner : UserControl
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
 
+        // Upstream's own caption and position: FormRebase puts Edit todo before the
+        // continue/skip/abort run (FormRebase.Designer.cs:160, FormRebase.cs:165). It is the
+        // only one of these buttons that changes what the rebase is GOING to do rather than
+        // what it does with the step it is on, which is why it leads.
+        _editTodo = MakeButton(
+            T("FormRebase/btnEditTodo.Text", "Edit todo..."),
+            T("Change, reorder or remove the steps this rebase has not replayed yet (git rebase --edit-todo)"),
+            OnEditTodo);
+
         _resolve = MakeButton(
             T("InteractiveGitActionControl/ResolveButton.Text", "Resolve..."),
             T("Open the conflict resolution dialog"),
@@ -201,7 +211,7 @@ public sealed class RepositoryProgressBanner : UserControl
             Orientation = Orientation.Horizontal,
             Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _resolve, _continue, _skipStep, _abort },
+            Children = { _editTodo, _resolve, _continue, _skipStep, _abort },
         };
 
         StackPanel actionTrailing = new()
@@ -401,6 +411,7 @@ public sealed class RepositoryProgressBanner : UserControl
                 // index (InteractiveGitActionControl.cs:150); Abort is offered in both
                 // states. No subscriber means no dialog to open, so Resolve stays down
                 // and the hint above takes over.
+                _editTodo.IsVisible = false;
                 _resolve.IsVisible = hasConflicts && canResolve;
                 _continue.IsVisible = !hasConflicts;
                 _skipStep.IsVisible = false;
@@ -415,6 +426,13 @@ public sealed class RepositoryProgressBanner : UserControl
                 // shuffle the other three under the pointer, and a greyed Continue says
                 // "this is how the rebase ends, but not yet" — which is the fact the user
                 // needs. The enablement itself is upstream's rule, unchanged.
+                // Only where there is a todo to edit: an explicit `rebase -i` with steps
+                // still pending (RebaseSessionState.CanEditTodo). A plain `git rebase` also
+                // runs on the merge backend and also keeps a todo, but the user never asked
+                // for a list of steps there — and a rebase whose todo is exhausted has
+                // nothing to show but the empty list, whose only possible edit throws the
+                // remaining series away.
+                _editTodo.IsVisible = rebase.CanEditTodo;
                 _resolve.IsVisible = conflicts && canResolve;
                 _continue.IsVisible = true;
                 _skipStep.IsVisible = true;
@@ -845,6 +863,50 @@ public sealed class RepositoryProgressBanner : UserControl
 
     // ---- merge and rebase actions -----------------------------------------------------
 
+    /// <summary>
+    ///  Opens the todo editor — upstream's <c>Edit todo</c> (<c>FormRebase.cs:300</c>).
+    ///  <para>Unlike Resolve and the bisect panel this one is <b>not</b> delegated to the
+    ///  host: the window edits the rebase's own pending steps and needs nothing but the
+    ///  repository and the service the bar already holds, so handing it out would only add
+    ///  a wire nobody else pulls. What it can change is the same thing every other button
+    ///  here changes, so it ends the same way — re-read the bar, tell the shell.</para>
+    /// </summary>
+    private void OnEditTodo() => _ = EditTodoAsync();
+
+    private async Task EditTodoAsync()
+    {
+        if (_repoPath is not { Length: > 0 } repo
+            || TopLevel.GetTopLevel(this) is not Window owner
+            || !_rebaseState.CanEditTodo)
+        {
+            return;
+        }
+
+        try
+        {
+            EnableSessionButtons(false);
+
+            // The window's own git calls are wrapped here rather than inside it: suspending
+            // the watcher is the host's concern, and --edit-todo rewrites a file the
+            // watcher is looking at.
+            using IDisposable? guard = SuspendWatcher?.Invoke();
+            await RebaseTodoWindow.ShowAsync(owner, repo, _rebaseSession);
+        }
+        catch (Exception ex)
+        {
+            // Same reasoning as RunSessionAsync: a throw here is a port bug, and taking the
+            // app down from a click handler is not how it should be reported.
+            _actionHint.Text = FirstLine(ex.Message);
+            _actionHint.IsVisible = _actionHint.Text.Length > 0;
+        }
+        finally
+        {
+            EnableSessionButtons(true);
+            Refresh();
+            RepositoryChanged?.Invoke();
+        }
+    }
+
     // The host owns the conflict dialog, for the same reason it owns the bisect panel.
     // One event serves both operations: what the dialog does — stage the resolutions —
     // is the same either way, and the bar's own refresh afterwards is what turns the
@@ -975,6 +1037,7 @@ public sealed class RepositoryProgressBanner : UserControl
     /// </summary>
     private void EnableSessionButtons(bool enabled)
     {
+        _editTodo.IsEnabled = enabled && _rebaseState.CanEditTodo;
         _resolve.IsEnabled = enabled;
         _continue.IsEnabled = enabled && (!_rebaseState.InProgress || _rebaseState.CanContinue);
         _skipStep.IsEnabled = enabled && _rebaseState.CanSkip;
@@ -1121,6 +1184,7 @@ public sealed class RepositoryProgressBanner : UserControl
         _skip.Content = T("Skip");
         _stop.Content = T("Stop bisect");
         _more.Content = T("InteractiveGitActionControl/MoreButton.Text", "More");
+        _editTodo.Content = T("FormRebase/btnEditTodo.Text", "Edit todo...");
         _resolve.Content = T("InteractiveGitActionControl/ResolveButton.Text", "Resolve...");
         _continue.Content = T("InteractiveGitActionControl/ContinueButton.Text", "Continue");
         _skipStep.Content = T("Skip");
