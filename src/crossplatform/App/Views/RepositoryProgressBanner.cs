@@ -28,15 +28,23 @@ namespace GitExtensions.Avalonia.Views;
 ///  from <see cref="BisectService"/>; the <b>merge</b> state gets upstream's own three —
 ///  <c>Resolve...</c>, <c>Continue</c> and <c>Abort</c>
 ///  (<c>InteractiveGitActionControl.cs:148-152</c>) — behind
-///  <see cref="MergeSessionService"/>; and the <b>rebase</b> state gets those plus
+///  <see cref="MergeSessionService"/>; the <b>rebase</b> state gets those plus
 ///  <c>Skip</c> (<c>FormRebase.cs:166-169</c>) behind
-///  <see cref="RebaseSessionService"/>. There is still deliberately <i>no</i>
-///  continue/abort button for cherry-pick, revert or <c>git am</c> in this bar: the port
-///  has no service behind the first two, and <c>am</c> has its own dialog
-///  (<see cref="ApplyPatchDialog"/>) which owns that state machine. A button that cannot
-///  do its job is worse than no button, so those states show what is going on and name
-///  the git command that finishes or undoes it, which is honest and still removes the
-///  "why is my repository behaving strangely" dead end.</para>
+///  <see cref="RebaseSessionService"/>; and the <b>cherry-pick</b> and <b>revert</b>
+///  states get those plus <c>Quit</c>, behind
+///  <see cref="SequencerSessionService"/> — the one service that drives both, because git
+///  drives both with one sequencer. Those last two have <b>no upstream to port</b>:
+///  upstream's bar knows four states only
+///  (<c>InteractiveGitActionControl.GitAction</c>, <c>:22-30</c>) and lets a stopped
+///  cherry-pick or revert fall through to the state that offers nothing but
+///  <c>Resolve...</c>, so the buttons here are this port's own — see
+///  <see cref="SequencerSessionService"/>.</para>
+///
+///  <para>The one state still deliberately without buttons is <c>git am</c>: it has its
+///  own dialog (<see cref="ApplyPatchDialog"/>), which owns that state machine, so the bar
+///  names the git command instead. A button that cannot do its job is worse than no
+///  button — which is why revert and cherry-pick were text-only until the service behind
+///  them existed. It does now.</para>
 ///
 ///  <para><b>The two stopped-session states.</b> Upstream splits a stopped merge — and a
 ///  stopped rebase — in two by asking <c>Module.InTheMiddleOfConflictedMerge()</c>
@@ -70,6 +78,7 @@ public sealed class RepositoryProgressBanner : UserControl
     private readonly BisectService _bisect = new();
     private readonly MergeSessionService _merge = new();
     private readonly RebaseSessionService _rebaseSession = new();
+    private readonly SequencerSessionService _sequencer = new();
 
     private readonly Border _bisectBar;
     private readonly TextBlock _bisectText;
@@ -98,6 +107,7 @@ public sealed class RepositoryProgressBanner : UserControl
     private readonly Button _continue;
     private readonly Button _skipStep;
     private readonly Button _abort;
+    private readonly Button _quit;
 
     // True while the bar is showing a session that still has unresolved conflicts: the
     // one state upstream paints orange instead of blue.
@@ -106,6 +116,11 @@ public sealed class RepositoryProgressBanner : UserControl
     // The rebase state behind the buttons when the bar is showing a rebase; None
     // otherwise. Read on the refresh thread, used only on the UI thread.
     private RebaseSessionState _rebaseState = RebaseSessionState.None;
+
+    // The cherry-pick/revert state behind the buttons when the bar is showing one of
+    // those; None otherwise. Read on the refresh thread, used only on the UI thread — and
+    // handed to every command, which is what spells them with the right verb.
+    private SequencerSessionState _sequencerState = SequencerSessionState.None;
 
     private string? _repoPath;
 
@@ -205,13 +220,22 @@ public sealed class RepositoryProgressBanner : UserControl
             string.Empty,
             OnAbort);
 
+        // Cherry-pick and revert only, and the reason it exists at all is that `--quit` is
+        // NOT a quieter `--abort`: it keeps everything the operation has done so far and
+        // merely makes git forget it is doing it, where abort puts the repository back.
+        // Neither name says that, and a user who guesses wrong loses either the work or
+        // the way out — so the caption says which of the two it is, and the tooltip and the
+        // confirmation spell out what stays behind (see SetSessionTips and OnQuit).
+        // Neither merge nor rebase has the command, so the button is hidden for them.
+        _quit = MakeButton(T("Quit (keep changes)"), string.Empty, OnQuit);
+
         _sessionButtons = new StackPanel
         {
             IsVisible = false,
             Orientation = Orientation.Horizontal,
             Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _editTodo, _resolve, _continue, _skipStep, _abort },
+            Children = { _editTodo, _resolve, _continue, _skipStep, _abort, _quit },
         };
 
         StackPanel actionTrailing = new()
@@ -310,7 +334,12 @@ public sealed class RepositoryProgressBanner : UserControl
 
         if (repo is null)
         {
-            Apply(RepositoryProgress.None, BisectSession.None, false, RebaseSessionState.None);
+            Apply(
+                RepositoryProgress.None,
+                BisectSession.None,
+                false,
+                RebaseSessionState.None,
+                SequencerSessionState.None);
             return;
         }
 
@@ -354,11 +383,19 @@ public sealed class RepositoryProgressBanner : UserControl
                 ? _rebaseSession.Read(repo)
                 : RebaseSessionState.None;
 
+            // And once more: the sequencer is only read while a cherry-pick or a revert is
+            // actually stopped. Read() is disk-only except for the applied-step count, and
+            // it re-checks the rebase directory itself, so it cannot mistake a rebase step
+            // (which also leaves CHERRY_PICK_HEAD behind) for a cherry-pick.
+            SequencerSessionState sequencer = IsSequencer(progress.Operation)
+                ? _sequencer.Read(repo)
+                : SequencerSessionState.None;
+
             Dispatcher.UIThread.Post(() =>
             {
                 if (generation == _generation)
                 {
-                    Apply(progress, session, hasConflicts, rebase);
+                    Apply(progress, session, hasConflicts, rebase, sequencer);
                 }
             });
         });
@@ -370,10 +407,12 @@ public sealed class RepositoryProgressBanner : UserControl
         RepositoryProgress progress,
         BisectSession session,
         bool hasConflicts,
-        RebaseSessionState rebase)
+        RebaseSessionState rebase,
+        SequencerSessionState sequencer)
     {
         _session = session;
         _rebaseState = rebase;
+        _sequencerState = sequencer;
         _bisectBar.IsVisible = progress.BisectInProgress;
         if (progress.BisectInProgress)
         {
@@ -395,16 +434,32 @@ public sealed class RepositoryProgressBanner : UserControl
             // apart (InTheMiddleOfRebase). With InProgress false the bar falls back to
             // the old text-only behaviour rather than offering commands that would fail.
             bool rebasing = IsRebase(progress.Operation) && rebase.InProgress;
+
+            // Same gate as the rebase's, for the same reason: the marker file alone is not
+            // proof. CHERRY_PICK_HEAD is also what a stopped rebase step leaves behind, and
+            // SequencerSessionService.Read is the one that refuses those. With InProgress
+            // false the bar falls back to the old text-only behaviour rather than offering
+            // commands that would fail.
+            bool sequencing = IsSequencer(progress.Operation) && sequencer.InProgress;
             bool canResolve = ResolveConflictsRequested is not null;
-            bool conflicts = merge ? hasConflicts : rebasing && rebase.HasUnresolvedConflicts;
+            bool conflicts = merge
+                ? hasConflicts
+                : rebasing
+                    ? rebase.HasUnresolvedConflicts
+                    : sequencing && sequencer.HasUnresolvedConflicts;
 
-            _actionText.Text = DescribeOperation(progress, conflicts, rebase);
+            _actionText.Text = DescribeOperation(progress, conflicts, rebase, sequencer);
 
-            string hint = HintFor(progress.Operation, conflicts, canResolve, rebasing);
+            string hint = HintFor(progress.Operation, conflicts, canResolve, rebasing, sequencing);
             _actionHint.Text = hint;
             _actionHint.IsVisible = hint.Length > 0;
 
-            _sessionButtons.IsVisible = merge || rebasing;
+            _sessionButtons.IsVisible = merge || rebasing || sequencing;
+
+            // Only the sequencer has a --quit; offering it anywhere else would be a button
+            // for a command that does not exist.
+            _quit.IsVisible = sequencing;
+
             if (merge)
             {
                 // Upstream puts Resolve and Continue in the same slot and picks by the
@@ -439,8 +494,23 @@ public sealed class RepositoryProgressBanner : UserControl
                 SetSessionTips();
                 EnableSessionButtons(true);
             }
+            else if (sequencing)
+            {
+                // The rebase's grammar, unchanged — this bar is not going to grow a fourth
+                // one. Continue stays put and goes grey while the index is unmerged (git
+                // exits 128 there, measured), Resolve... appears beside it, Abort is always
+                // up. Skip only where git has a series to carry on with: on a
+                // single-commit pick or revert it is Abort under another name, which is a
+                // question the user cannot answer (SequencerSessionState.CanSkip).
+                _editTodo.IsVisible = false;
+                _resolve.IsVisible = conflicts && canResolve;
+                _continue.IsVisible = true;
+                _skipStep.IsVisible = sequencer.CanSkip;
+                SetSessionTips();
+                EnableSessionButtons(true);
+            }
 
-            _conflicted = (merge || rebasing) && conflicts;
+            _conflicted = (merge || rebasing || sequencing) && conflicts;
             PaintActionBar(_conflicted);
         }
 
@@ -452,6 +522,14 @@ public sealed class RepositoryProgressBanner : UserControl
         => operation is RepositoryOperation.Rebase or RepositoryOperation.RebaseInteractive;
 
     /// <summary>
+    ///  The two operations git runs through its sequencer. They share every button and
+    ///  every rule; only the verb the commands are spelled with differs, and
+    ///  <see cref="SequencerSessionService"/> is the one that knows which.
+    /// </summary>
+    private static bool IsSequencer(RepositoryOperation operation)
+        => operation is RepositoryOperation.CherryPick or RepositoryOperation.Revert;
+
+    /// <summary>
     ///  Names the exact git command each shared button will run, in its tooltip, for the
     ///  operation the bar is currently showing. The captions stay upstream's
     ///  (<c>Continue</c> / <c>Abort</c>), so the tooltip is the only place the difference
@@ -461,16 +539,45 @@ public sealed class RepositoryProgressBanner : UserControl
     private void SetSessionTips()
     {
         bool rebase = _rebaseState.InProgress;
+        bool sequencer = _sequencerState.InProgress;
 
-        ToolTip.SetTip(_continue, rebase
-            ? T("Commit this step and replay the rest of the series (git rebase --continue)")
-            : T("Record the merge commit (git merge --continue)"));
+        // The verb the user sees has to be the verb git will be given, or the tooltip is
+        // describing a command nobody ran.
+        string verb = _sequencerState.IsRevert ? "revert" : "cherry-pick";
 
-        ToolTip.SetTip(_skipStep, T("Skip currently applying commit — its changes are dropped (git rebase --skip)"));
+        ToolTip.SetTip(_continue, sequencer
+            ? (_sequencerState.IsRevert
+                ? T("Record the revert commit and carry on with the rest of the series (git revert --continue)")
+                : T("Record this commit and carry on with the rest of the series (git cherry-pick --continue)"))
+            : rebase
+                ? T("Commit this step and replay the rest of the series (git rebase --continue)")
+                : T("Record the merge commit (git merge --continue)"));
 
-        ToolTip.SetTip(_abort, rebase
-            ? T("Discard the rebase and put the branch back where it started (git rebase --abort)")
-            : T("Discard the merge and restore the working tree (git merge --abort)"));
+        ToolTip.SetTip(_skipStep, sequencer
+            ? string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Leave out the commit it stopped on and carry on with the rest — the commits already made stay (git {0} --skip)"),
+                verb)
+            : T("Skip currently applying commit — its changes are dropped (git rebase --skip)"));
+
+        // Abort and Quit are the pair this bar exists to disambiguate: one PUTS THE
+        // REPOSITORY BACK, the other LEAVES IT EXACTLY AS IT IS and only forgets the
+        // operation. Both tips are written to be read next to each other, because that is
+        // how they are on screen. Measured behaviour, not the manual's wording — see
+        // SequencerSessionService.Abort and .Quit.
+        ToolTip.SetTip(_abort, sequencer
+            ? string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Undo everything: the commits this operation already made are removed and the files go back to how they were before it started (git {0} --abort)"),
+                verb)
+            : rebase
+                ? T("Discard the rebase and put the branch back where it started (git rebase --abort)")
+                : T("Discard the merge and restore the working tree (git merge --abort)"));
+
+        ToolTip.SetTip(_quit, string.Format(
+            System.Globalization.CultureInfo.CurrentCulture,
+            T("Stop here and change nothing: the commits already made stay, your files stay as they are now — conflict markers included — and git simply forgets the operation (git {0} --quit)"),
+            verb));
     }
 
     /// <summary>
@@ -636,11 +743,17 @@ public sealed class RepositoryProgressBanner : UserControl
     private static string DescribeOperation(
         RepositoryProgress progress,
         bool hasConflicts,
-        RebaseSessionState rebase)
+        RebaseSessionState rebase,
+        SequencerSessionState sequencer)
     {
         if (IsRebase(progress.Operation) && rebase.InProgress)
         {
             return DescribeRebase(rebase);
+        }
+
+        if (IsSequencer(progress.Operation) && sequencer.InProgress)
+        {
+            return DescribeSequencer(sequencer);
         }
 
         string headline = progress.Operation switch
@@ -648,8 +761,10 @@ public sealed class RepositoryProgressBanner : UserControl
             // Upstream's own two merge sentences, with its own operation noun
             // (InteractiveGitActionControl.cs:13,15,19) — so the wording, and the
             // translations behind it, are the ones the user already knows. The states
-            // below keep this port's phrasing: upstream has no sentence for a stopped
-            // cherry-pick or revert, and none of them has buttons to describe yet.
+            // below keep this port's phrasing, because upstream has no sentence for any of
+            // them. The cherry-pick and revert lines here are the fallback for a session
+            // the sequencer service could not confirm; the confirmed one is
+            // DescribeSequencer, which has facts to report instead.
             RepositoryOperation.Merge => string.Format(
                 System.Globalization.CultureInfo.CurrentCulture,
                 hasConflicts
@@ -750,6 +865,58 @@ public sealed class RepositoryProgressBanner : UserControl
     }
 
     /// <summary>
+    ///  What the bar says about a stopped cherry-pick or revert, built from
+    ///  <see cref="SequencerSessionService.Read"/>. It has the same two situations to tell
+    ///  apart as the rebase, and it tells them apart the same way:
+    ///  <list type="bullet">
+    ///   <item><b>stopped on a conflict</b> — upstream's own
+    ///    "… in progress with merge conflicts." sentence, and the work is to resolve;</item>
+    ///   <item><b>clean index</b> — everything is staged and the only thing missing is the
+    ///    commit, so the bar says the operation is <i>ready to finish</i> rather than
+    ///    telling the user to resolve conflicts that are not there.</item>
+    ///  </list>
+    ///  The step counter is only shown for a real series (git keeps no sequencer directory
+    ///  for a one-commit operation, so there is no "1 of 1" to invent), and the commit git
+    ///  stopped on comes from <c>CHERRY_PICK_HEAD</c>/<c>REVERT_HEAD</c>. Nothing is
+    ///  guessed: what git did not record is simply left out.
+    /// </summary>
+    private static string DescribeSequencer(SequencerSessionState sequencer)
+    {
+        // "Cherry-pick"/"Revert" as the operation noun, in the slot upstream's own sentence
+        // puts "Merge" and "Rebase" in — so the four states read as one family.
+        string noun = sequencer.IsRevert ? T("Revert") : T("Cherry-pick");
+
+        string headline = sequencer.HasUnresolvedConflicts
+            ? string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("{0} is currently in progress with merge conflicts."),
+                noun)
+            : string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("{0} is in progress — nothing left to resolve, only the commit is missing."),
+                noun);
+
+        if (sequencer.HasStepCount)
+        {
+            headline += "  " + string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Step {0} of {1}."),
+                sequencer.Step,
+                sequencer.TotalSteps);
+        }
+
+        if (sequencer.StoppedSha is { Length: > 0 } stopped)
+        {
+            headline += "  " + string.Format(
+                System.Globalization.CultureInfo.CurrentCulture,
+                T("Stopped at {0}."),
+                stopped);
+        }
+
+        return headline;
+    }
+
+    /// <summary>
     ///  Names the command that finishes or undoes the operation, for the states that
     ///  have no button because this port has no service behind them (see the class
     ///  remarks). Merge and rebase have buttons now, so they contribute a hint only in
@@ -762,7 +929,8 @@ public sealed class RepositoryProgressBanner : UserControl
         RepositoryOperation operation,
         bool hasConflicts,
         bool canResolve,
-        bool rebasing) => operation switch
+        bool rebasing,
+        bool sequencing) => operation switch
     {
         RepositoryOperation.Merge => hasConflicts && !canResolve
             ? T("Resolve the conflicts from the Commit tab, then use Continue.")
@@ -778,10 +946,20 @@ public sealed class RepositoryProgressBanner : UserControl
 
         RepositoryOperation.ApplyMailbox =>
             T("Resolve the conflicts, then run: git am --continue / --skip / --abort"),
-        RepositoryOperation.CherryPick =>
-            T("Resolve the conflicts, then run: git cherry-pick --continue / --abort"),
-        RepositoryOperation.Revert =>
-            T("Resolve the conflicts, then run: git revert --continue / --abort"),
+        // Same shape as the rebase above: with the session confirmed the buttons speak for
+        // themselves, and the terminal hint survives only for a session the service could
+        // not confirm (see Apply) — which is now the only way a user can end up reading it.
+        RepositoryOperation.CherryPick => sequencing
+            ? hasConflicts && !canResolve
+                ? T("Resolve the conflicts from the Commit tab, then use Continue.")
+                : string.Empty
+            : T("Resolve the conflicts, then run: git cherry-pick --continue / --skip / --abort / --quit"),
+
+        RepositoryOperation.Revert => sequencing
+            ? hasConflicts && !canResolve
+                ? T("Resolve the conflicts from the Commit tab, then use Continue.")
+                : string.Empty
+            : T("Resolve the conflicts, then run: git revert --continue / --skip / --abort / --quit"),
         _ => string.Empty,
     };
 
@@ -913,58 +1091,109 @@ public sealed class RepositoryProgressBanner : UserControl
     // conflicted state into the continuable one.
     private void OnResolve() => ResolveConflictsRequested?.Invoke();
 
-    // Which git command the three shared buttons run is decided here, by the state the
-    // last refresh read. _rebaseState.InProgress is only true when the bar is actually
-    // showing a confirmed rebase session (see Apply), so a stale click cannot send a
-    // rebase command to a merge.
-    private void OnContinue() => _ = _rebaseState.InProgress
+    // Which git command the shared buttons run is decided here, by the state the last
+    // refresh read. Each of the two InProgress flags is only true when the bar is actually
+    // showing that confirmed session (see Apply), so a stale click cannot send a rebase
+    // command to a merge, nor a cherry-pick command to a revert — the sequencer service
+    // re-checks the verb against the state it is handed, too.
+    private void OnContinue() => _ = _sequencerState.InProgress
         ? RunSessionAsync(
             T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
-            "rebase --continue",
+            $"{SequencerVerb} --continue",
             confirm: null,
-            (repo, emit) => Outcome(_rebaseSession.Continue(repo, emit)))
+            (repo, emit) => Outcome(_sequencer.Continue(repo, _sequencerState, emit)))
+        : _rebaseState.InProgress
+            ? RunSessionAsync(
+                T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
+                "rebase --continue",
+                confirm: null,
+                (repo, emit) => Outcome(_rebaseSession.Continue(repo, emit)))
+            : RunSessionAsync(
+                T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
+                "merge --continue",
+                confirm: null,
+                (repo, emit) => Outcome(_merge.Continue(repo, emit)));
+
+    // The verb of the stopped sequencer operation, for the process dialog's own title —
+    // the command it announces has to be the command it runs.
+    private string SequencerVerb => _sequencerState.IsRevert ? "revert" : "cherry-pick";
+
+    // Rebase and sequencer: the button is hidden in every other state, and for the
+    // sequencer only while git has a series left to carry on with (see Apply).
+    private void OnSkipStep() => _ = _sequencerState.InProgress
+        ? RunSessionAsync(
+            T("Skip"),
+            $"{SequencerVerb} --skip",
+            // Same reasoning as the rebase's confirmation below — cheap to confirm,
+            // impossible to undo — but the sentence is the sequencer's own: here the step
+            // is a whole commit of the series, and what survives is everything before it.
+            confirm: T("Skip this commit?\n\nThe commit it stopped on is left out: it will not be applied, and its changes will not be in your branch. The commits this operation has already made stay, and the rest of the series carries on."),
+            (repo, emit) => Outcome(_sequencer.Skip(repo, _sequencerState, emit)))
         : RunSessionAsync(
-            T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
-            "merge --continue",
-            confirm: null,
-            (repo, emit) => Outcome(_merge.Continue(repo, emit)));
+            T("Skip"),
+            "rebase --skip",
+            // Not destructive the way an abort is — the rest of the series survives — but the
+            // skipped step is gone for good, and upstream's own caption ("Skip currently
+            // applying commit") does not say that out loud. Cheap to confirm, expensive to
+            // undo. The wording stops short of naming what exactly is lost, because that
+            // depends on the step: a `pick` that could not be applied loses its commit
+            // outright, while a stop on an interactive `edit` has already applied the commit
+            // and only the pending amend is abandoned — verified in GUI on both.
+            confirm: T("Skip this step?\n\nThe rebase abandons the step it stopped on and carries on with the rest of the series. What that step was going to change will not be in the rebased branch, and git keeps no way back to it."),
+            (repo, emit) => Outcome(_rebaseSession.Skip(repo, emit)));
 
-    // Rebase only: the button is hidden in every other state.
-    private void OnSkipStep() => _ = RunSessionAsync(
-        T("Skip"),
-        "rebase --skip",
-        // Not destructive the way an abort is — the rest of the series survives — but the
-        // skipped step is gone for good, and upstream's own caption ("Skip currently
-        // applying commit") does not say that out loud. Cheap to confirm, expensive to
-        // undo. The wording stops short of naming what exactly is lost, because that
-        // depends on the step: a `pick` that could not be applied loses its commit
-        // outright, while a stop on an interactive `edit` has already applied the commit
-        // and only the pending amend is abandoned — verified in GUI on both.
-        confirm: T("Skip this step?\n\nThe rebase abandons the step it stopped on and carries on with the rest of the series. What that step was going to change will not be in the rebased branch, and git keeps no way back to it."),
-        (repo, emit) => Outcome(_rebaseSession.Skip(repo, emit)));
-
-    private void OnAbort() => _ = _rebaseState.InProgress
+    private void OnAbort() => _ = _sequencerState.InProgress
         ? RunSessionAsync(
             T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
-            "rebase --abort",
-            confirm: T("Abort the rebase?\n\nEvery step already replayed is thrown away and the branch goes back to the commit it was on before the rebase started. Conflict resolutions you have not committed are lost."),
-            (repo, emit) => Outcome(_rebaseSession.Abort(repo, emit)))
-        : RunSessionAsync(
-            T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
-            "merge --abort",
-            // Upstream aborts straight away (InteractiveGitActionControl.cs:221). This port
-            // asks first: the command throws the merge away AND rewrites the working tree,
-            // so a mis-click costs work that git keeps no reflog of. Same reasoning as the
-            // other destructive paths of this port (ResetChangesDialog, force-delete branch).
-            confirm: T("Abort the merge?\n\nThe merge is discarded and every file goes back to the state it had before the merge started. Conflict resolutions you have not committed are lost."),
-            (repo, emit) => Outcome(_merge.Abort(repo, emit)));
+            $"{SequencerVerb} --abort",
+            // The measured behaviour, in the words of the thing the user loses: it is not
+            // only "stop", it is "put back", and it reaches commits that are already on the
+            // branch. Written to be told apart from Quit's confirmation at a glance, since
+            // the two buttons sit next to each other.
+            confirm: _sequencerState.IsRevert
+                ? T("Abort the revert?\n\nEverything goes back to how it was before the revert started: the revert commits it has already made are removed, and your files are restored. Conflict resolutions you have not committed are lost.")
+                : T("Abort the cherry-pick?\n\nEverything goes back to how it was before the cherry-pick started: the commits it has already applied are removed, and your files are restored. Conflict resolutions you have not committed are lost."),
+            (repo, emit) => Outcome(_sequencer.Abort(repo, _sequencerState, emit)))
+        : _rebaseState.InProgress
+            ? RunSessionAsync(
+                T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
+                "rebase --abort",
+                confirm: T("Abort the rebase?\n\nEvery step already replayed is thrown away and the branch goes back to the commit it was on before the rebase started. Conflict resolutions you have not committed are lost."),
+                (repo, emit) => Outcome(_rebaseSession.Abort(repo, emit)))
+            : RunSessionAsync(
+                T("InteractiveGitActionControl/AbortButton.Text", "Abort"),
+                "merge --abort",
+                // Upstream aborts straight away (InteractiveGitActionControl.cs:221). This port
+                // asks first: the command throws the merge away AND rewrites the working tree,
+                // so a mis-click costs work that git keeps no reflog of. Same reasoning as the
+                // other destructive paths of this port (ResetChangesDialog, force-delete branch).
+                confirm: T("Abort the merge?\n\nThe merge is discarded and every file goes back to the state it had before the merge started. Conflict resolutions you have not committed are lost."),
+                (repo, emit) => Outcome(_merge.Abort(repo, emit)));
 
-    // The two session services report the same shape through two distinct record types;
+    /// <summary>
+    ///  Sequencer only. Confirmed like the destructive buttons even though it destroys
+    ///  nothing, because what it leaves behind is the surprising part: an unmerged index
+    ///  and half-applied files, with nothing left in the repository to explain them — this
+    ///  bar itself disappears afterwards, since git no longer reports an operation. The
+    ///  wording therefore describes the state the user will be standing in, not the command.
+    /// </summary>
+    private void OnQuit() => _ = RunSessionAsync(
+        T("Quit (keep changes)"),
+        $"{SequencerVerb} --quit",
+        confirm: _sequencerState.HasUnresolvedConflicts
+            ? T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: the commits it has already made stay on your branch, and your files stay exactly as they are — including the unresolved conflict, which you will then have to finish or undo by hand.")
+            : T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: the commits it has already made stay on your branch, and your files stay exactly as they are, staged and uncommitted. Any commits of the series still to come are dropped."),
+        (repo, emit) => Outcome(_sequencer.Quit(repo, _sequencerState, emit)));
+
+    // The three session services report the same shape through three distinct record types;
     // these keep the runner below indifferent to which one ran.
     private static GitProcessOutcome Outcome(MergeCommandResult result)
         => new(result.Success, result.Output);
 
     private static GitProcessOutcome Outcome(RebaseCommandResult result)
+        => new(result.Success, result.Output);
+
+    private static GitProcessOutcome Outcome(SequencerCommandResult result)
         => new(result.Success, result.Output);
 
     /// <summary>
@@ -1034,14 +1263,21 @@ public sealed class RepositoryProgressBanner : UserControl
     ///  button instead — see <see cref="Apply"/> for why this bar greys it). The merge
     ///  state does not need the rule: there, Continue is not on screen at all while the
     ///  index is conflicted.</para>
+    ///  <para>The sequencer obeys the same rule for the same reason, and it was measured
+    ///  rather than assumed: <c>git cherry-pick --continue</c> over an unmerged index does
+    ///  not fail politely, it exits <b>128</b> with <i>"fatal: exiting because of an
+    ///  unresolved conflict"</i>.</para>
     /// </summary>
     private void EnableSessionButtons(bool enabled)
     {
         _editTodo.IsEnabled = enabled && _rebaseState.CanEditTodo;
         _resolve.IsEnabled = enabled;
-        _continue.IsEnabled = enabled && (!_rebaseState.InProgress || _rebaseState.CanContinue);
-        _skipStep.IsEnabled = enabled && _rebaseState.CanSkip;
+        _continue.IsEnabled = enabled
+            && (!_rebaseState.InProgress || _rebaseState.CanContinue)
+            && (!_sequencerState.InProgress || _sequencerState.CanContinue);
+        _skipStep.IsEnabled = enabled && (_rebaseState.CanSkip || _sequencerState.CanSkip);
         _abort.IsEnabled = enabled;
+        _quit.IsEnabled = enabled;
     }
 
     // A yes/no modal, the same hand-built shape the rest of this port uses (Avalonia
@@ -1189,6 +1425,7 @@ public sealed class RepositoryProgressBanner : UserControl
         _continue.Content = T("InteractiveGitActionControl/ContinueButton.Text", "Continue");
         _skipStep.Content = T("Skip");
         _abort.Content = T("InteractiveGitActionControl/AbortButton.Text", "Abort");
+        _quit.Content = T("Quit (keep changes)");
         SetSessionTips();
         Refresh();
     });
