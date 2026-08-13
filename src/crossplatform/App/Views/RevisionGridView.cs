@@ -7030,29 +7030,21 @@ public sealed class RevisionGridView : UserControl
             return;
         }
 
-        if (!await ConfirmAsync(T(
-            "RevisionGridControl/_areYouSureRebase.Text",
-            "Are you sure you want to rebase? This action will rewrite commit history.")))
-        {
-            return;
-        }
-
         if (TopLevel.GetTopLevel(this) is not Window owner)
         {
             return;
         }
 
-        string target = row.Hash;
-        FlashStatus(string.Format(T("Rebasing on {0}…"), row.ShortHash));
-
-        BranchTagResult result;
-        try
+        // The yes/no "are you sure you want to rewrite history" that used to stand here
+        // is gone on purpose: the options dialog replaces it. Upstream reaches the same
+        // command through FormRebase and asks no such question either — a window that
+        // names the target, lists the options and shows the git command line is a
+        // better confirmation than a prompt that shows none of them, and it is the only
+        // way to reach the options at all.
+        RebaseDialogResult? result = await RebaseDialog.ShowAsync(owner, _repoPath, row.Hash);
+        if (result is not { Executed: true })
         {
-            result = await Task.Run(() => _branchTags.RebaseOnto(_repoPath, target));
-        }
-        catch (Exception ex)
-        {
-            result = new BranchTagResult(false, ex.Message);
+            return;
         }
 
         AfterRefOp(result.Success

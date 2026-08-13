@@ -104,6 +104,68 @@ public sealed record MergeDialogData(
 }
 
 /// <summary>
+///  One rebase, exactly as the rebase dialog described it — the port's stand-in for
+///  the state of upstream's <c>FormRebase</c> checkboxes at the moment
+///  <c>OkClick</c> runs (<c>FormRebase.cs:337-358</c>).
+///
+///  <para><see cref="From"/> and <see cref="BranchToMove"/> are upstream's "specific
+///  range" pair (<c>txtFrom</c> / <c>cboTo</c>): both empty means a plain
+///  <c>git rebase &lt;onto&gt;</c>, both set means
+///  <c>git rebase --onto &lt;onto&gt; &lt;from&gt; &lt;branch&gt;</c>. They travel as
+///  a pair because the core argument builder throws when only one of them is
+///  supplied, and because half a range has no meaning to git either.</para>
+/// </summary>
+/// <param name="Onto">The ref the current branch is replayed onto (upstream's <c>cboBranches</c>).</param>
+/// <param name="Interactive"><c>-i</c>. See <see cref="BranchTagService.RebaseStreaming"/> for what interactive can mean without an editor.</param>
+/// <param name="AutoSquash"><c>--autosquash</c>; only reachable together with <see cref="Interactive"/>, as upstream (<c>FormRebase.cs:216</c>).</param>
+/// <param name="AutoStash"><c>--autostash</c>: stash the dirty working tree around the rebase.</param>
+/// <param name="IgnoreDate"><c>--ignore-date</c>: rewrite the author date to now.</param>
+/// <param name="CommitterDateIsAuthorDate"><c>--committer-date-is-author-date</c>: keep the author date as the commit date.</param>
+/// <param name="RebaseMerges"><c>--rebase-merges</c>: recreate the merge commits in the range instead of flattening them.</param>
+/// <param name="From">Exclusive start of the range to replay, or "" for the whole branch.</param>
+/// <param name="BranchToMove">Branch the range belongs to, or "" for the current branch.</param>
+public sealed record RebaseChoice(
+    string Onto,
+    bool Interactive = false,
+    bool AutoSquash = false,
+    bool AutoStash = false,
+    bool IgnoreDate = false,
+    bool CommitterDateIsAuthorDate = false,
+    bool RebaseMerges = false,
+    string From = "",
+    string BranchToMove = "")
+{
+    /// <summary>True when both ends of upstream's "specific range" are filled in.</summary>
+    public bool HasRange => !string.IsNullOrWhiteSpace(From) && !string.IsNullOrWhiteSpace(BranchToMove);
+}
+
+/// <summary>
+///  Everything the rebase dialog needs, read in ONE go off the UI thread — the port's
+///  equivalent of what <c>FormRebase.OnShown</c> gathers before showing itself
+///  (<c>FormRebase.cs:105-138</c>).
+/// </summary>
+/// <param name="CurrentBranch">The branch that will be rebased, for the read-only caption.</param>
+/// <param name="Refs">Everything offerable as the rebase target: heads, remotes and tags (<c>FormRebase.cs:111</c>).</param>
+/// <param name="LocalBranches">The subset upstream puts in its "To" combo — local heads only (<c>FormRebase.cs:122-124</c>).</param>
+/// <param name="IsDirty">
+///  <c>Module.IsDirtyDir()</c>. Upstream enables the auto-stash box only for a dirty
+///  working tree (<c>FormRebase.cs:182</c>): with a clean tree <c>--autostash</c>
+///  would be a flag with nothing to do.
+/// </param>
+/// <param name="AutoStash">The remembered <c>AppSettings.RebaseAutoStash</c> (<c>FormRebase.cs:138</c>).</param>
+/// <param name="AutoSquashConfig">The repository's effective <c>rebase.autosquash</c> (<c>FormRebase.cs:132</c>).</param>
+public sealed record RebaseDialogData(
+    string CurrentBranch,
+    IReadOnlyList<string> Refs,
+    IReadOnlyList<string> LocalBranches,
+    bool IsDirty,
+    bool AutoStash,
+    bool AutoSquashConfig)
+{
+    public static readonly RebaseDialogData Empty = new(string.Empty, [], [], false, false, false);
+}
+
+/// <summary>
 ///  Snapshot of the working tree taken before a checkout: whether it is dirty
 ///  and how many entries <c>git status --porcelain</c> reports (tracked
 ///  modifications + untracked files). Loaded off the UI thread and handed to
@@ -1252,20 +1314,185 @@ public sealed class BranchTagService
     }
 
     /// <summary>
-    ///  Rebases the current branch onto <paramref name="branch"/>.
+    ///  Turns a <see cref="RebaseChoice"/> into the <c>git rebase</c> command line, by
+    ///  filling in the shared core's <c>Commands.RebaseOptions</c> exactly the way
+    ///  <c>FormRebase.OkClick</c> does (<c>FormRebase.cs:337-358</c>). Pure and static
+    ///  so the dialog can show the caller the command it is about to run without
+    ///  touching a repository.
+    ///
+    ///  <para><b><c>--rebase-merges</c>, not <c>--preserve-merges</c>.</b> Upstream's
+    ///  checkbox is called <c>chkPreserveMerges</c> and the core option kept that name,
+    ///  but the flag it originally stood for is gone: git 2.43 (this port's target
+    ///  platform) answers <c>fatal: --preserve-merges was replaced by
+    ///  --rebase-merges</c>, so the old spelling cannot produce a runnable command on
+    ///  Linux at all. <c>SupportRebaseMerges</c> is what the core exposes to pick the
+    ///  modern spelling, and it is pinned on here rather than probed: every git that
+    ///  could accept the legacy flag predates the minimum this port builds against.</para>
+    ///
+    ///  <para>Both ends of the range or neither: the core throws on half a range
+    ///  (<c>Commands.Arguments.cs:504-507</c>), hence the <see cref="RebaseChoice.HasRange"/>
+    ///  gate rather than two independent fields.</para>
     /// </summary>
-    public BranchTagResult RebaseOnto(string repoPath, string branch)
+    public static ArgumentString BuildRebaseArguments(RebaseChoice choice)
     {
-        GitModule module = GitContext.CreateModule(repoPath);
-        // Upstream's RebaseAutoStash: --autostash lets a rebase start with a dirty
-        // working tree, stashing and restoring around it. Off by default there too.
         Commands.RebaseOptions options = new()
         {
-            BranchName = branch,
-            AutoStash = new SettingsService().Load().RebaseAutoStash,
+            Interactive = choice.Interactive,
+            AutoSquash = choice.AutoSquash,
+            AutoStash = choice.AutoStash,
+            IgnoreDate = choice.IgnoreDate,
+            CommitterDateIsAuthorDate = choice.CommitterDateIsAuthorDate,
+            PreserveMerges = choice.RebaseMerges,
+            SupportRebaseMerges = true,
         };
-        ArgumentString args = Commands.Rebase(options);
-        return Run(module, args);
+
+        if (choice.HasRange)
+        {
+            options.OnTo = choice.Onto;
+            options.From = choice.From;
+            options.BranchName = choice.BranchToMove;
+        }
+        else
+        {
+            options.BranchName = choice.Onto;
+        }
+
+        return Commands.Rebase(options);
+    }
+
+    /// <summary>
+    ///  Runs one configured rebase, streaming every line git writes to
+    ///  <paramref name="onOutput"/> so the shared <c>GitProcessDialog</c> shows the
+    ///  command line and git's progress live — the port's stand-in for upstream's
+    ///  <c>FormProcess.ReadDialog</c> (<c>FormRebase.cs:362</c>). A conflicted rebase
+    ///  exits non-zero and is reported as a failure here; that is not an error but the
+    ///  state the caller reacts to, and the rebase banner then owns
+    ///  Continue / Skip / Abort.
+    ///
+    ///  <para><b>Why git gets no editor.</b> <c>GIT_SEQUENCE_EDITOR</c> and
+    ///  <c>GIT_EDITOR</c> are pinned to <c>true</c>, the shell no-op that exits 0 and
+    ///  therefore means "the file is accepted unchanged". This port has no editor wired
+    ///  to git (see <see cref="RebaseSessionService"/>'s remarks), so the inherited
+    ///  <c>vi</c> would hang the process dialog for ever with no visible prompt. The
+    ///  consequence for <c>-i</c> is deliberate and documented in the dialog: the
+    ///  generated todo runs as generated, which still buys <c>--autosquash</c> and
+    ///  still marks the session interactive, so the banner's rebase commands apply to
+    ///  it. Reordering the pending steps belongs to <c>git rebase --edit-todo</c>,
+    ///  which is the banner's business, not this dialog's.</para>
+    ///
+    ///  <para>Blocks until git exits: call from a background task.</para>
+    /// </summary>
+    public BranchTagResult RebaseStreaming(string repoPath, RebaseChoice choice, Action<string> onOutput)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        string args = BuildRebaseArguments(choice).ToString();
+
+        StringBuilder sb = new();
+        int exit = GitStreamRunner.Run(
+            repoPath: module.WorkingDir,
+            arguments: args,
+            onLine: line =>
+            {
+                sb.AppendLine(line);
+                onOutput(line);
+            },
+            env: EditorlessRebase);
+
+        return new BranchTagResult(exit == 0, sb.ToString());
+    }
+
+    // See RebaseStreaming's remarks: "true" exits 0 without touching the file, which is
+    // what git reads as "the user saved the todo / the message unchanged".
+    private static readonly IReadOnlyDictionary<string, string?> EditorlessRebase
+        = new Dictionary<string, string?>
+        {
+            ["GIT_SEQUENCE_EDITOR"] = "true",
+            ["GIT_EDITOR"] = "true",
+        };
+
+    /// <summary>
+    ///  Everything the rebase dialog shows, gathered in one blocking call — the port's
+    ///  <c>FormRebase.OnShown</c> (<c>FormRebase.cs:105-138</c>). Never throws: a
+    ///  repository that cannot be read still gets a dialog whose combo can be typed
+    ///  into.
+    /// </summary>
+    public RebaseDialogData LoadRebaseData(string repoPath)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+
+        // A detached HEAD reads as "(no branch)"; showing that verbatim is upstream's
+        // behaviour too, so it is kept rather than blanked.
+        string currentBranch = module.GetSelectedBranch();
+
+        BranchTagListing listing = LoadRefs(repoPath);
+        List<string> refs = [];
+        List<string> locals = [];
+        foreach (BranchTagRow row in listing.Branches)
+        {
+            refs.Add(row.Name);
+            if (!row.IsRemote)
+            {
+                locals.Add(row.Name);
+            }
+        }
+
+        foreach (BranchTagRow row in listing.Tags)
+        {
+            refs.Add(row.Name);
+        }
+
+        bool dirty = false;
+        bool autoSquashConfig = false;
+        try
+        {
+            dirty = module.IsDirtyDir();
+            autoSquashConfig = module.GetEffectiveSetting<bool>("rebase.autosquash") is true;
+        }
+        catch (Exception)
+        {
+            // Both are conveniences: a repository that will not answer simply gets the
+            // conservative defaults (auto-stash offered, autosquash off).
+            dirty = true;
+        }
+
+        bool autoStash = false;
+        try
+        {
+            autoStash = new SettingsService().Load().RebaseAutoStash;
+        }
+        catch (Exception)
+        {
+            // Unreadable settings → git's own default, no autostash.
+        }
+
+        return new RebaseDialogData(currentBranch, refs, locals, dirty, autoStash, autoSquashConfig);
+    }
+
+    /// <summary>
+    ///  Writes back the auto-stash choice the user made in the dialog. Upstream does
+    ///  exactly this on OK — <c>AppSettings.RebaseAutoStash = chkStash.Checked</c>
+    ///  (<c>FormRebase.cs:327</c>) — so the per-rebase decision becomes the next
+    ///  rebase's default. Best-effort: a settings store that refuses to write must not
+    ///  fail the rebase.
+    /// </summary>
+    public void SaveRebaseAutoStash(bool value)
+    {
+        try
+        {
+            SettingsService settings = new();
+            AppPreferences prefs = settings.Load();
+            if (prefs.RebaseAutoStash == value)
+            {
+                return;
+            }
+
+            prefs.RebaseAutoStash = value;
+            settings.Save(prefs);
+        }
+        catch (Exception)
+        {
+            // Not worth failing the rebase over.
+        }
     }
 
     // The "stash the local changes first" pre-step shared by Checkout and

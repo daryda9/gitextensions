@@ -436,9 +436,13 @@ public sealed class BranchTagPanel : UserControl
 
     private void DoRebase() => _ = DoRebaseAsync();
 
-    // Same shape as DoMergeAsync: the rebase runs off the UI thread and, once git
-    // has stopped, the conflict question gets its chance — the banner can now
-    // continue, skip or abort the session.
+    // Same shape as DoMergeAsync, with the options dialog in front: upstream never
+    // rebases straight from a button either — the Rebase command opens FormRebase and
+    // the rebase starts from there (FormRebase.OkClick). The selected branch arrives
+    // preselected as the target; the rebase itself runs inside the dialog's process
+    // window, so the command line and git's output are on screen. Once git has stopped,
+    // the conflict question gets its chance — the banner can then continue, skip or
+    // abort the session.
     private async Task DoRebaseAsync()
     {
         try
@@ -455,20 +459,16 @@ public sealed class BranchTagPanel : UserControl
                 return;
             }
 
-            Status(TF("Rebasing onto {0}…", row.Name));
-            BranchTagResult result;
-            try
+            RebaseDialogResult? result = await RebaseDialog.ShowAsync(owner, repo, row.Name);
+            if (result is not { Executed: true })
             {
-                result = await Task.Run(() => _service.RebaseOnto(repo, row.Name));
-            }
-            catch (Exception ex)
-            {
-                result = new BranchTagResult(false, ex.Message);
+                // Cancelled: nothing ran, so nothing to report or refresh.
+                return;
             }
 
             Status(result.Success
-                ? TF("Rebased onto {0}.", row.Name)
-                : TF("Rebase onto {0} did not complete.", row.Name));
+                ? TF("Rebased onto {0}.", result.Choice.Onto)
+                : TF("Rebase onto {0} did not complete.", result.Choice.Onto));
             RefreshRefs();
 
             if (await ConflictFlow.HandleAsync(owner, repo) is { HadConflicts: true })

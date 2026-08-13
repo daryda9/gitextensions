@@ -2719,10 +2719,13 @@ public sealed class RepoObjectsTree : UserControl
         }
     }
 
-    // A rebase stops on the first conflict, and now that the banner can continue,
-    // skip or abort one, it is worth asking straight away — the same question
-    // upstream asks. Done here rather than through RunMutation because the ask has
-    // to wait for git to finish.
+    // Same shape as DoMergeAsync: the rebase options dialog (the port of FormRebase)
+    // stands in front of the command instead of it starting silently on the global
+    // settings alone. This is the third entry to the same operation — the branch panel
+    // and the revision grid already go through the same window — and a rebase that
+    // rewrites history without showing what it is about to run is the one worth
+    // fixing. The dialog runs `git rebase` itself in the process dialog, so there is
+    // no Task.Run and no RunMutation here: that would run git a second time.
     private async Task DoRebaseAsync(string name)
     {
         try
@@ -2739,20 +2742,18 @@ public sealed class RepoObjectsTree : UserControl
                 return;
             }
 
-            _busy = true;
-            try
+            // The node the menu was opened on is the starting point, exactly as the
+            // panel passes its selected branch and the grid its revision.
+            RebaseDialogResult? result = await RebaseDialog.ShowAsync(owner, repo, name);
+            if (result is not { Executed: true })
             {
-                await Task.Run(() => _branchTagService.RebaseOnto(repo, name));
-            }
-            catch
-            {
-                // The result is surfaced by the refresh and the banner below.
-            }
-            finally
-            {
-                _busy = false;
+                // Cancelled: no git ran, so there is nothing to refresh or to report.
+                return;
             }
 
+            // The tree has no status surface (see NotifyBusyAsync), so the outcome is
+            // reported the way every other tree action reports it: the refreshed view,
+            // plus the repository banner for a rebase that stopped.
             OperationCompleted?.Invoke();
             Refresh();
 
