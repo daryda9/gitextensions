@@ -97,6 +97,25 @@ for (int i = 1; i <= rounds; i++)
     }
 }
 
+// Reading where the GitHub token lives starts `git credential fill`. On Windows the
+// helper is Git Credential Manager, which ACQUIRES credentials rather than just looking
+// them up: without credential.interactive=false it opened a sign-in window and waited,
+// which froze the app until Windows killed it. This must come back promptly and empty
+// for a host nothing is stored under — if it ever hangs here, it hangs the settings
+// window too.
+{
+    Stopwatch sw = Stopwatch.StartNew();
+    (string? token, GitHubTokenStore.Storage from) = GitHubTokenStore.Read("api.github.com");
+    sw.Stop();
+
+    Console.WriteLine();
+    Console.WriteLine("=== GitHub token lookup (must never prompt)");
+    Console.WriteLine($"   {sw.ElapsedMilliseconds} ms, stored={from}, token={(token is null ? "none" : "present")}");
+    Console.WriteLine(sw.ElapsedMilliseconds < 3000
+        ? "   OK - returned without waiting for a human"
+        : "   SLOW - check that the helper is not prompting");
+}
+
 // The watcher's own classification of a Windows path inside .git. This decides
 // whether a write the app's own refresh performs is filtered out as noise or
 // scheduled as "the repository changed behind our back".

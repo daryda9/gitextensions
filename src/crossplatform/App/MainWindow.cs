@@ -421,6 +421,10 @@ public sealed class MainWindow : Theming.ZoomWindow
             if (e.Property == WindowStateProperty)
             {
                 UpdateResizeGrips();
+
+                // Maximising is what makes the frame overhang the screen, so the padding
+                // that compensates for it has to be recomputed here.
+                UpdateOffScreenMargin();
             }
         };
         SizeChanged += (_, _) =>
@@ -4236,13 +4240,31 @@ public sealed class MainWindow : Theming.ZoomWindow
     ///  one, the desktop's own title bar with the menu on the row below it.
     /// </summary>
     /// <remarks>
-    ///  <para><b>Why the frame is dropped rather than "extended into".</b> The X11
-    ///  backend of Avalonia 11.3 ignores <c>ExtendClientAreaToDecorationsHint</c>
-    ///  outright — measured on this desktop: the hint leaves
+    ///  <para><b>Why the frame is dropped on X11 but only "extended into" on Windows.</b>
+    ///  The X11 backend of Avalonia 11.3 ignores <c>ExtendClientAreaToDecorationsHint</c>
+    ///  outright — measured on that desktop: the hint leaves
     ///  <c>IsExtendedIntoWindowDecorations</c> false and mutter goes on drawing its own
-    ///  bar. <see cref="Window.SystemDecorations"/> is honoured, so that is the lever,
-    ///  and it takes the resize border away with the title bar; <see cref="ResizeGrips"/>
-    ///  hands that back.</para>
+    ///  bar. <see cref="Window.SystemDecorations"/> is honoured, so there that is the
+    ///  lever, and it takes the resize border away with the title bar;
+    ///  <see cref="ResizeGrips"/> hands that back.</para>
+    ///
+    ///  <para>On Windows the same lever costs something X11 does not charge for.
+    ///  Drag-to-the-top tiling (Aero Snap, Snap Layouts) is a NON-CLIENT behaviour: the
+    ///  move loop only offers it to a window that still has <c>WS_CAPTION</c> and
+    ///  <c>WS_THICKFRAME</c>, and <c>SystemDecorations.None</c> strips both. Measured
+    ///  with the three arrangements side by side:</para>
+    ///
+    ///  <code>
+    ///                 extendedIntoDecorations  caption  sizing   tiling
+    ///  Full                             False     True    True      yes
+    ///  None                             False    False   False       NO
+    ///  ExtendClientArea                  True     True    True      yes
+    ///  </code>
+    ///
+    ///  <para>So Windows keeps its frame and merely draws into it, which is what the
+    ///  Win32 backend implements the hint for. The system then also keeps providing the
+    ///  resize border, so the grips are not added there — overlaying them on a live
+    ///  border would take the edges away from the thing that already handles them.</para>
     ///
     ///  <para>Nothing here looks at the visual style: the two are orthogonal, and the
     ///  merged bar takes its colours from the live palette like the rest of the chrome,
@@ -4287,33 +4309,68 @@ public sealed class MainWindow : Theming.ZoomWindow
             DockPanel.SetDock(_titleBar, Dock.Top);
             _root.Children.Insert(0, _titleBar);
 
-            if (_grips is null)
+            // Only where the system frame is actually gone. On Windows it is still
+            // there, doing the resizing itself.
+            if (!ExtendsIntoDecorations)
             {
-                _grips = new Panel();
-                foreach (Control grip in ResizeGrips.Build(this))
+                if (_grips is null)
                 {
-                    _grips.Children.Add(grip);
+                    _grips = new Panel();
+                    foreach (Control grip in ResizeGrips.Build(this))
+                    {
+                        _grips.Children.Add(grip);
+                    }
                 }
-            }
 
-            if (!_layered.Children.Contains(_grips))
-            {
-                _layered.Children.Add(_grips);
+                if (!_layered.Children.Contains(_grips))
+                {
+                    _layered.Children.Add(_grips);
+                }
             }
         }
         else
         {
             DockPanel.SetDock(_menu, Dock.Top);
             _root.Children.Insert(0, _menu);
+        }
+
+        if (!clientSide || ExtendsIntoDecorations)
+        {
             if (_grips is not null)
             {
                 _layered.Children.Remove(_grips);
             }
         }
 
-        SystemDecorations = clientSide ? SystemDecorations.None : SystemDecorations.Full;
+        if (clientSide && ExtendsIntoDecorations)
+        {
+            // Keep the frame — and therefore the snap behaviour — and paint over it.
+            SystemDecorations = SystemDecorations.Full;
+            ExtendClientAreaToDecorationsHint = true;
+            // Fully qualified: the property of the same name shadows the enum type here,
+            // and this app's own namespace makes a bare "Avalonia." resolve inwards.
+            ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome;
+
+            // -1 means "the whole window is client area"; the port draws every pixel of
+            // the bar itself, so there is no system caption height to reserve.
+            ExtendClientAreaTitleBarHeightHint = -1;
+        }
+        else
+        {
+            ExtendClientAreaToDecorationsHint = false;
+            SystemDecorations = clientSide ? SystemDecorations.None : SystemDecorations.Full;
+        }
+
         UpdateResizeGrips();
+        UpdateOffScreenMargin();
     }
+
+    /// <summary>
+    ///  Whether the merged bar is obtained by drawing INTO the system frame rather than
+    ///  by removing it. True only where the backend implements the hint, which of the
+    ///  two this port runs on is Windows.
+    /// </summary>
+    private static bool ExtendsIntoDecorations => OperatingSystem.IsWindows();
 
     // The strips are only useful on a window that has an edge to drag.
     private void UpdateResizeGrips()
@@ -4321,6 +4378,24 @@ public sealed class MainWindow : Theming.ZoomWindow
         if (_grips is not null)
         {
             _grips.IsVisible = WindowState == WindowState.Normal;
+        }
+    }
+
+    /// <summary>
+    ///  Pads the content by <see cref="TopLevel.OffScreenMargin"/> while the client area
+    ///  is extended into the frame.
+    ///
+    ///  <para>A maximised window with an extended client area is deliberately larger than
+    ///  the work area — Windows oversizes it by the frame thickness on every side — so
+    ///  without this the top of the title bar, its buttons included, sits off the screen.
+    ///  The margin is zero in every other state and arrangement, so this is safe to run
+    ///  unconditionally; it just has to run again whenever the state changes.</para>
+    /// </summary>
+    private void UpdateOffScreenMargin()
+    {
+        if (_layered is not null)
+        {
+            _layered.Margin = ExtendClientAreaToDecorationsHint ? OffScreenMargin : default;
         }
     }
 
