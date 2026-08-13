@@ -154,11 +154,44 @@ public static class InlineDiff
     private static InlineDiffResult Judge(
         string left, List<InlineSpan> leftSpans, string right, List<InlineSpan> rightSpans)
     {
+        if (leftSpans.Count == 0 && rightSpans.Count == 0)
+        {
+            // Safety net, not an expected path: every caller of Judge has already
+            // established that the two lines differ, so "nothing changed on either
+            // side" is the one answer that cannot be true. Saying it with
+            // Highlight=true would be a lie a renderer acts on — it would draw two
+            // visibly different lines with no marks at all. If some future pairing
+            // rule ever loses track of where the change is, fall back to the honest
+            // coarse answer instead: the whole line, not worth boxing.
+            return new InlineDiffResult(WholeLine(left), WholeLine(right), Highlight: false);
+        }
+
         bool noisy = TotalLength(leftSpans) * 2 > left.Length
                      && TotalLength(rightSpans) * 2 > right.Length;
 
         return new InlineDiffResult(leftSpans, rightSpans, Highlight: !noisy);
     }
+
+    /// <summary>
+    ///  Whether a span may start or end at <paramref name="index"/> without cutting
+    ///  a surrogate pair in half.
+    ///
+    ///  <para>Only one arrangement is unsafe: a low surrogate at
+    ///  <paramref name="index"/> whose high half sits at <c>index - 1</c>, because
+    ///  then the boundary runs between the two halves of one character and the
+    ///  renderer is handed half of it to measure and underline. Both string ends are
+    ///  safe by definition, and a lone surrogate — which the contract admits as
+    ///  ordinary input — is a character in its own right, so a boundary next to one
+    ///  is safe too. Testing the character <i>after</i> the boundary alone (or the
+    ///  one before alone) gets this wrong in one direction or the other; every
+    ///  boundary in this file goes through here so the asymmetry cannot be
+    ///  re-invented at the next one.</para>
+    /// </summary>
+    private static bool IsCodePointBoundary(string text, int index)
+        => index <= 0
+           || index >= text.Length
+           || !char.IsLowSurrogate(text[index])
+           || !char.IsHighSurrogate(text[index - 1]);
 
     /// <summary>
     ///  Character-level common-affix trim: one changed stretch per side, no
@@ -175,7 +208,11 @@ public static class InlineDiff
             head++;
         }
 
-        if (head > 0 && head < limit && char.IsLowSurrogate(left[head]))
+        // Both sides are tested at every boundary. The head sits at the same index
+        // in both strings, but the strings still differ there — one may end in a
+        // lone high surrogate exactly where the other carries a whole pair — so a
+        // boundary is only safe when it is safe for both.
+        while (head > 0 && (!IsCodePointBoundary(left, head) || !IsCodePointBoundary(right, head)))
         {
             head--;
         }
@@ -186,7 +223,9 @@ public static class InlineDiff
             tail++;
         }
 
-        if (tail > 0 && char.IsHighSurrogate(left[left.Length - tail]))
+        while (tail > 0
+               && (!IsCodePointBoundary(left, left.Length - tail)
+                   || !IsCodePointBoundary(right, right.Length - tail)))
         {
             tail--;
         }
@@ -208,6 +247,20 @@ public static class InlineDiff
     ///  case is refined — with several regions there is no reliable pairing
     ///  between them, and guessing one would move a highlight onto text that did
     ///  not change, which is worse than a highlight that is merely wide.</para>
+    ///
+    ///  <para><b>Why the alignment test below.</b> Shaving a shared head off both
+    ///  spans hands that text back to the "unchanged" part of each line, and that is
+    ///  only honest when the two spans describe the <i>same place</i> in the two
+    ///  lines. A token that merely moved breaks the premise: the two spans then hold
+    ///  the same characters at different offsets, the shave eats both of them whole,
+    ///  and a rotated line comes back reported as unchanged. The premise spelled out
+    ///  is "everything outside the two spans is already identical, and in the same
+    ///  order", so it is tested instead of assumed. Testing it is a pair of ordinal
+    ///  comparisons — vectorised and linear, on strings the tokenizer has already
+    ///  capped — where the alternative, a real character-level diff of the residue,
+    ///  is quadratic and would only buy precision on the inputs this test rejects,
+    ///  which are exactly the ones where the wide word-level span is the truthful
+    ///  answer.</para>
     /// </summary>
     private static void Refine(string left, List<InlineSpan> leftSpans, string right, List<InlineSpan> rightSpans)
     {
@@ -219,6 +272,16 @@ public static class InlineDiff
         InlineSpan a = leftSpans[0];
         InlineSpan b = rightSpans[0];
 
+        if (!left.AsSpan(0, a.Start).SequenceEqual(right.AsSpan(0, b.Start))
+            || !left.AsSpan(a.End).SequenceEqual(right.AsSpan(b.End)))
+        {
+            // The two spans are not the same hole in the same text: whatever moved,
+            // moved across them. Keep the word-level spans, which do cover every
+            // character that differs, and stay silent about which characters inside
+            // them are "the" change.
+            return;
+        }
+
         int limit = Math.Min(a.Length, b.Length);
         int head = 0;
         while (head < limit && left[a.Start + head] == right[b.Start + head])
@@ -227,8 +290,11 @@ public static class InlineDiff
         }
 
         // Never stop between the halves of a surrogate pair: the caller measures
-        // and underlines these offsets.
-        if (head > 0 && head < limit && char.IsLowSurrogate(left[a.Start + head]))
+        // and underlines these offsets. Backing off one code unit at a time is
+        // enough — the step lands on the high half, which is a boundary — and the
+        // span ends themselves are code-point aligned, so the walk terminates.
+        while (head > 0
+               && (!IsCodePointBoundary(left, a.Start + head) || !IsCodePointBoundary(right, b.Start + head)))
         {
             head--;
         }
@@ -240,7 +306,8 @@ public static class InlineDiff
             tail++;
         }
 
-        if (tail > 0 && char.IsHighSurrogate(left[a.Start + a.Length - tail]))
+        while (tail > 0
+               && (!IsCodePointBoundary(left, a.End - tail) || !IsCodePointBoundary(right, b.End - tail)))
         {
             tail--;
         }
