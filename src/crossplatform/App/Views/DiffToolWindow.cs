@@ -7,6 +7,7 @@ using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
 using Avalonia.Threading;
 using AvaloniaEdit;
+using AvaloniaEdit.Document;
 using AvaloniaEdit.Editing;
 using AvaloniaEdit.Rendering;
 using GitExtensions.Avalonia.Services;
@@ -39,6 +40,11 @@ public sealed class DiffToolWindow : ZoomWindow
     private readonly TextEditor _left;
     private readonly TextEditor _right;
     private readonly TextBlock _counter;
+
+    // The word diff of the changed rows, computed on demand for the rows that
+    // scroll into view and kept for as long as the window lives — the document is
+    // built once and never edited, so nothing can invalidate it.
+    private readonly Dictionary<int, InlineDiffResult> _inlineSpans = [];
 
     private int _current = -1;
     private bool _syncing;
@@ -129,6 +135,7 @@ public sealed class DiffToolWindow : ZoomWindow
             {
                 ToolButton("▲", T("Previous difference"), () => GoTo(_current - 1)),
                 ToolButton("▼", T("Next difference"), () => GoTo(_current + 1)),
+                InlineDiffToggle(),
             },
         };
         bar.Children.Add(actions);
@@ -205,6 +212,14 @@ public sealed class DiffToolWindow : ZoomWindow
         editor.Options.EnableEmailHyperlinks = false;
         editor.Options.AllowScrollBelowDocument = false;
         editor.TextArea.TextView.BackgroundRenderers.Add(new DiffRowHighlighter(document.Rows, side));
+
+        // After the row wash, so the word marks paint ON it rather than under it:
+        // renderers of one layer are drawn in the order they were added, and the
+        // point of the pair is that the row still reads as changed while the marks
+        // say where. The cache is shared by the two panes, because a changed row's
+        // word diff is one comparison whose two halves the two panes each use once.
+        editor.TextArea.TextView.BackgroundRenderers.Add(
+            new InlineDiffRowHighlighter(document.Rows, side, _inlineSpans));
         editor.TextArea.LeftMargins.Insert(0, new AlignedLineNumberMargin(document.Rows, side));
         return editor;
     }
@@ -288,6 +303,30 @@ public sealed class DiffToolWindow : ZoomWindow
             : Brush("App.Text", Brushes.Gainsboro);
     }
 
+    // The switch for the intra-line marks. It lives on this toolbar and on the patch
+    // pane's strip, over one process-wide flag, so the two surfaces never disagree
+    // about it — and flipping it here writes view-prefs.json just as flipping it there
+    // does: the user turned the marks off in "a" diff window, not for this window.
+    private ToggleButton InlineDiffToggle()
+    {
+        ToggleButton button = new()
+        {
+            Content = "a|b",
+            Padding = Metrics.Density.ButtonPadding,
+            IsChecked = InlineDiffOptions.Enabled,
+            Margin = new Thickness(Metrics.Space.Sm, 0, 0, 0),
+            [ToolTip.TipProperty] = T("Highlight the changed words inside a changed line"),
+        };
+        button.IsCheckedChanged += (_, _) =>
+        {
+            InlineDiffOptions.Enabled = button.IsChecked == true;
+            DiffViewerOptions.Persist();
+            _left.TextArea.TextView.InvalidateVisual();
+            _right.TextArea.TextView.InvalidateVisual();
+        };
+        return button;
+    }
+
     private Button ToolButton(string caption, string tip, Action action)
     {
         Button button = new()
@@ -369,6 +408,77 @@ internal sealed class DiffRowHighlighter(IReadOnlyList<DiffRow> rows, bool left)
                 new Rect(0, visual.VisualTop - textView.VerticalOffset,
                     Math.Max(textView.Bounds.Width, 0), visual.Height));
         }
+    }
+}
+
+/// <summary>
+///  Marks the changed words inside a <see cref="DiffRowKind.Changed"/> row: the
+///  removed stretches on the left pane, the added ones on the right.
+///
+///  <para>The alignment has already done the pairing this needs — a changed row IS
+///  a pair of lines — so there is no rule to invent here, unlike the unified pane.
+///  A filler row has no counterpart at all and is deliberately left alone: there is
+///  nothing on the other side to have changed <i>from</i>.</para>
+///
+///  <para>An <see cref="IBackgroundRenderer"/>, like the row wash it sits on, and
+///  for the extra reason that a <c>DocumentColorizingTransformer</c> would skip the
+///  empty lines the filler is made of. Only the rows on screen are compared, and
+///  each comparison is cached — <paramref name="spans"/> is shared with the other
+///  pane, which needs the other half of the same answer.</para>
+/// </summary>
+internal sealed class InlineDiffRowHighlighter(
+    IReadOnlyList<DiffRow> rows, bool left, Dictionary<int, InlineDiffResult> spans) : IBackgroundRenderer
+{
+    /// <inheritdoc/>
+    public KnownLayer Layer => KnownLayer.Background;
+
+    /// <inheritdoc/>
+    public void Draw(TextView textView, DrawingContext drawingContext)
+    {
+        if (!InlineDiffOptions.Enabled || textView.VisualLines.Count == 0)
+        {
+            return;
+        }
+
+        textView.EnsureVisualLines();
+        foreach (VisualLine visual in textView.VisualLines)
+        {
+            int index = visual.FirstDocumentLine.LineNumber - 1;
+            if (index < 0 || index >= rows.Count || rows[index].Kind != DiffRowKind.Changed)
+            {
+                continue;
+            }
+
+            InlineDiffResult result = Spans(index);
+            if (!result.Highlight)
+            {
+                // The two lines share too little for the marks to say anything: the
+                // row wash alone is the honest answer.
+                continue;
+            }
+
+            DocumentLine line = visual.FirstDocumentLine;
+            InlineDiffPainter.Paint(
+                textView,
+                drawingContext,
+                left ? DiffPalette.RemovedInline : DiffPalette.AddedInline,
+                line.Offset,
+                line.EndOffset,
+                left ? result.Left : result.Right);
+        }
+    }
+
+    private InlineDiffResult Spans(int index)
+    {
+        if (spans.TryGetValue(index, out InlineDiffResult? cached))
+        {
+            return cached;
+        }
+
+        DiffRow row = rows[index];
+        InlineDiffResult result = InlineDiff.Compare(row.Left ?? string.Empty, row.Right ?? string.Empty);
+        spans[index] = result;
+        return result;
     }
 }
 

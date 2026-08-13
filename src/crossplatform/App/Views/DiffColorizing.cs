@@ -129,6 +129,21 @@ internal static class DiffPalette
     /// <summary>Wash behind a syntax-highlighted removed line.</summary>
     public static IBrush RemovedTint { get; } = new SolidColorBrush(Color.FromArgb(0x28, 0xE0, 0x6C, 0x6C));
 
+    // The intra-line marks: the SAME two hues as the line tints, at roughly three
+    // times the alpha. Same hue because the mark must read as "more of what this
+    // line already is", not as a third category the reader has to learn; stronger
+    // because it has to win against the line's own wash while that wash stays
+    // visible around it — a mark that replaced the line colour would cost the
+    // glance that tells changed lines from unchanged ones, which is the one thing
+    // the line diff is good at. Literal for the same reason as the tints above:
+    // the palette has no resource for a translucent wash.
+
+    /// <summary>Wash behind the added words inside a changed line.</summary>
+    public static IBrush AddedInline { get; } = new SolidColorBrush(Color.FromArgb(0x78, 0x6A, 0xC7, 0x76));
+
+    /// <summary>Wash behind the removed words inside a changed line.</summary>
+    public static IBrush RemovedInline { get; } = new SolidColorBrush(Color.FromArgb(0x78, 0xE0, 0x6C, 0x6C));
+
     // Search highlight: amber for every occurrence, a stronger amber for the one
     // the ▲/▼ navigation currently sits on. Literal for the same reason as the tints.
 
@@ -381,3 +396,265 @@ internal sealed class DiffSearchColorizer : DocumentColorizingTransformer
 ///  document line, <paramref name="Column"/> a 0-based index into it.
 /// </summary>
 internal readonly record struct DiffSearchMatch(int Line, int Column, int Length);
+
+/// <summary>
+///  The one switch that turns intra-line highlighting off, for both the unified
+///  patch pane and the side-by-side window.
+///
+///  <para>Static and process-wide, like <see cref="DiffViewerOptions.Session"/>,
+///  because it is a reading preference and not a property of one open window: a
+///  user who finds the word marks noisy means it in every diff surface at once.
+///  This type is now only the NAME the two renderers know it by — the state itself
+///  moved into <see cref="DiffViewerOptions.InlineDiff"/>, which is the record
+///  <c>view-prefs.json</c> is written from, so the switch survives a restart like
+///  the rest of the strip. Both surfaces read it from their renderer's <c>Draw</c>,
+///  so flipping it is a repaint and nothing else; persisting it is the caller's job
+///  (<see cref="DiffViewerOptions.Persist"/>), exactly as for the other toggles.</para>
+/// </summary>
+internal static class InlineDiffOptions
+{
+    /// <summary>Whether the changed words inside a changed line are marked. Default on.</summary>
+    public static bool Enabled
+    {
+        get => DiffViewerOptions.Session.InlineDiff;
+        set => DiffViewerOptions.Session.InlineDiff = value;
+    }
+}
+
+/// <summary>
+///  Draws the changed-word marks for a segment of one visible line. Shared by the
+///  unified pane and the side-by-side window so both mark a word the same way.
+/// </summary>
+internal static class InlineDiffPainter
+{
+    /// <summary>
+    ///  Washes <paramref name="spans"/> — offsets relative to
+    ///  <paramref name="contentOffset"/> in the document — over the visible text.
+    /// </summary>
+    public static void Paint(
+        TextView textView,
+        DrawingContext context,
+        IBrush brush,
+        int contentOffset,
+        int lineEndOffset,
+        IReadOnlyList<InlineSpan> spans)
+    {
+        foreach (InlineSpan span in spans)
+        {
+            int start = contentOffset + span.Start;
+            int end = Math.Min(start + span.Length, lineEndOffset);
+            if (end <= start)
+            {
+                continue;
+            }
+
+            // BackgroundGeometryBuilder rather than arithmetic on column widths: it
+            // is the only thing that knows where a character actually landed once
+            // tabs, wide glyphs and the horizontal scroll offset have had their say,
+            // and getting that wrong would put the mark next to the changed word
+            // instead of on it.
+            TextSegment segment = new() { StartOffset = start, EndOffset = end };
+            foreach (Rect rect in BackgroundGeometryBuilder.GetRectsForSegment(textView, segment))
+            {
+                context.FillRectangle(brush, rect);
+            }
+        }
+    }
+}
+
+/// <summary>
+///  Marks the changed words inside the changed lines of a UNIFIED patch: the
+///  removed run of a hunk paired against the added run that follows it, and the
+///  difference between each pair washed in the line's own colour, stronger.
+///
+///  <para><b>Why a background renderer and not a colorizing transformer.</b> A
+///  <see cref="DocumentColorizingTransformer"/> is never called for a line with no
+///  characters, and a patch is full of them — a hunk that adds a blank line, a
+///  removed blank line — so the marks would silently go missing exactly where the
+///  pairing shifts. The renderer sees every visual line.</para>
+///
+///  <para><b>The pairing rule.</b> Inside a hunk, a maximal run of <c>-</c> lines
+///  immediately followed by a maximal run of <c>+</c> lines is one edit. The two
+///  runs are paired BY POSITION: the i-th removed line against the i-th added
+///  line, for i below the shorter run's length. The surplus lines of the longer
+///  run — the third removed line of a 3-for-2 replacement — get no partner and no
+///  marks at all, because any partner chosen for them would be a guess, and a
+///  wrong word mark does not merely fail to help, it points the reader at text
+///  that did not change. Position is the only defensible rule here for a further
+///  reason: git already emitted the two runs in file order, so the i-th removed
+///  line is the one the i-th added line stands where. Pairs that turn out to have
+///  nothing in common are still dropped, by <see cref="InlineDiff"/>'s own noise
+///  judgement rather than by this class.</para>
+///
+///  <para><b>Cost.</b> The pairing map is a single forward pass that reads at most
+///  three characters per line (no per-line string is allocated), built once per
+///  document and cached; the word diff itself runs only for the lines actually on
+///  screen, and its result is cached per line until the document changes.</para>
+/// </summary>
+internal sealed class InlineDiffRenderer : IBackgroundRenderer
+{
+    // Past this many cached lines the cache is dropped whole rather than grown:
+    // scrolling through a 200 000-line patch would otherwise keep a span array per
+    // line visited forever, and re-diffing a screenful costs well under a
+    // millisecond, so the cache is a repaint optimisation, not a correctness one.
+    private const int MaxCachedLines = 20_000;
+
+    // _partner[n - 1] == the 1-based line paired with line n, or 0 for none.
+    private int[] _partner = [];
+    private TextDocument? _mapped;
+
+    private readonly Dictionary<int, IReadOnlyList<InlineSpan>> _spans = [];
+
+    /// <inheritdoc/>
+    public KnownLayer Layer => KnownLayer.Background;
+
+    /// <summary>
+    ///  Forgets the pairing map and the cached spans. Must be called whenever the
+    ///  document's content changes: both are indexed by line number.
+    /// </summary>
+    public void Invalidate()
+    {
+        _mapped = null;
+        _partner = [];
+        _spans.Clear();
+    }
+
+    /// <inheritdoc/>
+    public void Draw(TextView textView, DrawingContext drawingContext)
+    {
+        if (!InlineDiffOptions.Enabled
+            || textView.Document is not { } document
+            || textView.VisualLines.Count == 0)
+        {
+            return;
+        }
+
+        textView.EnsureVisualLines();
+        EnsureMap(document);
+
+        foreach (VisualLine visual in textView.VisualLines)
+        {
+            DocumentLine line = visual.FirstDocumentLine;
+            int number = line.LineNumber;
+            if (number > _partner.Length || _partner[number - 1] == 0)
+            {
+                continue;
+            }
+
+            string text = document.GetText(line);
+            int content = line.Offset + DiffLineClassifier.ContentStart(text);
+            IBrush brush = text.StartsWith('+') ? DiffPalette.AddedInline : DiffPalette.RemovedInline;
+
+            InlineDiffPainter.Paint(
+                textView, drawingContext, brush, content, line.EndOffset,
+                SpansFor(document, number));
+        }
+    }
+
+    // The word diff for one line, computing (and caching) both sides of the pair at
+    // once: the two lines are almost always visible together, so the second one
+    // would otherwise pay for the same comparison again.
+    private IReadOnlyList<InlineSpan> SpansFor(TextDocument document, int number)
+    {
+        if (_spans.TryGetValue(number, out IReadOnlyList<InlineSpan>? cached))
+        {
+            return cached;
+        }
+
+        if (_spans.Count > MaxCachedLines)
+        {
+            _spans.Clear();
+        }
+
+        int partner = _partner[number - 1];
+        int removedLine = Math.Min(number, partner);
+        int addedLine = Math.Max(number, partner);
+
+        InlineDiffResult result = InlineDiff.Compare(
+            Content(document, removedLine), Content(document, addedLine));
+
+        // Highlight == false is the engine saying the two lines share too little
+        // for the marks to mean anything. Honouring it is the whole point of the
+        // flag: a line rewritten from scratch is left plain.
+        _spans[removedLine] = result.Highlight ? result.Left : [];
+        _spans[addedLine] = result.Highlight ? result.Right : [];
+
+        return _spans[number];
+    }
+
+    private static string Content(TextDocument document, int number)
+    {
+        string text = document.GetText(document.GetLineByNumber(number));
+        return text[DiffLineClassifier.ContentStart(text)..];
+    }
+
+    // Walks the document once, pairing each run of removed lines with the run of
+    // added lines that follows it. Character reads rather than GetText: on a big
+    // patch the strings alone would cost more than everything else here.
+    private void EnsureMap(TextDocument document)
+    {
+        if (ReferenceEquals(_mapped, document) && _partner.Length == document.LineCount)
+        {
+            return;
+        }
+
+        _mapped = document;
+        _partner = new int[document.LineCount];
+        _spans.Clear();
+
+        int line = 1;
+        while (line <= document.LineCount)
+        {
+            if (Marker(document, line) != '-')
+            {
+                line++;
+                continue;
+            }
+
+            int removed = line;
+            while (removed <= document.LineCount && Marker(document, removed) == '-')
+            {
+                removed++;
+            }
+
+            int added = removed;
+            while (added <= document.LineCount && Marker(document, added) == '+')
+            {
+                added++;
+            }
+
+            int pairs = Math.Min(removed - line, added - removed);
+            for (int i = 0; i < pairs; i++)
+            {
+                _partner[line + i - 1] = removed + i;
+                _partner[removed + i - 1] = line + i;
+            }
+
+            line = added > removed ? added : removed;
+        }
+    }
+
+    // '+' or '-' for a content line, '\0' for anything else — including the
+    // "+++"/"---" file headers, which carry the same first character as a content
+    // line and would otherwise start a run one line too early.
+    private static char Marker(TextDocument document, int number)
+    {
+        DocumentLine line = document.GetLineByNumber(number);
+        if (line.Length == 0)
+        {
+            return '\0';
+        }
+
+        char first = document.GetCharAt(line.Offset);
+        if (first is not ('+' or '-'))
+        {
+            return '\0';
+        }
+
+        bool header = line.Length >= 3
+                      && document.GetCharAt(line.Offset + 1) == first
+                      && document.GetCharAt(line.Offset + 2) == first;
+
+        return header ? '\0' : first;
+    }
+}
