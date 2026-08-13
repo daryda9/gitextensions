@@ -8,6 +8,21 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
 
+  <!-- Land `dotnet publish` in src/crossplatform/dist/<config>/<rid>/ instead of
+       the SDK's deep bin\…\net10.0\win-x64\publish\, so a published build is easy
+       to find and stays inside the repo (dist/ is gitignored). Configuration is
+       part of the path for the same reason it is in BaseOutputPath: a Debug and a
+       Release publish must not silently overlay each other.
+       Guarded on PublishDir being empty so an explicit `-o` still wins — that is
+       how packaging/build-deb.sh targets packaging/out/publish. -->
+  <PropertyGroup Condition="'$(PublishDir)' == ''">
+    <_PublishRid>$(RuntimeIdentifier)</_PublishRid>
+    <!-- A publish with no -r is runtime-portable; give it a name of its own
+         rather than an empty path segment. -->
+    <_PublishRid Condition="'$(_PublishRid)' == ''">portable</_PublishRid>
+    <PublishDir>$(MSBuildThisFileDirectory)..\dist\$(Configuration)\$(_PublishRid)\</PublishDir>
+  </PropertyGroup>
+
   <!-- Product version shown in the About dialog. Single source of truth is
        packaging/VERSION, the same file build-deb.sh stamps into the .deb, so the
        version the user sees in the UI can never disagree with the package. -->
