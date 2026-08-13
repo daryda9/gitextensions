@@ -253,6 +253,16 @@ public sealed class MainMenu : UserControl
     public event Action? ViewPatchRequested;
 
     // ---- Tools
+
+    /// <summary>
+    ///  "Command palette…" — opens <c>Views.CommandPaletteWindow</c> over the whole
+    ///  command surface, which the host builds from
+    ///  <see cref="EnumerateCommands"/> plus the keyboard-only commands. Port extra:
+    ///  upstream has no such window. It is in the menu as well as on Ctrl+Shift+P
+    ///  because a palette nobody knows about is a palette nobody uses.
+    /// </summary>
+    public event Action? CommandPaletteRequested;
+
     public event Action? GitBashRequested;
     public event Action? GitKRequested;
     public event Action? GitGuiRequested;
@@ -710,6 +720,13 @@ public sealed class MainMenu : UserControl
         {
             Header = T("ScriptsSettingsPage/$this.Text", "Scripts"),
         };
+
+        // The palette leads the Tools menu: it is the one entry here that is about
+        // reaching the OTHER entries, so it belongs above the separator that starts the
+        // external-tool block rather than inside it. Tools and not View, because View
+        // is about what the window shows and this changes nothing about that.
+        tools.Items.Add(Item(null, CommandPaletteItemId, "Search", () => CommandPaletteRequested?.Invoke(), gesture: BrowseCommand.CommandPalette));
+        tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/gitBashToolStripMenuItem.Text", "Git bash", "GitForWindows", () => GitBashRequested?.Invoke(), gesture: BrowseCommand.GitBash));
         tools.Items.Add(new Separator());
         tools.Items.Add(Item("FormBrowse/kGitToolStripMenuItem.Text", "GitK", null, () => GitKRequested?.Invoke()));
@@ -1305,6 +1322,132 @@ public sealed class MainMenu : UserControl
         Enable("branchTagWorkbench", live);
     }
 
+    /// <summary>
+    ///  What an entry built by <see cref="Item"/> / <see cref="GridCheck"/> carries in
+    ///  its <see cref="MenuItem.Tag"/>: the three things a palette row needs that a
+    ///  <see cref="MenuItem"/> does not otherwise expose — a language-independent id,
+    ///  the icon NAME (the item only keeps the loaded <see cref="Image"/>) and the
+    ///  action, which is a <c>Click</c> subscription and therefore unreadable from
+    ///  outside. Carrying it on the item rather than in a side table is what keeps it
+    ///  correct across the rebuilds a language or overflow change performs: the tag
+    ///  dies with the item it describes.
+    /// </summary>
+    private sealed record Leaf(string Id, string? IconName, Action Invoke);
+
+    // The palette's own menu entry, by id: it must not list itself.
+    private const string CommandPaletteItemId = "Command palette…";
+
+    /// <summary>
+    ///  Every invocable leaf of the menu as it stands RIGHT NOW, for the command
+    ///  palette (<c>Views.CommandPaletteWindow</c>).
+    ///
+    ///  <para><b>Why the live tree and not a registry.</b> This menu already holds every
+    ///  action with its caption, its icon, its shortcut and — through
+    ///  <see cref="SetRepositoryState"/> / <see cref="SetSelectionState"/> — its
+    ///  gating. A second, hand-written command list would duplicate all four and would
+    ///  start drifting from this one on the first commit that touches either. Walking
+    ///  the tree at open time means the palette cannot be out of date and cannot offer
+    ///  a command the menu itself refuses.</para>
+    ///
+    ///  <para>The walk starts from <see cref="_topLevel"/>, not from <c>_bar.Items</c>:
+    ///  the entries that do not fit the bar are the SAME objects, moved into the "…"
+    ///  (see <see cref="ApplyOverflow"/>), so walking the bar would miss them and
+    ///  walking bar + overflow together would be a coin toss between missing and
+    ///  double-listing them. <see cref="_topLevel"/> is the single source of truth for
+    ///  both sides by construction.</para>
+    ///
+    ///  <para><b>Enabled is effective, not local.</b> An item inside a disabled submenu
+    ///  cannot be reached with the mouse either, so the disabled state is carried down
+    ///  the chain; likewise an invisible one is not offered at all, because
+    ///  <see cref="ApplyRepositoryState"/> HIDES (not greys) the three menus that need
+    ///  a repository.</para>
+    ///
+    ///  <para><b>Ids are untranslated</b> — the XLIFF key, the English source text or
+    ///  the grid's command id — because the palette persists them in its MRU. They are
+    ///  not unique by construction: "Refresh" is in both View and Repository, and runs
+    ///  the same action from both, so a shared id is the right answer there.</para>
+    /// </summary>
+    public IReadOnlyList<PaletteEntry> EnumerateCommands()
+    {
+        List<PaletteEntry> entries = [];
+        foreach (MenuItem top in _topLevel)
+        {
+            Collect(top, path: string.Empty, reachable: true, entries);
+        }
+
+        return entries;
+    }
+
+    private static void Collect(MenuItem item, string path, bool reachable, List<PaletteEntry> into)
+    {
+        if (!item.IsVisible)
+        {
+            return;
+        }
+
+        bool live = reachable && item.IsEnabled;
+        string caption = Caption(item.Header);
+
+        if (item.Items.Count > 0)
+        {
+            string child = path.Length == 0 ? caption : path + CommandPaletteService.PathSeparator + caption;
+            foreach (object? entry in item.Items)
+            {
+                if (entry is MenuItem sub)
+                {
+                    Collect(sub, child, live, into);
+                }
+            }
+
+            return;
+        }
+
+        if (item.Tag is not Leaf leaf || leaf.Id == CommandPaletteItemId)
+        {
+            return;
+        }
+
+        into.Add(new PaletteEntry(
+            leaf.Id,
+            path,
+            caption,
+            leaf.IconName,
+            item.InputGesture?.ToString(),
+            live,
+            leaf.Invoke));
+    }
+
+    /// <summary>
+    ///  A menu caption as prose. Two mnemonic dialects meet in these headers and both
+    ///  have to go: the WinForms <c>&amp;</c> the XLIFF catalogues still carry inside
+    ///  translated strings (stripped by the shared
+    ///  <see cref="RevisionFilterDialog.StripMnemonic"/>), and Avalonia's own <c>_</c>
+    ///  access key, in which <c>__</c> escapes a literal underscore — which is how a
+    ///  repository path such as <c>git_ext_mod</c> reaches this menu. They are
+    ///  different conventions, not two spellings of one, so the second is undone here
+    ///  rather than by extending the first.
+    /// </summary>
+    private static string Caption(object? header)
+    {
+        string text = RevisionFilterDialog.StripMnemonic(header as string ?? string.Empty);
+
+        System.Text.StringBuilder plain = new(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] != '_')
+            {
+                plain.Append(text[i]);
+            }
+            else if (i + 1 < text.Length && text[i + 1] == '_')
+            {
+                plain.Append('_');
+                i++;
+            }
+        }
+
+        return plain.ToString();
+    }
+
     private void Enable(string name, bool enabled)
     {
         if (_gated.TryGetValue(name, out MenuItem? item))
@@ -1396,6 +1539,11 @@ public sealed class MainMenu : UserControl
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = _viewOptions.TryGetValue(id, out bool value) && value,
             InputGesture = Literal(GridGestures.GetValueOrDefault(id)),
+
+            // A tick is still a command — "Show tags" is exactly the sort of thing the
+            // palette is for — so it is tagged like any other leaf. The id is the
+            // grid's own command id, which is already untranslated and stable.
+            Tag = new Leaf(id, IconName: null, () => GridCommandRequested?.Invoke(id)),
         };
         item.Click += (_, _) => GridCommandRequested?.Invoke(id);
         _checkables[id] = item;
@@ -1435,7 +1583,16 @@ public sealed class MainMenu : UserControl
     {
         // Data headers (paths, plugin names) are escaped so an underscore in
         // "git_ext_mod" is shown, not swallowed as an access key.
-        MenuItem item = new() { Header = translate ? T(key, header) : header.Replace("_", "__") };
+        MenuItem item = new()
+        {
+            Header = translate ? T(key, header) : header.Replace("_", "__"),
+
+            // What makes the entry visible to EnumerateCommands, and the only thing
+            // that does: an item with no Leaf tag (a separator, a group header, a
+            // "(none)" placeholder, a submenu) is not a command and never becomes a
+            // palette row. See EnumerateCommands for why the id is the untranslated key.
+            Tag = new Leaf(key ?? header, iconName, onClick),
+        };
         if (gesture is { } command)
         {
             item.InputGesture = GestureFor(command);

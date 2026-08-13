@@ -40,6 +40,18 @@ public sealed class ViewPrefs
     public List<RevisionFilterMruEntry> RevisionFilterMru { get; set; } = [];
 
     /// <summary>
+    ///  Ids of the commands most recently run from the command palette
+    ///  (<c>Views.CommandPaletteWindow</c>), most recent first, without duplicates and
+    ///  capped at <see cref="ViewPrefsService.MaxCommandPaletteMru"/>.
+    ///
+    ///  <para>The ids are <see cref="PaletteEntry.Id"/> — an XLIFF key or a
+    ///  <see cref="BrowseCommand"/> name — deliberately NOT the caption the palette
+    ///  shows: a caption changes with the interface language, and a list keyed by it
+    ///  would silently empty itself the first time the user switches catalogue.</para>
+    /// </summary>
+    public List<string> CommandPaletteMru { get; set; } = [];
+
+    /// <summary>
     ///  Whether each illustrative help panel (<see cref="HelpImagePanel"/>) is
     ///  expanded, keyed by <see cref="HelpImageSpec.Id"/> — the port's home for what
     ///  upstream stores as <c>AppSettings.SetBool("HelpIsExpanded" + id)</c>. A map
@@ -430,6 +442,11 @@ public sealed class ViewPrefsService
     /// <summary>How many advanced revision filters the MRU keeps.</summary>
     public const int MaxRevisionFilterMru = 15;
 
+    /// <summary>How many commands the command palette's MRU keeps. Larger than the
+    /// filter MRU because it competes with nothing for screen space: the palette only
+    /// uses it to order a list the user is already scrolling.</summary>
+    public const int MaxCommandPaletteMru = 20;
+
     /// <summary>
     ///  Raised after any instance has written the file, on the thread that wrote it —
     ///  the same contract as <see cref="CommitInfoSettingsService.Changed"/>, so a
@@ -536,6 +553,7 @@ public sealed class ViewPrefsService
         p.LeftPanel ??= new LeftPanelPrefs();
         p.Merge ??= new MergeToolPrefs();
         p.RevisionFilterMru ??= [];
+        p.CommandPaletteMru ??= [];
         p.HelpPanels ??= [];
 
         // An unknown encoding name would leave the toolbar combo with no selection
@@ -576,6 +594,15 @@ public sealed class ViewPrefsService
         {
             p.RevisionFilterMru.RemoveRange(
                 MaxRevisionFilterMru, p.RevisionFilterMru.Count - MaxRevisionFilterMru);
+        }
+
+        // Same treatment for the palette's ids, plus a blank filter: a blank id would
+        // match no command and would only take a slot away from a real one.
+        p.CommandPaletteMru.RemoveAll(string.IsNullOrWhiteSpace);
+        if (p.CommandPaletteMru.Count > MaxCommandPaletteMru)
+        {
+            p.CommandPaletteMru.RemoveRange(
+                MaxCommandPaletteMru, p.CommandPaletteMru.Count - MaxCommandPaletteMru);
         }
 
         return p;

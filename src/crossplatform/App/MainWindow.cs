@@ -1546,6 +1546,8 @@ public sealed class MainWindow : Theming.ZoomWindow
         _menu.SparseCheckoutRequested += () => _ = OpenSparseAsync();
         _menu.RepoSettingsRequested += () => _ = OpenSettingsAsync();
 
+        _menu.CommandPaletteRequested += OpenCommandPalette;
+
         // Tools: terminal + external git GUIs, launched detached in the repo dir.
         _menu.GitBashRequested += () => WithRepo(p => _externalTools.OpenTerminal(p));
         _menu.GitKRequested += () => WithRepo(p => _externalTools.LaunchDetached("gitk", Array.Empty<string>(), p, "Launched gitk"));
@@ -2500,7 +2502,95 @@ public sealed class MainWindow : Theming.ZoomWindow
         Bind(BrowseCommand.FocusFilter, FocusFilterBox);
         Bind(BrowseCommand.ToggleLeftPanel, ToggleLeftPanel);
 
+        // --- the command palette over everything above, plus the menu (Ctrl+Shift+P)
+        Bind(BrowseCommand.CommandPalette, OpenCommandPalette);
+
         _hotkeys.Install(this, IsGestureOwnedByFocusedView);
+    }
+
+    /// <summary>
+    ///  Opens the command palette — Ctrl+Shift+P, or Tools → "Command palette…".
+    ///  Port-specific; upstream has no equivalent.
+    /// </summary>
+    private void OpenCommandPalette() => _ = ShowCommandPaletteAsync();
+
+    private async Task ShowCommandPaletteAsync()
+    {
+        // Built HERE, on every open, and never cached: the whole value of walking the
+        // menu is that the gating it shows is the gating in force at this instant (no
+        // repository, a bare one, an artificial row selected). A cached list would be a
+        // snapshot of some earlier state and would offer commands the menu refuses.
+        List<PaletteEntry> entries = [.. _menu.EnumerateCommands()];
+        entries.AddRange(KeyboardOnlyCommands(entries));
+
+        CommandPaletteWindow palette = new(entries);
+        await palette.ShowDialog(this);
+
+        if (palette.Chosen is { } chosen)
+        {
+            // The palette is already closed here (ShowDialog returned), and the action
+            // runs one dispatcher turn later still: most of these commands open a modal
+            // dialog owned by this window, and one opened while the palette was up would
+            // be parented over a window on its way out.
+            Dispatcher.UIThread.Post(chosen.Invoke);
+        }
+    }
+
+    /// <summary>
+    ///  The keyboard commands that appear in no menu — the focus moves, GoToParent, the
+    ///  quick pull/push variants — as palette rows under a "Keyboard" path.
+    ///
+    ///  <para>Only the commands with an action actually bound (see
+    ///  <see cref="HotkeyService.BoundCommands"/>): the rest are inert by design and a
+    ///  row that does nothing is worse than no row. "Appears in no menu" is decided by
+    ///  the gesture the menu prints, normalised through <see cref="HotkeyGesture"/> so
+    ///  the two spellings of the same combination cannot disagree.</para>
+    ///
+    ///  <para>The labels are derived from the enum names ("GoToParent" → "Go to
+    ///  parent"), not tabulated: a hand-written table for four dozen commands is a
+    ///  table that goes stale the first time someone adds one.</para>
+    /// </summary>
+    private IReadOnlyList<PaletteEntry> KeyboardOnlyCommands(IReadOnlyList<PaletteEntry> fromMenu)
+    {
+        HashSet<string> advertised = new(StringComparer.Ordinal);
+        foreach (PaletteEntry entry in fromMenu)
+        {
+            if (entry.Gesture is { Length: > 0 } gesture)
+            {
+                advertised.Add(Normalize(gesture));
+            }
+        }
+
+        string path = T("Keyboard");
+        List<PaletteEntry> rows = [];
+        foreach ((BrowseCommand command, HotkeyGesture? gesture, Action action) in _hotkeys.BoundCommands())
+        {
+            // The palette must not offer itself; it is already open.
+            if (command == BrowseCommand.CommandPalette)
+            {
+                continue;
+            }
+
+            string? shown = gesture?.ToString();
+            if (shown is { Length: > 0 } && advertised.Contains(shown))
+            {
+                continue;
+            }
+
+            rows.Add(new PaletteEntry(
+                Id: "key:" + command,
+                Path: path,
+                Label: CommandPaletteService.Humanize(command.ToString()),
+                IconName: null,
+                Gesture: shown,
+                IsEnabled: true,
+                Invoke: action));
+        }
+
+        return rows;
+
+        static string Normalize(string text)
+            => HotkeyGesture.TryParse(text, out HotkeyGesture parsed) ? parsed.ToString() : text;
     }
 
     /// <summary>

@@ -15,11 +15,16 @@ namespace GitExtensions.Avalonia.Services;
 ///  means the two tables can be diffed by eye, and a future settings UI can show
 ///  the same command list the Windows build shows.</para>
 ///
-///  <para>Two entries have no upstream counterpart in the <c>FormBrowse</c> scope:
+///  <para>Three entries have no upstream counterpart in the <c>FormBrowse</c> scope:
 ///  <see cref="Refresh"/> (upstream reaches it through the revision grid /
-///  toolbar) and <see cref="FindInDiff"/> (upstream <c>FileViewer.Command.Find</c>,
+///  toolbar), <see cref="FindInDiff"/> (upstream <c>FileViewer.Command.Find</c>,
 ///  which in this port has to be reachable from the window because the diff is a
-///  panel, not a focused form).</para>
+///  panel, not a focused form) and <see cref="CommandPalette"/> (a surface upstream
+///  does not have at all).</para>
+///
+///  <para>One default deviates from upstream on purpose: <see cref="QuickPull"/> is
+///  Shift+F8 here, not Ctrl+Shift+P, because <see cref="CommandPalette"/> takes that
+///  gesture — see the note in the <c>Defaults</c> table.</para>
 ///
 ///  <para>Commands upstream leaves unassigned (<c>Keys.None</c>: GitGui, GitGitK,
 ///  GoToSubmodule, GoToSuperproject, OpenCommitsWithDifftool) are simply absent.</para>
@@ -77,6 +82,11 @@ public enum BrowseCommand
     /// <summary>Port-specific: upstream <c>FileViewer.Command.Find</c>, promoted to
     /// a window-level gesture so Ctrl+F works with the focus outside the diff.</summary>
     FindInDiff,
+
+    /// <summary>Port-specific: opens the command palette (Ctrl+Shift+P), which has no
+    /// upstream counterpart — it is built by walking this port's own main menu, so
+    /// there is no <c>FormBrowse.Command</c> for it to mirror.</summary>
+    CommandPalette,
 }
 
 /// <summary>
@@ -212,7 +222,15 @@ public sealed class HotkeyService
             [BrowseCommand.PullOrFetch] = new(Key.Down, KeyModifiers.Control),
             [BrowseCommand.Push] = new(Key.Up, KeyModifiers.Control),
             [BrowseCommand.QuickFetch] = new(Key.Down, KeyModifiers.Control | KeyModifiers.Shift),
-            [BrowseCommand.QuickPull] = new(Key.P, KeyModifiers.Control | KeyModifiers.Shift),
+            // PORT DEVIATION: upstream binds QuickPull to Ctrl+Shift+P
+            // (HotkeySettingsManager.cs), which this port gives to the command palette
+            // — the gesture every editor of the last decade opens one with. Leaving
+            // QuickPull on it would have left it with no reachable key at all, so it
+            // moves to Shift+F8: the same key as its sibling QuickPullOrFetch (F8),
+            // with the Shift that already means "the quick variant" elsewhere in this
+            // table (Ctrl+Down/Ctrl+Shift+Down, Ctrl+Up/Ctrl+Shift+Up). Shift+F8 is
+            // free in this table and in every scope table of HotkeyScopes.cs.
+            [BrowseCommand.QuickPull] = new(Key.F8, KeyModifiers.Shift),
             [BrowseCommand.QuickPullOrFetch] = new(Key.F8, KeyModifiers.None),
             [BrowseCommand.QuickPush] = new(Key.Up, KeyModifiers.Control | KeyModifiers.Shift),
             [BrowseCommand.Rebase] = new(Key.E, KeyModifiers.Control | KeyModifiers.Shift),
@@ -223,6 +241,7 @@ public sealed class HotkeyService
             [BrowseCommand.ToggleLeftPanel] = new(Key.C, KeyModifiers.Control | KeyModifiers.Alt),
             [BrowseCommand.Refresh] = new(Key.F5, KeyModifiers.None),
             [BrowseCommand.FindInDiff] = new(Key.F, KeyModifiers.Control),
+            [BrowseCommand.CommandPalette] = new(Key.P, KeyModifiers.Control | KeyModifiers.Shift),
         };
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
@@ -382,10 +401,42 @@ public sealed class HotkeyService
     /// inert: its gesture falls through to whatever the focused control does with it.</summary>
     public void Bind(BrowseCommand command, Action action) => _actions[command] = action;
 
+    /// <summary>
+    ///  Every command that currently HAS an action, with the gesture in force and the
+    ///  action itself, in enum order.
+    ///
+    ///  <para>This is what lets the command palette offer the keyboard-only commands —
+    ///  the focus moves, GoToParent, the quick pull/push variants — which exist nowhere
+    ///  in the menu and were therefore undiscoverable by anyone who had not read
+    ///  <see cref="Defaults"/>. It deliberately answers with the BOUND commands only:
+    ///  an unbound one is inert (see <see cref="Bind"/>), so offering it would be
+    ///  offering a row that does nothing.</para>
+    /// </summary>
+    public IReadOnlyList<(BrowseCommand Command, HotkeyGesture? Gesture, Action Action)> BoundCommands()
+    {
+        List<(BrowseCommand, HotkeyGesture?, Action)> rows = new(_actions.Count);
+        foreach (BrowseCommand command in Enum.GetValues<BrowseCommand>())
+        {
+            if (_actions.TryGetValue(command, out Action? action))
+            {
+                rows.Add((command, GestureFor(command), action));
+            }
+        }
+
+        return rows;
+    }
+
     /// <summary>Rebuilds the gesture → command lookup after <see cref="Bindings"/> changed.</summary>
     public void Reindex()
     {
         _byGesture.Clear();
+
+        // No two defaults claim the same gesture any more (the command palette took
+        // Ctrl+Shift+P and QuickPull moved to Shift+F8, see the Defaults table), so the
+        // only way two commands can collide here is a user override — and then the
+        // override is exactly what should decide the winner, not a hard-coded
+        // preference of ours. _bindings keeps the Defaults insertion order with the
+        // port's own commands last, so a rebound stock command beats them.
         foreach ((BrowseCommand command, HotkeyGesture gesture) in _bindings)
         {
             // First writer wins, so a user override cannot silently shadow another
