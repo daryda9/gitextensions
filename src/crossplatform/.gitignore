@@ -1,2 +1,5 @@
 bin/
 obj/
+
+# Default `dotnet publish` output (App/GitExtensions.Avalonia.csproj sets PublishDir).
+dist/
