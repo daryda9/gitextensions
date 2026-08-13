@@ -26,6 +26,11 @@ Stato dei riferimenti: agosto 2026. Le fonti sono in fondo.
 
 | | |
 |---|---|
+| **M181** | **Conflitti non fondibili (§1.3 + §1.5 + §1.6 lato UI).** Selettore del commit per i submodule: mostra cosa c'è *in mezzo* ai due puntatori e sa scegliere anche un **terzo** commit (`update-index --cacheinfo 160000`). Pannello guidato al posto del pulsante grigio: dice in una riga perché il merge a tre vie non si può fare e offre le uscite. rerere a schermo: banner, interruttori, cosa ha già riapplicato, `forget` sotto conferma, finestra della cache. |
+| **M180** | **`git rerere` (§1.6).** Servizio con i fatti misurati su git 2.43: attivo anche per sola esistenza di `rr-cache`, `status`/`remaining`/`diff` vuoti dopo un replay mentre l'indice è ancora unmerged, `forget` che si auto-annulla fuori da un merge. |
+| **M179** | **Diff di immagini (§1.4).** Affiancate, sovrapposte con opacità, differenza per pixel. Immagine riconosciuta **dai byte**, non dall'estensione. |
+| **M178** | **Editor di merge (§1.2 + conflitti banali).** Conflitti di sola spaziatura / fine riga / righe vuote chiusi con un clic, mai all'apertura, reversibili uno per uno. Marcature intra-riga LOCAL↔REMOTE e ogni-lato↔BASE. Rifiuti tipizzati. |
+| **M177** | **Diff intra-riga (§1.2).** `InlineDiff`: quali *caratteri* cambiano, in memoria, ~8,6 µs a riga, solo righe visibili. Era il vero divario residuo con kdiff3. |
 | **M174** | **Difftool affiancato interno.** «Compare side by side…» nel menu dei file: `git diff --no-index -U0` fa il diff, l'allineamento viene dagli header di hunk, i numeri di riga vengono dall'allineamento e non dal documento. Non serve `diff.tool`. |
 | **M173** | **Collaudo del merge su conflitti veri** (5431 righe, UTF-8, CRLF, senza newline finale): due difetti trovati e chiusi. |
 | **M172** | **Editor di merge a tre vie interno.** `git merge-file --diff3` fa il merge, `MergeToolService` lo trasforma in chunk tipizzati, `MergeToolWindow` mostra LOCAL / BASE / REMOTE in sola lettura e il risultato modificabile sotto. Con `merge.tool` vuoto i pulsanti esterni sono disabilitati e **Merge funziona lo stesso**. kdiff3 resta dov'era. |
@@ -37,17 +42,25 @@ documento: pannelli allineati, evidenziatori e modello a chunk sono già lì.
 
 ---
 
-## 1. Indipendenza dagli strumenti esterni — cosa manca
+## 1. Indipendenza dagli strumenti esterni — CHIUSO (M177–M181)
 
-Ordine di valore decrescente. La stima è di sforzo, non di calendario.
+Tutte le voci 1.2–1.6 sono state consegnate, più i **conflitti banali** che non erano
+in lista. Conflitti, confronto, immagini e riuso delle risoluzioni si fanno in casa, e
+il motore resta git.
 
-| # | Voce | Perché | Sforzo | Appoggia su |
-|---|---|---|---|---|
-| 1.2 | **Diff parola per parola / carattere per carattere** dentro la riga | Su una riga cambiata di due caratteri il diff per righe fa perdere tempo. È il motivo per cui la gente apre comunque un tool esterno. | M | `DiffView`, colorizer esistenti |
-| 1.3 | **Merge dei conflitti sui submodule** con scelta del commit in una lista | Oggi la risoluzione è per lati (M-precedenti): funziona, ma non fa vedere *cosa c'è in mezzo* fra i due commit. | M | `ConflictService.ChooseSubmoduleSide` |
-| 1.4 | **Diff di immagini** (affiancate, sovrapposte, differenza) | Nessun tool esterno per i PNG. Piccolo, molto visibile. | S | nuovo |
-| 1.5 | **Editor interno per i file di conflitto non testuali** (rifiuto esplicito e guidato) | Già c'è il rifiuto, manca la strada che propone. | S | `MergeToolService.PrepareAsync` |
-| 1.6 | **`git rerere` esposto in UI** (riusa risoluzioni già date) | Git lo sa fare da sempre e nessun client lo mostra. Su un rebase lungo cambia la giornata. | M | nuovo |
+Quello che è rimasto scoperto **dentro** queste voci, dichiarato e non nascosto:
+
+| Voce | Scoperto |
+|---|---|
+| §1.2 | Nessuna suite che protegga `InlineDiff` dalle regressioni. Con più regioni cambiate la granularità resta la parola: `alpha_beta` → `alpha_gamma` marca l'intera parola se accanto c'è un'altra modifica. Nessuna opzione «ignora spazi» intra-riga. Il pannello MERGE RESULT non ha marcature. La modalità intra-riga dell'editor di merge non è persistita fra sessioni. |
+| §1.3 | Non provati: submodule inizializzato ma con gli oggetti di un lato mancanti, add/add di gitlink senza BASE, liste oltre 200 commit, path con spazi. |
+| §1.4 | Firme WEBP/GIF/BMP/ICO implementate ma provate solo su PNG e JPEG. Rifiuto oltre 16 megapixel non esercitato a schermo. Niente pan col trascinamento né scorciatoie di zoom. |
+| §1.5 | Non provati a schermo: file oltre 20 MB, e il pannello su un repo senza `merge.tool` configurato. |
+| §1.6 | Nessuna prova su conflitti di rebase (solo merge), su cache multi-variante, su path non ASCII o con spazi, su worktree collegati. `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
+
+Trasversale: le stringhe nuove passano da `T(english)` come le altre, quindi a schermo
+restano in inglese finché non esiste un catalogo italiano attivo — è una decisione di
+catalogo, non di questi file.
 
 ---
 

@@ -3418,6 +3418,117 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M181 (2026-08-13, `9ee2cafed`) — un conflitto che non si può fondere ora propone una strada (feature INEDITA)
+
+Chiude tre voci della roadmap che finiscono tutte nello stesso dialogo.
+
+**Submodule (§1.3).** Si risolveva **per lati, alla cieca**: tieni il mio o tieni il suo, senza vedere
+cosa c'è **in mezzo** ai due puntatori, che è l'unica informazione che decide. Il nuovo selettore
+mostra i due puntatori con oggetto, autore e data, dice se uno è semplicemente **antenato** dell'altro
+(caso banale, e allora tenere l'altro non perde niente), elenca i commit che ciascun lato ha da solo,
+e soprattutto i **commit che li contengono entrambi**: quando ce n'è uno, quasi sempre è la risposta
+giusta. La scelta si scrive con `update-index --cacheinfo 160000,<sha>,<path>`, che è l'unico modo di
+esprimere un **terzo** commit — `checkout --ours` non lo sa dire — e poi il working tree del submodule
+viene allineato. Submodule non inizializzato: degrada ai due puntatori e dice cosa lanciare, non
+fallisce. Difetto trovato in corsa e chiuso: `Escape` chiudeva la finestra scavalcando Annulla e la
+riga evidenziata veniva applicata lo stesso; ora `ChosenSha` è vincolato a OK.
+
+**Rifiuto guidato (§1.5).** Il rifiuto c'era, la strada no: un pulsante grigio è un vicolo cieco. Ora
+il rifiuto tipizzato di `MergeToolService` alimenta un pannello che dice **in una riga e senza gergo**
+perché il merge a tre vie non si può fare su quel file, e poi offre le uscite: tieni un lato **con
+dimensione, tipo e data a schermo** (così la scelta non è alla cieca), confronta come immagini quando
+sono i **byte** a dire che lo sono, e il tool esterno configurato — presentato come **un'alternativa**,
+non come l'unica strada.
+
+**rerere in UI (§1.6, parte visibile).** Banner che dice **perché** rerere è acceso, gli interruttori,
+i path che ha già riapplicato con il diff di quello che ha applicato, `forget` dietro conferma e solo
+mentre un merge è in corso, più la finestra della cache. «Già risolti» è **dedotto dall'albero di
+lavoro** e scritto come fatto verificato, non come vanto: dopo un replay git **tronca `MERGE_RR`** e
+non nomina più il path, quindi nessun segnale git può dirlo (misurato, non supposto).
+
+**Verificato a schermo** su fixture vere: conflitto di gitlink divergente (indice da tre stage 160000
+a `160000 3fd156e3… 0 sublib`, `--unmerged` vuoto, submodule allineato), PNG e binario non immagine
+col pannello guidato, delete/modify, e un conflitto testuale normale che apre l'editor **identico a
+prima**. Zero regressioni sul lavoro rerere.
+
+## M180 (2026-08-13, `a0dee8600`) — `git rerere` esposto, compreso quello che fa in silenzio (feature INEDITA)
+
+`rerere` riapplica una risoluzione già data. Git ce l'ha da anni, è spento di default e nessun client
+lo mostra; su un rebase lungo, dove lo stesso conflitto torna a ogni commit, cambia la giornata. Ed è
+**silenzioso**: una risoluzione sbagliata viene riapplicata per sempre senza dire niente.
+
+Quello che il servizio riporta è **misurato su git 2.43**, non supposto:
+- rerere è attivo **anche solo perché esiste `.git/rr-cache`**, con la configurazione vuota — è il caso
+  pericoloso, e va detto ad alta voce; un `false` esplicito però vince;
+- dopo un replay completo `status`, `remaining` e `diff` sono **tutti vuoti** mentre l'indice è ancora
+  unmerged: vuoto **non** significa «rerere non ha fatto niente»;
+- una directory di cache contiene una voce **per variante** (`preimage.1`, `.2`), non una risoluzione;
+- le voci senza postimage non replayeranno **mai**;
+- `forget` fuori da un merge conflittuale **si auto-annulla**, perché l'albero di lavoro contiene
+  ancora il testo risolto e rerere lo ri-registra subito; e su un path già replayato ma non staged
+  riarma il conflitto **senza** rimettere i marker nel file.
+
+Niente dipende dalla lingua di git: i valori di config si leggono grezzi e si interpretano qui
+(`--type=bool` aborta con 128 su un valore spazzatura), e la git dir viene da
+`rev-parse --absolute-git-dir`, mai composta a mano.
+
+## M179 (2026-08-13, `5e03fcd80`) — confrontare immagini come immagini (feature INEDITA)
+
+Aprire un PNG cambiato mostrava una patch di byte illeggibili: la peggiore risposta possibile, e
+nessun tool esterno configurato a rimediare. La finestra nuova confronta in tre modi: **affiancate**
+con zoom e scorrimento tenuti in passo, **sovrapposte** con slider di opacità (l'unico modo di vedere
+uno spostamento di pochi pixel), e per **differenza**, con quanti pixel cambiano e la percentuale.
+Scacchiera dietro entrambe, o un PNG trasparente è indistinguibile da uno bianco; interpolazione
+spenta oltre 1:1, o a 8× non si vede **quale** pixel è cambiato. Dimensioni diverse: allineate in alto
+a sinistra e **dichiarato**, non rifiutato; un lato mancante è un caso normale, non un errore.
+
+L'immagine si riconosce **dai byte** (magic number), mai dall'estensione: un `.png` che è testo deve
+finire nel diff testuale, non in una finestra che si lamenta. La sonda legge al massimo 32 byte per
+lato. E siccome il punto è essere offerta **prima** che si legga la patch inutile, un'immagine alza
+anche un banner sopra il pannello patch; la voce di menu resta **visibile ma disabilitata** sui non
+immagine, perché una voce che appare e sparisce non si impara.
+
+## M178 (2026-08-13, `e51ae787a`) — l'editor di merge dice cosa cambia davvero (feature INEDITA)
+
+**Conflitti banali.** Parte di quello che git segnala non è un disaccordo: i due lati dicono la stessa
+cosa scritta diversamente. Ora sono classificati sul chunk — solo spaziatura, spazi in coda, fine
+riga, righe vuote, un lato provabilmente immutato — e si chiudono con un clic, **mai all'apertura**:
+una riscrittura automatica non chiesta è esattamente ciò che rende inaffidabile un merge tool. Gli
+spazi si **collassano, mai si cancellano**, così `a b` e `ab` restano un conflitto vero, e la corsa
+iniziale si collassa invece di sparire: in Python quella differenza **è** il programma. A parità vince
+LOCAL, i byte già nell'albero di lavoro. Ogni risposta automatica passa dallo stesso percorso di una
+manuale, quindi resta **reversibile una per una**.
+
+**Marcature intra-riga** nei pannelli LOCAL e REMOTE, più una seconda modalità che legge **ogni lato
+contro BASE** — cosa ha cambiato ciascuno è spesso l'informazione che decide. Le righe si allineano su
+quello che hanno in comune, e una corsa con conteggi diversi resta **non marcata**: un accoppiamento
+indovinato punta il lettore su testo mai cambiato.
+
+**Rifiuti tipizzati** invece di una stringa — motivo, più dimensione, tipo dedotto dai byte e data di
+ogni lato — così un chiamante può proporre una via d'uscita. `PrepareAsync` mantiene la firma e ricava
+il messaggio dallo stesso rifiuto: le due strade non possono divergere.
+
+## M177 (2026-08-13, `c48a58c0b`) — quali caratteri cambiano dentro una riga cambiata (feature INEDITA)
+
+Era **il vero divario residuo con kdiff3**. Un diff per righe si ferma a «questa riga è cambiata»,
+quindi una riga che differisce di due caratteri costa una rilettura intera.
+
+`InlineDiff` risponde alla domanda fine **in memoria**: `--word-diff` di git sarebbe un processo per
+ogni coppia di righe, che un ridisegno non può permettersi. I token sono corse di caratteri di parola,
+corse di spazi o singoli segni di punteggiatura, così le marcature cadono su **parole** e non su
+lettere sparse, e CJK e surrogate pair sopravvivono. Prima si tagliano prefisso e suffisso comuni (il
+caso normale, ed è lineare); un **tetto di celle** esplicito sostituisce l'LCS con «tutto il residuo è
+cambiato» invece di lasciare che una riga minificata congeli la UI. Se cambia più di metà di
+**entrambe** le righe il risultato chiede di **non evidenziare niente**: marcare quasi tutto equivale a
+non marcare, e costa di più a chi legge.
+
+Misurato **~8,6 µs a riga** su codice normale, quindi si calcola solo per le righe visibili e da un
+`IBackgroundRenderer` — un colorizing transformer non sopravvive alle righe vuote (nota già pagata in
+questo port). Accoppiamento nel pannello unificato: una corsa di `-` seguita da una di `+` è una
+modifica, appaiata **per posizione**, e le righe in eccesso non ricevono marcature. Scorrimento su
+4000 righe con 2000 coppie cambiate: 3,47 s di CPU con le marcature contro 3,41 s senza, cioè dentro
+il rumore.
+
 ## M176 (2026-08-13, `897dfd07f`) — schede: due checkout distinti a colpo d'occhio (feature INEDITA)
 
 Segnalato: due cloni dello stesso progetto usati in parallelo hanno **gli stessi submodule**, quindi
