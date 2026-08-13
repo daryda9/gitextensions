@@ -38,6 +38,23 @@ public sealed class DiffViewerOptions
     /// <summary>Upstream <c>showSyntaxHighlighting</c> — colours the patch content.</summary>
     public bool SyntaxHighlighting { get; set; }
 
+    /// <summary>
+    ///  Whether the changed words inside a changed line are marked, in both the unified
+    ///  patch pane and the side-by-side window (the <c>a|b</c> switch).
+    ///
+    ///  <para>It is stored HERE rather than next to the renderer that reads it — where
+    ///  <c>InlineDiffOptions</c> now only forwards to this property — because this class
+    ///  is the one that is written to and read back from <c>view-prefs.json</c>. A
+    ///  reading preference the user turns off has to stay off across a restart like every
+    ///  other switch on that strip; before this it was session-scoped and came back on at
+    ///  every start, which reads as the setting not working.</para>
+    ///
+    ///  <para>Default <see langword="true"/>, and the mirror property in
+    ///  <c>DiffPrefs</c> defaults the same way: the two must agree or the first save on a
+    ///  machine with no preferences file would silently flip the marks off.</para>
+    /// </summary>
+    public bool InlineDiff { get; set; } = true;
+
     /// <summary>Whether any of the three git flags is on.</summary>
     public bool HasGitFlags => IgnoreWhitespaceAtEol || IgnoreWhitespaceChange || TreatAllFilesAsText;
 
@@ -84,6 +101,7 @@ public sealed class DiffViewerOptions
         Session.IgnoreWhitespaceChange = prefs.IgnoreWhitespaceChange;
         Session.TreatAllFilesAsText = prefs.TreatAllFilesAsText;
         Session.SyntaxHighlighting = prefs.SyntaxHighlighting;
+        Session.InlineDiff = prefs.InlineDiff;
     }
 
     /// <summary>
@@ -110,6 +128,7 @@ public sealed class DiffViewerOptions
             IgnoreWhitespaceChange = Session.IgnoreWhitespaceChange,
             TreatAllFilesAsText = Session.TreatAllFilesAsText,
             SyntaxHighlighting = Session.SyntaxHighlighting,
+            InlineDiff = Session.InlineDiff,
         });
     }
 }
@@ -268,6 +287,91 @@ public static class ExtendedDiffTextService
         return DiffTextService.ResolveEncoding(encodingName).GetString(bytes);
     }
 
+    /// <summary>
+    ///  The first <paramref name="count"/> bytes of a file at a revision (or of the
+    ///  working-tree copy when <paramref name="rev"/> is <see langword="null"/>) —
+    ///  enough to recognise a format by its magic number and no more.
+    ///
+    ///  <para>Bounded on purpose: this runs for every file the user clicks, and the
+    ///  question it answers ("is this an image?") must not cost a full read of a
+    ///  200 MB blob. git is stopped as soon as the header is in hand — a broken pipe
+    ///  is the normal end of this call, not a failure.</para>
+    ///
+    ///  <para>Returns an EMPTY array for a side that does not exist (an added file has
+    ///  no old version, a deleted one no new version), because that is a legitimate
+    ///  answer here and not an error: it simply is not an image.</para>
+    /// </summary>
+    public static async Task<byte[]> GetFileHeaderAsync(
+        string repoPath,
+        string? rev,
+        string path,
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(rev))
+            {
+                await using FileStream file = new(
+                    Path.Combine(repoPath, path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+                byte[] head = new byte[count];
+                int read = await file.ReadAtLeastAsync(head, count, throwOnEndOfStream: false, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return head[..read];
+            }
+
+            ProcessStartInfo psi = new()
+            {
+                FileName = "git",
+                WorkingDirectory = repoPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            psi.ArgumentList.Add("--no-pager");
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add("core.quotepath=false");
+            psi.ArgumentList.Add("show");
+            psi.ArgumentList.Add(rev.EndsWith(':') ? rev + path : rev + ":" + path);
+
+            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
+
+            using Process process = new() { StartInfo = psi };
+            process.Start();
+
+            try
+            {
+                byte[] head = new byte[count];
+                int read = await process.StandardOutput.BaseStream
+                    .ReadAtLeastAsync(head, count, throwOnEndOfStream: false, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return head[..read];
+            }
+            finally
+            {
+                // Not awaited for exit: the point of this method is not to wait for the
+                // whole blob to be written to a pipe nobody is going to drain.
+                TryKill(process);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Missing path, missing revision, unreadable file: not an image, and the
+            // caller has nothing useful to say about it.
+            return [];
+        }
+    }
+
     private static string Quote(string arg) =>
         arg.Contains(' ', StringComparison.Ordinal)
             ? string.Format(CultureInfo.InvariantCulture, "\"{0}\"", arg)
@@ -287,4 +391,73 @@ public static class ExtendedDiffTextService
             // The process already went away; nothing to clean up.
         }
     }
+}
+
+/// <summary>
+///  Recognises the raster formats the port's image comparison can decode, from the
+///  first bytes of the file.
+///
+///  <para>From the BYTES and never from the extension, which is the whole point: a
+///  <c>.png</c> that is really a patch, a text file or a Git-LFS pointer must fall
+///  through to the textual diff, and a screenshot committed without an extension must
+///  still be offered as an image. Upstream asks the decoder the same question
+///  (<c>FileViewer.IsImage</c> tries to build a bitmap); the port asks it twice — this
+///  cheap sniff decides whether to OFFER the window, and the window's own decode
+///  decides what it can actually show, so a format that merely starts like an image
+///  degrades to "this side could not be decoded" instead of a wrong menu.</para>
+///
+///  <para><see cref="HeaderLength"/> bytes are enough for every signature below; WEBP
+///  is the longest at 12.</para>
+/// </summary>
+public static class ImageFormats
+{
+    /// <summary>How many leading bytes <see cref="LooksLikeImage"/> needs at most.</summary>
+    public const int HeaderLength = 32;
+
+    /// <summary>Whether <paramref name="header"/> starts with a known image signature.</summary>
+    public static bool LooksLikeImage(ReadOnlySpan<byte> header) =>
+        IsPng(header) || IsJpeg(header) || IsGif(header) || IsWebp(header) || IsBmp(header) || IsIco(header);
+
+    // The 0x89 first byte and the CR/LF pair are the signature's own transfer test:
+    // a PNG that travelled through a text channel no longer starts with them.
+    private static ReadOnlySpan<byte> PngMagic => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    // SOI, then the marker introducer of the segment that follows it; every JPEG
+    // variant (JFIF, Exif, raw) has one, so three bytes are necessary and enough.
+    private static ReadOnlySpan<byte> JpegMagic => [0xFF, 0xD8, 0xFF];
+
+    private static bool IsPng(ReadOnlySpan<byte> h) => h.StartsWith(PngMagic);
+
+    private static bool IsJpeg(ReadOnlySpan<byte> h) => h.StartsWith(JpegMagic);
+
+    private static bool IsGif(ReadOnlySpan<byte> h) =>
+        h.StartsWith("GIF87a"u8) || h.StartsWith("GIF89a"u8);
+
+    private static bool IsWebp(ReadOnlySpan<byte> h) =>
+        h.Length >= 12 && h.StartsWith("RIFF"u8) && h[8..12].SequenceEqual("WEBP"u8);
+
+    // "BM" alone is two bytes of ASCII that plenty of text starts with ("BMW..."), so
+    // the rest of the 14-byte file header is checked too: both reserved words are zero
+    // in every writer's output, and the offset to the pixel data cannot point before
+    // the end of the smallest possible header pair (14 + 12).
+    private static bool IsBmp(ReadOnlySpan<byte> h)
+    {
+        if (h.Length < 14 || !h.StartsWith("BM"u8))
+        {
+            return false;
+        }
+
+        if (h[6] != 0 || h[7] != 0 || h[8] != 0 || h[9] != 0)
+        {
+            return false;
+        }
+
+        uint pixelOffset = (uint)(h[10] | (h[11] << 8) | (h[12] << 16) | (h[13] << 24));
+        return pixelOffset is >= 26 and < 1 << 24;
+    }
+
+    // Reserved word, type 1 (icon; 2 would be a cursor), and at least one image in the
+    // directory — four zero-ish bytes would otherwise match far too much.
+    private static bool IsIco(ReadOnlySpan<byte> h) =>
+        h.Length >= 6 && h[0] == 0 && h[1] == 0 && h[2] == 1 && h[3] == 0 && (h[4] | h[5]) != 0;
 }

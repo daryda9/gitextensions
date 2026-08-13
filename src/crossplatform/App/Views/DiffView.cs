@@ -98,6 +98,7 @@ public sealed class DiffView : UserControl
     private readonly BusyOverlay _patchBusy = new();
     private readonly DiffLineColorizer _colorizer = new();
     private readonly DiffSearchColorizer _searchColorizer = new();
+    private readonly InlineDiffRenderer _inlineDiff = new();
     private readonly TextBlock _status;
 
     // Diff-toolbar state (session-persisted in DiffTextService.Session).
@@ -112,12 +113,14 @@ public sealed class DiffView : UserControl
     private readonly ToggleButton _nonPrintingButton;
     private readonly ToggleButton _wordDiffButton;
     private readonly ToggleButton _syntaxButton;
+    private readonly ToggleButton _inlineDiffButton;
     private readonly ComboBox _encodingBox;
 
     // Kept so a language switch can re-label them in place (see ApplyTranslations).
     private readonly CopyPathsMenuItem _copyPathItem;
     private readonly MenuItem _blameItem;
     private readonly MenuItem _historyItem;
+    private readonly MenuItem _compareImagesItem;
     private readonly MenuItem _compareHereItem;
     private readonly MenuItem _difftoolItem;
     private readonly MenuItem _compareWorkingDirItem;
@@ -131,6 +134,19 @@ public sealed class DiffView : UserControl
     private readonly MenuItem _copyPatchItem;
     private readonly MenuItem _copyNewVersionItem;
     private readonly MenuItem _copyOldVersionItem;
+    // The image-comparison offer. The banner is the "evident" half of it: a patch of a
+    // PNG is either "Binary files differ" or a screenful of bytes, so when the selected
+    // file IS an image the pane says so above the useless text and puts the button that
+    // opens the real comparison within reach, instead of hiding it in a context menu the
+    // user has no reason to open. The three fields below it are what the byte probe
+    // leaves behind, read by both the banner and the menu item.
+    private readonly Border _imageBanner;
+    private readonly TextBlock _imageBannerText;
+    private readonly Button _imageBannerButton;
+    private bool _leftIsImage;
+    private bool _rightIsImage;
+    private string _imageOfferSummary = string.Empty;
+
     private readonly Button _prevChangeButton;
     private readonly Button _nextChangeButton;
     private readonly Button _zoomInButton;
@@ -246,6 +262,10 @@ public sealed class DiffView : UserControl
         _blameItem.Click += (_, _) => RaiseFileAction(BlameRequested);
         _historyItem = new MenuItem();
         _historyItem.Click += (_, _) => RaiseFileAction(FileHistoryRequested);
+        // Above "Compare side by side…" on purpose: for an image that entry is the wrong
+        // one, and a menu that lists the wrong answer first is how the user finds it.
+        _compareImagesItem = new MenuItem();
+        _compareImagesItem.Click += (_, _) => _ = CompareSelectedAsImagesAsync();
         _compareHereItem = new MenuItem();
         _compareHereItem.Click += (_, _) => _ = CompareSelectedHereAsync();
         _difftoolItem = new MenuItem();
@@ -283,6 +303,7 @@ public sealed class DiffView : UserControl
                 _blameItem,
                 _historyItem,
                 new Separator(),
+                _compareImagesItem,
                 _compareHereItem,
                 _difftoolItem,
                 _compareWorkingDirItem,
@@ -326,6 +347,12 @@ public sealed class DiffView : UserControl
         // added/removed tint rather than under it.
         _editor.TextArea.TextView.LineTransformers.Add(_colorizer);
         _editor.TextArea.TextView.LineTransformers.Add(_searchColorizer);
+
+        // A BACKGROUND renderer, not a third transformer: a transformer is never
+        // handed a line with no characters, and a patch that adds or removes a
+        // blank line has plenty — the word marks would vanish precisely where the
+        // pairing between the - and + runs shifts.
+        _editor.TextArea.TextView.BackgroundRenderers.Add(_inlineDiff);
 
         // The palette brushes are mutated in place by ThemeManager, but nothing
         // tells a text-view line that its brush changed colour, so a switch has to
@@ -457,6 +484,18 @@ public sealed class DiffView : UserControl
             },
             icon: "SyntaxHighlighting");
 
+        // Display-only as well, and cheaper still: the marks are computed by a
+        // background renderer for the visible lines, so turning them off is one
+        // repaint — no git run, hence no ReloadDiff.
+        _inlineDiffButton = ToggleTool(
+            "a|b", InlineDiffOptions.Enabled,
+            v =>
+            {
+                InlineDiffOptions.Enabled = v;
+                DiffViewerOptions.Persist();
+                RedrawDiff();
+            });
+
         _encodingBox = new ComboBox
         {
             ItemsSource = DiffTextService.EncodingNames,
@@ -518,6 +557,7 @@ public sealed class DiffView : UserControl
         toolbar.Children.Add(_ignoreWhitespaceButton);
         toolbar.Children.Add(_nonPrintingButton);
         toolbar.Children.Add(_syntaxButton);
+        toolbar.Children.Add(_inlineDiffButton);
         toolbar.Children.Add(_wordDiffButton);
         toolbar.Children.Add(ToolSeparator());
         toolbar.Children.Add(_encodingBox);
@@ -594,11 +634,52 @@ public sealed class DiffView : UserControl
         patchHost.Children.Add(_editor);
         patchHost.Children.Add(_patchBusy);
 
+        _imageBannerText = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = B("App.Text"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        };
+        _imageBannerButton = new Button
+        {
+            Padding = new Thickness(8, 2),
+            MinWidth = 0,
+            MinHeight = 0,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 12,
+        };
+        _imageBannerButton.Click += (_, _) => _ = CompareSelectedAsImagesAsync();
+
+        // Button docked right and added FIRST: the message is the part that may be long
+        // (two revision labels), and it is the one that must shrink, never the button.
+        DockPanel bannerPanel = new();
+        DockPanel.SetDock(_imageBannerButton, Dock.Right);
+        bannerPanel.Children.Add(_imageBannerButton);
+        bannerPanel.Children.Add(_imageBannerText);
+
+        // Docked under the find bar and above the patch: it belongs to the CONTENT
+        // (it appears and goes with the selected file), not to the option strip, and
+        // the busy overlay must not cover it — the offer is what the user wants while
+        // the pointless patch is still loading.
+        _imageBanner = new Border
+        {
+            Background = B("App.Toolbar"),
+            BorderBrush = B("App.Rule"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(12, 5),
+            Child = bannerPanel,
+            IsVisible = false,
+        };
+
         DockPanel diffPane = new();
         DockPanel.SetDock(toolbarBar, Dock.Top);
         DockPanel.SetDock(_findBar, Dock.Top);
+        DockPanel.SetDock(_imageBanner, Dock.Top);
         diffPane.Children.Add(toolbarBar);
         diffPane.Children.Add(_findBar);
+        diffPane.Children.Add(_imageBanner);
         diffPane.Children.Add(patchHost);
 
         _status = new TextBlock
@@ -809,6 +890,9 @@ public sealed class DiffView : UserControl
         _copyPathItem.ApplyTranslations();
         _blameItem.Header = T("FileStatusList/tsmiBlame.Text", "Blame");
         _historyItem.Header = T("FileStatusList/tsmiFileHistory.Text", "File history");
+        // Both the entry and the banner are worded from the current probe result, so
+        // one call re-labels them together after a language switch.
+        UpdateImageOffer();
         _compareHereItem.Header = T("Compare side by side…");
         _difftoolItem.Header = T("FileStatusList/tsmiOpenWithDifftool.Text", "Open in external difftool");
         _compareWorkingDirItem.Header = T(
@@ -870,6 +954,8 @@ public sealed class DiffView : UserControl
             "git diff -b"));
         ToolTip.SetTip(_syntaxButton,
             T("FileViewer/showSyntaxHighlighting.ToolTipText", "Show syntax highlighting"));
+        ToolTip.SetTip(_inlineDiffButton,
+            T("Highlight the changed words inside a changed line"));
 
         ToolTip.SetTip(_encodingBox, T("Encoding used to decode the diff text"));
         ToolTip.SetTip(_settingsButton, T("FileViewer/settingsButton.ToolTipText", "Settings"));
@@ -1119,8 +1205,8 @@ public sealed class DiffView : UserControl
                 TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("No window"),
                 repoPath,
                 row.Name,
-                Label(leftRev, leftPath),
-                Label(rightRev, rightPath),
+                SideLabel(leftRev, leftPath),
+                SideLabel(rightRev, rightPath),
                 left,
                 right,
                 histogram);
@@ -1131,9 +1217,203 @@ public sealed class DiffView : UserControl
         {
             _status.Text = F(T("Compare error: {0}"), ex.Message);
         }
+    }
 
-        static string Label(string? rev, string path)
-            => rev is null ? $"{path} — working tree" : $"{path} @ {rev}";
+    /// <summary>
+    ///  How one side of the current comparison is named on screen — in the side-by-side
+    ///  window's two captions, in the image window's two captions, in the banner and in
+    ///  the context-menu entry. ONE method, because the user must be able to tell that
+    ///  the four are talking about the same pair of versions.
+    /// </summary>
+    private static string SideLabel(string? rev, string path)
+        => rev is null || rev == ":" ? $"{path} — {RevWord(rev)}" : $"{path} @ {rev}";
+
+    // The revision alone, for the offer, which names the file once and the two
+    // revisions after it. ":" is git's own name for the index copy of a path and
+    // means nothing to a reader, so it is spelled out here as it is in the captions.
+    private static string RevWord(string? rev)
+    {
+        if (rev is null)
+        {
+            return T("working tree");
+        }
+
+        if (rev == ":")
+        {
+            return T("index");
+        }
+
+        // A full object name is 40 characters of which a reader uses the first few, and
+        // the offer is a single line sharing its width with a file list: it is
+        // abbreviated the way the grid's own Commit column abbreviates it. The "^" of a
+        // parent revision is kept — it is the part that says WHICH side this is.
+        string name = rev.TrimEnd('^');
+        return name.Length == 40 && name.All(Uri.IsHexDigit)
+            ? name[..8] + rev[name.Length..]
+            : rev;
+    }
+
+    // How the offer names the comparison. When both sides are the same path — every
+    // case but a rename — the path is said ONCE and the two revisions follow it: the
+    // menu entry and the banner are single lines competing for width with a file list
+    // and a toolbar, and "logo.png — index ↔ logo.png — working tree" spends half of it
+    // repeating the name the user just clicked.
+    private static string OfferSummary(string? leftRev, string leftPath, string? rightRev, string rightPath)
+        => string.Equals(leftPath, rightPath, StringComparison.Ordinal)
+            ? F("{0}: {1} ↔ {2}", leftPath, RevWord(leftRev), RevWord(rightRev))
+            : F("{0} ↔ {1}", SideLabel(leftRev, leftPath), SideLabel(rightRev, rightPath));
+
+    /// <summary>
+    ///  Opens the two versions of the selected file in <see cref="ImageDiffWindow"/>.
+    ///
+    ///  <para>Reads the two BLOBS, not the two texts: a PNG that has been through a
+    ///  string is no longer a PNG — every byte that is not valid in the chosen encoding
+    ///  comes back as U+FFFD — so this path deliberately does not reuse
+    ///  <see cref="ReadSideAsync"/>. Sides are resolved by the same
+    ///  <see cref="ResolveSide"/> as everything else, so renames, ranges and the
+    ///  artificial index rows land on the right blobs here too.</para>
+    /// </summary>
+    private async Task CompareSelectedAsImagesAsync()
+    {
+        if (_files.SelectedFile is not DiffFileRow row || _repoPath is null || _commitHash is null)
+        {
+            return;
+        }
+
+        (string? leftRev, string leftPath) = ResolveSide(row, newVersion: false);
+        (string? rightRev, string rightPath) = ResolveSide(row, newVersion: true);
+
+        string repoPath = _repoPath;
+
+        _status.Text = F(T("Comparing {0}…"), row.Name);
+
+        try
+        {
+            byte[]? left = await ReadSideBytesAsync(repoPath, leftRev, leftPath);
+            byte[]? right = await ReadSideBytesAsync(repoPath, rightRev, rightPath);
+
+            string? error = await ImageDiffWindow.ShowAsync(
+                TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("No window"),
+                left,
+                right,
+                SideLabel(leftRev, leftPath),
+                SideLabel(rightRev, rightPath));
+
+            _status.Text = error ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _status.Text = F(T("Compare error: {0}"), ex.Message);
+        }
+    }
+
+    // null rather than an empty array for a side that does not exist — an added file
+    // has no "before", a deleted one no "after" — because the window tells "absent"
+    // and "there but undecodable" apart and words its information bar accordingly.
+    private static async Task<byte[]?> ReadSideBytesAsync(string repoPath, string? rev, string path)
+    {
+        try
+        {
+            byte[] bytes = await Task.Run(() => DiffTextService.GetFileBytesAsync(repoPath, rev, path));
+            return bytes.Length == 0 ? null : bytes;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///  Asks whether either version of <paramref name="row"/> is an image, from the
+    ///  first bytes of each side, and turns the answer into the banner and the menu
+    ///  entry.
+    ///
+    ///  <para>From the bytes and not from the extension: a <c>.png</c> that is really
+    ///  text must fall through to the textual diff rather than open a window that can
+    ///  only complain, and there is no extension at all to consult for a file named
+    ///  <c>screenshot</c>. Only <see cref="ImageFormats.HeaderLength"/> bytes per side
+    ///  are read, so this costs nothing next to the patch it rides along with.</para>
+    ///
+    ///  <para>Shares the patch load's cancellation token: whoever selects another file
+    ///  cancels this too, so a slow blob cannot land after the fact and offer the
+    ///  comparison of the file the user has just left.</para>
+    /// </summary>
+    private void ProbeImageSides(DiffFileRow row, string repoPath, CancellationToken token)
+    {
+        (string? leftRev, string leftPath) = ResolveSide(row, newVersion: false);
+        (string? rightRev, string rightPath) = ResolveSide(row, newVersion: true);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                byte[] leftHead = await ExtendedDiffTextService
+                    .GetFileHeaderAsync(repoPath, leftRev, leftPath, ImageFormats.HeaderLength, token)
+                    .ConfigureAwait(false);
+                byte[] rightHead = await ExtendedDiffTextService
+                    .GetFileHeaderAsync(repoPath, rightRev, rightPath, ImageFormats.HeaderLength, token)
+                    .ConfigureAwait(false);
+
+                bool left = ImageFormats.LooksLikeImage(leftHead);
+                bool right = ImageFormats.LooksLikeImage(rightHead);
+
+                if (token.IsCancellationRequested || !(left || right))
+                {
+                    return;
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    _leftIsImage = left;
+                    _rightIsImage = right;
+                    _imageOfferSummary = OfferSummary(leftRev, leftPath, rightRev, rightPath);
+                    UpdateImageOffer();
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by another selection; the new load asks the question again.
+            }
+            catch (Exception)
+            {
+                // The probe is an offer, not a result: a file that cannot be read is
+                // simply not offered as an image, and the patch pane reports the error.
+            }
+        });
+    }
+
+    // Back to "this is not an image", the state every pane reset starts from.
+    private void ClearImageOffer()
+    {
+        _leftIsImage = false;
+        _rightIsImage = false;
+        _imageOfferSummary = string.Empty;
+        UpdateImageOffer();
+    }
+
+    // What the probe found, turned into what the user sees. The menu entry stays in
+    // place (and disabled) when the file is not an image rather than disappearing: an
+    // entry that comes and goes is one the user cannot learn.
+    private void UpdateImageOffer()
+    {
+        bool isImage = _leftIsImage || _rightIsImage;
+
+        _compareImagesItem.IsEnabled = isImage;
+        _compareImagesItem.FontWeight = isImage ? FontWeight.Bold : FontWeight.Normal;
+        _compareImagesItem.Header = isImage
+            ? F(T("Compare as images — {0}"), _imageOfferSummary)
+            : T("Compare as images…");
+
+        _imageBannerButton.Content = T("Compare as images…");
+        _imageBannerText.Text = isImage
+            ? F(T("This is an image; the patch below cannot show it. {0}"), _imageOfferSummary)
+            : string.Empty;
+        _imageBanner.IsVisible = isImage;
     }
 
     // An absent side is empty, not an error: "git show" fails for a path that does
@@ -1993,6 +2273,14 @@ public sealed class DiffView : UserControl
         };
         syntax.Click += (_, _) => _syntaxButton.IsChecked = !_extras.SyntaxHighlighting;
 
+        MenuItem inlineDiff = new()
+        {
+            Header = T("Highlight the changed words inside a changed line"),
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = InlineDiffOptions.Enabled,
+        };
+        inlineDiff.Click += (_, _) => _inlineDiffButton.IsChecked = !InlineDiffOptions.Enabled;
+
         MenuItem nonPrinting = new()
         {
             Header = T("FileViewer/showNonprintableCharactersToolStripMenuItem.Text", "Show nonprinting characters"),
@@ -2071,6 +2359,7 @@ public sealed class DiffView : UserControl
                 ignore,
                 nonPrinting,
                 syntax,
+                inlineDiff,
                 word,
                 asText,
                 new Separator(),
@@ -2351,6 +2640,11 @@ public sealed class DiffView : UserControl
         // listening; here the host decides by subscribing or not.
         _filterFileInGridItem.IsVisible = FilterFileInGridRequested is not null;
         _filterFileInGridItem.IsEnabled = hasFile;
+        // NOT gated on hasCommitObject, unlike its neighbours: comparing two images
+        // needs two blobs, and the artificial rows have them (the index copy, the file
+        // on disk) even though they are not commits. What it IS gated on is the byte
+        // probe — the entry only lights up when a side really starts like an image.
+        _compareImagesItem.IsEnabled = hasFile && (_leftIsImage || _rightIsImage);
         _compareHereItem.IsEnabled = hasCommitObject;
         _difftoolItem.IsEnabled = hasCommitObject;
         _compareWorkingDirItem.IsEnabled = hasCommitObject;
@@ -2596,6 +2890,10 @@ public sealed class DiffView : UserControl
         ShowPlaceholder(string.Empty);
         _patchBusy.Show(LoadingCaption());
 
+        // Asked in parallel with the patch, not after it: the answer decides whether the
+        // patch about to arrive is worth reading at all, and for an image it is not.
+        ProbeImageSides(row, _repoPath, token);
+
         _ = Task.Run(async () =>
         {
             try
@@ -2651,6 +2949,11 @@ public sealed class DiffView : UserControl
     // patch the clipboard commands read is deliberately NOT touched here.
     private void ShowPlaceholder(string message)
     {
+        // The image offer describes the file whose patch is being replaced, so it goes
+        // with it — every path that empties the pane (a new selection, a new file list,
+        // a repository switch, an error) passes through here, which is why the reset
+        // lives in this method and not in each of them.
+        ClearImageOffer();
         _hunkLines.Clear();
         _hunkIndex = -1;
         _searchMatches.Clear();
@@ -2658,6 +2961,7 @@ public sealed class DiffView : UserControl
         _matchesTruncated = false;
         _searchColorizer.SetMatches([]);
         _colorizer.Invalidate();
+        _inlineDiff.Invalidate();
         _editor.Document = new TextDocument(message);
     }
 
@@ -2678,8 +2982,10 @@ public sealed class DiffView : UserControl
         _currentDiffText = diffText;
 
         // The block-comment table the colorizer keeps is indexed by line number,
-        // and those now mean something else.
+        // and those now mean something else — and so are the inline renderer's
+        // pairing map and span cache.
         _colorizer.Invalidate();
+        _inlineDiff.Invalidate();
 
         _editor.Document = new TextDocument(diffText);
         _editor.CaretOffset = 0;

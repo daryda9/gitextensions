@@ -111,6 +111,13 @@ public sealed class DiffPrefs
     /// <summary><see cref="DiffViewerOptions.SyntaxHighlighting"/>.</summary>
     public bool SyntaxHighlighting { get; set; }
 
+    /// <summary>
+    ///  <see cref="DiffViewerOptions.InlineDiff"/> — the <c>a|b</c> intra-line marks.
+    ///  Defaults to <see langword="true"/> to match that property's own default, per the
+    ///  rule stated on this class: this record is also what a first run writes.
+    /// </summary>
+    public bool InlineDiff { get; set; } = true;
+
     /// <summary><see cref="DiffDisplayOptions.EncodingName"/>.</summary>
     public string EncodingName { get; set; } = DiffTextService.DefaultEncodingName;
 
