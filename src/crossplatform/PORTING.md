@@ -3418,6 +3418,46 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M183 (2026-08-13, `62aac6bcc`) — un pull che deve fondere non aspetta più un editor
+
+Segnalato: **Pull - merge** restava su «Running…» a lungo, mostrando una riga storpiata
+(`B the commit.ing with '#' will be ignored…`) che era il **template del messaggio di merge** di git.
+Facendo Abort e poi **Continue** dal banner, il merge riusciva subito.
+
+**Causa.** git decide di aprire `core.editor` quando stdin e stdout sono **lo stesso terminale**
+(`builtin/merge.c`, `default_edit_option`) — ed è esattamente la forma della finestra di processo, che
+gira i comandi interattivi su una **PTY** (`GitProcessDialog.RunStreamingAsync` con `interactive: true`
+→ `GitStreamRunner.RunOnPty`). git credeva quindi che ci fosse un umano davanti a un terminale e
+avviava un editor a schermo intero, le cui sequenze di controllo finivano in una casella di testo che
+terminale non è: illeggibile e senza via d'uscita. Il merge era **già riuscito**, ed è per questo che
+Continue lo chiudeva: quel percorso la trappola la conosceva già (`MergeSessionService` la documenta).
+
+**Correzione**: `--no-edit` di `pull`, non `GIT_EDITOR=true`. Motivo, scritto nel commento: il flag si
+vede nella casella «Command to be executed», e un messaggio di merge che l'utente non ha potuto
+scrivere è una decisione che la riga di comando deve **confessare**. La variabile d'ambiente resta lo
+strumento per i comandi che un flag equivalente **non ce l'hanno** (`merge --continue`,
+`rebase --continue`). Un pull **con conflitti** non cambia: git si ferma prima di preparare qualsiasi
+messaggio, e Continue continua a chiudere il lavoro.
+
+**Audit di tutti i comandi che possono raggiungere `core.editor`** — `merge`, `merge --continue`,
+`rebase -i` e le sue continuazioni, `commit`/`--amend`, `revert`, `cherry-pick`, `tag -a`, `notes`,
+`am`: erano **già** tutti esplicitamente senza editor (`--no-edit`, `-F <file>`, `-m`, `GIT_EDITOR=true`
+o editor scriptato). `pull` era l'unico buco.
+
+**Regola da tenere** (il commento del codice rimanda a un `NOTES.md` che non esiste, quindi sta qui):
+*un comando lanciato sulla PTY deve essere esplicitamente privo di editor*. Un comando nuovo con
+`interactive: true` che git possa accoppiare a un editor eredita la stessa trappola.
+
+**Scoperto e non corretto, di proposito**: la finestra di processo **non può accorgersi** di essere
+bloccata su un editor — vede solo byte dalla PTY e l'uscita del processo, e un editor appeso è
+indistinguibile da un clone lento. Nessuna euristica: il difetto vero era che l'editor partisse.
+
+**Riprodotto prima, verificato dopo**: blocco riprodotto a schermo con `nano` vivo su `MERGE_MSG`, poi
+pull che si chiude da solo («Merge made by the 'ort' strategy», commit di merge con due genitori).
+Riprovati conflitto (si ferma, banner, Continue chiude), fast-forward e «Already up to date»: invariati.
+Trappola dell'ambiente da ricordare: la shell degli agent esporta `GIT_EDITOR=true`, che **mascherava
+il difetto** — le prove vanno fatte con `env -u GIT_EDITOR`.
+
 ## M182 (2026-08-13, `1a6eff3f2`) — quello che git ha fuso da solo si vede, e si può scavalcare (feature INEDITA)
 
 Segnalato dall'utente con lo screenshot di kdiff3 («totale 7, automaticamente risolti 6, non risolti 1»):
