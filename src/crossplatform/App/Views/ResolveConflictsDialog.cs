@@ -428,10 +428,19 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
             Content = new TextBlock { Text = T("Reuse recorded conflict resolutions (rerere)") },
             Foreground = text,
         };
+        // Deliberately says "the same conflict" and then spells out what that means.
+        // Measured on git 2.43: rebasing three commits that each rewrite the SAME line
+        // replays nothing, because after the first step your resolution becomes the new
+        // "ours" and every later step is a conflict git has never seen. What does get
+        // replayed is the same conflict recurring across commits — the same hunk hit by
+        // several commits of the series, the same edit repeated over many files, or the
+        // whole rebase run a second time after an abort. Promising "resolve it once" for
+        // any long rebase would be a promise git does not keep.
         ToolTip.SetTip(_rerereEnabled, T(
-            "git remembers how you resolve a conflict and replays that resolution the next time "
-            + "the same conflict appears — on a long rebase, the same hunk is otherwise resolved "
-            + "once per commit."));
+            "git remembers how you resolve a conflict and replays that resolution wherever the "
+            + "identical conflict turns up again — later commits of a rebase, other files with the "
+            + "same clash, or the same rebase run again after an abort. A conflict whose two sides "
+            + "are not exactly the ones already recorded is still presented to you."));
         _rerereEnabled.Click += (_, _) => _ = SetRerereEnabledAsync(_rerereEnabled.IsChecked == true);
 
         _rerereAutoUpdate = new CheckBox
@@ -442,7 +451,8 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         ToolTip.SetTip(_rerereAutoUpdate, T(
             "rerere.autoupdate. Off, a replayed resolution is written into the file but left "
             + "unmerged, so you still have to look at it before staging — that review is the last "
-            + "moment a wrongly remembered resolution can be caught. On, it is staged for you."));
+            + "moment a wrongly remembered resolution can be caught. On, it is staged for you; on a "
+            + "rebase that check is skipped once per commit, which is where it adds up."));
         _rerereAutoUpdate.Click += (_, _) => _ = SetRerereAutoUpdateAsync(_rerereAutoUpdate.IsChecked == true);
 
         _rerereCache = new Button
@@ -665,7 +675,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
                 service.GetMergeToolName(repoPath),
                 service.InTheMiddleOfRebase(repoPath),
                 snapshot,
-                ScanReplayed(repoPath, snapshot, [.. entries.Select(e => e.Path)]));
+                ScanReplayed(repoPath, snapshot, entries));
         });
 
         ResolveConflictsDialog dialog = new(repoPath, conflicts, tool, inRebase, rerereState, replayed);
@@ -771,8 +781,10 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         // for an add/add there is nothing to revert to.
         _ctxChooseBase.IsEnabled = !_busy && selected.Count > 0 && selected.All(e => e.Base.Exists);
 
-        // Forget is offered only while the index is unmerged: with no conflicted merge
-        // in flight git accepts the command, reports success, and the resolution comes
+        // Forget is offered only while the index is unmerged — which covers a merge and
+        // a stopped rebase alike, since _conflicts is filled from the unmerged index and
+        // says nothing about which operation put it there. With nothing conflicted in
+        // flight git accepts the command, reports success, and the resolution comes
         // straight back — the work tree still holds the resolved text and rerere
         // re-records it. An action that silently undoes itself must not be reachable.
         _ctxForget.IsEnabled = !_busy
@@ -939,10 +951,16 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _ctxChooseBase.Click += (_, _) => _ = ChooseSideAsync(ConflictChoice.Base);
 
         _ctxForget.Header = T("Forget the recorded resolution…");
+        // "conflict on the table" rather than "merge": this same dialog is what a
+        // stopped rebase shows, and forget behaves there exactly as it does in a merge
+        // (verified mid-rebase: postimage dropped, the path back in status/remaining,
+        // MERGE_RR repopulated). Naming only merges would read as "not for you" to the
+        // user who needs it most.
         ToolTip.SetTip(_ctxForget, T(
             "Drops what rerere remembers for this file and puts the original conflict markers "
-            + "back into it. Offered only while a conflicted merge is in progress: outside one "
-            + "the file still holds the resolved text and rerere records it straight back."));
+            + "back into it. Offered only while there is a conflict on the table — a merge or a "
+            + "stopped rebase: with none, the file still holds the resolved text and rerere "
+            + "records it straight back."));
         _ctxForget.Click += (_, _) => _ = ForgetSelectedAsync();
 
         _ctxOpen.Header = T("FormResolveConflicts/openToolStripMenuItem.Text", "Open");
@@ -1624,10 +1642,25 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         {
             _rerereBannerTitle.Text = configuration.Activation == RerereActivation.EnabledByCacheDirectory
                 ? T("rerere is on because this repository has an rr-cache directory — nothing in your configuration turns it on.")
-                : T("rerere is on: git is recording how you resolve these conflicts and will replay it next time.");
+                : _inRebase
+                    // During a rebase the sentence has to be about the commit, not about
+                    // "next time": the replay is evaluated again at every --continue, and
+                    // it fires only where the conflict comes back in the same shape.
+                    ? T("rerere is on: git records how you resolve this commit's conflicts and replays them at "
+                        + "each further step of the rebase where the same conflict comes back.")
+                    : T("rerere is on: git is recording how you resolve these conflicts and will replay it next time.");
 
             string autoUpdate = configuration.AutoUpdateEffective
-                ? T("Replayed resolutions are staged for you (rerere.autoupdate), so a replayed conflict never comes back for review.")
+                ? _inRebase
+                    // Measured on git 2.43: with autoupdate on, a replayed step is staged
+                    // and the rebase STILL stops on that commit — but with nothing unmerged
+                    // left, so it never reaches this window at all and the only trace is a
+                    // staged change nobody asked to see. Claiming "it never stops" would be
+                    // wrong; saying nothing would hide the one step that is never reviewed.
+                    ? T("Replayed resolutions are staged for you (rerere.autoupdate). On a rebase that skips the "
+                        + "review once per commit: a step resolved entirely by rerere leaves nothing unmerged, so "
+                        + "it never opens this window and goes on with its resolution staged unseen.")
+                    : T("Replayed resolutions are staged for you (rerere.autoupdate), so a replayed conflict never comes back for review.")
                 : T("Replayed resolutions are written into the file but left unstaged, so you still get to check them before committing.");
 
             _rerereBannerDetail.Text = configuration.Activation == RerereActivation.EnabledByCacheDirectory
@@ -1642,10 +1675,18 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _rerereReplayed.IsVisible = _rerereReplayedPaths.Count > 0;
         if (_rerereReplayedPaths.Count > 0)
         {
+            // Says "in this step" during a rebase because that is the whole of the
+            // promise: the replay covers the commit git is stopped on, and the next
+            // --continue can stop again on the very same file.
             _rerereReplayed.Text = string.Format(
-                T("rerere has already done these for you — {0} — and no conflict markers are left in them. "
-                  + "You do not have to redo that work, but review it before staging: the replay is silent, "
-                  + "and a resolution remembered wrongly looks exactly like a clean merge."),
+                _inRebase
+                    ? T("rerere has already done these for you in this step of the rebase — {0} — and no "
+                        + "conflict markers are left in them. You do not have to redo that work, but review it "
+                        + "before staging: the replay is silent, and a resolution remembered wrongly looks "
+                        + "exactly like a clean merge.")
+                    : T("rerere has already done these for you — {0} — and no conflict markers are left in them. "
+                        + "You do not have to redo that work, but review it before staging: the replay is silent, "
+                        + "and a resolution remembered wrongly looks exactly like a clean merge."),
                 string.Join(", ", _rerereReplayedPaths));
         }
 
@@ -1668,8 +1709,8 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     }
 
     /// <summary>
-    ///  The paths rerere has already resolved in this merge, which is harder to answer
-    ///  than it looks.
+    ///  The paths rerere has already resolved in the operation in progress — merge or
+    ///  rebase, the answer is the same — which is harder to give than it looks.
     ///
     ///  <para><b>git stops saying so the moment it is done.</b> The documented answer is
     ///  "<c>rerere status</c> minus <c>rerere remaining</c>", and it works only while a
@@ -1687,11 +1728,26 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     ///  who hand-edited the file without staging it lands in the same state and the
     ///  advice ("review it before staging") is right either way. Only asked when rerere
     ///  is active, so a repository without rerere never sees this line.</para>
+    ///
+    ///  <para><b>And the eligibility filter is what stops it lying.</b> "unmerged and no
+    ///  markers" is also true of conflicts rerere never touches, and those are not rare
+    ///  in a rebase of real work. Measured on git 2.43, mid-rebase: a <b>binary</b>
+    ///  content conflict sits at <c>UU</c> with git's own side in the work tree, not one
+    ///  marker in it, and it is absent from <c>rerere remaining</c> — rerere ignores
+    ///  binaries entirely. A <b>mode-only</b> add/add (same blob <c>100755</c> against
+    ///  <c>100644</c>) is <c>AA</c> with perfectly clean text and is likewise absent from
+    ///  both <c>status</c> and <c>remaining</c>. Without this filter both were announced
+    ///  as "rerere has already done these for you", which is the worst kind of wrong: it
+    ///  tells the user to stop worrying about a conflict nobody has resolved. So a path
+    ///  only qualifies when rerere <i>could</i> have produced it — two existing text
+    ///  sides whose content actually differs, no gitlink — and anything else is left in
+    ///  the list where the user will meet it. (A modify/delete needs no rule: git does
+    ///  report it in <c>remaining</c>, verified.)</para>
     /// </summary>
     private static IReadOnlyList<string> ScanReplayed(
         string repoPath,
         RerereSnapshot snapshot,
-        IReadOnlyList<string> conflictPaths)
+        IReadOnlyList<ConflictEntry> conflicts)
     {
         if (!snapshot.Configuration.IsActive)
         {
@@ -1700,16 +1756,21 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
         HashSet<string> remaining = new(snapshot.RemainingPaths, StringComparer.Ordinal);
         List<string> replayed = [];
-        foreach (string path in conflictPaths)
+        foreach (ConflictEntry entry in conflicts)
         {
             // "remaining" is authoritative when it has something to say: git means
             // exactly "the user still has to open this one".
-            if (remaining.Contains(path) || !LooksResolved(Path.Combine(repoPath, path)))
+            if (remaining.Contains(entry.Path) || !CouldRerereHaveResolved(entry))
             {
                 continue;
             }
 
-            replayed.Add(path);
+            if (!LooksResolved(Path.Combine(repoPath, entry.Path)))
+            {
+                continue;
+            }
+
+            replayed.Add(entry.Path);
         }
 
         replayed.Sort(StringComparer.Ordinal);
@@ -1717,10 +1778,29 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     }
 
     /// <summary>
-    ///  True when the file exists and holds no conflict markers. Streamed line by line
-    ///  and stopped at the first marker: a conflicted file can be arbitrarily large and
-    ///  this runs for every path in the list. A binary or unreadable file answers false,
-    ///  which is the safe direction — it only means the banner stays quiet about it.
+    ///  Whether a conflict is of the kind rerere is even able to resolve, from the index
+    ///  alone. rerere works on the text of a three-way content conflict: it has nothing
+    ///  to say about a gitlink (the dispute is a commit id), about a side that does not
+    ///  exist (modify/delete), or about a conflict where the two blobs are identical and
+    ///  only the file mode differs — all three were observed unmerged and marker-free
+    ///  mid-rebase, which is exactly the shape of a replayed resolution.
+    /// </summary>
+    private static bool CouldRerereHaveResolved(ConflictEntry entry)
+        => !entry.IsSubmodule
+           && entry.Ours.Exists
+           && entry.Theirs.Exists
+           && entry.Ours.Sha != entry.Theirs.Sha;
+
+    /// <summary>
+    ///  True when the file exists, is text, and holds no conflict markers. Read in
+    ///  blocks and stopped at the first marker or the first NUL: a conflicted file can
+    ///  be arbitrarily large and this runs for every path in the list.
+    ///
+    ///  <para>The NUL check is not decoration. A binary file trivially contains no
+    ///  marker line, so a line-based reading calls every binary conflict "resolved" —
+    ///  and git leaves binary conflicts in the work tree without markers by design. An
+    ///  unreadable file answers false too, which is the safe direction: it only means
+    ///  the banner stays quiet about that path.</para>
     /// </summary>
     private static bool LooksResolved(string fullPath)
     {
@@ -1731,8 +1811,15 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
                 return false;
             }
 
-            foreach (string line in File.ReadLines(fullPath))
+            using FileStream stream = File.OpenRead(fullPath);
+            using StreamReader reader = new(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            while (reader.ReadLine() is string line)
             {
+                if (line.Contains('\0'))
+                {
+                    return false;
+                }
+
                 if (line.StartsWith("<<<<<<<", StringComparison.Ordinal)
                     || line.StartsWith(">>>>>>>", StringComparison.Ordinal))
                 {
@@ -1754,13 +1841,13 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
     private async Task RefreshRerereAsync()
     {
-        List<string> paths = [.. _conflicts.Select(c => c.Path)];
+        List<ConflictEntry> entries = [.. _conflicts];
         try
         {
             (_rerereState, _rerereReplayedPaths) = await Task.Run(() =>
             {
                 RerereSnapshot snapshot = _rerere.GetSnapshot(_repoPath);
-                return (snapshot, ScanReplayed(_repoPath, snapshot, paths));
+                return (snapshot, ScanReplayed(_repoPath, snapshot, entries));
             });
         }
         catch (Exception ex)
@@ -1851,7 +1938,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
     /// <summary>
     ///  The safety valve: drops the remembered resolution for the selected path and
-    ///  restores the conflict as the merge produced it.
+    ///  restores the conflict as the merge — or the rebase step — produced it.
     ///
     ///  <para>Confirmed explicitly, because it throws away the current content of the
     ///  file, and re-checked afterwards against the cache: <c>git rerere forget</c> on a
@@ -1929,11 +2016,15 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         }
         else
         {
-            // git said nothing and nothing changed: there was no stored resolution for
-            // this path. Reporting the success alone would have been a lie by omission.
+            // Nothing changed: there was no stored resolution for this path. Reporting
+            // the success alone would have been a lie by omission — and git's exit code
+            // is no help, measured mid-rebase it printed "no remembered resolution for
+            // 'f.txt'" on stderr and still exited 0, so that line is carried through
+            // rather than replaced by a guess.
             _status.Text = string.Format(
-                T("git reported no error, but nothing left the cache: rerere had no recorded resolution for {0}."),
-                entry.Path);
+                T("Nothing left the cache: rerere had no recorded resolution for {0}. {1}"),
+                entry.Path,
+                outcome.result.Message).TrimEnd();
         }
 
         await ReloadAsync();

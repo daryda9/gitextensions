@@ -149,11 +149,32 @@ public sealed record RerereSnapshot(
 ///  <c>git rerere</c> — <i>reuse recorded resolution</i> — exposed as a service.
 ///
 ///  <para><b>Why this deserves a UI at all.</b> rerere remembers how a conflict was resolved and
-///  replays that resolution the next time the same conflict shape appears. On a long rebase,
-///  where the same hunk collides against every commit in the series, that is the difference
-///  between resolving one conflict and resolving it thirty times. It has shipped with git for
-///  two decades, it is off by default, and essentially no graphical client surfaces it — so the
-///  feature that most reduces the cost of a hard rebase is the one nobody knows exists.</para>
+///  replays that resolution the next time the same conflict <i>shape</i> appears — the same two
+///  sides against the same base, wherever they turn up. That is the difference between resolving
+///  one conflict and resolving it thirty times. It has shipped with git for two decades, it is
+///  off by default, and essentially no graphical client surfaces it — so the feature that most
+///  reduces the cost of a hard rebase is the one nobody knows exists.</para>
+///
+///  <para><b>What "the same shape" excludes, because the folklore gets it wrong.</b> "Rebase a
+///  branch whose three commits all rewrite the same line" is the example everyone gives, and it
+///  is the one case where rerere does <b>nothing</b>: measured on git 2.43, after resolving step
+///  one your resolution becomes the new <i>ours</i>, so step two is <c>RESOLVED</c> vs
+///  <c>TOPIC-B</c> — a conflict git has never seen, new preimage, no replay, three times over.
+///  The replay fires where the conflict genuinely recurs: several commits of the series hitting
+///  the same hunk with the same content, one edit repeated across many files (verified: three
+///  files with the identical clash, resolved once at step one and replayed at steps two and
+///  three), or the same rebase run again after an abort. The UI must not promise more.</para>
+///
+///  <para><b>Rebase behaves like merge everywhere this service looks.</b> Measured mid-rebase on
+///  git 2.43: <c>rev-parse --absolute-git-dir</c> still answers the ordinary git dir (the rebase
+///  state lives in <c>rebase-merge/</c> below it); <c>MERGE_RR</c> exists and holds the same
+///  <c>&lt;id&gt;\t&lt;path&gt;\0</c> records, rewritten at every stop; <c>status</c>,
+///  <c>remaining</c> and <c>diff</c> answer exactly as in a merge, including going all-empty with
+///  <c>MERGE_RR</c> truncated to zero bytes after a complete replay while the index is still
+///  unmerged; <c>forget</c> behaves identically; and <c>rerere.autoupdate</c> really does stage
+///  the replayed path (<c>ls-files -u</c> empty, path at <c>M </c>) — the rebase still stops on
+///  that commit, only with nothing left unmerged to show. So no method here needs a rebase
+///  branch; what needed correcting was the wording around them.</para>
 ///
 ///  <para><b>Why it is dangerous.</b> The replay is silent and unconditional. A resolution
 ///  recorded wrongly once is reapplied to every future occurrence of that conflict, and with
@@ -266,7 +287,8 @@ public sealed class RerereService
     ///  resolved text, with no markers anywhere in it. What <c>forget</c> guarantees is that the
     ///  conflict is armed again, not that the file on disk is rewritten.</para>
     ///
-    ///  <para><b>Offer it only during a conflicted merge.</b> git will run it outside one, but the
+    ///  <para><b>Offer it only while a conflict is in flight</b> — a merge or a stopped rebase,
+    ///  which behave the same here. git will run it outside one, but the
     ///  result does not stick, and the way it fails is nasty. <c>forget</c> restores the conflict
     ///  markers into the <i>work tree</i>; with a merge in progress that is exactly what the user
     ///  wants to see. With no merge in progress there is nothing to restore, the file keeps the
@@ -275,10 +297,13 @@ public sealed class RerereService
     ///  unrelated <c>git rerere forget</c> later the identical <c>postimage</c> was back. So the
     ///  user presses "forget", sees a success, and the wrong resolution survives.</para>
     ///
-    ///  <para>It also says nothing when the path has no recorded resolution:
-    ///  <c>git rerere forget nosuch.txt</c> exits 0 in silence. A true result is therefore not
-    ///  proof that anything was forgotten — the caller should re-list the cache and show the user
-    ///  what actually changed.</para>
+    ///  <para>It also says nothing useful when the path has no recorded resolution:
+    ///  <c>git rerere forget nosuch.txt</c> exits 0 in silence, and for a path whose current
+    ///  conflict shape has only a preimage it prints <c>error: no remembered resolution for
+    ///  'f.txt'</c> on stderr and <b>still exits 0</b> (measured mid-rebase). A true result is
+    ///  therefore not proof that anything was forgotten — the caller should re-list the cache,
+    ///  show the user what actually changed, and pass this message through rather than
+    ///  translating a zero exit code into "done".</para>
     /// </summary>
     public RerereActionResult Forget(string repoPath, IReadOnlyList<string> paths)
     {

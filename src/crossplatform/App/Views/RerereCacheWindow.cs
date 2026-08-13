@@ -26,10 +26,15 @@ namespace GitExtensions.Avalonia.Views;
 ///  list shows them one per row and never collapses them by hash.</para>
 ///
 ///  <para><b>The hash becomes a name where it can.</b> <c>MERGE_RR</c> maps the
-///  conflict id of the merge <i>currently in flight</i> to its path, so during a
-///  conflicted merge the rows involved say which file they belong to. Outside a merge
-///  that map is empty and the id is all git itself knows — the cache genuinely does
-///  not record which path produced an entry.</para>
+///  conflict id of the operation <i>currently in flight</i> to its path, so while a
+///  conflict is on the table the rows involved say which file they belong to. Despite
+///  the name this is not merge-only: verified mid-rebase, git writes and rewrites the
+///  same file at every stopped commit. With nothing in flight the map is empty and the
+///  id is all git itself knows — the cache genuinely does not record which path
+///  produced an entry. Note the one case where the map goes empty <i>during</i> a
+///  conflict: a step resolved entirely from the cache leaves <c>MERGE_RR</c> truncated
+///  to zero bytes, so the rows lose their names exactly when a resolution was replayed
+///  unseen.</para>
 ///
 ///  <para>Every git and filesystem call goes through <see cref="Task.Run"/>: the
 ///  service methods block by contract.</para>
