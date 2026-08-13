@@ -1274,6 +1274,11 @@ public sealed class MainWindow : Theming.ZoomWindow
         // Safe to wire now that the grid guards against rebind re-entrancy (0.19).
         _diff.FilterFileInGridRequested +=
             path => _revisions.ApplyRevisionFilter(_revisions.CurrentFilter with { PathFilter = path });
+        // The pickaxe goes straight to the grid, like the path filter above: the grid
+        // owns the quick filter box and drops empty text itself, so there is nothing
+        // for the host to validate. No repository guard either — the menu entry that
+        // raises this only exists while a diff is on screen, which implies a repo.
+        _diff.SearchDiffContentRequested += text => _revisions.SearchDiffContent(text);
         // Same two jumps from the file tree, now that it is a real tree.
         _fileTree.BlameRequested += path => ShowInBottom(_blameTab, () => _blame.ShowBlame(_repoPath!, path));
         _fileTree.FileHistoryRequested +=

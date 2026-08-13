@@ -126,6 +126,7 @@ public sealed class DiffView : UserControl
     private readonly MenuItem _compareWorkingDirItem;
     private readonly MenuItem _copyDiffItem;
     private readonly MenuItem _selectAllCopyItem;
+    private readonly MenuItem _searchHistoryItem;
     private readonly MenuItem _openWorkingFileItem;
     private readonly MenuItem _openRevisionFileItem;
     private readonly MenuItem _showInFolderItem;
@@ -374,12 +375,23 @@ public sealed class DiffView : UserControl
         _copyOldVersionItem = new MenuItem();
         _copyOldVersionItem.Click += (_, _) => CopyFileVersion(newVersion: false);
 
+        // "Which commit touched this text" asked from where the text is: the
+        // selection goes to the revision grid as a pickaxe search.
+        _searchHistoryItem = new MenuItem();
+        _searchHistoryItem.Click += (_, _) => SearchHistoryForSelection();
+
+        // Hidden together with the entry it introduces, so a menu without a usable
+        // selection does not show two rules with nothing between them.
+        Separator searchHistorySeparator = new();
+
         ContextMenu diffMenu = new()
         {
             ItemsSource = new Control[]
             {
                 _copyDiffItem,
                 _selectAllCopyItem,
+                searchHistorySeparator,
+                _searchHistoryItem,
                 new Separator(),
                 _copyNewVersionItem,
                 _copyOldVersionItem,
@@ -390,6 +402,18 @@ public sealed class DiffView : UserControl
             bool hasFile = _files.SelectedFile is not null && _repoPath is not null && _commitHash is not null;
             _copyNewVersionItem.IsEnabled = hasFile;
             _copyOldVersionItem.IsEnabled = hasFile;
+
+            // Re-worded, not rebuilt: the entry echoes the text it would search, and
+            // it is HIDDEN rather than disabled when there is nothing usable to
+            // search — a greyed "Search history for this text" over an empty
+            // selection is an offer the pane cannot explain.
+            string selected = SelectedPickaxeText();
+            _searchHistoryItem.IsVisible = selected.Length > 0;
+            searchHistorySeparator.IsVisible = selected.Length > 0;
+            if (selected.Length > 0)
+            {
+                _searchHistoryItem.Header = SearchHistoryHeader(selected, SelectionSpansMoreLines());
+            }
         };
         // On the TextArea, not on the TextEditor: the editor's own template puts a
         // ScrollViewer in between, and a menu on the outer control never sees the
@@ -904,6 +928,10 @@ public sealed class DiffView : UserControl
         _copyDiffItem.Header = T("Copy diff");
         _selectAllCopyItem.Header = T("Select all + copy");
 
+        // Replaced on Opening by the same sentence with the selected text in it; this
+        // is only what the entry says before it has ever been shown.
+        _searchHistoryItem.Header = T("Search history for this text");
+
         _openWorkingFileItem.Header = T(
             "FileStatusList/tsmiOpenWorkingDirectoryFile.Text", "Open working directory file");
         _openRevisionFileItem.Header = T(
@@ -1122,6 +1150,122 @@ public sealed class DiffView : UserControl
     ///  so it can be assigned verbatim.
     /// </summary>
     public event Action<string>? FilterFileInGridRequested;
+
+    /// <summary>
+    ///  Raised with ONE line of literal text when the user picks "Search history for
+    ///  this text": the host is expected to hand it to
+    ///  <c>RevisionGridView.SearchDiffContent</c>, which arms the literal pickaxe
+    ///  (<c>git log -S</c>) on the revision grid.
+    ///
+    ///  <para>Literal, never a pattern: what travels here is selected source code,
+    ///  and <c>-G</c> would read its brackets, dots and asterisks as a regex — a
+    ///  silently wrong result far more often than an intended one.</para>
+    /// </summary>
+    public event Action<string>? SearchDiffContentRequested;
+
+    // The longest echo of the selected text a menu entry may carry. A selection can
+    // be a whole minified line; past this the entry would set the popup's width and
+    // push everything else off screen.
+    private const int SearchHistoryEchoLength = 48;
+
+    /// <summary>
+    ///  The one line of diff text a pickaxe search would be given, or an empty
+    ///  string when the selection cannot serve as one.
+    ///
+    ///  <para>Only the FIRST non-blank line of the selection is used. <c>-S</c>
+    ///  compares its argument against the blobs, so a multi-line value would have to
+    ///  reproduce the file's indentation and line endings exactly to hit anything —
+    ///  it would silently return nothing — and the grid's quick box is single-line
+    ///  besides. The menu entry echoes the line it is going to search, so the
+    ///  narrowing is on screen rather than implied.</para>
+    ///
+    ///  <para>The leading <c>+</c>/<c>-</c>/space of a diff line is dropped when the
+    ///  selection starts at the very beginning of a line: that column belongs to the
+    ///  patch format, not to the file, and searching for "+    return x;" finds
+    ///  nothing anywhere.</para>
+    /// </summary>
+    private string SelectedPickaxeText()
+    {
+        string selection = _editor.SelectedText;
+        if (selection.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        // Only the first line of the selection can begin mid-line; every later one
+        // starts at column 1 and therefore carries the patch marker.
+        bool atLineStart = _editor.Document.GetLocation(_editor.SelectionStart).Column == 1;
+
+        foreach (string raw in selection.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            if (atLineStart && line.Length > 0 && line[0] is '+' or '-' or ' ')
+            {
+                line = line[1..];
+            }
+
+            atLineStart = true;
+
+            line = line.Trim();
+            if (line.Length > 0)
+            {
+                return line;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    // The entry's label: plain words plus the text it will actually search, elided
+    // to a length a popup can carry (see SearchHistoryEchoLength).
+    //
+    // The underscores are DOUBLED: a menu header reads "_" as the access-key marker
+    // and eats it, so a header echoing SECRET_TOKEN showed "SECRETTOKEN" — text the
+    // user never selected, in the one place whose whole job is to say what will be
+    // searched. Doubling is Avalonia's escape for a literal underscore.
+    private static string SearchHistoryHeader(string text, bool firstLineOnly)
+    {
+        string echo = (text.Length > SearchHistoryEchoLength ? text[..SearchHistoryEchoLength] + "…" : text)
+            .Replace("_", "__");
+
+        // Said out loud rather than left to be noticed: the selection covered more
+        // lines than the search will, and a result set narrower than the user's
+        // selection would otherwise look like a bug.
+        return firstLineOnly
+            ? string.Format(T("Search history for “{0}” (first line)"), echo)
+            : string.Format(T("Search history for “{0}”"), echo);
+    }
+
+    // True when the selection carries a second non-blank line, i.e. more than
+    // SelectedPickaxeText is going to search.
+    private bool SelectionSpansMoreLines()
+    {
+        int lines = 0;
+        foreach (string raw in _editor.SelectedText.Split('\n'))
+        {
+            if (raw.Trim().Length > 0 && ++lines > 1)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Hands the selected line to the host as a literal pickaxe search. Posted for
+    // the same reason FilterSelectedFileInGrid posts: the handler reloads the
+    // revision grid, which is not work to start while the context menu's pointer
+    // event is still unwinding.
+    private void SearchHistoryForSelection()
+    {
+        string text = SelectedPickaxeText();
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() => SearchDiffContentRequested?.Invoke(text));
+    }
 
     /// <summary>
     ///  Emits the selected file's repo-relative path as a revision-grid path

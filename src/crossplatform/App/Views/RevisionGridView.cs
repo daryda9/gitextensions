@@ -152,6 +152,12 @@ public sealed class RevisionGridView : UserControl
     private readonly Button _mruButton;
     private readonly Button _filterTypeButton;
 
+    // The -S/-G sub-choice inside the "Filter type" flyout. Held because it is shown
+    // only while the diff field is the armed one, and the flyout's content is built
+    // once (rebuilding it while it is open would pull the tree out from under the
+    // pointer — see OptionsChanged).
+    private StackPanel? _quickFilterDiffMode;
+
     // Opens the filter dialog; captioned with a funnel so an active filter is
     // visible even before reading the status line.
     private readonly Button _filterButton;
@@ -239,6 +245,11 @@ public sealed class RevisionGridView : UserControl
     // Bumped by every Reload(): a page that completes after a reload (scope change,
     // language switch, another repository) belongs to a dead walk and is discarded.
     private int _loadGeneration;
+
+    // Cancels the walk of the CURRENT generation. Replaced on every restart, so the
+    // pages of one walk share a token and a restart aborts the git process behind
+    // the walk it replaces instead of merely ignoring its result (see LoadPage).
+    private CancellationTokenSource? _loadCts;
 
     // The accumulated pages exactly as git returned them, WITHOUT graph geometry.
     // The DAG is rebuilt from this whole list on every append (off the UI thread),
@@ -1854,6 +1865,25 @@ public sealed class RevisionGridView : UserControl
             _highlightAnchor = null;
         }
 
+        if (restart)
+        {
+            // Stop the walk that is still running. The generation counter above already
+            // makes its result unusable, but on its own it lets the superseded `git log`
+            // read the history to the end for nobody — and a pickaxe (-S/-G) walk over a
+            // large repository is exactly the walk that takes minutes, so the user who
+            // narrows the filter to escape it would be waiting behind BOTH.
+            //
+            // The token reaches the process through RevisionService.LoadRevisionPage;
+            // the core's reader observes it between output chunks and kills git when the
+            // process handle is disposed. No machinery of our own beyond the source.
+            CancellationTokenSource? previous = _loadCts;
+            _loadCts = new CancellationTokenSource();
+            previous?.Cancel();
+            previous?.Dispose();
+        }
+
+        CancellationToken cancellation = (_loadCts ??= new CancellationTokenSource()).Token;
+
         int generation = _loadGeneration;
         _loadingPage = true;
 
@@ -1894,7 +1924,8 @@ public sealed class RevisionGridView : UserControl
                     showStashes: showStashes,
                     topoOrder: topoOrder,
                     filter: filter,
-                    authorDateOrder: authorDateOrder);
+                    authorDateOrder: authorDateOrder,
+                    cancellationToken: cancellation);
 
                 // Merge and rebuild the DAG here, still off the UI thread.
                 List<RevisionRow> merged = new(before.Count + page.Rows.Count);
@@ -1971,6 +2002,12 @@ public sealed class RevisionGridView : UserControl
                     ApplyFilterCore(_search.Text, keepViewport);
                     ApplyPendingSelection();
                 });
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by a newer walk, which owns the spinner, the status line
+                // and _loadingPage from the moment it started. Reporting anything here
+                // would overwrite the state of a load that is still running.
             }
             catch (Exception ex)
             {
@@ -2081,13 +2118,27 @@ public sealed class RevisionGridView : UserControl
         => string.Format(T("{0} — press Enter to search git"), QuickFilterFieldLabel);
 
     // The label of the field the quick box searches, on the dropdown button.
+    //
+    // The diff field names WHICH of the two pickaxe questions is armed: -S and -G
+    // do not answer the same one (a commit that only MOVES the line is a -G hit and
+    // not a -S hit), so a box that says merely "Diff contains" would leave the user
+    // reading a result set without knowing which question produced it.
     private string QuickFilterFieldLabel => _quickFilterField switch
     {
         QuickFilterField.Committer => T("FilterToolBar/tsmiCommitterFilter.Text", "Committer"),
         QuickFilterField.Author => T("TranslatedStrings/_author.Text", "Author"),
-        QuickFilterField.DiffContent => T("FilterToolBar/tsmiDiffContainsFilter.Text", "Diff contains"),
+        QuickFilterField.DiffContent => string.Format(
+            T("{0} ({1})"),
+            T("FilterToolBar/tsmiDiffContainsFilter.Text", "Diff contains"),
+            QuickFilterDiffModeLabel),
         _ => T("FilterToolBar/tsmiMessageFilter.Text", "Commit message"),
     };
+
+    // Short name of the armed pickaxe form, for the button and the watermark. Kept
+    // to one word each because it rides inside another label; the flyout carries
+    // the full sentence.
+    private string QuickFilterDiffModeLabel
+        => _gitFilter.DiffContentIsRegex ? T("pattern") : T("text");
 
     // Upstream's "Filter type" dropdown (FilterToolBar.Designer.cs:48-70).
     //
@@ -2123,6 +2174,35 @@ public sealed class RevisionGridView : UserControl
             "revQuickFilterField",
             () => SetQuickFilterField(QuickFilterField.DiffContent)));
 
+        // The -S/-G choice, subordinate to the field it belongs to: indented, and on
+        // screen only while "Diff contains" is the armed field. Kept out of the four
+        // radios above because it is NOT a fifth field — it is which question the
+        // diff field asks — and offering it as a peer would suggest the box can
+        // search something else again.
+        //
+        // The wording is the one RevisionFilter.DiffContent documents, and it is the
+        // difference measured on a repository where a line is added, moved, removed
+        // and re-added: -S skips the commit that only MOVED the line (the number of
+        // occurrences did not change), -G reports it (a removed and an added line
+        // both match). "Contains" would describe neither.
+        _quickFilterDiffMode = new StackPanel
+        {
+            Spacing = 3,
+            Margin = new Thickness(16, 2, 0, 0),
+            IsVisible = _quickFilterField == QuickFilterField.DiffContent,
+        };
+        _quickFilterDiffMode.Children.Add(OptionRadio(
+            OptQuickFilterDiffLiteral,
+            T("The text appears or disappears"),
+            "revQuickFilterDiffMode",
+            () => SetQuickFilterDiffMode(isRegex: false)));
+        _quickFilterDiffMode.Children.Add(OptionRadio(
+            OptQuickFilterDiffRegex,
+            T("An added or removed line matches this pattern"),
+            "revQuickFilterDiffMode",
+            () => SetQuickFilterDiffMode(isRegex: true)));
+        panel.Children.Add(_quickFilterDiffMode);
+
         panel.Children.Add(new TextBlock
         {
             Text = T("Press Enter in the box to search git; typing alone only sifts the rows already loaded."),
@@ -2141,8 +2221,10 @@ public sealed class RevisionGridView : UserControl
 
     // Switches the field the quick box searches. A term already submitted is
     // re-submitted against the new field, so the change is visible at once instead
-    // of waiting for the next Enter.
-    private void SetQuickFilterField(QuickFilterField field)
+    // of waiting for the next Enter — unless the caller is about to submit a term of
+    // its own (resubmit: false), where re-running the OLD term would be a walk whose
+    // result is discarded a moment later.
+    private void SetQuickFilterField(QuickFilterField field, bool resubmit = true)
     {
         if (_quickFilterField == field)
         {
@@ -2152,12 +2234,80 @@ public sealed class RevisionGridView : UserControl
         _quickFilterField = field;
         _filterTypeButton.Content = Chevron(QuickFilterFieldLabel);
         _search.Watermark = QuickFilterWatermark;
+        if (_quickFilterDiffMode is not null)
+        {
+            _quickFilterDiffMode.IsVisible = field == QuickFilterField.DiffContent;
+        }
+
         OptionsChanged();
 
-        if (_submittedQuickText.Length > 0)
+        if (resubmit && _submittedQuickText.Length > 0)
         {
             SubmitQuickFilter(_submittedQuickText);
         }
+    }
+
+    /// <summary>
+    ///  Chooses which pickaxe form the quick box arms: <c>-S</c> (the number of
+    ///  occurrences of the literal text changed) or <c>-G</c> (an added or removed
+    ///  line matches the pattern as a regex).
+    /// </summary>
+    private void SetQuickFilterDiffMode(bool isRegex)
+    {
+        if (_gitFilter.DiffContentIsRegex == isRegex)
+        {
+            return;
+        }
+
+        // Only an ARMED pickaxe has an argument that just changed. With an empty
+        // diff text the flag is nowhere in the command line, and reloading would
+        // re-read the whole history to produce byte-identical rows.
+        bool armed = _gitFilter.DiffContent.Length > 0;
+        ArmQuickFilterDiffMode(isRegex);
+        if (armed)
+        {
+            Reload();
+        }
+    }
+
+    // Stores the pickaxe form and re-reads the two surfaces that name the armed
+    // field (see QuickFilterFieldLabel), WITHOUT restarting the walk — so a caller
+    // that is about to submit a search pays for one walk instead of two.
+    private void ArmQuickFilterDiffMode(bool isRegex)
+    {
+        _gitFilter = _gitFilter with { DiffContentIsRegex = isRegex };
+        _filterTypeButton.Content = Chevron(QuickFilterFieldLabel);
+        _search.Watermark = QuickFilterWatermark;
+        OptionsChanged();
+    }
+
+    /// <summary>
+    ///  Searches the history for <paramref name="text"/> as diff content, the way
+    ///  choosing "Diff contains" in the quick box and pressing Enter would: the
+    ///  LITERAL form (<c>-S</c>) is armed, because the caller (the diff view's
+    ///  "Search history for this text") hands over selected source code, which is a
+    ///  broken regex far more often than an intended one.
+    ///
+    ///  <para>Whitespace-only or empty text is ignored rather than submitted: it
+    ///  would arm a criterion that matches every commit touching any file, i.e. an
+    ///  expensive way to filter nothing.</para>
+    /// </summary>
+    public void SearchDiffContent(string text)
+    {
+        string value = (text ?? string.Empty).Trim();
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        // Neither call reloads: the submit below is the one walk this costs.
+        SetQuickFilterField(QuickFilterField.DiffContent, resubmit: false);
+        ArmQuickFilterDiffMode(isRegex: false);
+
+        // ApplyFilter (not SubmitQuickFilter directly) so the box shows what is being
+        // searched: the criterion is otherwise invisible, and the user would have no
+        // way to see, edit or undo the text a context menu put into git's hands.
+        ApplyFilter(value);
     }
 
     /// <summary>
@@ -3767,6 +3917,11 @@ public sealed class RevisionGridView : UserControl
     public const string OptQuickFilterAuthor = "tsmiAuthorFilter";
     public const string OptQuickFilterDiff = "tsmiDiffContainsFilter";
 
+    // Which pickaxe the diff field arms. Not a fifth field: a sub-choice of
+    // OptQuickFilterDiff, exposed as options so it syncs and persists like the rest.
+    public const string OptQuickFilterDiffLiteral = "tsmiDiffContainsFilterLiteral";
+    public const string OptQuickFilterDiffRegex = "tsmiDiffContainsFilterRegex";
+
     // Sorting.
     public const string OptOrderDefault = "GitDefaultOrder";
     public const string OptOrderAuthorDate = "AuthorDateSort";
@@ -3813,6 +3968,8 @@ public sealed class RevisionGridView : UserControl
         [OptQuickFilterCommitter] = _quickFilterField == QuickFilterField.Committer,
         [OptQuickFilterAuthor] = _quickFilterField == QuickFilterField.Author,
         [OptQuickFilterDiff] = _quickFilterField == QuickFilterField.DiffContent,
+        [OptQuickFilterDiffLiteral] = !_gitFilter.DiffContentIsRegex,
+        [OptQuickFilterDiffRegex] = _gitFilter.DiffContentIsRegex,
     };
 
     /// <summary>
@@ -3854,6 +4011,12 @@ public sealed class RevisionGridView : UserControl
         OptQuickFilterCommitter,
         OptQuickFilterAuthor,
         OptQuickFilterDiff,
+
+        // Same canonical-subset rule: -S (literal) is the fallback, so only the -G
+        // half is stored. The advanced filter's own copy of this flag is not
+        // persisted at all, which is exactly why it is stored here — otherwise the
+        // quick box would come back arming whichever form the last session left.
+        OptQuickFilterDiffRegex,
     ];
 
     /// <summary>
@@ -3984,8 +4147,16 @@ public sealed class RevisionGridView : UserControl
                 : Get(OptQuickFilterAuthor, false) ? QuickFilterField.Author
                 : Get(OptQuickFilterDiff, false) ? QuickFilterField.DiffContent
                 : QuickFilterField.Message;
+
+            // The pickaxe form the diff field arms; nothing is armed yet, so this only
+            // stores the flag (the walk below starts from the restored state anyway).
+            _gitFilter = _gitFilter with { DiffContentIsRegex = Get(OptQuickFilterDiffRegex, false) };
             _filterTypeButton.Content = Chevron(QuickFilterFieldLabel);
             _search.Watermark = QuickFilterWatermark;
+            if (_quickFilterDiffMode is not null)
+            {
+                _quickFilterDiffMode.IsVisible = _quickFilterField == QuickFilterField.DiffContent;
+            }
 
             // The recent searches, ordered by the rank encoded in the key (see
             // PersistedViewOptions) rather than by the file's member order.
