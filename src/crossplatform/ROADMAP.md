@@ -26,6 +26,8 @@ Stato dei riferimenti: agosto 2026. Le fonti sono in fondo.
 
 | | |
 |---|---|
+| **M195** | **Palette dei comandi (§2.1).** `Ctrl+Shift+P`. La lista **è il menu vero**, percorso all'apertura, quindi la disponibilità la decide il menu che già la calcola e non c'è un secondo registro da tenere in vita. Recenti salvati per id non tradotto; comandi non disponibili in grigio, non nascosti. **Deviazione dichiarata**: `QuickPull` passa a `Shift+F8`. |
+| **M194** | **Ricerca nel contenuto dei commit (§2.1).** Il motore pickaxe c'era **già** (`RevisionFilter.DiffContent` → `git log -S`/`-G`): questa voce della roadmap era **vecchia** su questo punto. Aggiunti l'ingresso dal diff («Search history for …» sulla selezione) e la scelta letterale/regex nella tendina della casella di ricerca; più l'annullamento della camminata precedente. |
 | **M181** | **Conflitti non fondibili (§1.3 + §1.5 + §1.6 lato UI).** Selettore del commit per i submodule: mostra cosa c'è *in mezzo* ai due puntatori e sa scegliere anche un **terzo** commit (`update-index --cacheinfo 160000`). Pannello guidato al posto del pulsante grigio: dice in una riga perché il merge a tre vie non si può fare e offre le uscite. rerere a schermo: banner, interruttori, cosa ha già riapplicato, `forget` sotto conferma, finestra della cache. |
 | **M180** | **`git rerere` (§1.6).** Servizio con i fatti misurati su git 2.43: attivo anche per sola esistenza di `rr-cache`, `status`/`remaining`/`diff` vuoti dopo un replay mentre l'indice è ancora unmerged, `forget` che si auto-annulla fuori da un merge. |
 | **M179** | **Diff di immagini (§1.4).** Affiancate, sovrapposte con opacità, differenza per pixel. Immagine riconosciuta **dai byte**, non dall'estensione. |
@@ -71,12 +73,12 @@ feature è ormai attesa da chi arriva da un client moderno: *standard* = la dann
 praticamente tutti, *comune* = la danno diversi, *rara* = la dà qualcuno e
 distingue.
 
-### 2.1 Navigazione e comandi
+### 2.1 Navigazione e comandi — CHIUSA (M194–M195)
 
 | Voce | Diffusione | Cosa dà | Sforzo |
 |---|---|---|---|
-| **Palette dei comandi** (Ctrl+Shift+P, ogni azione git raggiungibile da tastiera) | comune | È la feature che chi ci lavora cita per prima. Sul port è **quasi gratis**: c'è già il registro degli hotkey (`HotkeyService`, i 6 scope di M158) da cui prendere l'elenco delle azioni. | S/M |
-| **Ricerca nel contenuto dei commit** (pickaxe, `-S`/`-G`) con UI decente | rara | `GitGrepService` esiste già; manca l'ingresso dalla griglia. | S |
+| ~~**Palette dei comandi** (Ctrl+Shift+P, ogni azione git raggiungibile da tastiera)~~ — **fatta (M195)** | comune | Consegnata, e **non** come previsto qui: l'elenco non viene dal registro degli hotkey ma dal **menu vero**, percorso all'apertura — `HotkeyService` serve solo per i comandi legati a un tasto e assenti da ogni menu. Scoperto: nessun test automatico, nessun motivo accanto ai comandi grigi, voci di lingua non offerte, stato delle spunte non disegnato. | S/M |
+| ~~**Ricerca nel contenuto dei commit** (pickaxe, `-S`/`-G`) con UI decente~~ — **fatta (M194)** | rara | **Questa voce era già in gran parte realizzata quando è stata scritta**: il pickaxe girava già via `RevisionFilter.DiffContent`, la roadmap era vecchia su questo punto. Non è stata costruita da zero — sono stati aggiunti l'ingresso dal diff, la scelta letterale/regex a schermo e l'annullamento della camminata superata. Scoperto: blame e vista del contenuto non hanno la voce, l'annullamento è osservato solo fra un blocco di output e l'altro. | S |
 
 ### 2.2 Ispezione della storia
 
@@ -169,11 +171,30 @@ nell'impianto.
 
 ## 4. Ordine proposto
 
+Già consegnati, in ordine di consegna:
+
 1. ~~**1.1 difftool interno**~~ — **fatto (M174)**.
-2. **2.1 palette dei comandi** — costo basso, resa altissima, `HotkeyService` è già lì.
-3. **3.1.2 messaggio di commit con IA** — porta dentro tutta l'infrastruttura IA sul caso più innocuo.
-4. **1.2 diff intra-riga** — toglie l'ultimo motivo per aprire un tool esterno.
-5. **3.1.4 spiega il conflitto** — il primo uso dell'IA dove serve davvero.
+2. ~~**1.2 diff intra-riga**~~ — **fatto (M177)**.
+3. ~~**2.1 palette dei comandi**~~ — **fatto (M195)**.
+4. ~~**2.1 ricerca nel contenuto dei commit**~~ — **fatto (M194)**, sopra un motore che c'era già.
+
+Quello che resta, riordinato di conseguenza:
+
+1. **3.1.2 messaggio di commit con IA** — resta il primo passo consigliato del §3.3: porta dentro
+   tutta l'infrastruttura IA sul caso più innocuo.
+2. **2.2 blame in linea nel diff** — `BlameView` c'è, si tratta di portarlo *dentro* il diff; è la
+   voce rimasta con il rapporto resa/rischio migliore.
+3. **3.1.4 spiega il conflitto** — il primo uso dell'IA dove serve davvero, sopra il pannello BASE
+   già costruito.
+4. **2.3 undo timeline sul reflog** — il reflog *è* già la timeline, manca la lettura; niente storage
+   inventato.
+5. **2.3 rebase interattivo per trascinamento** — l'interruzione a metà è già gestita
+   (`RebaseSessionService`) e `--edit-todo` passa già da un editor scriptato (M191), quindi il
+   trascinamento è la parte che manca; resta la voce **grossa** del gruppo.
+6. **2.2 prestazioni del grafo su repo enormi** — **da misurare prima di decidere se esiste un
+   problema**: oggi non c'è nessuna misura, quindi non c'è nessun lavoro giustificato.
+7. **2.4 / 2.5 branch impilati e forge oltre GitHub** — ultimi: molto lavoro, e utili solo a chi sta
+   fuori dal caso d'uso GitHub già coperto (M159).
 
 ---
 

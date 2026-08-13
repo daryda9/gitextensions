@@ -3418,6 +3418,121 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M195 (2026-08-13, `515feaea2`) — una palette dei comandi raggiunge ogni voce di menu da tastiera (feature INEDITA)
+
+Voce §2.1 della roadmap, la prima dell'ordine proposto. **Upstream non ha niente di equivalente**:
+è lavoro **originale** del port, dichiarato come tale nel codice e qui.
+
+**La lista dei comandi non è un secondo registro scritto a mano: è il menu vero**, percorso
+all'apertura della palette. `MainMenu.EnumerateCommands()` cammina `_topLevel` — la struttura logica —
+e **non** `_bar.Items`, perché le voci finite nell'overflow «…» vivono in un altro contenitore e
+partendo dalla barra sarebbero o perse o contate due volte. Ogni foglia invocabile porta nel proprio
+`Tag` un record `Leaf(Id, IconName, Invoke)`; separatori, intestazioni e segnaposto non diventano
+righe. La ragione della scelta è che un elenco parallelo si sfalderebbe alla prima voce aggiunta al
+menu, e che **la disponibilità la decide il menu che già la calcola** (niente repository, niente
+selezione): un comando che non può girare non viene presentato come se potesse.
+
+I comandi legati a un tasto ma **assenti da ogni menu** — la famiglia `Focus*`, `GoToParent`/`GoToChild`,
+le varianti rapide di pull e push — sono elencati sotto un percorso «Keyboard», con l'etichetta
+derivata dal nome dell'enum invece che da una tabella di quarantaquattro voci che nessuno terrebbe
+aggiornata.
+
+**Corrispondenza e ordine.** Punteggio a sottosequenza che preferisce gli inizi di parola, i tratti
+contigui e le occorrenze nell'etichetta della foglia più che nel percorso; i caratteri trovati sono
+disegnati evidenziati. I comandi usati di recente salgono in cima e sono persistiti in
+`ViewPrefsService` (`CommandPaletteMru`, tetto 20) **per id non tradotto**: salvare la didascalia
+perderebbe la lista al primo cambio di lingua.
+
+**Tre decisioni scritte, non implicite.**
+- I comandi non disponibili si vedono **in grigio**, non spariscono: un «Commit» assente non ha
+  risposta che l'utente possa leggere, uno grigio dice almeno che il comando esiste. Invio e clic su
+  una riga grigia non fanno niente.
+- **Esc non può invocare**: la scelta viene scritta **solo** dal percorso di accettazione — la stessa
+  disciplina che era servita al selettore dei conflitti di submodule (M181).
+- La finestra della palette si chiude **prima** che l'azione parta, perché molte azioni aprono una
+  modale di proprietà della finestra principale: eseguirle sotto una palette viva le farebbe nascere
+  con il parent sbagliato e lascerebbe la palette a galleggiarci sopra.
+
+**Difetto trovato e corretto durante la verifica a schermo**: `VirtualizingStackPanel` richiama il
+template con un elemento **null** mentre ricicla i contenitori, e l'app cadeva alla prima lettera
+digitata.
+
+**Deviazione dall'originale, dichiarata.** `Ctrl+Shift+P` nell'upstream è `QuickPull`. La palette se
+lo prende e `QuickPull` passa a **Shift+F8**, accanto al fratello `QuickPullOrFetch` (F8), dove
+`Shift` significa già «la variante rapida» altrove nella stessa tabella: lasciare `QuickPull` su un
+gesto che non avrebbe più potuto vincere gli avrebbe tolto la tastiera in silenzio. Rimosso anche
+l'array `GesturePriority` introdotto per far vincere la palette: senza più collisione fra i valori
+predefiniti non difendeva più niente.
+
+File: `App/Services/CommandPaletteService.cs` (nuovo), `App/Views/CommandPaletteWindow.cs` (nuovo),
+`App/Views/MainMenu.cs`, `App/Services/HotkeyService.cs`, `App/Services/ViewPrefsService.cs`,
+`App/MainWindow.cs`.
+
+**Non coperto**, e non nascosto:
+- accanto a una riga grigia **non c'è il motivo** per cui è grigia: il gating è una serie di chiamate
+  `Enable(...)` senza messaggio, e non ce n'è uno da mostrare;
+- le voci di **Vista → Lingua non sono offerte**: sono dati, non comandi, e cambiare catalogo da una
+  palette che poi continua a mostrare didascalie vecchie non convinceva;
+- le opzioni **a spunta** del menu Vista sono offerte, ma la riga della palette **non disegna lo stato
+  della spunta**: si vede il comando, non se è acceso;
+- **nessun test automatico**: il motore di corrispondenza è isolato apposta in `CommandPaletteService`
+  e sarebbe testabile, ma il progetto di test non è stato toccato.
+
+Verificato a schermo sotto Xvfb con configurazione isolata. Build `--no-incremental`:
+`Avvisi: 0 / Errori: 0`.
+
+## M194 (2026-08-13, `6c59a516b`) — cercare nella storia il testo selezionato nel diff
+
+Voce §2.1 della roadmap («ricerca nel contenuto dei commit», pickaxe). **Il motore c'era già**:
+`RevisionFilter.DiffContent` → `git log -S` / `-G`. Ci si arrivava però **solo** scrivendo nella
+casella di ricerca della griglia, e la casella non dava modo di scegliere fra le due forme — che sono
+due domande diverse.
+
+**La differenza, misurata su un repo usa-e-getta** (aggiunta → spostamento → rimozione → riaggiunta
+della stessa riga):
+
+```
+git log -S'SECRET_TOKEN' --oneline   → 3 commit (c2 add, c4 remove, c5 re-add)
+git log -G'SECRET_TOKEN' --oneline   → 4 commit (gli stessi + c3, che ha solo SPOSTATO la riga)
+```
+
+Quel `c3` è **tutta** la differenza fra le due domande, ed è la ragione di come sono formulate a
+schermo.
+
+**Tre lacune chiuse.**
+
+1. **La scelta letterale/regex esce dal dialogo del filtro avanzato** ed entra nella tendina della
+   casella di ricerca della griglia, visibile **solo** mentre «Diff contains» è armato: non è un
+   quinto campo, è **quale domanda fa** quel campo. Il pulsante e il segnaposto dicono ora
+   `Diff contains (text)` oppure `Diff contains (pattern)`, così la forma armata si legge senza
+   aprire niente.
+2. **Voce «Search history for …» nel menu contestuale del diff**, sulla selezione. Il `+`/`-`/spazio
+   iniziale viene tolto quando la selezione parte dalla **colonna 1**: quella colonna è formato del
+   patch, non contenuto del file, e cercare `+    return x;` non trova niente da nessuna parte. La
+   voce arma la forma **letterale**, perché del codice selezionato è letterale e come espressione
+   regolare sarebbe rotto più spesso che no. Su una selezione **multiriga** usa la prima riga, e lo
+   dice nell'etichetta.
+3. **Riavviare una camminata annulla la precedente**, attraverso il token che
+   `RevisionService.LoadRevisionPage` già accettava: un pickaxe superato uccide davvero il suo
+   `git log` invece di leggerlo fino in fondo.
+
+File: `App/Views/RevisionGridView.cs`, `App/Views/DiffView.cs`, `App/MainWindow.cs`.
+
+**Non coperto**, e non nascosto:
+- **blame e vista del contenuto del file non hanno la voce**: lì non c'è una selezione carattere per
+  carattere da cui partire — `BlameView` è una `ListBox` di righe e `FileContentView` non ha menu
+  contestuale;
+- **l'annullamento non è immediato**: il core osserva il token **fra un blocco di output e l'altro**
+  (`RevisionReader.GetLog` → `ThrowIfCancellationRequested`, processo ucciso alla `Dispose`), quindi
+  una camminata che resta muta per minuti non viene uccisa finché non arriva il blocco successivo.
+  Chiuderlo richiederebbe disporre la maniglia del processo dal callback del token dentro
+  `RevisionService` / core: **non fatto**;
+- **nessun pulsante «annulla» visibile all'utente**: c'è già `BusyOverlay`, e non è stato aggiunto un
+  secondo indicatore.
+
+Verificato a schermo sotto Xvfb con configurazione isolata. Build `--no-incremental`:
+`Avvisi: 0 / Errori: 0`.
+
 ## M193 (2026-08-13, `91d14d4e5`) — una sequenza committata a mano non perde più la barra
 
 La barra trovava un revert o un cherry-pick **solo** da `CHERRY_PICK_HEAD` / `REVERT_HEAD`, e git li
