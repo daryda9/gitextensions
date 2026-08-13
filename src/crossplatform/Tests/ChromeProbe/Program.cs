@@ -2,6 +2,10 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 
+// This project inherits the WinForms-shim implicit usings, so a bare Screen is
+// System.Windows.Forms'.
+using Screen = Avalonia.Platform.Screen;
+
 // Which ways of getting a client-side title bar keep Windows' drag-to-the-top tiling.
 //
 // Tiling (Aero Snap, Snap Layouts) is a NON-CLIENT behaviour: the move loop offers it
@@ -45,6 +49,92 @@ bool extended = Check(
         ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
         ExtendClientAreaTitleBarHeightHint = -1,
     });
+
+// How much of a MAXIMISED extended-client-area window falls outside the usable screen.
+// This is what decides whether the content needs padding, and by how much.
+{
+    Window window = new()
+    {
+        Width = 400,
+        Height = 300,
+        ShowInTaskbar = false,
+        SystemDecorations = SystemDecorations.Full,
+        ExtendClientAreaToDecorationsHint = true,
+        ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
+        ExtendClientAreaTitleBarHeightHint = -1,
+    };
+
+    Console.WriteLine();
+    window.Show();
+    ChromeProbe.Maximized.Report(window, "extended, normal");
+
+    // WHEN each value lands matters as much as what it is: if OffScreenMargin is still
+    // zero at the moment WindowState changes, then compensating from a WindowState
+    // handler reads the stale value and the padding never appears.
+    Console.WriteLine();
+    Console.WriteLine("    property changes while maximising, in order:");
+    window.PropertyChanged += (_, e) =>
+    {
+        // OffScreenMargin has no public AvaloniaProperty to compare against, so every
+        // change is logged with the margin's value at that instant; the ordering is what
+        // is being read here.
+        Console.WriteLine(
+            $"      {e.Property.Name,-22} (offScreenMargin now {window.OffScreenMargin})");
+    };
+
+    window.WindowState = WindowState.Maximized;
+
+    // The margin is published as the window is re-laid out, not synchronously with the
+    // state change, so let the layout pass run before reading it.
+    Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+    ChromeProbe.Maximized.Report(window, "extended, maximised");
+
+    window.Close();
+}
+
+// Where the top-left of the CONTENT actually lands on screen when maximised, with and
+// without the OffScreenMargin compensation. This is the question behind "is there any
+// padding": the window overhangs the screen, so content that is not inset by the same
+// amount has its first few pixels above the top edge.
+foreach (bool compensate in new[] { false, true })
+{
+    Border content = new() { Background = Avalonia.Media.Brushes.Red };
+    Panel layered = new() { Children = { content } };
+
+    Window window = new()
+    {
+        Width = 400,
+        Height = 300,
+        ShowInTaskbar = false,
+        SystemDecorations = SystemDecorations.Full,
+        ExtendClientAreaToDecorationsHint = true,
+        ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
+        ExtendClientAreaTitleBarHeightHint = -1,
+        Content = layered,
+    };
+
+    window.Show();
+    window.WindowState = WindowState.Maximized;
+    if (compensate)
+    {
+        layered.Margin = window.OffScreenMargin;
+    }
+
+    Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+    PixelPoint onScreen = window.PointToScreen(
+        content.TranslatePoint(default, window) ?? default);
+    Screen? screen = window.Screens.ScreenFromWindow(window) ?? window.Screens.Primary;
+    int top = screen is null ? 0 : onScreen.Y - screen.WorkingArea.Y;
+
+    Console.WriteLine();
+    Console.WriteLine($"--- maximised, compensation {(compensate ? "ON " : "OFF")}");
+    Console.WriteLine($"    content top-left on screen : {onScreen}");
+    Console.WriteLine($"    vs top of working area     : {top:+#;-#;0} px  "
+        + (top < 0 ? "<- CLIPPED, above the screen" : top == 0 ? "<- flush with the edge" : "<- inset"));
+
+    window.Close();
+}
 
 if (!OperatingSystem.IsWindows())
 {

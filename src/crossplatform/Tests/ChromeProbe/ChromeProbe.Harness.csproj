@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="Maximized.cs" />
     <ProjectReference Include="..\..\App\GitExtensions.Avalonia.csproj" />
   </ItemGroup>
 </Project>
