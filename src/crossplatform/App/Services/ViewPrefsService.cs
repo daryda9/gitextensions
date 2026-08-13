@@ -27,6 +27,9 @@ public sealed class ViewPrefs
     /// <summary>Left repository-objects panel filters (see <see cref="LeftPanelPrefs"/>).</summary>
     public LeftPanelPrefs LeftPanel { get; set; } = new();
 
+    /// <summary>Built-in three-way merge editor (see <see cref="MergeToolPrefs"/>).</summary>
+    public MergeToolPrefs Merge { get; set; } = new();
+
     /// <summary>Revision-grid column widths (see <see cref="GridColumnPrefs"/>).</summary>
     public GridColumnPrefs GridColumns { get; set; } = new();
 
@@ -126,6 +129,34 @@ public sealed class DiffPrefs
 
     /// <summary><see cref="DiffDisplayOptions.FontSize"/> — the zoom level.</summary>
     public double FontSize { get; set; } = DiffDisplayOptions.DefaultFontSize;
+}
+
+/// <summary>
+///  What the built-in merge editor (<c>Views.MergeToolWindow</c>) remembers between
+///  sessions.
+///
+///  <para>A reading preference, exactly like <see cref="DiffPrefs.InlineDiff"/> and
+///  persisted for the same reason: a user who turns the intra-line marks off — or who
+///  works in the "against BASE" reading — has to find that reading again at the next
+///  conflict, or the control reads as not working. Nothing that decides what gets
+///  written to the work tree is remembered here, and nothing ever will be: a merge
+///  tool that carried a decision across sessions would be answering for the file it
+///  has not read yet.</para>
+/// </summary>
+public sealed class MergeToolPrefs
+{
+    /// <summary>
+    ///  Which intra-line comparison the merge editor shows: <c>"Sides"</c>
+    ///  (LOCAL ↔ REMOTE, the default), <c>"Base"</c> (each side ↔ BASE) or
+    ///  <c>"Off"</c>.
+    ///
+    ///  <para>A NAME and not the combo's index, for the reason
+    ///  <see cref="LeftPanelPrefs.SortKey"/> is one: an index is a fact about the order
+    ///  of a control's items, so inserting a reading at the top would silently
+    ///  reinterpret every file already written. An unknown name collapses to the
+    ///  default in <see cref="ViewPrefsService.Sanitize"/>.</para>
+    /// </summary>
+    public string InlineMode { get; set; } = "Sides";
 }
 
 /// <summary>
@@ -503,6 +534,7 @@ public sealed class ViewPrefsService
         p.FileHistory ??= new FileHistoryPrefs();
         p.FindInFiles ??= new FindInFilesPrefs();
         p.LeftPanel ??= new LeftPanelPrefs();
+        p.Merge ??= new MergeToolPrefs();
         p.RevisionFilterMru ??= [];
         p.HelpPanels ??= [];
 
@@ -526,6 +558,16 @@ public sealed class ViewPrefsService
 
         p.LeftPanel.SortKey = p.LeftPanel.SortKey?.Trim() == "CommitDate" ? "CommitDate" : "Name";
         p.LeftPanel.SortOrder = p.LeftPanel.SortOrder?.Trim() == "Descending" ? "Descending" : "Ascending";
+
+        // An unknown reading collapses to the default rather than to "Off": a file
+        // written by a later build must not open the merge editor with its marks gone
+        // and no way to tell that from a bug.
+        p.Merge.InlineMode = p.Merge.InlineMode?.Trim() switch
+        {
+            "Base" => "Base",
+            "Off" => "Off",
+            _ => "Sides",
+        };
 
         // A hand-edited file could carry nulls inside the list, or more entries than
         // the cap; both would reach the flyout that lists them.

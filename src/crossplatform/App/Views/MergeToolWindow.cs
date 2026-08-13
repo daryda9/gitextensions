@@ -292,7 +292,7 @@ public sealed class MergeToolWindow : ZoomWindow
                 T("Inline: each side ↔ BASE"),
                 T("Inline: off"),
             },
-            SelectedIndex = 0,
+            SelectedIndex = RestoredInlineMode(),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
             Padding = Metrics.Density.ButtonPadding,
@@ -303,12 +303,23 @@ public sealed class MergeToolWindow : ZoomWindow
         };
 
         // The mode is read back out of the combo when the marks are rebuilt, so
-        // there is nothing to keep in step here beyond asking for a rebuild.
+        // there is nothing to keep in step here beyond asking for a rebuild — of the
+        // reference panes AND of the result, which reads the same combo.
+        //
+        // Attached after the initial SelectedIndex so that seeding the control from
+        // the file cannot be mistaken for the user choosing, and write the file back.
         _inlineMode.SelectionChanged += (_, _) =>
         {
+            PersistInlineMode();
+            BuildResultMarks();
+
             if (Current() is Region region)
             {
                 Reveal(region);
+            }
+            else
+            {
+                _result.TextArea.TextView.InvalidateLayer(KnownLayer.Background);
             }
         };
 
@@ -977,6 +988,11 @@ public sealed class MergeToolWindow : ZoomWindow
         }
 
         _strays = CountStrayMarkers(doc);
+
+        // After the choices have been re-derived and never before: the marks are laid
+        // out from what each region is now holding.
+        BuildResultMarks();
+
         UpdateCounter();
         _result.TextArea.TextView.InvalidateLayer(KnownLayer.Background);
         InvalidateMargin();
@@ -1240,8 +1256,177 @@ public sealed class MergeToolWindow : ZoomWindow
         Pair(chunk.Base, source.Base, null, chunk.Theirs, source.Theirs, _theirsHighlighter.Inline);
     }
 
+    /// <summary>
+    ///  Rebuilds the intra-line marks of the <b>result</b> pane, for every region at
+    ///  once.
+    ///
+    ///  <para><b>Why the pane that decides gets marks too.</b> It was left out with
+    ///  the argument that inside a marker block the two sides sit one above the other,
+    ///  so the same difference would be drawn twice. That is true and it is not a
+    ///  reason: the user reads the block top to bottom precisely to see where the two
+    ///  disagree, and drawing the answer on both halves is what makes it findable
+    ///  without counting characters. The reference panes above show the two versions
+    ///  <i>in their files</i>; this pane shows what the merged file will contain, and
+    ///  that is where the eye is when the button is pressed.</para>
+    ///
+    ///  <para><b>What is marked is where LOCAL's and REMOTE's lines currently are</b>,
+    ///  whatever put them there. In an open conflict both blocks are present, so the
+    ///  two halves of the block are marked against each other; a region that has been
+    ///  answered with one side holds only that side's lines, and they are marked
+    ///  against what the combo names. So the combo keeps ONE meaning across the four
+    ///  panes — "compare with the other side" or "compare with the ancestor" — instead
+    ///  of quietly changing what a colour means depending on which pane it is in.
+    ///  Reading a decided region against the side that was dropped is also the check
+    ///  the user actually wants there: what did taking LOCAL throw away?</para>
+    ///
+    ///  <para><b>What is deliberately left unmarked.</b> A region holding BASE, and a
+    ///  region typed over by hand. BASE is the thing both readings measure against, so
+    ///  marking it would mean showing two answers at once in one place — the same
+    ///  argument that keeps the BASE pane clean. Hand-typed text belongs to nobody: any
+    ///  pairing of it with a version would be a guess, and a guess redrawn on every
+    ///  keystroke is worse than silence. The block of BASE lines inside an open marker
+    ///  block is left alone for the first of those reasons.</para>
+    ///
+    ///  <para>Runs from <see cref="Refresh"/>, i.e. after every change of the text:
+    ///  the marks are keyed by document line number, so a rebuild is not an
+    ///  optimisation but a correctness requirement — taking a side four lines up moves
+    ///  every line below it. Only the pairing is rebuilt; the character diffs stay
+    ///  lazy and are run by the renderer for the lines on screen.</para>
+    /// </summary>
+    private void BuildResultMarks()
+    {
+        InlineOverlay ours = _resultHighlighter.OursMarks;
+        InlineOverlay theirs = _resultHighlighter.TheirsMarks;
+
+        ours.Clear();
+        theirs.Clear();
+
+        int mode = _inlineMode.SelectedIndex;
+        if (mode is not (SidesMode or BaseMode) || _regions.Count == 0)
+        {
+            return;
+        }
+
+        // Same inks as the panes above, so a mark means the same thing wherever it is
+        // read: amber for "the two sides disagree here", each side's own colour for
+        // "this is what that side changed".
+        ours.SetInk(mode == SidesMode ? SidesInk : OursInk);
+        theirs.SetInk(mode == SidesMode ? SidesInk : TheirsInk);
+
+        TextDocument doc = _result.Document;
+
+        foreach (Region region in _regions)
+        {
+            (int? oursAt, int? baseAt, int? theirsAt) = Blocks(doc, region);
+            MergeChunk chunk = region.Chunk;
+
+            if (mode == SidesMode)
+            {
+                // The counterpart may not be in the document at all — that is the
+                // normal case for an answered region — and it does not need to be:
+                // the region carries all three versions, and the side that is missing
+                // from the text is exactly the one the mark is measuring against.
+                Pair(
+                    chunk.Ours, Block(oursAt, chunk.Ours.Count), oursAt is null ? null : ours,
+                    chunk.Theirs, Block(theirsAt, chunk.Theirs.Count), theirsAt is null ? null : theirs);
+                continue;
+            }
+
+            Pair(
+                chunk.Base, Block(baseAt, chunk.Base.Count), null,
+                chunk.Ours, Block(oursAt, chunk.Ours.Count), oursAt is null ? null : ours);
+            Pair(
+                chunk.Base, Block(baseAt, chunk.Base.Count), null,
+                chunk.Theirs, Block(theirsAt, chunk.Theirs.Count), theirsAt is null ? null : theirs);
+        }
+
+        // A range whose start is unknown still has to have the right LENGTH: Pair
+        // refuses to mark a side whose lines it could not locate, and a version that
+        // is merely absent from the result is located perfectly well — in the chunk.
+        static LineRange Block(int? start, int count) => new(start ?? 1, count);
+    }
+
+    /// <summary>
+    ///  Where, in the result document, the three versions of <paramref name="region"/>
+    ///  currently are — <see langword="null"/> for a version that is not there at all,
+    ///  or that is empty and so occupies no line.
+    ///
+    ///  <para>Computed from the line counts of the versions and not by searching the
+    ///  text, which is sound because the text between the anchors is one of the strings
+    ///  <see cref="TextFor"/> builds: <see cref="Refresh"/> has just re-derived the
+    ///  choice by comparing them character for character, so the arithmetic below
+    ///  cannot describe a layout the document does not have. The one case where it
+    ///  could — <see cref="MergeChoice.Custom"/>, where the text is whatever was typed
+    ///  — is answered with three nulls.</para>
+    /// </summary>
+    private static (int? Ours, int? Base, int? Theirs) Blocks(TextDocument doc, Region region)
+    {
+        int first = doc.GetLineByOffset(region.Start.Offset).LineNumber;
+        MergeChunk chunk = region.Chunk;
+
+        return region.Choice switch
+        {
+            // The marker block, whose shape is the one RegionHighlighter washes: a
+            // label line, our lines, a label line, the ancestor's, "=======", theirs,
+            // and the closing label.
+            MergeChoice.Conflict => (
+                At(first + 1, chunk.Ours.Count),
+                At(first + 2 + chunk.Ours.Count, chunk.Base.Count),
+                At(first + 3 + chunk.Ours.Count + chunk.Base.Count, chunk.Theirs.Count)),
+            MergeChoice.Ours => (At(first, chunk.Ours.Count), null, null),
+            MergeChoice.Theirs => (null, null, At(first, chunk.Theirs.Count)),
+            MergeChoice.Base => (null, At(first, chunk.Base.Count), null),
+            MergeChoice.OursThenTheirs => (
+                At(first, chunk.Ours.Count), null, At(first + chunk.Ours.Count, chunk.Theirs.Count)),
+            MergeChoice.TheirsThenOurs => (
+                At(first + chunk.Theirs.Count, chunk.Ours.Count), null, At(first, chunk.Theirs.Count)),
+            _ => (null, null, null),
+        };
+
+        static int? At(int line, int count) => count > 0 ? line : null;
+    }
+
     private const int SidesMode = 0;
     private const int BaseMode = 1;
+    private const int OffMode = 2;
+
+    /// <summary>
+    ///  Where the chosen reading is kept between sessions — the same file, and the
+    ///  same service, that already carry the diff viewer's own intra-line switch
+    ///  (<see cref="DiffViewerOptions.InlineDiff"/>). A window-local copy would have
+    ///  been half the work and none of the benefit: this window is opened once per
+    ///  conflicting FILE, so "per session" here means "until the next file", which is
+    ///  precisely when the user would have to set it again.
+    /// </summary>
+    private static readonly ViewPrefsService Prefs = new();
+
+    /// <summary>
+    ///  The reading the file names, or LOCAL ↔ REMOTE when it names none — the
+    ///  default this window has always opened in, unchanged.
+    /// </summary>
+    private static int RestoredInlineMode() => Prefs.Load().Merge.InlineMode switch
+    {
+        "Base" => BaseMode,
+        "Off" => OffMode,
+        _ => SidesMode,
+    };
+
+    /// <summary>
+    ///  Writes the reading back. Through <see cref="ViewPrefsService.Update"/> and not
+    ///  <c>Save</c>, for the reason that method exists: this window is modal over a
+    ///  main window whose other surfaces write the same file.
+    /// </summary>
+    private void PersistInlineMode()
+    {
+        string mode = _inlineMode.SelectedIndex switch
+        {
+            BaseMode => "Base",
+            OffMode => "Off",
+            _ => "Sides",
+        };
+
+        Prefs.Update(prefs => prefs.Merge.InlineMode = mode);
+    }
 
     // Same three colours the window already speaks in: the amber of a conflict for
     // the LOCAL↔REMOTE reading, and each side's header colour for the ↔BASE one.
@@ -2519,6 +2704,19 @@ internal sealed class RegionHighlighter(
     private static readonly IBrush TheirsWash = new SolidColorBrush(Color.FromArgb(0x24, 0x5B, 0x9C, 0xFF));
     private static readonly IBrush CurrentEdge = new SolidColorBrush(Color.FromRgb(0x5B, 0x9C, 0xFF));
 
+    /// <summary>
+    ///  Intra-line marks on the lines the result currently takes from LOCAL, and on
+    ///  the ones it takes from REMOTE.
+    ///
+    ///  <para>Two overlays and not one because the two speak in different inks in the
+    ///  "each side ↔ BASE" reading, and one overlay carries one ink. They cannot
+    ///  disagree about a line: no line of the result belongs to both sides.</para>
+    /// </summary>
+    public InlineOverlay OursMarks { get; } = new();
+
+    /// <summary>The same, for the lines taken from REMOTE.</summary>
+    public InlineOverlay TheirsMarks { get; } = new();
+
     /// <inheritdoc/>
     public KnownLayer Layer => KnownLayer.Background;
 
@@ -2558,11 +2756,6 @@ internal sealed class RegionHighlighter(
             }
         }
 
-        if (regions.Count == 0)
-        {
-            return;
-        }
-
         int active = current();
 
         for (int i = 0; i < regions.Count; i++)
@@ -2600,6 +2793,18 @@ internal sealed class RegionHighlighter(
                     drawingContext.FillRectangle(CurrentEdge, new Rect(rect.X, rect.Y, 3, rect.Height));
                 }
             }
+        }
+
+        // Last, so the marks sit on top of every wash they fall inside: a mark is
+        // read against the line it is on, and a translucent wash painted over it
+        // would take it back down towards the colour it is meant to stand out from.
+        // Asked for every visible line and not only for the regions', because the
+        // lookup is a dictionary miss for the stable text between them.
+        foreach (VisualLine visual in textView.VisualLines)
+        {
+            int number = visual.FirstDocumentLine.LineNumber;
+            OursMarks.Draw(textView, drawingContext, visual.FirstDocumentLine, number);
+            TheirsMarks.Draw(textView, drawingContext, visual.FirstDocumentLine, number);
         }
     }
 
@@ -2897,6 +3102,53 @@ internal sealed class InlineOverlay
         _cache[line] = spans;
         return spans;
     }
+
+    /// <summary>
+    ///  Draws the marks of one document line, if it has any and if marking is on.
+    ///
+    ///  <para>Here rather than in each renderer because both of them need it and it is
+    ///  the same drawing: the reference panes mark the version they are showing, the
+    ///  result pane marks the version it is holding, and a mark that looked different
+    ///  in the two would read as a different statement.</para>
+    /// </summary>
+    public void Draw(TextView textView, DrawingContext context, DocumentLine line, int number)
+    {
+        if (Fill is not IBrush fill)
+        {
+            return;
+        }
+
+        IReadOnlyList<InlineSpan> spans = Spans(number);
+        if (spans.Count == 0)
+        {
+            return;
+        }
+
+        BackgroundGeometryBuilder builder = new() { AlignToWholePixels = true, CornerRadius = 2 };
+        foreach (InlineSpan span in spans)
+        {
+            // Clamped rather than trusted: the spans are offsets into the string the
+            // window paired this line with, and a line the user has typed into since
+            // would otherwise be indexed past its end.
+            int start = Math.Clamp(span.Start, 0, line.Length);
+            int end = Math.Clamp(span.End, start, line.Length);
+            if (end == start)
+            {
+                continue;
+            }
+
+            builder.AddSegment(textView, new TextSegment
+            {
+                StartOffset = line.Offset + start,
+                EndOffset = line.Offset + end,
+            });
+        }
+
+        if (builder.CreateGeometry() is Geometry geometry)
+        {
+            context.DrawGeometry(fill, Edge, geometry);
+        }
+    }
 }
 
 /// <summary>
@@ -2944,46 +3196,7 @@ internal sealed class RangeHighlighter : IBackgroundRenderer
 
             // Drawn after the wash of the same line and never instead of it: the
             // line stays part of its conflict, the mark only says where to look.
-            DrawInline(textView, drawingContext, visual.FirstDocumentLine, number);
-        }
-    }
-
-    private void DrawInline(TextView textView, DrawingContext context, DocumentLine line, int number)
-    {
-        if (Inline.Fill is not IBrush fill)
-        {
-            return;
-        }
-
-        IReadOnlyList<InlineSpan> spans = Inline.Spans(number);
-        if (spans.Count == 0)
-        {
-            return;
-        }
-
-        BackgroundGeometryBuilder builder = new() { AlignToWholePixels = true, CornerRadius = 2 };
-        foreach (InlineSpan span in spans)
-        {
-            // Clamped rather than trusted: the spans are offsets into the string the
-            // window paired this line with, and a pane whose file moved under us
-            // would otherwise index past the end of the line.
-            int start = Math.Clamp(span.Start, 0, line.Length);
-            int end = Math.Clamp(span.End, start, line.Length);
-            if (end == start)
-            {
-                continue;
-            }
-
-            builder.AddSegment(textView, new TextSegment
-            {
-                StartOffset = line.Offset + start,
-                EndOffset = line.Offset + end,
-            });
-        }
-
-        if (builder.CreateGeometry() is Geometry geometry)
-        {
-            context.DrawGeometry(fill, Inline.Edge, geometry);
+            Inline.Draw(textView, drawingContext, visual.FirstDocumentLine, number);
         }
     }
 }
