@@ -3418,6 +3418,48 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M182 (2026-08-13, `1a6eff3f2`) — quello che git ha fuso da solo si vede, e si può scavalcare (feature INEDITA)
+
+Segnalato dall'utente con lo screenshot di kdiff3 («totale 7, automaticamente risolti 6, non risolti 1»):
+l'editor non dice quanti conflitti sono stati risolti da soli, «anche riga per riga lo fa lui».
+
+**Stavamo facendo il lavoro e lo nascondevamo.** `merge-file` fonde in silenzio ogni modifica non
+conflittuale, quindi un file con otto cambiamenti e un conflitto si apre sembrando averne uno solo, e
+quel silenzio si legge come «questo strumento non ha fatto niente».
+
+Il conteggio è **dedotto, mai stimato**: il testo fuso viene ricostruito rimettendo ogni blocco di
+conflitto **alla base**, poi diffato contro la base riga per riga. Quello che ancora differisce è
+esattamente ciò che git ha deciso da solo — rimettere prima i conflitti alla base è il passaggio
+portante, senza il quale i conflitti aperti verrebbero contati come fusioni automatiche.
+L'attribuzione è **per prova**: base contro LOCAL e base contro REMOTE, e ogni tratto va al lato il cui
+diff tocca quelle righe della base; entrambi che toccano = i due lati hanno fatto la stessa modifica; un
+tratto che nessuno rivendica viene **scartato invece che indovinato**. Il diff per righe è un Myers a
+budget in memoria: tre processi git per un numero che serve **prima** che la finestra appaia si
+pagherebbero sull'unico percorso che deve sembrare istantaneo, e a budget esaurito la finestra dichiara
+il conteggio sconosciuto invece di stampare uno zero che non sa difendere.
+
+I numeri stanno in una **riga di riepilogo, non in una finestra modale** da chiudere: l'informazione
+serve anche un'ora dopo. Le fusioni automatiche sono ancorate come i conflitti, marcate nel margine col
+lato da cui vengono (`AUTO ← LOCAL` / `← REMOTE` / `= both`, e `−N` per una cancellazione, che non
+occupa righe) e raggiungibili con una loro navigazione: **una fusione automatica sbagliata è più
+pericolosa di un conflitto** proprio perché nessuno la guarda.
+
+Secondo punto segnalato: i lati si prendevano solo dalla toolbar. Ora il **tasto destro** agisce sulla
+regione **sotto il puntatore** — nel pannello del risultato e, come «prendi questo lato per questo
+conflitto», nei tre pannelli in sola lettura, che è il gesto più diretto che esista. Le voci sono
+radio, spuntate dallo stato **riletto dal testo**, quindi il menu dice *dove sei*, non solo dove puoi
+andare. Funziona anche sulle fusioni automatiche, con la via di ritorno alla risposta di git e la
+marcatura `OVERRIDE` nel margine, altrimenti si perde l'unica traccia che lì git aveva deciso
+diversamente. Vengono offerti solo i lati che metterebbero **caratteri davvero diversi**: su una
+fusione automatica a senso unico «prendi LOCAL» e «prendi BASE» sono gli stessi byte, e uno screenshot
+ha dimostrato che il menu mentiva su quale dei due fosse stato usato.
+
+**Verificato a schermo** su fixture a numeri noti: 8 modifiche, 6 fuse (3 LOCAL, 2 REMOTE, 1 uguale sui
+due lati), 2 da decidere di cui 1 banale — attesi e ottenuti coincidono, marcatore per marcatore. Menu
+aperto sul conflitto 2 mentre la toolbar era sul 1: agisce sul 2. Override di una fusione REMOTE e
+ritorno; cancellazione automatica riportata e ritolta. Nessuna regressione su scelte, `Resolve trivial`,
+`Restore conflict`, contatori e salvataggio.
+
 ## M181 (2026-08-13, `9ee2cafed`) — un conflitto che non si può fondere ora propone una strada (feature INEDITA)
 
 Chiude tre voci della roadmap che finiscono tutte nello stesso dialogo.
