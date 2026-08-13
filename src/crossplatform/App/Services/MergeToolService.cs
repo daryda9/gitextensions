@@ -246,6 +246,221 @@ internal static class TrivialConflict
         => [.. lines.Where(static line => line.Trim(' ', '\t', '\r').Length > 0)];
 }
 
+/// <summary>Where a region git merged on its own came from.</summary>
+public enum AutoMergeSide
+{
+    /// <summary>Only our side changed it.</summary>
+    Local,
+
+    /// <summary>Only their side changed it.</summary>
+    Remote,
+
+    /// <summary>Both sides changed it and agreed, so there was nothing to ask.</summary>
+    Both,
+}
+
+/// <summary>
+///  One change <c>git merge-file</c> applied by itself: a stretch of the result
+///  that differs from the ancestor and that nobody was asked about.
+///
+///  <para><b>Why this is worth a type of its own.</b> The silent part of a merge is
+///  the dangerous part: a conflict is at least read before it is answered, while an
+///  automatic fusion is applied, committed and never looked at. Carrying each one
+///  as a located, attributed record is what lets the editor say how many there were
+///  and let the user walk through them.</para>
+/// </summary>
+/// <param name="ChunkIndex">Index into <see cref="MergeDocument.Chunks"/> of the stable chunk holding it.</param>
+/// <param name="LineOffset">First line of the change inside that chunk's text, 0-based.</param>
+/// <param name="LineCount">How many lines of the result the change produced; 0 for a pure deletion.</param>
+/// <param name="RemovedLines">How many ancestor lines it replaced; 0 for a pure insertion.</param>
+/// <param name="Side">Which side the change came from.</param>
+public sealed record AutoMerge(
+    int ChunkIndex,
+    int LineOffset,
+    int LineCount,
+    int RemovedLines,
+    AutoMergeSide Side);
+
+/// <summary>
+///  A line-level diff, used here to <b>recover what git did silently</b>.
+///
+///  <para><b>Why not run a git process.</b> The three versions and the merged text
+///  are already decoded in memory when the window opens; writing them back to
+///  temporary files and spawning <c>git diff --no-index</c> three times would buy
+///  the same answer at the price of three processes on the path that must feel
+///  instant — this runs before the window is shown. The engine below is the same
+///  greedy edit-script walk git's own diff is built on (Myers), so the answer is
+///  not a different notion of "difference", only a local computation of it.</para>
+///
+///  <para><b>It may refuse.</b> Beyond <see cref="MaxEdits"/> differences the walk
+///  is abandoned and <see langword="null"/> is returned rather than a truncated
+///  answer: a merge editor that reported "4 changes merged automatically" when the
+///  real number was four hundred would be worse than one that says nothing.</para>
+/// </summary>
+internal static class LineDiff
+{
+    /// <summary>
+    ///  One differing stretch: lines <c>[LeftStart, LeftEnd)</c> of the first text
+    ///  became lines <c>[RightStart, RightEnd)</c> of the second. Either range may
+    ///  be empty — that is what a pure insertion and a pure deletion are.
+    /// </summary>
+    internal readonly record struct Hunk(int LeftStart, int LeftEnd, int RightStart, int RightEnd);
+
+    /// <summary>
+    ///  How far the walk goes before giving up. The cost of the algorithm is
+    ///  O(N·D), and the trace kept for backtracking is O(D²) integers, so the bound
+    ///  is what keeps a merge of two unrelated files from allocating hundreds of
+    ///  megabytes on the way to an answer nobody could read anyway.
+    /// </summary>
+    private const int MaxEdits = 1200;
+
+    /// <summary>
+    ///  The stretches by which <paramref name="right"/> differs from
+    ///  <paramref name="left"/>, or <see langword="null"/> when the two are too far
+    ///  apart to compare within the budget.
+    /// </summary>
+    internal static IReadOnlyList<Hunk>? Diff(IReadOnlyList<string> left, IReadOnlyList<string> right)
+    {
+        int leftCount = left.Count;
+        int rightCount = right.Count;
+
+        // Common head and tail are stripped first. Two versions of a source file
+        // agree almost everywhere, and every line trimmed here is a line the
+        // quadratic part below never sees.
+        int lo = 0;
+        while (lo < leftCount && lo < rightCount && Eq(left[lo], right[lo]))
+        {
+            lo++;
+        }
+
+        int hiLeft = leftCount;
+        int hiRight = rightCount;
+        while (hiLeft > lo && hiRight > lo && Eq(left[hiLeft - 1], right[hiRight - 1]))
+        {
+            hiLeft--;
+            hiRight--;
+        }
+
+        int n = hiLeft - lo;
+        int m = hiRight - lo;
+        if (n == 0 && m == 0)
+        {
+            return [];
+        }
+
+        if (n == 0 || m == 0)
+        {
+            return [new Hunk(lo, hiLeft, lo, hiRight)];
+        }
+
+        int max = Math.Min(n + m, MaxEdits);
+        int off = max + 1;
+        int[] v = new int[(2 * max) + 3];
+        List<int[]> trace = new(max + 1);
+
+        for (int d = 0; d <= max; d++)
+        {
+            // Only the band the round can reach is kept, so the whole trace costs
+            // O(D²) and not O(D·(N+M)).
+            trace.Add(v[(off - d)..(off + d + 1)]);
+
+            for (int k = -d; k <= d; k += 2)
+            {
+                int x = k == -d || (k != d && v[off + k - 1] < v[off + k + 1])
+                    ? v[off + k + 1]
+                    : v[off + k - 1] + 1;
+                int y = x - k;
+
+                while (x < n && y < m && Eq(left[lo + x], right[lo + y]))
+                {
+                    x++;
+                    y++;
+                }
+
+                v[off + k] = x;
+                if (x >= n && y >= m)
+                {
+                    return Backtrack(trace, lo, n, m);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///  Walks the trace back from the end point, turning each single edit step into
+    ///  a hunk and welding consecutive steps into the runs a reader thinks of as
+    ///  "one change".
+    /// </summary>
+    private static IReadOnlyList<Hunk> Backtrack(List<int[]> trace, int lo, int n, int m)
+    {
+        List<Hunk> steps = [];
+        int x = n;
+        int y = m;
+
+        for (int d = trace.Count - 1; d > 0; d--)
+        {
+            int[] v = trace[d];
+            int k = x - y;
+            int previousK = k == -d || (k != d && v[k - 1 + d] < v[k + 1 + d]) ? k + 1 : k - 1;
+            int previousX = v[previousK + d];
+            int previousY = previousX - previousK;
+
+            // Everything above the predecessor on this diagonal is matching lines;
+            // the one step that is left is the edit this round paid for.
+            int stepX = x;
+            int stepY = y;
+            while (stepX > previousX && stepY > previousY)
+            {
+                stepX--;
+                stepY--;
+            }
+
+            steps.Add(new Hunk(lo + previousX, lo + stepX, lo + previousY, lo + stepY));
+            x = previousX;
+            y = previousY;
+        }
+
+        steps.Reverse();
+
+        List<Hunk> merged = [];
+        foreach (Hunk step in steps)
+        {
+            if (merged.Count > 0
+                && merged[^1].LeftEnd == step.LeftStart
+                && merged[^1].RightEnd == step.RightStart)
+            {
+                merged[^1] = merged[^1] with { LeftEnd = step.LeftEnd, RightEnd = step.RightEnd };
+                continue;
+            }
+
+            merged.Add(step);
+        }
+
+        return merged;
+    }
+
+    /// <summary>Whether two hunks speak about the same place in the ancestor.</summary>
+    internal static bool Touches(IReadOnlyList<Hunk> hunks, int start, int end)
+    {
+        foreach (Hunk hunk in hunks)
+        {
+            // Touching counts, not only overlapping: an insertion is an empty range,
+            // and two insertions at the same point would never "overlap" while being
+            // exactly the case this test has to catch.
+            if (Math.Max(hunk.LeftStart, start) <= Math.Min(hunk.LeftEnd, end))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool Eq(string left, string right) => string.Equals(left, right, StringComparison.Ordinal);
+}
+
 /// <summary>
 ///  A conflicted file prepared for the built-in editor: the three input versions
 ///  as whole texts (what the reference panes show) plus the merged document split
@@ -263,6 +478,20 @@ public sealed record MergeDocument(
 {
     /// <summary>How many regions still need a decision.</summary>
     public int ConflictCount => Chunks.Count(c => c.Kind == MergeChunkKind.Conflict);
+
+    /// <summary>
+    ///  The changes git applied without asking, in document order. Empty when
+    ///  <see cref="AutoMergeKnown"/> is false — which is not the same as "there
+    ///  were none", and is why the flag exists.
+    /// </summary>
+    public IReadOnlyList<AutoMerge> AutoMerges { get; init; } = [];
+
+    /// <summary>
+    ///  Whether the automatic merges could be recovered at all. False when the three
+    ///  versions are too far apart for the diff budget, in which case the window says
+    ///  so instead of showing a zero it cannot stand behind.
+    /// </summary>
+    public bool AutoMergeKnown { get; init; }
 }
 
 /// <summary>Why the built-in three-way merge refuses a file.</summary>
@@ -464,12 +693,19 @@ public sealed class MergeToolService
 
             string merged = encoding.GetString(File.ReadAllBytes(ours));
 
+            IReadOnlyList<string> ourLines = SplitLines(encoding.GetString(ourBytes));
+            IReadOnlyList<string> baseLines = SplitLines(encoding.GetString(File.ReadAllBytes(@base)));
+            IReadOnlyList<string> theirLines = SplitLines(encoding.GetString(File.ReadAllBytes(theirs)));
+            IReadOnlyList<MergeChunk> chunks = Parse(SplitLines(merged));
+            (IReadOnlyList<AutoMerge> autoMerges, bool autoKnown) =
+                FindAutoMerges(baseLines, ourLines, theirLines, chunks);
+
             return (new MergeDocument(
                 entry.Path,
-                SplitLines(encoding.GetString(ourBytes)),
-                SplitLines(encoding.GetString(File.ReadAllBytes(@base))),
-                SplitLines(encoding.GetString(File.ReadAllBytes(theirs))),
-                Parse(SplitLines(merged)),
+                ourLines,
+                baseLines,
+                theirLines,
+                chunks,
                 encoding,
                 UseCrLf: DominantEolIsCrLf(ourBytes),
 
@@ -485,7 +721,11 @@ public sealed class MergeToolService
                 // says "yes" even when the file said no. Measured, not assumed:
                 // merging three files that all end without a newline gives output
                 // ending "> t.txt\n".
-                EndsWithNewline: ourBytes.Length == 0 || ourBytes[^1] == (byte)'\n'), null);
+                EndsWithNewline: ourBytes.Length == 0 || ourBytes[^1] == (byte)'\n')
+            {
+                AutoMerges = autoMerges,
+                AutoMergeKnown = autoKnown,
+            }, null);
         }
         catch (Exception ex)
         {
@@ -884,6 +1124,123 @@ public sealed class MergeToolService
         }
 
         return new ConflictService().MarkResolved(repoPath, document.Path);
+    }
+
+    /// <summary>
+    ///  Recovers the changes <c>git merge-file</c> applied on its own — the work the
+    ///  user never sees, because the tool's whole job is to make it disappear.
+    ///
+    ///  <para><b>How it is counted, and why the number can be defended.</b> Nothing
+    ///  is estimated from the shape of the input. The ancestor is compared, line by
+    ///  line, against the merged text with every conflict block <i>put back to the
+    ///  ancestor</i>: what remains different is, by construction, exactly what git
+    ///  decided by itself, and each differing stretch is one such decision. Reverting
+    ///  the conflict blocks is the load-bearing step — without it the still-open
+    ///  conflicts would be counted as automatic merges, which is the one number that
+    ///  must not be inflated.</para>
+    ///
+    ///  <para><b>Attribution</b> is done the same way, from evidence rather than from
+    ///  a rule of thumb: the ancestor is also diffed against each side, and a stretch
+    ///  is credited to the side whose own diff touches the same ancestor lines. Both
+    ///  touching it means both sides changed it and git merged them without asking —
+    ///  which only happens when they agreed. A stretch no side claims is dropped
+    ///  instead of being guessed at: it cannot arise (text that neither side changed
+    ///  cannot differ from the ancestor), and if it ever did, silence is the honest
+    ///  answer.</para>
+    /// </summary>
+    internal static (IReadOnlyList<AutoMerge> Merges, bool Known) FindAutoMerges(
+        IReadOnlyList<string> baseLines,
+        IReadOnlyList<string> ourLines,
+        IReadOnlyList<string> theirLines,
+        IReadOnlyList<MergeChunk> chunks)
+    {
+        List<string> view = [];
+
+        // Where each line of the view came from: the stable chunk that holds it, or
+        // -1 for the ancestor lines standing in for a conflict block.
+        List<(int Chunk, int Line)> origin = [];
+
+        for (int c = 0; c < chunks.Count; c++)
+        {
+            MergeChunk chunk = chunks[c];
+            bool stable = chunk.Kind == MergeChunkKind.Stable;
+            IReadOnlyList<string> lines = stable ? chunk.Text : chunk.Base;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                view.Add(lines[i]);
+                origin.Add((stable ? c : -1, i));
+            }
+        }
+
+        IReadOnlyList<LineDiff.Hunk>? automatic = LineDiff.Diff(baseLines, view);
+        IReadOnlyList<LineDiff.Hunk>? local = LineDiff.Diff(baseLines, ourLines);
+        IReadOnlyList<LineDiff.Hunk>? remote = LineDiff.Diff(baseLines, theirLines);
+        if (automatic is null || local is null || remote is null)
+        {
+            return ([], false);
+        }
+
+        List<AutoMerge> merges = [];
+        foreach (LineDiff.Hunk hunk in automatic)
+        {
+            bool byLocal = LineDiff.Touches(local, hunk.LeftStart, hunk.LeftEnd);
+            bool byRemote = LineDiff.Touches(remote, hunk.LeftStart, hunk.LeftEnd);
+            if (!byLocal && !byRemote)
+            {
+                continue;
+            }
+
+            AutoMergeSide side = byLocal && byRemote
+                ? AutoMergeSide.Both
+                : byLocal ? AutoMergeSide.Local : AutoMergeSide.Remote;
+
+            int removed = hunk.LeftEnd - hunk.LeftStart;
+
+            if (hunk.RightEnd > hunk.RightStart)
+            {
+                // The run of produced lines is reported against the chunk it starts
+                // in. A hunk that ran across a conflict block would be a change git
+                // both merged and asked about, which is not a thing: the first stable
+                // run is the whole of it in practice, and reporting that is better
+                // than reporting a span that would be highlighted in the wrong place.
+                int first = hunk.RightStart;
+                while (first < hunk.RightEnd && origin[first].Chunk < 0)
+                {
+                    first++;
+                }
+
+                if (first == hunk.RightEnd)
+                {
+                    continue;
+                }
+
+                int chunkIndex = origin[first].Chunk;
+                int last = first;
+                while (last < hunk.RightEnd && origin[last].Chunk == chunkIndex)
+                {
+                    last++;
+                }
+
+                merges.Add(new AutoMerge(chunkIndex, origin[first].Line, last - first, removed, side));
+                continue;
+            }
+
+            // A deletion produces no line to point at, so it is pinned to the line
+            // that took the deleted text's place — the reader needs somewhere to
+            // look, and "here is where three lines went away" is that somewhere.
+            int at = hunk.RightStart;
+            if (at < origin.Count && origin[at].Chunk >= 0)
+            {
+                merges.Add(new AutoMerge(origin[at].Chunk, origin[at].Line, 0, removed, side));
+            }
+            else if (at > 0 && origin[at - 1].Chunk >= 0)
+            {
+                merges.Add(new AutoMerge(origin[at - 1].Chunk, origin[at - 1].Line + 1, 0, removed, side));
+            }
+        }
+
+        return (merges, true);
     }
 
     /// <summary>

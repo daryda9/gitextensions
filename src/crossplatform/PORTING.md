@@ -3418,6 +3418,88 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M183 (2026-08-13, `62aac6bcc`) — un pull che deve fondere non aspetta più un editor
+
+Segnalato: **Pull - merge** restava su «Running…» a lungo, mostrando una riga storpiata
+(`B the commit.ing with '#' will be ignored…`) che era il **template del messaggio di merge** di git.
+Facendo Abort e poi **Continue** dal banner, il merge riusciva subito.
+
+**Causa.** git decide di aprire `core.editor` quando stdin e stdout sono **lo stesso terminale**
+(`builtin/merge.c`, `default_edit_option`) — ed è esattamente la forma della finestra di processo, che
+gira i comandi interattivi su una **PTY** (`GitProcessDialog.RunStreamingAsync` con `interactive: true`
+→ `GitStreamRunner.RunOnPty`). git credeva quindi che ci fosse un umano davanti a un terminale e
+avviava un editor a schermo intero, le cui sequenze di controllo finivano in una casella di testo che
+terminale non è: illeggibile e senza via d'uscita. Il merge era **già riuscito**, ed è per questo che
+Continue lo chiudeva: quel percorso la trappola la conosceva già (`MergeSessionService` la documenta).
+
+**Correzione**: `--no-edit` di `pull`, non `GIT_EDITOR=true`. Motivo, scritto nel commento: il flag si
+vede nella casella «Command to be executed», e un messaggio di merge che l'utente non ha potuto
+scrivere è una decisione che la riga di comando deve **confessare**. La variabile d'ambiente resta lo
+strumento per i comandi che un flag equivalente **non ce l'hanno** (`merge --continue`,
+`rebase --continue`). Un pull **con conflitti** non cambia: git si ferma prima di preparare qualsiasi
+messaggio, e Continue continua a chiudere il lavoro.
+
+**Audit di tutti i comandi che possono raggiungere `core.editor`** — `merge`, `merge --continue`,
+`rebase -i` e le sue continuazioni, `commit`/`--amend`, `revert`, `cherry-pick`, `tag -a`, `notes`,
+`am`: erano **già** tutti esplicitamente senza editor (`--no-edit`, `-F <file>`, `-m`, `GIT_EDITOR=true`
+o editor scriptato). `pull` era l'unico buco.
+
+**Regola da tenere** (il commento del codice rimanda a un `NOTES.md` che non esiste, quindi sta qui):
+*un comando lanciato sulla PTY deve essere esplicitamente privo di editor*. Un comando nuovo con
+`interactive: true` che git possa accoppiare a un editor eredita la stessa trappola.
+
+**Scoperto e non corretto, di proposito**: la finestra di processo **non può accorgersi** di essere
+bloccata su un editor — vede solo byte dalla PTY e l'uscita del processo, e un editor appeso è
+indistinguibile da un clone lento. Nessuna euristica: il difetto vero era che l'editor partisse.
+
+**Riprodotto prima, verificato dopo**: blocco riprodotto a schermo con `nano` vivo su `MERGE_MSG`, poi
+pull che si chiude da solo («Merge made by the 'ort' strategy», commit di merge con due genitori).
+Riprovati conflitto (si ferma, banner, Continue chiude), fast-forward e «Already up to date»: invariati.
+Trappola dell'ambiente da ricordare: la shell degli agent esporta `GIT_EDITOR=true`, che **mascherava
+il difetto** — le prove vanno fatte con `env -u GIT_EDITOR`.
+
+## M182 (2026-08-13, `1a6eff3f2`) — quello che git ha fuso da solo si vede, e si può scavalcare (feature INEDITA)
+
+Segnalato dall'utente con lo screenshot di kdiff3 («totale 7, automaticamente risolti 6, non risolti 1»):
+l'editor non dice quanti conflitti sono stati risolti da soli, «anche riga per riga lo fa lui».
+
+**Stavamo facendo il lavoro e lo nascondevamo.** `merge-file` fonde in silenzio ogni modifica non
+conflittuale, quindi un file con otto cambiamenti e un conflitto si apre sembrando averne uno solo, e
+quel silenzio si legge come «questo strumento non ha fatto niente».
+
+Il conteggio è **dedotto, mai stimato**: il testo fuso viene ricostruito rimettendo ogni blocco di
+conflitto **alla base**, poi diffato contro la base riga per riga. Quello che ancora differisce è
+esattamente ciò che git ha deciso da solo — rimettere prima i conflitti alla base è il passaggio
+portante, senza il quale i conflitti aperti verrebbero contati come fusioni automatiche.
+L'attribuzione è **per prova**: base contro LOCAL e base contro REMOTE, e ogni tratto va al lato il cui
+diff tocca quelle righe della base; entrambi che toccano = i due lati hanno fatto la stessa modifica; un
+tratto che nessuno rivendica viene **scartato invece che indovinato**. Il diff per righe è un Myers a
+budget in memoria: tre processi git per un numero che serve **prima** che la finestra appaia si
+pagherebbero sull'unico percorso che deve sembrare istantaneo, e a budget esaurito la finestra dichiara
+il conteggio sconosciuto invece di stampare uno zero che non sa difendere.
+
+I numeri stanno in una **riga di riepilogo, non in una finestra modale** da chiudere: l'informazione
+serve anche un'ora dopo. Le fusioni automatiche sono ancorate come i conflitti, marcate nel margine col
+lato da cui vengono (`AUTO ← LOCAL` / `← REMOTE` / `= both`, e `−N` per una cancellazione, che non
+occupa righe) e raggiungibili con una loro navigazione: **una fusione automatica sbagliata è più
+pericolosa di un conflitto** proprio perché nessuno la guarda.
+
+Secondo punto segnalato: i lati si prendevano solo dalla toolbar. Ora il **tasto destro** agisce sulla
+regione **sotto il puntatore** — nel pannello del risultato e, come «prendi questo lato per questo
+conflitto», nei tre pannelli in sola lettura, che è il gesto più diretto che esista. Le voci sono
+radio, spuntate dallo stato **riletto dal testo**, quindi il menu dice *dove sei*, non solo dove puoi
+andare. Funziona anche sulle fusioni automatiche, con la via di ritorno alla risposta di git e la
+marcatura `OVERRIDE` nel margine, altrimenti si perde l'unica traccia che lì git aveva deciso
+diversamente. Vengono offerti solo i lati che metterebbero **caratteri davvero diversi**: su una
+fusione automatica a senso unico «prendi LOCAL» e «prendi BASE» sono gli stessi byte, e uno screenshot
+ha dimostrato che il menu mentiva su quale dei due fosse stato usato.
+
+**Verificato a schermo** su fixture a numeri noti: 8 modifiche, 6 fuse (3 LOCAL, 2 REMOTE, 1 uguale sui
+due lati), 2 da decidere di cui 1 banale — attesi e ottenuti coincidono, marcatore per marcatore. Menu
+aperto sul conflitto 2 mentre la toolbar era sul 1: agisce sul 2. Override di una fusione REMOTE e
+ritorno; cancellazione automatica riportata e ritolta. Nessuna regressione su scelte, `Resolve trivial`,
+`Restore conflict`, contatori e salvataggio.
+
 ## M181 (2026-08-13, `9ee2cafed`) — un conflitto che non si può fondere ora propone una strada (feature INEDITA)
 
 Chiude tre voci della roadmap che finiscono tutte nello stesso dialogo.
