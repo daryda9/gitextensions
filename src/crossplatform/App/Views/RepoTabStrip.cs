@@ -118,6 +118,19 @@ public sealed class RepoTabStrip : UserControl
             Content = _strip,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+
+            // The bar must take LAYOUT space, not float over the tabs. Fluent's default
+            // (AllowAutoHide) draws a thin line while idle and then swells to its full
+            // ~12px thumb, with its two arrow buttons, the moment the pointer enters the
+            // scroller — and it draws that on TOP of the content. Everywhere else in the
+            // app the content is tall enough for that to be a stripe along the bottom;
+            // here the whole viewport is one 24px row, so the swollen bar covers the
+            // repository names it is meant to help reach, in the one situation where the
+            // strip has more tabs than fit and the user most needs to read them. Measured
+            // in the light theme at 560px with 14 tabs: every label went grey behind an
+            // opaque slab and stayed there. Reserving the row costs a few pixels of height
+            // only while the strip actually overflows (the visibility is still Auto).
+            AllowAutoHide = false,
         };
 
         // Tunnelling: the tab under the pointer must not eat the wheel first, and the
@@ -552,12 +565,16 @@ public sealed class RepoTabStrip : UserControl
         // Labels are decided for the strip as a WHOLE, here, and handed to each visual:
         // the shortest text that still tells a tab apart depends on its neighbours (see
         // BuildLabels), so no tab can compute its own.
-        IReadOnlyList<string> labels = BuildLabels(_tabs);
+        IReadOnlyList<(string Path, string Number)> labels = BuildLabels(_tabs);
         IReadOnlyList<(IBrush? Colour, string? Root)> checkouts = BuildCheckouts(_tabs);
         for (int i = 0; i < _tabs.Count; i++)
         {
             Visual(_tabs[i]).Apply(
-                ReferenceEquals(_tabs[i], _active), labels[i], checkouts[i].Colour, checkouts[i].Root);
+                ReferenceEquals(_tabs[i], _active),
+                labels[i].Path,
+                labels[i].Number,
+                checkouts[i].Colour,
+                checkouts[i].Root);
         }
 
         IsVisible = _tabs.Count > 0;
@@ -920,8 +937,22 @@ public sealed class RepoTabStrip : UserControl
     ///
     ///  <para>Numbering only ever appears while a duplicate is open: a single tab on a
     ///  repository is labelled exactly as before.</para>
+    ///
+    ///  <para><b>The number is returned SEPARATELY from the path, and that is a
+    ///  correction.</b> While it was glued onto the end of one string, the elision ate it:
+    ///  a label like <c>a-very-long-repository-name (1)</c> has no <c>/</c> in it, so
+    ///  <see cref="PathLabel.Choose"/> went straight to trimming the leaf at its END and
+    ///  the <c>(1)</c> was the first thing to go — leaving two tabs on the same repository
+    ///  looking IDENTICAL, which is the exact confusion the numbering exists to prevent.
+    ///  Measured with two tabs on <c>a-very-long-repository-name-that-will-not-fit</c>: at
+    ///  the Large UI size, and at ANY window width (the label's own 220px cap is enough on
+    ///  its own), both tabs read <c>a-very-long-repository-…</c> with no number at all.
+    ///  Handed over on its own the number becomes a suffix the label protects from the
+    ///  elision, so the NAME degrades and the answer survives.</para>
     /// </summary>
-    private static IReadOnlyList<string> BuildLabels(List<RepoTabEntry> tabs)
+    /// <returns>Per tab, the path text to elide and the <c>" (n)"</c> suffix to keep
+    ///  whole, which is empty for every tab that has no duplicate.</returns>
+    private static IReadOnlyList<(string Path, string Number)> BuildLabels(List<RepoTabEntry> tabs)
     {
         List<string> labels = new(tabs.Count);
         foreach (RepoTabEntry tab in tabs)
@@ -991,18 +1022,22 @@ public sealed class RepoTabStrip : UserControl
         }
 
         Dictionary<string, int> seen = [];
+        List<(string, string)> result = new(tabs.Count);
         for (int i = 0; i < tabs.Count; i++)
         {
             string key = PathKey(tabs[i].Path);
             labels[i] = byPath[key];
+            string number = "";
             if (total[key] > 1)
             {
                 seen[key] = seen.TryGetValue(key, out int n) ? n + 1 : 1;
-                labels[i] = $"{labels[i]} ({seen[key]})";
+                number = $" ({seen[key]})";
             }
+
+            result.Add((labels[i], number));
         }
 
-        return labels;
+        return result;
     }
 
     // The last <paramref name="segments"/> parts of a path, as the user reads them. Not a
@@ -1268,6 +1303,7 @@ public sealed class RepoTabStrip : UserControl
         private const string Ellipsis = "…";
 
         private string _text = "";
+        private string _suffix = "";
         private double _fontSize = Metrics.Text.Body;
         private FontWeight _fontWeight = FontWeight.Normal;
         private FontStyle _fontStyle = FontStyle.Normal;
@@ -1285,6 +1321,19 @@ public sealed class RepoTabStrip : UserControl
         {
             get => _text;
             set => Set(ref _text, value ?? "");
+        }
+
+        /// <summary>
+        ///  A tail that is NEVER elided — the <c>" (2)"</c> that tells two tabs on one
+        ///  repository apart. It is reserved out of the width first and every candidate is
+        ///  measured with it attached, so the path shortens around it instead of it being
+        ///  the first thing trimmed away (which is what happened while it was simply part
+        ///  of <see cref="Text"/>; see <see cref="BuildLabels"/>).
+        /// </summary>
+        internal string Suffix
+        {
+            get => _suffix;
+            set => Set(ref _suffix, value ?? "");
         }
 
         internal double FontSize
@@ -1326,7 +1375,10 @@ public sealed class RepoTabStrip : UserControl
                 return;
             }
 
-            FormattedText text = Format(Fit(Bounds.Width));
+            // One FormattedText over body+suffix rather than two draws side by side: the
+            // shaper then sees the whole line, so nothing has to be positioned by hand and
+            // the result is byte-for-byte what an unelided label would have drawn.
+            FormattedText text = Format(Fit(Bounds.Width) + _suffix);
 
             // Centred on the row rather than sat on the baseline: the tab's height is the
             // chrome's, not the text's.
@@ -1335,7 +1387,7 @@ public sealed class RepoTabStrip : UserControl
 
         protected override Size MeasureOverride(Size availableSize)
         {
-            FormattedText full = Format(_text);
+            FormattedText full = Format(_text + _suffix);
 
             // Rounded UP, so a label asked to render at exactly its own desired width is
             // never elided by a fraction of a pixel it cannot see.
@@ -1417,10 +1469,21 @@ public sealed class RepoTabStrip : UserControl
 
             // Last resort: the leaf itself, cut at its end. Half a repository name is the
             // only thing left that still says which repository this is.
+            //
+            // Cut on GRAPHEME boundaries, never on a raw string index. A directory name is
+            // free to hold an emoji, and an emoji is two UTF-16 units: `leaf[..length]`
+            // with an odd length hands the renderer half a surrogate pair, which draws as a
+            // replacement box or vanishes depending on the font. The same index also falls
+            // between a letter and its combining mark (a decomposed "é"), and the orphaned
+            // mark then reattaches itself to the ellipsis. Choose() takes the LONGEST
+            // candidate that fits and a half-cut candidate is narrower than the whole one,
+            // so those cuts are not merely possible, they are what the search prefers.
+            // This is the same bug this project already fixed once, in the inline diff.
             string leaf = parts[^1];
-            for (int length = leaf.Length - 1; length >= 1; length--)
+            IReadOnlyList<int> starts = GraphemeStarts(leaf);
+            for (int count = starts.Count - 1; count >= 1; count--)
             {
-                string candidate = leaf[..length] + Ellipsis;
+                string candidate = leaf[..starts[count]] + Ellipsis;
                 if (Fits(candidate, width))
                 {
                     return candidate;
@@ -1430,11 +1493,33 @@ public sealed class RepoTabStrip : UserControl
             return Ellipsis;
         }
 
+        // The index at which each user-perceived character of <paramref name="text"/>
+        // begins, plus its length as a final entry, so slicing at any of them is safe.
+        // TextElementEnumerator, not ParseCombiningCharacters: the former follows the
+        // current Unicode text-segmentation rules, so a ZWJ emoji sequence or a flag is one
+        // element rather than the two or four codepoints it is built from.
+        private static IReadOnlyList<int> GraphemeStarts(string text)
+        {
+            List<int> starts = [];
+            System.Globalization.TextElementEnumerator elements =
+                System.Globalization.StringInfo.GetTextElementEnumerator(text);
+            while (elements.MoveNext())
+            {
+                starts.Add(elements.ElementIndex);
+            }
+
+            starts.Add(text.Length);
+            return starts;
+        }
+
         private bool Fits(string text, double width) =>
 
+            // Measured WITH the suffix, so the room the number needs is taken out of the
+            // path's budget rather than borrowed from the tab's neighbour.
+            //
             // Half a pixel of slack: the width offered comes from a layout pass that has
             // already rounded, and losing a whole segment to that rounding is visible.
-            Format(text).Width <= width + 0.5;
+            Format(text + _suffix).Width <= width + 0.5;
 
         private FormattedText Format(string text) => new(
             text,
@@ -1479,10 +1564,14 @@ public sealed class RepoTabStrip : UserControl
             Paint();
         }
 
-        internal void Apply(bool active, string text, IBrush? checkoutColour, string? checkoutPath)
+        internal void Apply(
+            bool active, string text, string number, IBrush? checkoutColour, string? checkoutPath)
         {
             _active = active;
             label.Text = text;
+
+            // Handed over separately so the elision cannot eat it: see BuildLabels.
+            label.Suffix = number;
 
             // A chip only when the strip holds more than one checkout, and the
             // checkout named on the tooltip only when it is not the tab itself —
