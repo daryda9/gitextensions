@@ -893,54 +893,6 @@ public sealed class MergeToolService
         }
     }
 
-    /// <summary>
-    ///  The image format the leading bytes announce, or null. <b>Content, never the
-    ///  extension</b>: the extension is a claim by whoever named the file, the magic
-    ///  number is what every decoder actually dispatches on.
-    /// </summary>
-    public static string? DetectImageFormat(byte[]? data)
-    {
-        if (data is null || data.Length < 12)
-        {
-            return null;
-        }
-
-        if (Starts(data, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
-        {
-            return "PNG";
-        }
-
-        if (Starts(data, 0xFF, 0xD8, 0xFF))
-        {
-            return "JPEG";
-        }
-
-        if (Starts(data, (byte)'G', (byte)'I', (byte)'F', (byte)'8'))
-        {
-            return "GIF";
-        }
-
-        if (Starts(data, (byte)'B', (byte)'M'))
-        {
-            return "BMP";
-        }
-
-        // RIFF....WEBP — the four size bytes in between are why this one is not a
-        // straight prefix test.
-        if (Starts(data, (byte)'R', (byte)'I', (byte)'F', (byte)'F')
-            && data[8] == (byte)'W' && data[9] == (byte)'E' && data[10] == (byte)'B' && data[11] == (byte)'P')
-        {
-            return "WEBP";
-        }
-
-        if (Starts(data, 0x00, 0x00, 0x01, 0x00))
-        {
-            return "ICO";
-        }
-
-        return null;
-    }
-
     private static bool Starts(byte[] data, params byte[] prefix)
     {
         if (data.Length < prefix.Length)
@@ -978,7 +930,12 @@ public sealed class MergeToolService
 
         long size = new FileInfo(file).Length;
         byte[] head = ReadHead(file);
-        string? image = DetectImageFormat(head);
+
+        // The same sniffer the diff view offers "Compare as images" from, deliberately
+        // and not a local copy: the guided refusal below offers that very window, so a
+        // stricter or looser answer here would mean a button that opens on nothing (or
+        // no button for a file the diff view calls an image).
+        string? image = ImageFormats.Detect(head);
 
         return new MergeSideFacts(
             true,

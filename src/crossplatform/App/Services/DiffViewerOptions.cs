@@ -406,17 +406,62 @@ public static class ExtendedDiffTextService
 ///  decides what it can actually show, so a format that merely starts like an image
 ///  degrades to "this side could not be decoded" instead of a wrong menu.</para>
 ///
-///  <para><see cref="HeaderLength"/> bytes are enough for every signature below; WEBP
-///  is the longest at 12.</para>
+///  <para><see cref="HeaderLength"/> bytes are enough for every signature below; ICO
+///  is the longest at 22.</para>
+///
+///  <para><b>The only such sniffer in the port.</b> The conflict dialog's guided
+///  refusal used to carry a second, hand-rolled copy inside <c>MergeToolService</c>;
+///  it had drifted (its ICO test was the four-byte one this class has since dropped),
+///  so the same file could be an image in the diff view and not in the merge tool, or
+///  the reverse. Two answers to "is this an image?" is a bug waiting for the day the
+///  two copies are edited apart, and there is no reason for two: the question has
+///  nothing to do with either caller. Hence <see cref="Detect"/>, which returns the
+///  NAME because the merge tool has to print it, and <see cref="LooksLikeImage"/> on
+///  top of it for the caller that only needs the yes/no.</para>
 /// </summary>
 public static class ImageFormats
 {
-    /// <summary>How many leading bytes <see cref="LooksLikeImage"/> needs at most.</summary>
+    /// <summary>How many leading bytes <see cref="Detect"/> needs at most.</summary>
     public const int HeaderLength = 32;
 
     /// <summary>Whether <paramref name="header"/> starts with a known image signature.</summary>
-    public static bool LooksLikeImage(ReadOnlySpan<byte> header) =>
-        IsPng(header) || IsJpeg(header) || IsGif(header) || IsWebp(header) || IsBmp(header) || IsIco(header);
+    public static bool LooksLikeImage(ReadOnlySpan<byte> header) => Detect(header) is not null;
+
+    /// <summary>
+    ///  The name of the format <paramref name="header"/> announces ("PNG", "JPEG",
+    ///  "GIF", "WEBP", "BMP", "ICO"), or <see langword="null"/> when the bytes match
+    ///  none of them. The name is meant to be shown to the user, so it is spelled the
+    ///  way the format is commonly written rather than as an enum member.
+    /// </summary>
+    public static string? Detect(ReadOnlySpan<byte> header)
+    {
+        if (IsPng(header))
+        {
+            return "PNG";
+        }
+
+        if (IsJpeg(header))
+        {
+            return "JPEG";
+        }
+
+        if (IsGif(header))
+        {
+            return "GIF";
+        }
+
+        if (IsWebp(header))
+        {
+            return "WEBP";
+        }
+
+        if (IsBmp(header))
+        {
+            return "BMP";
+        }
+
+        return IsIco(header) ? "ICO" : null;
+    }
 
     // The 0x89 first byte and the CR/LF pair are the signature's own transfer test:
     // a PNG that travelled through a text channel no longer starts with them.

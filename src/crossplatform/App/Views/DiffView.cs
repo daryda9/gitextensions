@@ -1187,8 +1187,8 @@ public sealed class DiffView : UserControl
             return;
         }
 
-        (string? leftRev, string leftPath) = ResolveSide(row, newVersion: false);
-        (string? rightRev, string rightPath) = ResolveSide(row, newVersion: true);
+        DiffSide left0 = ResolveSide(row, newVersion: false);
+        DiffSide right0 = ResolveSide(row, newVersion: true);
 
         string repoPath = _repoPath;
         string encoding = _options.EncodingName;
@@ -1198,15 +1198,15 @@ public sealed class DiffView : UserControl
 
         try
         {
-            string left = await ReadSideAsync(repoPath, leftRev, leftPath, encoding);
-            string right = await ReadSideAsync(repoPath, rightRev, rightPath, encoding);
+            string left = await ReadSideAsync(repoPath, left0.Rev, left0.Path, encoding);
+            string right = await ReadSideAsync(repoPath, right0.Rev, right0.Path, encoding);
 
             string? error = await DiffToolWindow.ShowAsync(
                 TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("No window"),
                 repoPath,
                 row.Name,
-                SideLabel(leftRev, leftPath),
-                SideLabel(rightRev, rightPath),
+                SideLabel(left0),
+                SideLabel(right0),
                 left,
                 right,
                 histogram);
@@ -1224,15 +1224,32 @@ public sealed class DiffView : UserControl
     ///  window's two captions, in the image window's two captions, in the banner and in
     ///  the context-menu entry. ONE method, because the user must be able to tell that
     ///  the four are talking about the same pair of versions.
+    ///
+    ///  <para><paramref name="exists"/> is what <see cref="ResolveSide"/> says about
+    ///  this side being there at all. It has to be part of the LABEL and not of the
+    ///  window behind it: for an added file the old side is not a revision the user
+    ///  could go and look at, it is nothing, and naming it "<c>&lt;sha&gt;^</c>"
+    ///  states as fact a version that was never written. The image window did say so
+    ///  ("This version does not exist.") but only once opened, which is exactly one
+    ///  click too late — and the banner and the menu entry never said it at all.</para>
     /// </summary>
-    private static string SideLabel(string? rev, string path)
-        => rev is null || rev == ":" ? $"{path} — {RevWord(rev)}" : $"{path} @ {rev}";
+    private static string SideLabel(string? rev, string path, bool exists)
+        => !exists || rev is null || rev == ":"
+            ? $"{path} — {RevWord(rev, exists)}"
+            : $"{path} @ {rev}";
 
     // The revision alone, for the offer, which names the file once and the two
     // revisions after it. ":" is git's own name for the index copy of a path and
     // means nothing to a reader, so it is spelled out here as it is in the captions.
-    private static string RevWord(string? rev)
+    private static string RevWord(string? rev, bool exists)
     {
+        if (!exists)
+        {
+            // Before any revision talk: on a side that does not exist the revision is
+            // not merely unnamed, it is the wrong question.
+            return T("does not exist");
+        }
+
         if (rev is null)
         {
             return T("working tree");
@@ -1258,10 +1275,14 @@ public sealed class DiffView : UserControl
     // menu entry and the banner are single lines competing for width with a file list
     // and a toolbar, and "logo.png — index ↔ logo.png — working tree" spends half of it
     // repeating the name the user just clicked.
-    private static string OfferSummary(string? leftRev, string leftPath, string? rightRev, string rightPath)
-        => string.Equals(leftPath, rightPath, StringComparison.Ordinal)
-            ? F("{0}: {1} ↔ {2}", leftPath, RevWord(leftRev), RevWord(rightRev))
-            : F("{0} ↔ {1}", SideLabel(leftRev, leftPath), SideLabel(rightRev, rightPath));
+    private static string OfferSummary(DiffSide left, DiffSide right)
+        => string.Equals(left.Path, right.Path, StringComparison.Ordinal)
+            ? F("{0}: {1} ↔ {2}", left.Path, RevWord(left.Rev, left.Exists), RevWord(right.Rev, right.Exists))
+            : F("{0} ↔ {1}", SideLabel(left), SideLabel(right));
+
+    // The two ways of naming a side both take the whole side, so a caller cannot
+    // pass the revision and forget the "is it there" bit that qualifies it.
+    private static string SideLabel(DiffSide side) => SideLabel(side.Rev, side.Path, side.Exists);
 
     /// <summary>
     ///  Opens the two versions of the selected file in <see cref="ImageDiffWindow"/>.
@@ -1280,8 +1301,8 @@ public sealed class DiffView : UserControl
             return;
         }
 
-        (string? leftRev, string leftPath) = ResolveSide(row, newVersion: false);
-        (string? rightRev, string rightPath) = ResolveSide(row, newVersion: true);
+        DiffSide left0 = ResolveSide(row, newVersion: false);
+        DiffSide right0 = ResolveSide(row, newVersion: true);
 
         string repoPath = _repoPath;
 
@@ -1289,15 +1310,15 @@ public sealed class DiffView : UserControl
 
         try
         {
-            byte[]? left = await ReadSideBytesAsync(repoPath, leftRev, leftPath);
-            byte[]? right = await ReadSideBytesAsync(repoPath, rightRev, rightPath);
+            byte[]? left = await ReadSideBytesAsync(repoPath, left0.Rev, left0.Path);
+            byte[]? right = await ReadSideBytesAsync(repoPath, right0.Rev, right0.Path);
 
             string? error = await ImageDiffWindow.ShowAsync(
                 TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException("No window"),
                 left,
                 right,
-                SideLabel(leftRev, leftPath),
-                SideLabel(rightRev, rightPath));
+                SideLabel(left0),
+                SideLabel(right0));
 
             _status.Text = error ?? string.Empty;
         }
@@ -1340,18 +1361,18 @@ public sealed class DiffView : UserControl
     /// </summary>
     private void ProbeImageSides(DiffFileRow row, string repoPath, CancellationToken token)
     {
-        (string? leftRev, string leftPath) = ResolveSide(row, newVersion: false);
-        (string? rightRev, string rightPath) = ResolveSide(row, newVersion: true);
+        DiffSide left0 = ResolveSide(row, newVersion: false);
+        DiffSide right0 = ResolveSide(row, newVersion: true);
 
         _ = Task.Run(async () =>
         {
             try
             {
                 byte[] leftHead = await ExtendedDiffTextService
-                    .GetFileHeaderAsync(repoPath, leftRev, leftPath, ImageFormats.HeaderLength, token)
+                    .GetFileHeaderAsync(repoPath, left0.Rev, left0.Path, ImageFormats.HeaderLength, token)
                     .ConfigureAwait(false);
                 byte[] rightHead = await ExtendedDiffTextService
-                    .GetFileHeaderAsync(repoPath, rightRev, rightPath, ImageFormats.HeaderLength, token)
+                    .GetFileHeaderAsync(repoPath, right0.Rev, right0.Path, ImageFormats.HeaderLength, token)
                     .ConfigureAwait(false);
 
                 bool left = ImageFormats.LooksLikeImage(leftHead);
@@ -1371,7 +1392,7 @@ public sealed class DiffView : UserControl
 
                     _leftIsImage = left;
                     _rightIsImage = right;
-                    _imageOfferSummary = OfferSummary(leftRev, leftPath, rightRev, rightPath);
+                    _imageOfferSummary = OfferSummary(left0, right0);
                     UpdateImageOffer();
                 });
             }
@@ -1494,32 +1515,57 @@ public sealed class DiffView : UserControl
     ///  and the artificial rows have real sides that are not commits — "Working
     ///  directory" is (index → disk) and "Commit index" is (HEAD → index), where
     ///  <c>":"</c> is git's own name for the index copy of a path.</para>
+    ///
+    ///  <para>It also answers whether the side is THERE: an added file has no old
+    ///  version and a deleted one no new version, and that is a property of the pair
+    ///  this method resolves, not of whoever consumes it. Answered here so that every
+    ///  reader gets it — the four captions, the banner and the menu entry all label
+    ///  sides through <see cref="SideLabel"/>, and a second place deciding "is this
+    ///  side real" is how one of them ends up naming a revision that never existed.</para>
     /// </summary>
-    private (string? Rev, string Path) ResolveSide(DiffFileRow row, bool newVersion)
+    private DiffSide ResolveSide(DiffFileRow row, bool newVersion)
     {
         bool workingTree = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree;
+
+        // A rename or a copy has both sides; only a pure add or a pure delete is
+        // missing one, and which one it is follows from the direction of the change.
+        bool exists = row.Kind switch
+        {
+            DiffChangeKind.Added => newVersion,
+            DiffChangeKind.Deleted => !newVersion,
+            _ => true,
+        };
 
         if (!_forceWorkingTreeCompare && IsArtificialMode)
         {
             bool index = _mode == CompareMode.Index;
-            return (
+            return new DiffSide(
                 newVersion ? (index ? ":" : null) : (index ? "HEAD" : ":"),
-                newVersion ? row.Name : row.OldName ?? row.Name);
+                newVersion ? row.Name : row.OldName ?? row.Name,
+                exists);
         }
 
         if (newVersion)
         {
-            return (workingTree ? null : _commitHash, row.Name);
+            return new DiffSide(workingTree ? null : _commitHash, row.Name, exists);
         }
 
-        return (
+        return new DiffSide(
             _mode == CompareMode.Range
                 ? _baseHash ?? _commitHash
                 : workingTree
                     ? _commitHash
                     : _commitHash + "^",
-            row.OldName ?? row.Name);
+            row.OldName ?? row.Name,
+            exists);
     }
+
+    /// <summary>
+    ///  One side of the current comparison: which revision, under which path, and
+    ///  whether it exists at all. A named type rather than a bare tuple because the
+    ///  third field is the one a caller silently drops when it is optional.
+    /// </summary>
+    private readonly record struct DiffSide(string? Rev, string Path, bool Exists);
 
     /// <summary>
     ///  The original's "Copy new version" / "Copy old version": the whole file as
@@ -1534,7 +1580,7 @@ public sealed class DiffView : UserControl
             return;
         }
 
-        (string? rev, string path) = ResolveSide(row, newVersion);
+        (string? rev, string path, _) = ResolveSide(row, newVersion);
 
         string repoPath = _repoPath;
         string encoding = _options.EncodingName;
