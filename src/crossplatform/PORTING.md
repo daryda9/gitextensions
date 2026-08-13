@@ -3418,6 +3418,38 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M184 (2026-08-13, `88a2e0d4c`) — una scheda lunga perde il percorso, mai il nome della repo
+
+Segnalato con screenshot: `pluma_orchestrator/ai-server/core/…`. L'ellissi di fine riga è la regola
+sbagliata per un **percorso**: la coda porta l'identità, la testa è solo contesto — e spariva proprio
+il nome della repo.
+
+**Degrado dalla testa verso l'interno.** Il mezzo collassa **un segmento alla volta partendo dal lato
+testa**, perché i segmenti vicini alla foglia sono quelli che la **collocano** e vanno persi per
+ultimi: `pluma_orchestrator/…/core/api` → `pluma_orchestrator/…/api` → `…/ai-server/core/api` →
+`…/core/api` → `…/api`; e solo quando non entra più niente si taglia la foglia stessa
+(`an_extraord…`) — mezzo nome di repo batte nessun nome. I segmenti intermedi **non** sono abbreviati
+all'iniziale (`p…/a…/core/api`): un'iniziale si legge come un nome e invita a espanderla, cioè è
+rumore esattamente quando lo spazio manca, mentre un solo `…` è già convenzione nota. Il **tooltip**
+porta sempre il percorso completo: l'elisione è per lo sguardo, non per l'informazione.
+
+Quale livello si applica è **misurato** con lo stesso typeface, size, weight e style con cui il testo
+verrà disegnato, non contato a caratteri — con un font proporzionale `pluma_orchestrator` e una corsa
+di lettere strette non occupano la stessa larghezza — e viene ricalcolato a ogni cambio di larghezza
+(finestra ridimensionata, scheda che diventa attiva e quindi SemiBold, schede aperte o chiuse).
+
+**Due modifiche di layout erano necessarie** perché l'etichetta potesse **accorgersi** di essere stata
+stretta: uno `StackPanel` orizzontale misura i figli con larghezza **infinita**, quindi la riga della
+scheda è diventata un `Grid`; e la striscia ora ripartisce la larghezza vera fra le schede fino a un
+pavimento, sotto il quale scorre come prima. Senza un budget, restringere la finestra non stringeva
+mai una scheda e i livelli corti erano **irraggiungibili** — il difetto sarebbe sembrato corretto in
+codice e non lo sarebbe stato a schermo.
+
+**Verificato a schermo** livello per livello (1300 → 380 px) con sei schede, fra cui due `api` in
+collisione in fondo a percorsi profondi e due cloni con sottomodulo omonimo. Non regrediti: pastiglia
+del checkout, tooltip, scheda attiva, anteprima in corsivo, riordino per trascinamento, chiusura e
+persistenza dell'ordine.
+
 ## M183 (2026-08-13, `62aac6bcc`) — un pull che deve fondere non aspetta più un editor
 
 Segnalato: **Pull - merge** restava su «Running…» a lungo, mostrando una riga storpiata
