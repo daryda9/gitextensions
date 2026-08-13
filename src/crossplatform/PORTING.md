@@ -3418,6 +3418,60 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M193 (2026-08-13, `91d14d4e5`) — una sequenza committata a mano non perde più la barra
+
+La barra trovava un revert o un cherry-pick **solo** da `CHERRY_PICK_HEAD` / `REVERT_HEAD`, e git li
+cancella appena il passo fermo viene committato — mentre `.git/sequencer/todo` contiene ancora il resto
+della serie e `git status` continua a dire che l'operazione è in corso. Committando il passo da un
+terminale la barra spariva con la sequenza aperta: **il vicolo cieco appena chiuso, riaperto da un'altra
+porta**.
+
+Sia la visibilità della barra sia i suoi pulsanti ricadono ora sulla directory del sequencer,
+distinguendo revert da cherry-pick dal **verbo della prima riga della todo** — che è il test di git
+stesso (`wt-status.c` → `sequencer_get_last_command`), non un'ipotesi; un verbo non riconosciuto non
+mostra niente. Le due strade **condividono un solo parser**, perché rispondono a due metà della stessa
+domanda e lasciarle divergere è il modo in cui il vicolo cieco tornerebbe una terza volta.
+
+**Com'è fatto davvero quello stato è stato misurato, e tre frasi mentivano.**
+- La todo elenca **ancora** il passo appena committato, quindi «applicati + rimanenti» lo conta due
+  volte e una serie di tre uscirebbe come «Step 2 of 4»: il contatore è **soppresso**, non rattoppato.
+- `--skip` da lì **fallisce** (exit 128: git dice che non c'è nulla da saltare e suggerisce
+  `--continue`), quindi il pulsante **sparisce** invece di essere offerto e rotto.
+- `--abort` esce 0 ma **rifiuta esplicitamente di riavvolgere** un HEAD spostato: è `--quit` sotto altro
+  nome, e la conferma non promette più un ripristino che non avverrà.
+- L'intestazione non dice più «manca solo il commit», che chiedeva all'utente di rifare quello che aveva
+  appena fatto.
+
+`Continue` è stato verificato: riprende la serie **senza** duplicare né riscrivere il commit fatto a
+mano, e nessun editor si apre lungo la strada.
+
+## M192 (2026-08-13, `8d819d2ac`) — un revert o cherry-pick fermo si chiude dall'app (feature INEDITA)
+
+Segnalato: fatto un revert e risolto il conflitto, la barra restava su «A revert is in progress» e non
+offriva **niente**. L'app nominava il comando git e mandava l'utente in un terminale.
+
+Il buco era **voluto e scritto**: merge, rebase e bisect avevano un servizio dietro i pulsanti, questi
+no, e *un pulsante che non sa fare il suo mestiere è peggio di nessun pulsante*. Il ragionamento era
+giusto quando è stato scritto; mancava il servizio, e questo lo costruisce. **Uno solo per entrambi**,
+perché git implementa revert e cherry-pick con **un** sequencer.
+
+`--abort` e `--quit` sono stati **misurati**, non descritti a memoria, su stati identici: abort toglie i
+commit che l'operazione ha già fatto e rimette i file com'erano; quit tiene entrambi e si limita a
+dimenticare la sequenza, **marcatori di conflitto compresi**. Sono offerti tutti e due, con etichetta e
+conferma scritte perché la differenza si **legga** invece di indovinarla. `Skip` è assente su
+un'operazione a **un solo commit**, dove è stato misurato essere `abort` sotto altro nome: due pulsanti
+con lo stesso esito sono una domanda a cui l'utente non può rispondere.
+
+**La trappola dell'editor, per la terza volta.** `Continue` fa un commit, quindi apre `core.editor`, e
+scatta **solo su una PTY** — cioè esattamente dove questo port lancia i comandi interattivi.
+Verificato puntando `core.editor` a uno script che registra ed esegue `vim`: su una PTY nuda l'editor
+è partito; attraverso l'app non è partito niente e il commit è stato fatto. `Skip` porta la stessa
+guardia, perché prosegue in passi successivi che committano.
+
+Upstream **non ha** continue né abort per queste due operazioni — la sua barra conosce solo bisect,
+rebase, merge e patch — quindi questo è lavoro **originale** del port, e il codice lo dichiara invece di
+spacciarlo per parità.
+
 ## M191 (2026-08-13, `8e43a7574`) — modificare la lista dei passi del rebase dalla barra
 
 Parità con `FormRebase.cs:304` (`Edit todo`, cioè `git rebase --edit-todo`). Il port non ne aveva
