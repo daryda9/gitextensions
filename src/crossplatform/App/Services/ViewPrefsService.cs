@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace GitExtensions.Avalonia.Services;
@@ -436,6 +437,52 @@ public sealed class RevisionFilterMruEntry : IEquatable<RevisionFilterMruEntry>
 ///  immediate (so the state survives even a hard kill, which skips
 ///  <c>PersistLayout</c> entirely), and the file stays the single source of truth for
 ///  the several editors of the same value.</para>
+///
+///  <para><b>Why the writing is not a plain load-mutate-save.</b> Every preference
+///  surface in the app writes THIS file, and the app runs as more than one process on
+///  purpose: the merge editor is modal, so comparing two merges means two instances.
+///  A read-modify-write with no interlock loses an unrelated preference silently —
+///  instance A loads, instance B loads, A writes, B writes the copy it loaded before
+///  A's change existed, and A's change is gone with nothing logged anywhere. Two
+///  defences, because they cover different failures:</para>
+///
+///  <list type="number">
+///   <item>
+///    <description>
+///     A <c>view-prefs.json.lock</c> sidecar held with <see cref="FileShare.None"/>
+///     across the whole load-mutate-save. A SIDECAR and not the file itself: the write
+///     replaces the target by <c>rename</c>, so a lock taken on the old inode would
+///     protect nothing, and locking the JSON for writing would also fail every
+///     concurrent <see cref="Load"/>. On Linux this is a <c>flock</c>, which the kernel
+///     drops when the owning process dies — so an instance killed mid-write leaves no
+///     stale lock to expire, and this class needs no lock-breaking heuristic.
+///    </description>
+///   </item>
+///   <item>
+///    <description>
+///     The mutation is applied to a state re-read INSIDE that lock, never to whatever
+///     the caller loaded earlier. <see cref="Update"/>'s delegate is already a delta —
+///     it touches only the group its surface owns — so this costs nothing and is what
+///     keeps the file correct even where the lock is not honoured (a filesystem with no
+///     working <c>flock</c>, or the deliberate lockless fall-back below).
+///    </description>
+///   </item>
+///  </list>
+///
+///  <para><b>Why it never blocks the caller.</b> The lock is attempted exactly once,
+///  without waiting. Uncontended — which is every write in a single running instance —
+///  the save happens inline as before, so the value is on disk before the method
+///  returns and still survives a hard kill. Contended, the mutation is handed to a
+///  background pump that does the waiting there instead, so a second instance can never
+///  make this one's UI thread stall on a file. The cost of that choice is a window of a
+///  few milliseconds, in the contended case only, in which a process killed right then
+///  loses the write; the alternative was letting another process decide how long our UI
+///  freezes, which is worse.</para>
+///
+///  <para>The write itself is a temp file plus <c>rename</c>, which is a separate
+///  concern from the lost update and worth doing on its own: it is what stops a process
+///  that dies mid-write from leaving a truncated file, which <see cref="Load"/> would
+///  silently read as "no preferences at all".</para>
 /// </summary>
 public sealed class ViewPrefsService
 {
@@ -456,68 +503,159 @@ public sealed class ViewPrefsService
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    private readonly string _path;
+    /// <summary>
+    ///  How long the background pump waits for the cross-process lock before writing
+    ///  without it. Generous, because nothing is waiting on it; finite, because a lock
+    ///  held by something that is not going to release it must not cost the user a
+    ///  preference. The lockless fall-back still re-reads and merges, so the worst case
+    ///  degrades to the old race rather than to a silent discard.
+    /// </summary>
+    private const int PumpLockWaitMs = 5000;
 
-    public ViewPrefsService() => _path = ResolvePath();
+    /// <summary>
+    ///  Writer state per resolved PATH, shared by every instance in the process. It has
+    ///  to be static: every call site builds its own <c>new ViewPrefsService()</c>, so
+    ///  anything held per instance would serialise nothing at all. Keyed by path rather
+    ///  than a single global, so a test that redirects <c>XDG_CONFIG_HOME</c> gets its
+    ///  own queue instead of inheriting another file's.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, Writer> Writers = new(StringComparer.Ordinal);
+
+    private readonly string _path;
+    private readonly Writer _writer;
+
+    public ViewPrefsService()
+    {
+        _path = ResolvePath();
+        _writer = Writers.GetOrAdd(_path, static _ => new Writer());
+    }
 
     /// <summary>The resolved JSON file path (for diagnostics/tests).</summary>
     public string FilePath => _path;
 
-    /// <summary>Loads persisted preferences; returns defaults if absent or unreadable.</summary>
+    /// <summary>
+    ///  Loads persisted preferences; returns defaults if absent or unreadable.
+    ///
+    ///  <para>Any mutation this process has queued but not yet written is replayed onto
+    ///  what the file says, so a surface that saves and immediately reads back sees its
+    ///  own change even when the write was deferred. Replaying a mutation that has in
+    ///  fact just landed is harmless: every one of them sets a group or promotes an MRU
+    ///  entry, which are idempotent.</para>
+    /// </summary>
     public ViewPrefs Load()
     {
-        try
-        {
-            if (File.Exists(_path))
-            {
-                ViewPrefs? loaded = JsonSerializer.Deserialize<ViewPrefs>(File.ReadAllText(_path), Options);
-                if (loaded is not null)
-                {
-                    return Sanitize(loaded);
-                }
-            }
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → defaults.
-        }
+        ViewPrefs prefs = ReadFile();
 
-        return new ViewPrefs();
-    }
-
-    /// <summary>Writes the given preferences; best-effort (never throws).</summary>
-    public void Save(ViewPrefs prefs)
-    {
-        try
+        Func<ViewPrefs, ViewPrefs>[] queued;
+        lock (_writer.Queue)
         {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
+            if (_writer.InFlight.Count == 0 && _writer.Pending.Count == 0)
             {
-                Directory.CreateDirectory(dir);
+                return prefs;
             }
 
-            File.WriteAllText(_path, JsonSerializer.Serialize(Sanitize(prefs), Options));
-        }
-        catch
-        {
-            // Persistence is best-effort; a failure must not crash the app.
+            queued = [.. _writer.InFlight, .. _writer.Pending];
         }
 
-        // Announced even if the write failed: the in-memory intent still changed.
-        Changed?.Invoke();
+        foreach (Func<ViewPrefs, ViewPrefs> entry in queued)
+        {
+            try
+            {
+                prefs = entry(prefs) ?? prefs;
+            }
+            catch (Exception)
+            {
+                // A preview is a courtesy; a mutation that throws is the writer's problem.
+            }
+        }
+
+        return Sanitize(prefs);
     }
 
     /// <summary>
-    ///  Reads the file, hands the loaded object to <paramref name="mutate"/> and
-    ///  writes it back — the only safe way for one surface to update its own group
-    ///  without reverting another surface's group written meanwhile (the MRU is
-    ///  appended to by a dialog while the diff toolbar is being toggled).
+    ///  Replaces the WHOLE file with <paramref name="prefs"/>; best-effort (never
+    ///  throws). Prefer <see cref="Update"/>: this overload cannot merge, so it reverts
+    ///  any group another instance changed meanwhile — it exists for the caller that
+    ///  genuinely owns the entire document. The object becomes the service's from this
+    ///  call on and must not be mutated afterwards, since the write may be deferred.
+    /// </summary>
+    public void Save(ViewPrefs prefs)
+    {
+        if (prefs is null)
+        {
+            return;
+        }
+
+        Apply(_ => prefs);
+    }
+
+    /// <summary>
+    ///  Applies <paramref name="mutate"/> to the file's current contents and writes the
+    ///  result back — the only safe way for one surface to update its own group without
+    ///  reverting another surface's group written meanwhile (the MRU is appended to by a
+    ///  dialog while the diff toolbar is being toggled, possibly in another instance).
+    ///
+    ///  <para>The delegate is a DELTA, not a whole document, and that is what makes the
+    ///  merge possible: it is handed a state read inside the interlock, at the last
+    ///  moment before the write, so nothing the caller read earlier can go stale.</para>
+    ///
+    ///  <para><b>The one thing a caller must respect.</b> The delegate can therefore run
+    ///  later, and on another thread, than the call that queued it, and it may run more
+    ///  than once (a preview inside <see cref="Load"/> replays it). So it must SET what
+    ///  it means to save, out of state that still means the same thing when it runs — a
+    ///  local captured before the call, not a loop variable and not something a later
+    ///  edit reinterprets. Every call site in the app already does exactly that, and the
+    ///  regression suite under <c>Tests/ViewPrefsRegression</c> demonstrates what
+    ///  closing over a mutating variable costs.</para>
     /// </summary>
     public void Update(Action<ViewPrefs> mutate)
     {
-        ViewPrefs prefs = Load();
-        mutate(prefs);
-        Save(prefs);
+        if (mutate is null)
+        {
+            return;
+        }
+
+        Apply(prefs =>
+        {
+            mutate(prefs);
+            return prefs;
+        });
+    }
+
+    /// <summary>
+    ///  Waits until every deferred write of this file has reached the disk, and reports
+    ///  whether it got there within <paramref name="timeout"/>.
+    ///
+    ///  <para>For tests and for a deliberate shutdown only. The UI never needs it: a
+    ///  write is deferred only when another instance holds the lock, and the pump
+    ///  finishes on its own. It BLOCKS, so it must not be called on the UI thread.</para>
+    /// </summary>
+    public bool Flush(TimeSpan timeout)
+    {
+        long deadline = Environment.TickCount64 + (long)Math.Max(0, timeout.TotalMilliseconds);
+
+        while (true)
+        {
+            lock (_writer.Queue)
+            {
+                if (!_writer.Draining && _writer.Pending.Count == 0)
+                {
+                    return true;
+                }
+            }
+
+            long remaining = deadline - Environment.TickCount64;
+            if (remaining <= 0)
+            {
+                return false;
+            }
+
+            // Waits on the pump's idle signal rather than on its Task: a task started by
+            // someone else is exactly the shape that deadlocks when it needs the thread
+            // doing the waiting (Async.Forget says the same). Re-checked from the top
+            // because the pump can go idle and be restarted between two waits.
+            _ = _writer.Idle.Wait((int)Math.Min(remaining, 25));
+        }
     }
 
     /// <summary>
@@ -540,6 +678,327 @@ public sealed class ViewPrefsService
         {
             mru.RemoveRange(MaxRevisionFilterMru, mru.Count - MaxRevisionFilterMru);
         }
+    }
+
+    // ------------------------------------------------------------------ writing
+    //
+    // One entry of the write queue: given the state read from disk, it returns the state
+    // to write. Update wraps a mutation in it, Save wraps a whole document — one shape,
+    // so the two can never be reordered against each other.
+
+    /// <summary>
+    ///  Everything that serialises the writers of ONE file. Nothing here is per
+    ///  <see cref="ViewPrefsService"/> instance, because the call sites are not: they
+    ///  build a service, write once, and drop it.
+    /// </summary>
+    private sealed class Writer
+    {
+        /// <summary>
+        ///  Serialises this process's own writers. Taken with a zero timeout on the
+        ///  inline path: a thread that cannot have it immediately queues its mutation
+        ///  rather than standing in line, which is what keeps the UI thread free.
+        /// </summary>
+        internal readonly SemaphoreSlim Gate = new(1, 1);
+
+        /// <summary>Guards <see cref="Pending"/>, <see cref="InFlight"/>, <see cref="Draining"/> and <see cref="Pump"/>.</summary>
+        internal readonly object Queue = new();
+
+        /// <summary>Queued and not yet picked up by the pump.</summary>
+        internal readonly List<Func<ViewPrefs, ViewPrefs>> Pending = [];
+
+        /// <summary>Picked up and being written. Still visible to <see cref="Load"/>, so
+        /// the preview does not blink off between the pick-up and the rename.</summary>
+        internal readonly List<Func<ViewPrefs, ViewPrefs>> InFlight = [];
+
+        /// <summary>Whether a pump is running. Flipped only under <see cref="Queue"/>,
+        /// which is what makes "queue work, start a pump if none is running" atomic
+        /// against the pump's own "queue is empty, stop" decision.</summary>
+        internal bool Draining;
+
+        /// <summary>Set whenever no pump is running, so <see cref="Flush"/> can wait for
+        /// the queue to empty without ever joining the pump's task to its own thread.</summary>
+        internal readonly ManualResetEventSlim Idle = new(initialState: true);
+    }
+
+    // The one entry point of the write path: inline when the file is free, queued when
+    // it is not. Never throws, never waits on another process.
+    private void Apply(Func<ViewPrefs, ViewPrefs> entry)
+    {
+        if (TryApplyInline(entry))
+        {
+            // Outside the interlock on purpose: a subscriber is arbitrary code, and one
+            // that wrote back from here would deadlock against a lock we still held.
+            // Announced even if the write failed — the in-memory intent still changed.
+            Changed?.Invoke();
+            return;
+        }
+
+        Defer(entry);
+    }
+
+    private bool TryApplyInline(Func<ViewPrefs, ViewPrefs> entry)
+    {
+        lock (_writer.Queue)
+        {
+            // Order before speed: a write that jumped the queue would be overwritten a
+            // moment later by the older mutation the pump is about to replay on top of
+            // it, which for two edits of the SAME group is the lost update again.
+            if (_writer.Draining || _writer.Pending.Count > 0)
+            {
+                return false;
+            }
+        }
+
+        if (!_writer.Gate.Wait(0))
+        {
+            return false;
+        }
+
+        try
+        {
+            // A single non-blocking attempt. Contention means another instance is in its
+            // own load-mutate-save; waiting for it here would be waiting on a process we
+            // do not control, on whatever thread called us — including the UI one.
+            using FileStream? guard = TryLock();
+            if (guard is null)
+            {
+                return false;
+            }
+
+            WriteMerged([entry]);
+            return true;
+        }
+        catch (Exception)
+        {
+            // Taking the lock itself failed in a way retrying cannot help (no permission
+            // to create the sidecar, say). Deferring would only fail again, slower.
+            return true;
+        }
+        finally
+        {
+            _writer.Gate.Release();
+        }
+    }
+
+    private void Defer(Func<ViewPrefs, ViewPrefs> entry)
+    {
+        lock (_writer.Queue)
+        {
+            _writer.Pending.Add(entry);
+
+            if (!_writer.Draining)
+            {
+                _writer.Draining = true;
+                _writer.Idle.Reset();
+
+                // Started under the lock so that the flag, the signal and the queue can
+                // never disagree. Task.Run only schedules; the pump's first act is to
+                // take this same lock, so it does not run in here.
+                Task.Run(Drain).Forget("saving view preferences");
+            }
+        }
+    }
+
+    // The background writer. Loops rather than handling one batch, so mutations queued
+    // while it was writing do not each pay for a new task. Never throws: it is the body
+    // of a fire-and-forget task, and an exception escaping one of those kills the process.
+    private void Drain()
+    {
+        while (true)
+        {
+            int batch;
+            lock (_writer.Queue)
+            {
+                if (_writer.Pending.Count == 0)
+                {
+                    _writer.Draining = false;
+                    _writer.Idle.Set();
+                    return;
+                }
+
+                _writer.InFlight.AddRange(_writer.Pending);
+                _writer.Pending.Clear();
+                batch = _writer.InFlight.Count;
+            }
+
+            _writer.Gate.Wait();
+            try
+            {
+                // Null means the wait ran out; see PumpLockWaitMs for why that writes
+                // anyway rather than dropping the user's preference.
+                using FileStream? guard = TryLock(PumpLockWaitMs);
+                WriteMerged(_writer.InFlight);
+            }
+            catch (Exception)
+            {
+                // Persistence is best-effort by design, here as everywhere in this class.
+            }
+            finally
+            {
+                _writer.Gate.Release();
+            }
+
+            lock (_writer.Queue)
+            {
+                _writer.InFlight.Clear();
+            }
+
+            // One event per call that was queued, matching what an inline write raises.
+            for (int i = 0; i < batch; i++)
+            {
+                Changed?.Invoke();
+            }
+        }
+    }
+
+    // The load-mutate-save critical section itself, called with the interlock held. The
+    // re-read is the point: each entry is applied as a delta onto whatever is on disk
+    // NOW, so a group another instance wrote while this mutation was being composed
+    // survives instead of being reverted. Never throws.
+    private void WriteMerged(IReadOnlyList<Func<ViewPrefs, ViewPrefs>> entries)
+    {
+        try
+        {
+            ViewPrefs prefs = ReadFile();
+
+            foreach (Func<ViewPrefs, ViewPrefs> entry in entries)
+            {
+                try
+                {
+                    prefs = entry(prefs) ?? prefs;
+                }
+                catch (Exception)
+                {
+                    // One surface's broken mutation must not cost the other surfaces in
+                    // the same batch their preference.
+                }
+            }
+
+            WriteAtomic(Sanitize(prefs));
+        }
+        catch (Exception)
+        {
+            // Persistence is best-effort; a failure must not crash the app.
+        }
+    }
+
+    // Write-then-rename. rename(2) is atomic, so a reader — this process, another
+    // instance, or a person with an editor — sees either the whole old file or the whole
+    // new one, never the half-written middle that a plain WriteAllText leaves behind when
+    // the process dies mid-write. Load() reads such a middle as "no preferences at all",
+    // which is how a truncated file silently resets everything the user had configured.
+    private void WriteAtomic(ViewPrefs prefs)
+    {
+        string? dir = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        string json = JsonSerializer.Serialize(prefs, Options);
+
+        // Named per process and thread, not randomly: a run that is killed at the wrong
+        // instant leaves at most one leftover per writer, which the next write of the
+        // same writer truncates, instead of a growing litter of temp files.
+        string temp = $"{_path}.tmp-{Environment.ProcessId}-{Environment.CurrentManagedThreadId}";
+
+        try
+        {
+            using (FileStream stream = new(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (StreamWriter writer = new(stream))
+            {
+                writer.Write(json);
+                writer.Flush();
+
+                // The rename is only atomic with respect to the bytes the kernel already
+                // has. Forcing them out first is what makes the guarantee survive a
+                // machine that loses power rather than only a process that dies.
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temp, _path, overwrite: true);
+        }
+        catch (Exception)
+        {
+            try
+            {
+                File.Delete(temp);
+            }
+            catch (Exception)
+            {
+                // Nothing else to do about it; the caller swallows either way.
+            }
+
+            throw;
+        }
+    }
+
+    // The cross-process interlock. A sidecar rather than the JSON itself: the write
+    // replaces the target by rename, so a lock on the old inode would guard an inode
+    // nobody writes to any more, and locking the JSON would additionally fail every
+    // concurrent Load. Held only for the duration of one load-mutate-save; released by
+    // the kernel if this process dies holding it, so there is no stale lock to break.
+    private FileStream? TryLock(int waitMs = 0)
+    {
+        string? dir = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        string lockPath = _path + ".lock";
+        long deadline = Environment.TickCount64 + waitMs;
+        int backoff = 1;
+
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, bufferSize: 1);
+            }
+            catch (IOException)
+            {
+                // Held by somebody else; the only failure worth retrying.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // No lock is obtainable here at all (read-only config directory). The
+                // merge in WriteMerged is then the whole defence, which is still better
+                // than refusing to save.
+                return null;
+            }
+
+            if (Environment.TickCount64 >= deadline)
+            {
+                return null;
+            }
+
+            Thread.Sleep(backoff);
+            backoff = Math.Min(backoff * 2, 16);
+        }
+    }
+
+    // The file exactly as it is on disk, with no queued mutation replayed over it — what
+    // a merge has to start from.
+    private ViewPrefs ReadFile()
+    {
+        try
+        {
+            if (File.Exists(_path))
+            {
+                ViewPrefs? loaded = JsonSerializer.Deserialize<ViewPrefs>(File.ReadAllText(_path), Options);
+                if (loaded is not null)
+                {
+                    return Sanitize(loaded);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Missing/corrupt/unreadable → defaults.
+        }
+
+        return new ViewPrefs();
     }
 
     // Replaces missing groups and clamps the few non-bool values. A corrupt bool
