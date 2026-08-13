@@ -1876,7 +1876,7 @@ public sealed class RevisionGridView : UserControl
             // them to announce work happening below the fold would be a lie about what
             // is going on. The overlay's own delay then decides whether a restart is slow
             // enough to be worth saying anything at all.
-            _busy.Show(T("RevisionGridControl/_strLoading.Text", "Loading…"));
+            _busy.Show();
         }
 
         _ = Task.Run(() =>

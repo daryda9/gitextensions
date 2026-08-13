@@ -43,11 +43,6 @@ public sealed class CommitDetailView : UserControl
 
     private static string T(string english) => TranslationService.T(english);
 
-    // The word every pane of this app waits with, taken from the revision grid rather
-    // than invented here: the point of giving each pane the same spinner was to stop each
-    // one having its own name for the same wait.
-    private static string LoadingCaption() => T("RevisionGridControl/_strLoading.Text", "Loading…");
-
     private readonly CommitDetailService _service = new();
     private readonly CommitInfoExtrasService _extrasService = new();
     private readonly CommitInfoSettingsService _settingsService = new();
@@ -680,7 +675,7 @@ public sealed class CommitDetailView : UserControl
         // only thing left on an otherwise blank panel. The line goes blank and comes back
         // as the subject, which is the one thing it is for.
         _status.Text = string.Empty;
-        _busy.Show(LoadingCaption());
+        _busy.Show();
 
         bool wantRemote = _settings.ShowContainedInBranchesRemote
             || _settings.ShowContainedInBranchesRemoteIfNoLocal;

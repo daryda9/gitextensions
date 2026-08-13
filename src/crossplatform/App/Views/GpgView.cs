@@ -167,10 +167,6 @@ public sealed class GpgView : UserControl
     private static string F(string format, params object?[] args)
         => string.Format(CultureInfo.CurrentCulture, format, args);
 
-    // Shared with the revision grid, the left tree and the other detail panes: one spinner
-    // and one word for every wait in the window, instead of a private sentence per pane.
-    private static string LoadingCaption() => T("RevisionGridControl/_strLoading.Text", "Loading…");
-
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(() =>
     {
         if (_placeholder is not null)
@@ -219,7 +215,7 @@ public sealed class GpgView : UserControl
         _commitIcon.IsVisible = false;
         _tagIcon.IsVisible = false;
         SetTagRowVisible(false);
-        _busy.Show(LoadingCaption());
+        _busy.Show();
 
         _ = Task.Run(async () =>
         {

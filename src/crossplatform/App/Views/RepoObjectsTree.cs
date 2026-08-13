@@ -762,7 +762,7 @@ public sealed class RepoObjectsTree : UserControl
         // what the user is waiting for is a tree that matches the repository, and until
         // some pass paints one they are still waiting. The overlay's delay means the
         // reloads that finish quickly never show anything.
-        _loadingOverlay.Show(T("RevisionGridControl/_strLoading.Text", "Loading…"));
+        _loadingOverlay.Show();
 
         Task<RepositoryNavigationSnapshot>? navigationForPass = _navigationSnapshotTask;
         _ = Task.Run(async () =>

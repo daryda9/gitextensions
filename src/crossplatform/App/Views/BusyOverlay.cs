@@ -1,11 +1,8 @@
 using Avalonia;
-using Avalonia.Animation;
-using Avalonia.Animation.Easings;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
 using Avalonia.Layout;
 using Avalonia.Media;
-using Avalonia.Styling;
 using Avalonia.Threading;
 using GitExtensions.Avalonia.Theming;
 
@@ -40,13 +37,24 @@ namespace GitExtensions.Avalonia.Views;
 ///  arrived would make the pane feel slower than it is, which is the opposite of
 ///  what this control is for. It goes up late and comes down at once.</para>
 ///
-///  <para><b>The animation never runs behind an invisible control.</b> It is started
-///  when the spinner is actually revealed and stopped by <see cref="Hide"/> (and by
-///  the control leaving the visual tree). An <see cref="Animation"/> left running on
-///  a collapsed control still ticks the clock and still invalidates its target every
-///  frame — pure battery for nothing, multiplied by however many panes the host has
-///  wired up. Hence the <see cref="CancellationTokenSource"/>: it is the off switch,
-///  not error handling.</para>
+///  <para><b>The rotation is driven by a timer, not by an <c>Animation</c>.</b> The
+///  obvious thing — build an <c>Animation</c> over <c>RotateTransform.Angle</c> and
+///  <c>RunAsync</c> it on the transform — does not merely fail to animate, it THROWS:
+///  Avalonia's <c>TransformAnimator</c> casts the target to <c>Visual</c>, and a
+///  <c>RotateTransform</c> is not one (<c>InvalidCastException</c>, Avalonia 11.3).
+///  That is how this spinner sat frozen for so long: the exception went into a
+///  fire-and-forget continuation and nothing on screen said anything. Animating the
+///  CONTROL's <c>RenderTransform</c> instead is the documented alternative, but it
+///  needs a <c>TransformOperations</c> animator that Avalonia 11.3 does not expose to
+///  code-behind — and this port has no XAML through which the styling pipeline would
+///  register one. A timer that advances the angle is what is left, and for a spinner
+///  it is entirely sufficient.</para>
+///
+///  <para><b>It never runs behind an invisible control.</b> The timer is started when
+///  the spinner is actually revealed and stopped by <see cref="Hide"/> (and by the
+///  control leaving the visual tree). A timer left ticking on a collapsed control
+///  still invalidates its target every frame — pure battery for nothing, multiplied by
+///  however many panes the host has wired up.</para>
 ///
 ///  <para><b>Clicks are swallowed while the spinner is up</b>, and that is a choice
 ///  rather than an accident of drawing a filled scrim. The content underneath is
@@ -91,18 +99,25 @@ public sealed class BusyOverlay : UserControl
     private const double ScrimOpacity = 0.6;
 
     // One turn per second, linear. Anything faster reads as urgency — this is a
-    // background wait, not an alarm — and any easing makes a constant rotation look
-    // like it is stuttering, because a full turn has no start and no end to ease.
+    // background wait, not an alarm — and a constant rate is what makes a rotation
+    // look like rotation: a full turn has no start and no end to ease between.
     private static readonly TimeSpan TurnDuration = TimeSpan.FromSeconds(1);
+
+    // 30 fps. Below it the arc visibly steps; above it costs UI-thread work that
+    // nobody can see on a 28px ring.
+    private static readonly TimeSpan FrameInterval = TimeSpan.FromMilliseconds(33);
+
+    // Derived rather than written as a number, so changing either constant above
+    // keeps the rate honest instead of quietly changing the speed of the turn.
+    private static readonly double DegreesPerFrame =
+        360 * (FrameInterval.TotalMilliseconds / TurnDuration.TotalMilliseconds);
 
     private readonly Border _scrim = new();
     private readonly ShapePath _arc = new();
     private readonly Ellipse _track = new();
-    private readonly TextBlock _caption = new();
     private readonly RotateTransform _rotation = new();
     private readonly DispatcherTimer _reveal;
-
-    private CancellationTokenSource? _spin;
+    private readonly DispatcherTimer _spin;
 
     /// <summary>Builds a hidden overlay. Nothing is drawn and no timer runs until <see cref="Show"/>.</summary>
     public BusyOverlay()
@@ -126,33 +141,19 @@ public sealed class BusyOverlay : UserControl
         _arc.StrokeLineCap = PenLineCap.Round;
         _arc.Data = BuildArc();
 
-        // The transform is held as a field and the animation targets IT, not the Path:
-        // re-creating a RotateTransform per reveal would leave the previous one bound
-        // to a cancelled clock, and the animation needs one stable Animatable to run on.
+        // The transform is held as a field and the timer advances ITS angle, not a
+        // fresh transform per reveal: re-creating one would leave the arc pointing at
+        // a transform nothing is turning any more.
         _arc.RenderTransform = _rotation;
         _arc.RenderTransformOrigin = RelativePoint.Center;
 
-        _caption.FontSize = Metrics.Text.Body;
-        _caption.HorizontalAlignment = HorizontalAlignment.Center;
-        _caption.TextAlignment = TextAlignment.Center;
-        _caption.TextWrapping = TextWrapping.Wrap;
-        _caption.MaxWidth = 260;
-
-        // The caption is collapsed rather than merely emptied, so a captionless
-        // spinner is centred on the pane instead of hanging above an invisible line.
-        _caption.IsVisible = false;
-
-        StackPanel column = new()
+        Panel column = new()
         {
-            Orientation = Orientation.Vertical,
-            Spacing = Metrics.Space.Md,
+            Width = SpinnerSize,
+            Height = SpinnerSize,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Children =
-            {
-                new Panel { Width = SpinnerSize, Height = SpinnerSize, Children = { _track, _arc } },
-                _caption,
-            },
+            Children = { _track, _arc },
         };
 
         // The scrim is its own child under the spinner rather than the background of
@@ -162,6 +163,11 @@ public sealed class BusyOverlay : UserControl
 
         _reveal = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _reveal.Tick += (_, _) => Reveal();
+
+        // Render priority so the turn is paced with the frames it is drawn in; at
+        // Normal it competes with the very loading work the spinner is reporting on.
+        _spin = new DispatcherTimer(DispatcherPriority.Render) { Interval = FrameInterval };
+        _spin.Tick += (_, _) => _rotation.Angle = (_rotation.Angle + DegreesPerFrame) % 360;
 
         // Invisible costs nothing: Avalonia neither measures nor hit-tests a collapsed
         // control, so an idle pane pays for this overlay exactly once, at construction.
@@ -187,20 +193,21 @@ public sealed class BusyOverlay : UserControl
     public TimeSpan Delay { get; set; } = TimeSpan.FromMilliseconds(250);
 
     /// <summary>
-    ///  Requests the spinner, with an optional caption drawn under it. The caption is
-    ///  display text and must already be translated — this control never calls the
-    ///  translation service, because the host knows what it is loading and this does not.
+    ///  Requests the spinner.
     ///
-    ///  <para>Calling it again while busy only updates the caption; it does NOT restart
-    ///  the delay. A load that reports progress by re-showing with a new caption ("Reading
-    ///  refs" → "Walking commits") is still ONE wait as far as the user is concerned, and
+    ///  <para>There is deliberately no caption. Every caller of this control passed the
+    ///  same word — "Loading…" — under a spinner that already means exactly that, so the
+    ///  text said nothing the animation did not and cost a line of layout in every pane.
+    ///  A pane that genuinely needs to explain itself should say so in its own content,
+    ///  where the words can be specific, rather than through the veil that covers it.</para>
+    ///
+    ///  <para>Calling it again while busy does NOT restart the delay. A load that
+    ///  proceeds in steps is still ONE wait as far as the user is concerned, and
     ///  restarting the timer on each step is how a slow multi-step load ends up never
     ///  showing a spinner at all.</para>
     /// </summary>
-    public void Show(string? caption = null)
+    public void Show()
     {
-        SetCaption(caption);
-
         if (IsBusy)
         {
             return;
@@ -283,12 +290,6 @@ public sealed class BusyOverlay : UserControl
         StartSpinning();
     }
 
-    private void SetCaption(string? caption)
-    {
-        _caption.Text = caption;
-        _caption.IsVisible = !string.IsNullOrWhiteSpace(caption);
-    }
-
     private void Paint()
     {
         _scrim.Background = B("App.Window");
@@ -299,63 +300,31 @@ public sealed class BusyOverlay : UserControl
         // how far round the arc has got; without it a lone arc on a dim pane reads as
         // a wandering mark rather than as something turning in place.
         _track.Stroke = B("App.Border");
-        _caption.Foreground = B("App.TextDim");
     }
 
-    // ---- animation ---------------------------------------------------------
+    // ---- rotation ----------------------------------------------------------
 
     private void StartSpinning()
     {
-        if (_spin is not null)
+        // Already turning. Restarting would snap the arc back to twelve o'clock,
+        // which is exactly the flicker a re-Show() must not produce.
+        if (!_spin.IsEnabled)
         {
-            // Already turning. Restarting would snap the arc back to twelve o'clock,
-            // which is exactly the flicker a re-Show() must not produce.
-            return;
+            _spin.Start();
         }
-
-        CancellationTokenSource cts = new();
-        _spin = cts;
-
-        Animation turn = new()
-        {
-            Duration = TurnDuration,
-            IterationCount = IterationCount.Infinite,
-            Easing = new LinearEasing(),
-            Children =
-            {
-                new KeyFrame
-                {
-                    Cue = new Cue(0d),
-                    Setters = { new Setter(RotateTransform.AngleProperty, 0d) },
-                },
-                new KeyFrame
-                {
-                    Cue = new Cue(1d),
-                    Setters = { new Setter(RotateTransform.AngleProperty, 360d) },
-                },
-            },
-        };
-
-        // Fire and observe, never await: the task completes only when the token is
-        // cancelled, so awaiting it here would mean awaiting Hide(). Forget keeps a
-        // fault visible instead of letting it surface later on the finalizer thread.
-        turn.RunAsync(_rotation, cts.Token).Forget("spinner animation");
     }
 
     private void StopSpinning()
     {
-        if (_spin is null)
+        if (!_spin.IsEnabled)
         {
             return;
         }
 
-        _spin.Cancel();
-        _spin.Dispose();
-        _spin = null;
+        _spin.Stop();
 
-        // Cancelling stops the clock but leaves the angle wherever it stopped; the
-        // next reveal has to start from twelve o'clock or it looks like a resumed
-        // animation of the PREVIOUS load.
+        // Stopping leaves the angle wherever it got to; the next reveal has to start
+        // from twelve o'clock or it looks like a resumed turn of the PREVIOUS load.
         _rotation.Angle = 0;
     }
 

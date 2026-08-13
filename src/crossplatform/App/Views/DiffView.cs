@@ -1834,12 +1834,6 @@ public sealed class DiffView : UserControl
 
     private static string LoadingFilesFormat() => T("Loading changed files for {0}…");
 
-    // The one word every pane of this app now waits with — the same string the revision
-    // grid and the left tree hand to their own BusyOverlay. The spinner says "wait", the
-    // status line says what for; splitting the two that way is what stops each pane from
-    // inventing its own vocabulary for the same idea.
-    private static string LoadingCaption() => T("RevisionGridControl/_strLoading.Text", "Loading…");
-
     // Shared changed-file-list loader: clears the panes, loads the file rows off
     // the UI thread, then hands them to the list, which selects the first row and
     // reports it back through SelectedFileChanged (which dispatches on _mode).
@@ -1893,7 +1887,7 @@ public sealed class DiffView : UserControl
         // place that can say WHICH of the two the wait belongs to.
         _status.Text = loadingText;
         _hasCommit = true;
-        _filesBusy.Show(LoadingCaption());
+        _filesBusy.Show();
 
         _ = Task.Run(() =>
         {
@@ -2078,7 +2072,7 @@ public sealed class DiffView : UserControl
 
         _diffPath = row.Name;
         ShowPlaceholder(string.Empty);
-        _patchBusy.Show(LoadingCaption());
+        _patchBusy.Show();
 
         _ = Task.Run(async () =>
         {
@@ -2888,7 +2882,7 @@ public sealed class DiffView : UserControl
         // patch on screen belongs to the previously selected file and is a wrong answer,
         // not merely a stale one, so it goes even though the overlay would have dimmed it.
         ShowPlaceholder(string.Empty);
-        _patchBusy.Show(LoadingCaption());
+        _patchBusy.Show();
 
         // Asked in parallel with the patch, not after it: the answer decides whether the
         // patch about to arrive is worth reading at all, and for an image it is not.
