@@ -101,7 +101,7 @@ public sealed class RepoTabStrip : UserControl
 
     private readonly List<RepoTabEntry> _tabs = [];
     private readonly Dictionary<RepoTabEntry, TabVisual> _visuals = [];
-    private readonly StackPanel _strip = new() { Orientation = Orientation.Horizontal };
+    private readonly TabsPanel _strip = new();
     private readonly ScrollViewer _scroll;
 
     private RepoTabEntry? _active;
@@ -147,6 +147,22 @@ public sealed class RepoTabStrip : UserControl
 
         // Nothing to lay out when no repository is open; the host shows the dashboard.
         IsVisible = false;
+    }
+
+    /// <summary>
+    ///  Hands the row of tabs the width it has to share before it is measured.
+    ///
+    ///  <para>The tabs live in a ScrollViewer, which measures its content with an
+    ///  INFINITE width — that is how a scroller works, and it is why the row could never
+    ///  tell "there is plenty of room" from "the window is half its size". The strip
+    ///  itself is the only control in the chain that is given the real width, so it is
+    ///  the one that has to pass it on. Written before <c>base</c> measures the child, so
+    ///  the new budget is used by the very same pass rather than by the next one.</para>
+    /// </summary>
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        _strip.Budget = availableSize.Width;
+        return base.MeasureOverride(availableSize);
     }
 
     /// <summary>The open repositories, left to right.</summary>
@@ -580,7 +596,7 @@ public sealed class RepoTabStrip : UserControl
 
     private TabVisual Build(RepoTabEntry entry)
     {
-        TextBlock label = new()
+        PathLabel label = new()
         {
             // Placeholder only: the real text is the strip-wide label Sync computes, and
             // Sync always runs before this control can be seen.
@@ -588,7 +604,6 @@ public sealed class RepoTabStrip : UserControl
             FontSize = Metrics.Text.Body,
             Foreground = B("App.Text"),
             VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
             MaxWidth = 220,
         };
 
@@ -624,13 +639,22 @@ public sealed class RepoTabStrip : UserControl
             IsVisible = false,
         };
 
-        StackPanel row = new()
+        // A Grid, not the StackPanel it used to be: a horizontal StackPanel measures its
+        // children with an infinite width, so the label would never learn that the tab
+        // around it had been squeezed and could not decide how to elide. The star column
+        // hands it exactly the room the chip and the close button leave over. The gaps the
+        // StackPanel's Spacing used to draw are margins now, and the chip's is set with
+        // the chip itself so a tab without one keeps the label where it always was.
+        Grid row = new()
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = Metrics.Space.Xs,
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
             VerticalAlignment = VerticalAlignment.Center,
             Children = { checkout, label, close },
         };
+        Grid.SetColumn(checkout, 0);
+        Grid.SetColumn(label, 1);
+        Grid.SetColumn(close, 2);
+        label.Margin = new Thickness(0, 0, Metrics.Space.Xs, 0);
 
         // Row 0 is the 2px accent rule of the active tab; it owns its own layout row so
         // that showing it never moves the label. Row 1 is the tab proper.
@@ -654,6 +678,9 @@ public sealed class RepoTabStrip : UserControl
             // MinHeight, never Height: at the "Large" UI size the label is taller than
             // any fixed row would be, and a clipped repository name is unreadable.
             MinHeight = Metrics.Density.ControlMinHeight,
+            // A squeezed tab is given less width than its content asked for, and without
+            // this the close button would simply paint over its neighbour.
+            ClipToBounds = true,
             Child = body,
         };
         ToolTip.SetTip(root, entry.Path);
@@ -1040,6 +1067,385 @@ public sealed class RepoTabStrip : UserControl
     private static string T(string? key, string english) => TranslationService.T(key, english);
 
     /// <summary>
+    ///  The row of tabs: horizontal, natural width while the tabs fit, and squeezed
+    ///  proportionally down to <see cref="MinTabWidth"/> once they do not.
+    ///
+    ///  <para><b>Why not a StackPanel.</b> A StackPanel gives every tab the width it asks
+    ///  for and lets the total run off the end, which the surrounding ScrollViewer then
+    ///  hides behind a scrollbar. That is the right last resort and the wrong first
+    ///  answer: with three tabs open in a narrow window there is room for all three, just
+    ///  not for all three at full length, and a scrollbar hides a tab that could simply
+    ///  have been shortened. So the width is shared first and scrolled only when even the
+    ///  floor does not fit — the floor being the point below which a tab stops being a
+    ///  label and becomes a stub.</para>
+    ///
+    ///  <para>The shrink is proportional rather than equal: a long label needs more of the
+    ///  room than a short one, and equal shares would elide <c>api</c> to make space no
+    ///  <c>api</c> needs. Tabs that reach the floor stop giving and the remainder is
+    ///  re-shared among the rest, which is why this iterates instead of scaling once.</para>
+    /// </summary>
+    private sealed class TabsPanel : Panel
+    {
+        // Enough for the chrome (insets, chip, close button) plus a few characters of
+        // name. Below this a tab carries no information and only costs the tabs that
+        // still could carry some.
+        private const double MinTabWidth = 96;
+
+        private double _budget = double.PositiveInfinity;
+        private double[] _widths = [];
+
+        /// <summary>
+        ///  The width the whole row has to fit into — the strip's own width, which the
+        ///  ScrollViewer in between cannot pass down (it measures with infinity).
+        /// </summary>
+        internal double Budget
+        {
+            set
+            {
+                // Guarded, because this is written from a measure pass: assigning the
+                // same number back must not invalidate anything, or the layout would
+                // never settle.
+                if (value.Equals(_budget))
+                {
+                    return;
+                }
+
+                _budget = value;
+                InvalidateMeasure();
+            }
+        }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            _widths = new double[Children.Count];
+            double natural = 0;
+            double height = 0;
+            for (int i = 0; i < Children.Count; i++)
+            {
+                Children[i].Measure(new Size(double.PositiveInfinity, availableSize.Height));
+                _widths[i] = Children[i].DesiredSize.Width;
+                natural += _widths[i];
+                height = Math.Max(height, Children[i].DesiredSize.Height);
+            }
+
+            double budget = Math.Min(_budget, availableSize.Width);
+            if (double.IsInfinity(budget) || natural <= budget || Children.Count == 0)
+            {
+                return new Size(natural, height);
+            }
+
+            Squeeze(_widths, budget);
+
+            // Measured a second time at the width each tab has actually been given: that
+            // is the only way the label inside hears about the squeeze.
+            double total = 0;
+            for (int i = 0; i < Children.Count; i++)
+            {
+                Children[i].Measure(new Size(_widths[i], availableSize.Height));
+                total += _widths[i];
+                height = Math.Max(height, Children[i].DesiredSize.Height);
+            }
+
+            return new Size(total, height);
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            double x = 0;
+            for (int i = 0; i < Children.Count; i++)
+            {
+                double width = i < _widths.Length ? _widths[i] : Children[i].DesiredSize.Width;
+                Children[i].Arrange(new Rect(x, 0, width, finalSize.Height));
+                x += width;
+            }
+
+            return new Size(Math.Max(x, finalSize.Width), finalSize.Height);
+        }
+
+        // Scale everything by the same factor; whatever that would push under the floor is
+        // pinned there and taken out of the pot, and what is left is re-shared among the
+        // rest. At most one tab is pinned per round, so this terminates.
+        private static void Squeeze(double[] widths, double budget)
+        {
+            bool[] pinned = new bool[widths.Length];
+            for (int round = 0; round <= widths.Length; round++)
+            {
+                double free = budget;
+                double flexible = 0;
+                for (int i = 0; i < widths.Length; i++)
+                {
+                    if (pinned[i])
+                    {
+                        free -= widths[i];
+                    }
+                    else
+                    {
+                        flexible += widths[i];
+                    }
+                }
+
+                if (flexible <= 0 || free <= 0)
+                {
+                    // Even the floors overflow: the ScrollViewer takes it from here.
+                    return;
+                }
+
+                double scale = free / flexible;
+                if (scale >= 1)
+                {
+                    return;
+                }
+
+                bool hitFloor = false;
+                for (int i = 0; i < widths.Length; i++)
+                {
+                    // A tab already narrower than the floor is left alone rather than
+                    // grown to it: the floor is a limit on shrinking, not a size.
+                    double floor = Math.Min(MinTabWidth, widths[i]);
+                    if (!pinned[i] && widths[i] * scale < floor)
+                    {
+                        widths[i] = floor;
+                        pinned[i] = true;
+                        hitFloor = true;
+                    }
+                }
+
+                if (!hitFloor)
+                {
+                    for (int i = 0; i < widths.Length; i++)
+                    {
+                        if (!pinned[i])
+                        {
+                            widths[i] = widths[i] * scale;
+                        }
+                    }
+
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///  A one-line label for a path-shaped tab title, which shortens from the MIDDLE.
+    ///
+    ///  <para><b>Why not <see cref="TextTrimming.CharacterEllipsis"/>.</b> The strip's
+    ///  labels are paths — <c>pluma_orchestrator/ai-server/core/api</c> — and an ordinary
+    ///  end ellipsis cuts exactly the segment that identifies the tab, leaving
+    ///  <c>pluma_orchestrator/ai-server/co…</c>: the part every sibling tab shares is kept
+    ///  and the part that tells them apart is thrown away. So the LAST segment is never
+    ///  touched, and the prefix is what pays.</para>
+    ///
+    ///  <para><b>The order of degradation</b>, each step used only when the one before it
+    ///  does not fit the width the tab was actually given:</para>
+    ///  <list type="number">
+    ///   <item><description><c>pluma_orchestrator/ai-server/core/api</c> — all of it;</description></item>
+    ///   <item><description><c>pluma_orchestrator/…/core/api</c>, then
+    ///     <c>pluma_orchestrator/…/api</c> — the head is kept and the middle collapses one
+    ///     segment at a time, nearest the head first, because the segments next to the
+    ///     leaf are the ones that place it;</description></item>
+    ///   <item><description><c>…/core/api</c>, then <c>…/api</c> — the head goes too;</description></item>
+    ///   <item><description><c>plum…</c> — the leaf itself trimmed at its end, and only
+    ///     here, where half a name still beats no name.</description></item>
+    ///  </list>
+    ///
+    ///  <para>Segments are dropped whole rather than abbreviated to their initial
+    ///  (<c>p…/a…/core/api</c>): an initial reads as a name so the eye tries to expand it,
+    ///  and a row of them is noise at exactly the moment the tab is short of room. One
+    ///  <c>…</c> says "there is more here" once and is the form editors, shells and file
+    ///  choosers have already taught everyone.</para>
+    ///
+    ///  <para>Every candidate is MEASURED with the same typeface, size, weight and style
+    ///  the text is drawn with — <c>pluma_orchestrator</c> and <c>iiiiiiiiiiiiiiiii</c> are
+    ///  the same seventeen characters and nothing like the same width — and it is measured
+    ///  against <see cref="Visual.Bounds"/>, so the answer follows the tab through a
+    ///  window resize, a neighbour opening or closing, and the weight change that comes
+    ///  with becoming the active tab. The full path stays on the tooltip: the elision is
+    ///  for the glance, never for the information.</para>
+    /// </summary>
+    private sealed class PathLabel : Control
+    {
+        private const string Ellipsis = "…";
+
+        private string _text = "";
+        private double _fontSize = Metrics.Text.Body;
+        private FontWeight _fontWeight = FontWeight.Normal;
+        private FontStyle _fontStyle = FontStyle.Normal;
+        private IBrush? _foreground;
+
+        private string? _shown;
+        private double _shownFor = -1;
+
+        internal PathLabel() =>
+            // The elided string is computed for a width and drawn at it; a stale frame
+            // would spill over its neighbour rather than simply look wrong.
+            ClipToBounds = true;
+
+        internal string Text
+        {
+            get => _text;
+            set => Set(ref _text, value ?? "");
+        }
+
+        internal double FontSize
+        {
+            get => _fontSize;
+            set => Set(ref _fontSize, value);
+        }
+
+        internal FontWeight FontWeight
+        {
+            get => _fontWeight;
+            set => Set(ref _fontWeight, value);
+        }
+
+        internal FontStyle FontStyle
+        {
+            get => _fontStyle;
+            set => Set(ref _fontStyle, value);
+        }
+
+        internal IBrush? Foreground
+        {
+            get => _foreground;
+            set
+            {
+                // Colour alone never changes what fits, so it repaints and nothing more.
+                if (!ReferenceEquals(_foreground, value))
+                {
+                    _foreground = value;
+                    InvalidateVisual();
+                }
+            }
+        }
+
+        public override void Render(DrawingContext context)
+        {
+            if (_text.Length == 0 || Bounds.Width <= 0)
+            {
+                return;
+            }
+
+            FormattedText text = Format(Fit(Bounds.Width));
+
+            // Centred on the row rather than sat on the baseline: the tab's height is the
+            // chrome's, not the text's.
+            context.DrawText(text, new Point(0, Math.Max(0, (Bounds.Height - text.Height) / 2)));
+        }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            FormattedText full = Format(_text);
+
+            // Rounded UP, so a label asked to render at exactly its own desired width is
+            // never elided by a fraction of a pixel it cannot see.
+            double width = Math.Ceiling(full.Width);
+            return new Size(Math.Min(width, availableSize.Width), Math.Ceiling(full.Height));
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            // Avalonia does not repaint a control merely because it was arranged smaller,
+            // and the whole text of this one is a function of that width.
+            if (!finalSize.Width.Equals(_shownFor))
+            {
+                InvalidateVisual();
+            }
+
+            return base.ArrangeOverride(finalSize);
+        }
+
+        private void Set<T>(ref T field, T value)
+        {
+            if (EqualityComparer<T>.Default.Equals(field, value))
+            {
+                return;
+            }
+
+            field = value;
+            _shown = null;
+            _shownFor = -1;
+            InvalidateMeasure();
+            InvalidateVisual();
+        }
+
+        // The longest form that fits, cached for the width it was chosen for: Render runs
+        // on every repaint (hover, activation, a neighbour's animation) and the answer
+        // only ever changes with the width or the text.
+        private string Fit(double width)
+        {
+            if (_shown is not null && width.Equals(_shownFor))
+            {
+                return _shown;
+            }
+
+            _shown = Choose(width);
+            _shownFor = width;
+            return _shown;
+        }
+
+        private string Choose(double width)
+        {
+            if (Fits(_text, width))
+            {
+                return _text;
+            }
+
+            string[] parts = _text.Split('/');
+            if (parts.Length > 1)
+            {
+                // Head kept, middle collapsing from the head end down to nothing.
+                for (int keep = parts.Length - 2; keep >= 1; keep--)
+                {
+                    string candidate = parts[0] + "/" + Ellipsis + "/" + string.Join('/', parts[^keep..]);
+                    if (Fits(candidate, width))
+                    {
+                        return candidate;
+                    }
+                }
+
+                // Head gone as well; the tail keeps shedding its outermost segment.
+                for (int keep = parts.Length - 1; keep >= 1; keep--)
+                {
+                    string candidate = Ellipsis + "/" + string.Join('/', parts[^keep..]);
+                    if (Fits(candidate, width))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+
+            // Last resort: the leaf itself, cut at its end. Half a repository name is the
+            // only thing left that still says which repository this is.
+            string leaf = parts[^1];
+            for (int length = leaf.Length - 1; length >= 1; length--)
+            {
+                string candidate = leaf[..length] + Ellipsis;
+                if (Fits(candidate, width))
+                {
+                    return candidate;
+                }
+            }
+
+            return Ellipsis;
+        }
+
+        private bool Fits(string text, double width) =>
+
+            // Half a pixel of slack: the width offered comes from a layout pass that has
+            // already rounded, and losing a whole segment to that rounding is visible.
+            Format(text).Width <= width + 0.5;
+
+        private FormattedText Format(string text) => new(
+            text,
+            System.Globalization.CultureInfo.CurrentCulture,
+            FlowDirection.LeftToRight,
+            new Typeface(this.GetValue(TextBlock.FontFamilyProperty), _fontStyle, _fontWeight),
+            _fontSize,
+            _foreground ?? Brushes.Transparent);
+    }
+
+    /// <summary>
     ///  One tab's controls plus the two bits of state that decide how it is painted.
     ///  Kept together so the paint is a single function of (active, hovered) and cannot
     ///  drift between the four call sites that trigger it.
@@ -1048,7 +1454,7 @@ public sealed class RepoTabStrip : UserControl
         RepoTabEntry entry,
         Border root,
         Border accent,
-        TextBlock label,
+        PathLabel label,
         Button close,
         Border checkout)
     {
@@ -1084,6 +1490,11 @@ public sealed class RepoTabStrip : UserControl
             checkout.IsVisible = checkoutColour is not null;
             checkout.Width = checkoutColour is null ? 0 : 3;
             checkout.Background = checkoutColour ?? Brushes.Transparent;
+            // The gap belongs to the chip, so a tab without one starts its label flush
+            // against the tab's own inset exactly as it did before the chip existed.
+            checkout.Margin = checkoutColour is null
+                ? default
+                : new Thickness(0, 0, Metrics.Space.Xs, 0);
             // Italic IS the preview state — the one visual difference the user has to
             // read at a glance before double-clicking makes it permanent.
             label.FontStyle = entry.Pinned ? FontStyle.Normal : FontStyle.Italic;
