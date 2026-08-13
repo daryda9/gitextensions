@@ -25,6 +25,18 @@ namespace GitExtensions.Avalonia.Services;
 ///  reachable from the menu either, so it is not reachable from here.
 /// </param>
 /// <param name="Invoke">What the menu item / hotkey does. Never called when disabled.</param>
+/// <param name="IsChecked">
+///  For a command that is a toggle (a View check option, a language radio), whether it
+///  is on RIGHT NOW; <see langword="null"/> for the commands that are not toggles.
+///  Read from the menu item's own <c>IsChecked</c> — the state is not recomputed here,
+///  because the menu already holds the only copy that is kept in step with the grid.
+/// </param>
+/// <param name="DisabledReason">
+///  Why this command is greyed, when — and ONLY when — the gating itself said so at the
+///  moment it disabled the item. Null everywhere else, deliberately: a guessed reason
+///  ("no repository open" next to something disabled for an unrelated cause) is worse
+///  than no reason at all, because the user acts on it.
+/// </param>
 public sealed record PaletteEntry(
     string Id,
     string Path,
@@ -32,7 +44,9 @@ public sealed record PaletteEntry(
     string? IconName,
     string? Gesture,
     bool IsEnabled,
-    Action Invoke)
+    Action Invoke,
+    bool? IsChecked = null,
+    string? DisabledReason = null)
 {
     /// <summary>
     ///  What the row shows and what the matcher runs over: "Repository ▸ Manage
@@ -230,7 +244,9 @@ public sealed class CommandPaletteService
 
         for (int j = 0; j < n; j++)
         {
-            if (Same(target[j], query[0]))
+            // A pair's low half can only ever be entered from its high half (see
+            // PairedLow), so an alignment may not START on one.
+            if (Same(target[j], query[0]) && !PairedLow(target, j))
             {
                 best[0, j] = CharScore(target, j, contiguous: false, labelStart);
                 parent[0, j] = -1;
@@ -248,7 +264,10 @@ public sealed class CommandPaletteService
 
             for (int j = 1; j < n; j++)
             {
-                if (j >= 2 && best[i - 1, j - 2] > runningBest)
+                // A pair's high half may only be left towards its low half, which is
+                // adjacent — so a paired high can never be a LOOSE predecessor, and is
+                // kept out of the running maximum entirely (see PairedHigh).
+                if (j >= 2 && best[i - 1, j - 2] > runningBest && !PairedHigh(target, j - 2))
                 {
                     runningBest = best[i - 1, j - 2];
                     runningIndex = j - 2;
@@ -268,7 +287,9 @@ public sealed class CommandPaletteService
                     from = j - 1;
                 }
 
-                if (runningBest > NoScore)
+                // ...and symmetrically, a paired low may only be ENTERED from j - 1, so
+                // the loose transition is not offered for it.
+                if (runningBest > NoScore && !PairedLow(target, j))
                 {
                     int loose = runningBest + CharScore(target, j, contiguous: false, labelStart);
                     if (loose > candidate)
@@ -290,7 +311,9 @@ public sealed class CommandPaletteService
         int total = NoScore;
         for (int j = 0; j < n; j++)
         {
-            if (best[m - 1, j] > total)
+            // Ending on a pair's high half would leave its low half unmatched — the
+            // torn-character case again, at the other end of the alignment.
+            if (best[m - 1, j] > total && !PairedHigh(target, j))
             {
                 total = best[m - 1, j];
                 end = j;
@@ -347,4 +370,25 @@ public sealed class CommandPaletteService
            || (char.IsUpper(target[index]) && !char.IsUpper(target[index - 1]));
 
     private static bool Same(char a, char b) => char.ToLowerInvariant(a) == char.ToLowerInvariant(b);
+
+    // The two halves of one astral character (an emoji in a repository path, a plugin
+    // name, a branch name that reached a menu caption) are two UTF-16 units here, and
+    // the table above aligns UNITS. Left alone it happily takes the high half of one
+    // pair and the low half of another — each half following a pair reads as a word
+    // start, which outbids the honest contiguous alignment — and the row renderer
+    // (CommandPaletteWindow.Fill) cuts the caption into runs exactly at the hit indices,
+    // so that answer is drawn as two broken halves of two different characters.
+    //
+    // The rule that prevents it is local and therefore free: a pair's low half may only
+    // be reached from its high half, and its high half may only be left towards its low
+    // half. Enforced at the four places an alignment can touch a boundary — where it
+    // starts, where it ends, and the two kinds of transition — which together mean a
+    // pair is either matched whole or not matched at all. A query holding a LONE half
+    // consequently matches nothing, which is the honest answer: half a character is not
+    // a character.
+    private static bool PairedLow(string target, int index)
+        => index > 0 && char.IsLowSurrogate(target[index]) && char.IsHighSurrogate(target[index - 1]);
+
+    private static bool PairedHigh(string target, int index)
+        => index + 1 < target.Length && char.IsHighSurrogate(target[index]) && char.IsLowSurrogate(target[index + 1]);
 }

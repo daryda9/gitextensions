@@ -37,9 +37,11 @@ namespace GitExtensions.Avalonia.Views;
 ///
 ///  <para><b>Disabled commands are shown, greyed, and cannot be run.</b> Filtering them
 ///  out was the alternative and it is worse: "why is there no Commit here" has no answer
-///  the user can see, whereas a greyed row with "unavailable" next to it says the
-///  command exists and something about the repository is why it is not offered — the
-///  same message the menu gives by greying rather than hiding.</para>
+///  the user can see, whereas a greyed row says the command exists and something about
+///  the repository is why it is not offered — the same message the menu gives by greying
+///  rather than hiding. The row quotes the actual cause ("needs a working tree") when
+///  <see cref="MainMenu.Enable"/> stated one when it greyed the item, and says only
+///  "unavailable" when it did not; nothing here infers a cause.</para>
 /// </summary>
 public sealed class CommandPaletteWindow : Theming.ZoomWindow
 {
@@ -255,7 +257,12 @@ public sealed class CommandPaletteWindow : Theming.ZoomWindow
         Grid row = new()
         {
             Height = RowHeight,
-            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
+
+            // icon · caption · toggle state · gesture-or-reason. The state has a column
+            // of its own rather than sharing the trailing one: a checkable entry can
+            // carry a shortcut too ("Show tags" has one), and the two would otherwise
+            // have to be glued into one string.
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto"),
         };
 
         // A fixed-width cell whether or not there is an icon, so the captions line up
@@ -283,15 +290,43 @@ public sealed class CommandPaletteWindow : Theming.ZoomWindow
         Grid.SetColumn(caption, 1);
         row.Children.Add(caption);
 
+        // Whether the toggle is ON, in words rather than as a tick.
+        //
+        // A tick would have to live in the icon gutter (checkable entries carry no icon,
+        // so the cell is free) and that is exactly what makes it useless here: an empty
+        // gutter would mean both "this option is off" and "this row is not a toggle and
+        // simply has no icon", and the two are indistinguishable in a list that mixes
+        // them row by row. The menu can get away with the ambiguity because a checkable
+        // item sits among its own kind; the palette cannot. "off" said out loud is also
+        // the only version a screen reader can convey.
+        if (entry.IsChecked is { } check)
+        {
+            TextBlock state = new()
+            {
+                Text = check ? T("on") : T("off"),
+                Foreground = !entry.IsEnabled ? _dim : check ? _accent : _dim,
+                FontSize = Metrics.Text.Caption,
+                FontWeight = check ? Metrics.Text.ActiveWeight : Metrics.Text.BodyWeight,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(Metrics.Space.Md, 0, 0, 0),
+            };
+            Grid.SetColumn(state, 2);
+            row.Children.Add(state);
+        }
+
         TextBlock trailing = new()
         {
-            Text = entry.IsEnabled ? entry.Gesture ?? string.Empty : T("unavailable"),
+            // A greyed row says WHY when the gating stated a reason (see
+            // MainMenu.Enable) and falls back to the bare "unavailable" when it did not.
+            Text = entry.IsEnabled
+                ? entry.Gesture ?? string.Empty
+                : entry.DisabledReason ?? T("unavailable"),
             Foreground = _dim,
             FontSize = Metrics.Text.Caption,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(Metrics.Space.Md, 0, 0, 0),
         };
-        Grid.SetColumn(trailing, 2);
+        Grid.SetColumn(trailing, 3);
         row.Children.Add(trailing);
 
         return row;

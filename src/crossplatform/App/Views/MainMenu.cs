@@ -115,6 +115,11 @@ public sealed class MainMenu : UserControl
     // FormBrowse.cs. Refilled by every Build().
     private readonly Dictionary<string, MenuItem> _gated = new(StringComparer.Ordinal);
 
+    // Why each currently greyed entry is grey, keyed by the item itself (reference
+    // identity: the item IS the key, so a rebuilt menu cannot inherit a stale reason).
+    // Written only by Enable, which is the only code that knows the answer.
+    private readonly Dictionary<MenuItem, string> _gateReason = [];
+
     // Last values pushed in by the host window: kept so a language switch can
     // rebuild the menu without the host having to re-supply them.
     private IReadOnlyList<string> _recentRepositories = [];
@@ -1137,6 +1142,15 @@ public sealed class MainMenu : UserControl
                 Header = captured.Replace("_", "__"),
                 ToggleType = MenuItemToggleType.Radio,
                 IsChecked = string.Equals(captured, _currentLanguage, StringComparison.OrdinalIgnoreCase),
+
+                // Offered to the command palette like any other leaf. It was withheld at
+                // first over stale captions, and that fear does not survive contact with
+                // how the palette works: MainWindow rebuilds the row list on every open,
+                // and choosing a language CLOSES the window before the switch runs, so
+                // there is no moment at which a row can be showing a caption from the
+                // previous language. The id is the catalogue name — already untranslated
+                // and stable, which is exactly what the MRU needs.
+                Tag = new Leaf(captured, IconName: null, () => LanguageRequested?.Invoke(captured)),
             };
             item.Click += (_, _) => LanguageRequested?.Invoke(captured);
             _language.Items.Add(item);
@@ -1263,23 +1277,30 @@ public sealed class MainMenu : UserControl
 
         // FormBrowse.cs:1014-1019 — needs a work tree.
         bool live = !_isBare;
-        Enable("manageSubmodules", live);
-        Enable("updateAllSubmodules", live);
-        Enable("synchronizeAllSubmodules", live);
-        Enable("editgitignore", live);
-        Enable("editGitAttributes", live);
-        Enable("editmailmap", live);
+
+        // The two causes this method ever has for greying something, spelled once and
+        // handed to the very call that applies them, so the palette can quote the cause
+        // rather than guess it. Short, because they are drawn inside a list row.
+        string noWorkTree = T(null, "needs a working tree");
+        string noCommit = T(null, "needs a commit selected");
+
+        Enable("manageSubmodules", live, noWorkTree);
+        Enable("updateAllSubmodules", live, noWorkTree);
+        Enable("synchronizeAllSubmodules", live, noWorkTree);
+        Enable("editgitignore", live, noWorkTree);
+        Enable("editGitAttributes", live, noWorkTree);
+        Enable("editmailmap", live, noWorkTree);
 
         // FormBrowse.cs:1025-1034 and the "not operating on selected revision" block
         // of CommandsToolStripMenuItem_DropDownOpening (:2359-2366).
-        Enable("commit", live);
-        Enable("undoLastCommit", live);
-        Enable("pull", live);
-        Enable("stash", live);
-        Enable("reset", live);
-        Enable("cleanup", live);
-        Enable("applyPatch", live);
-        Enable("reflog", live);
+        Enable("commit", live, noWorkTree);
+        Enable("undoLastCommit", live, noWorkTree);
+        Enable("pull", live, noWorkTree);
+        Enable("stash", live, noWorkTree);
+        Enable("reset", live, noWorkTree);
+        Enable("cleanup", live, noWorkTree);
+        Enable("applyPatch", live, noWorkTree);
+        Enable("reflog", live, noWorkTree);
 
         // :2338-2352 — one real (non-artificial) commit to operate on. "New branch"
         // additionally needs a work tree to check the branch out into; "New tag" does
@@ -1296,8 +1317,11 @@ public sealed class MainMenu : UserControl
         // A selection containing an artificial (work-tree / index) row still disables
         // them, which is upstream's rule and unchanged.
         bool noSelection = _selectedCount == 0;
-        Enable("branch", (singleNormalCommit || noSelection) && live);
-        Enable("tag", singleNormalCommit || noSelection);
+        // Which of the two clauses actually failed decides which reason is quoted; when
+        // both fail the work-tree one is the honest headline, because no selection can
+        // rescue a bare repository.
+        Enable("branch", (singleNormalCommit || noSelection) && live, live ? noCommit : noWorkTree);
+        Enable("tag", singleNormalCommit || noSelection, noCommit);
 
         // FormBrowse.cs:2347-2349 — bisectToolStripMenuItem shares that block's
         // singleNormalCommit && !IsBareRepository() test. An empty selection is
@@ -1305,7 +1329,7 @@ public sealed class MainMenu : UserControl
         // need a revision to open, and with two selected it offers range seeding, so
         // upstream's strict count == 1 would only make the entry dead after a refresh
         // that dropped the selection.
-        Enable("bisect", (_selectionIsNormal || noSelection) && live);
+        Enable("bisect", (_selectionIsNormal || noSelection) && live, live ? noCommit : noWorkTree);
 
         // The two port-extra utility windows. Both live in menus that are hidden
         // outright without a valid repository, so this only has to answer the bare
@@ -1319,7 +1343,7 @@ public sealed class MainMenu : UserControl
         //    single work-tree action inside, and git refuses it with a plain message —
         //    so it is not registered as gated at all, exactly like the neighbour it was
         //    placed under, "Remote repositories…".
-        Enable("branchTagWorkbench", live);
+        Enable("branchTagWorkbench", live, noWorkTree);
     }
 
     /// <summary>
@@ -1372,13 +1396,16 @@ public sealed class MainMenu : UserControl
         List<PaletteEntry> entries = [];
         foreach (MenuItem top in _topLevel)
         {
-            Collect(top, path: string.Empty, reachable: true, entries);
+            Collect(top, path: string.Empty, reachable: true, inheritedReason: null, entries);
         }
 
         return entries;
     }
 
-    private static void Collect(MenuItem item, string path, bool reachable, List<PaletteEntry> into)
+    /// <param name="inheritedReason">Why the nearest disabled ancestor is disabled, if
+    /// it said. An item inside a greyed submenu is greyed for the submenu's reason, and
+    /// that reason is the true one for the leaf as well — it is the same gate.</param>
+    private void Collect(MenuItem item, string path, bool reachable, string? inheritedReason, List<PaletteEntry> into)
     {
         if (!item.IsVisible)
         {
@@ -1388,6 +1415,12 @@ public sealed class MainMenu : UserControl
         bool live = reachable && item.IsEnabled;
         string caption = Caption(item.Header);
 
+        // A reason from this item outranks one inherited from an ancestor (it is nearer
+        // the truth); an enabled item contributes none and simply passes the chain's on.
+        string? reason = item.IsEnabled
+            ? inheritedReason
+            : _gateReason.TryGetValue(item, out string? own) ? own : inheritedReason;
+
         if (item.Items.Count > 0)
         {
             string child = path.Length == 0 ? caption : path + CommandPaletteService.PathSeparator + caption;
@@ -1395,7 +1428,7 @@ public sealed class MainMenu : UserControl
             {
                 if (entry is MenuItem sub)
                 {
-                    Collect(sub, child, live, into);
+                    Collect(sub, child, live, reason, into);
                 }
             }
 
@@ -1414,7 +1447,14 @@ public sealed class MainMenu : UserControl
             leaf.IconName,
             item.InputGesture?.ToString(),
             live,
-            leaf.Invoke));
+            leaf.Invoke,
+
+            // The tick as the menu holds it. ToggleType is what separates "this command
+            // is off" from "this command is not a toggle": IsChecked is a plain bool and
+            // reads false for every ordinary entry, which would draw the whole menu as
+            // switched off.
+            item.ToggleType == MenuItemToggleType.None ? null : item.IsChecked,
+            live ? null : reason));
     }
 
     /// <summary>
@@ -1448,11 +1488,31 @@ public sealed class MainMenu : UserControl
         return plain.ToString();
     }
 
-    private void Enable(string name, bool enabled)
+    /// <summary>
+    ///  Greys or restores a gated entry and, when greying it, records WHY.
+    ///
+    ///  <para>The reason is stated here, at the one place that knows it, and never
+    ///  inferred later: <see cref="EnumerateCommands"/> shows it next to the greyed
+    ///  palette row, and a palette row that explains a command with a cause that is
+    ///  merely plausible would send the user off to fix the wrong thing. An entry
+    ///  disabled without a reason therefore stays reasonless all the way to the row.</para>
+    /// </summary>
+    private void Enable(string name, bool enabled, string? reason = null)
     {
-        if (_gated.TryGetValue(name, out MenuItem? item))
+        if (!_gated.TryGetValue(name, out MenuItem? item))
         {
-            item.IsEnabled = enabled;
+            return;
+        }
+
+        item.IsEnabled = enabled;
+
+        if (enabled || reason is null)
+        {
+            _gateReason.Remove(item);
+        }
+        else
+        {
+            _gateReason[item] = reason;
         }
     }
 
