@@ -875,10 +875,16 @@ public sealed class RepositoryProgressBanner : UserControl
     ///    commit, so the bar says the operation is <i>ready to finish</i> rather than
     ///    telling the user to resolve conflicts that are not there.</item>
     ///  </list>
-    ///  The step counter is only shown for a real series (git keeps no sequencer directory
-    ///  for a one-commit operation, so there is no "1 of 1" to invent), and the commit git
-    ///  stopped on comes from <c>CHERRY_PICK_HEAD</c>/<c>REVERT_HEAD</c>. Nothing is
-    ///  guessed: what git did not record is simply left out.
+    ///  …and a third one, which only <see cref="SequencerSessionState.HasStoppedMarker"/>
+    ///  can tell apart: the stopped step has already been committed by hand and only the
+    ///  remainder of the series is outstanding.
+    ///  <para>The step counter is only shown for a real series (git keeps no sequencer
+    ///  directory for a one-commit operation, so there is no "1 of 1" to invent) whose
+    ///  marker is still there to anchor it — see
+    ///  <see cref="SequencerSessionState.HasStepCount"/> for the double count that rules the
+    ///  third case out — and the commit git stopped on comes from
+    ///  <c>CHERRY_PICK_HEAD</c>/<c>REVERT_HEAD</c>, so it too is simply absent there.
+    ///  Nothing is guessed: what git did not record is left out.</para>
     /// </summary>
     private static string DescribeSequencer(SequencerSessionState sequencer)
     {
@@ -891,10 +897,20 @@ public sealed class RepositoryProgressBanner : UserControl
                 System.Globalization.CultureInfo.CurrentCulture,
                 T("{0} is currently in progress with merge conflicts."),
                 noun)
-            : string.Format(
-                System.Globalization.CultureInfo.CurrentCulture,
-                T("{0} is in progress — nothing left to resolve, only the commit is missing."),
-                noun);
+            : !sequencer.HasStoppedMarker
+                // Third situation, and the reason this branch exists: the step git stopped
+                // on has already been committed, by hand, from somewhere else — that is the
+                // only way the marker can be gone while the series is still open. Saying
+                // "only the commit is missing" here would tell the user to do again what
+                // they have just done. What is actually missing is the rest of the series.
+                ? string.Format(
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    T("{0} is in progress — the step it stopped on is already committed; the rest of the series is waiting."),
+                    noun)
+                : string.Format(
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    T("{0} is in progress — nothing left to resolve, only the commit is missing."),
+                    noun);
 
         if (sequencer.HasStepCount)
         {
@@ -1150,9 +1166,17 @@ public sealed class RepositoryProgressBanner : UserControl
             // only "stop", it is "put back", and it reaches commits that are already on the
             // branch. Written to be told apart from Quit's confirmation at a glance, since
             // the two buttons sit next to each other.
-            confirm: _sequencerState.IsRevert
-                ? T("Abort the revert?\n\nEverything goes back to how it was before the revert started: the revert commits it has already made are removed, and your files are restored. Conflict resolutions you have not committed are lost.")
-                : T("Abort the cherry-pick?\n\nEverything goes back to how it was before the cherry-pick started: the commits it has already applied are removed, and your files are restored. Conflict resolutions you have not committed are lost."),
+            // …except once the stopped step has been committed by hand, where git refuses to
+            // rewind past a commit it did not make ("you seem to have moved HEAD, not
+            // rewinding", exit 0, nothing touched — measured; see SequencerSessionService
+            // .Abort). Promising a restore that git will not perform is the worst kind of
+            // wrong confirmation: the user agrees to lose work and instead loses nothing,
+            // and only finds out by inspecting the log afterwards.
+            confirm: !_sequencerState.HasStoppedMarker
+                ? T("Stop the operation?\n\nGit will not undo anything here: the commit you made by hand moved the branch, so it refuses to rewind past it. Nothing is removed and no file is restored — the operation simply ends, and the commits of the series still to come are dropped.")
+                : _sequencerState.IsRevert
+                    ? T("Abort the revert?\n\nEverything goes back to how it was before the revert started: the revert commits it has already made are removed, and your files are restored. Conflict resolutions you have not committed are lost.")
+                    : T("Abort the cherry-pick?\n\nEverything goes back to how it was before the cherry-pick started: the commits it has already applied are removed, and your files are restored. Conflict resolutions you have not committed are lost."),
             (repo, emit) => Outcome(_sequencer.Abort(repo, _sequencerState, emit)))
         : _rebaseState.InProgress
             ? RunSessionAsync(
@@ -1182,7 +1206,13 @@ public sealed class RepositoryProgressBanner : UserControl
         $"{SequencerVerb} --quit",
         confirm: _sequencerState.HasUnresolvedConflicts
             ? T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: the commits it has already made stay on your branch, and your files stay exactly as they are — including the unresolved conflict, which you will then have to finish or undo by hand.")
-            : T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: the commits it has already made stay on your branch, and your files stay exactly as they are, staged and uncommitted. Any commits of the series still to come are dropped."),
+            // Without the marker the step is already committed and the work tree is
+            // typically clean, so the "staged and uncommitted" half of the sentence below
+            // would describe files that do not exist. What is true in that state, and all
+            // that is true, is that the remaining steps are dropped.
+            : !_sequencerState.HasStoppedMarker
+                ? T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: every commit already on your branch stays, and no file is touched. Only the commits of the series still to come are dropped.")
+                : T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: the commits it has already made stay on your branch, and your files stay exactly as they are, staged and uncommitted. Any commits of the series still to come are dropped."),
         (repo, emit) => Outcome(_sequencer.Quit(repo, _sequencerState, emit)));
 
     // The three session services report the same shape through three distinct record types;

@@ -215,6 +215,46 @@ public sealed class RepositoryStateService
                 return new RepositoryProgress(RepositoryOperation.Revert, bisect);
             }
 
+            // The two marker files above are git's fast path, and they are gone the
+            // moment the stopped step gets committed — a plain `git commit` from a
+            // terminal is enough, and git deletes them without ending the sequence
+            // (sequencer_post_commit_cleanup). Measured on git 2.43, mid-way through a
+            // three-commit pick: after committing the conflicted step by hand,
+            // CHERRY_PICK_HEAD was gone while `.git/sequencer/todo` still listed the
+            // whole series, `git status` still said "Cherry-pick in corso" and
+            // `--continue` still replayed the rest. Reading only the markers therefore
+            // hid the banner on a sequence that was still open — the dead end the
+            // banner's buttons exist to close, re-opened by another door.
+            //
+            // Falling back to the sequencer directory is git's own answer, in git's own
+            // order: wt-status.c stats the two marker files first and then calls
+            // sequencer_get_last_command, which decides pick against revert from the
+            // FIRST command in the todo. The verb is read rather than guessed because
+            // the two operations spell every command differently, and sending
+            // `cherry-pick --abort` to a repository that is reverting is precisely the
+            // mistake the caller cannot recover from.
+            //
+            // It comes after the rebase tests for the same reason those come first: an
+            // interactive rebase keeps its steps in rebase-merge/git-rebase-todo and
+            // never here, and has already been claimed above — so this cannot turn a
+            // paused `rebase -i` into a cherry-pick.
+            // The verb test itself lives in SequencerSessionService, which needs the very
+            // same answer to decide whether the banner gets buttons; one implementation so
+            // the two can never disagree about what is stopped here.
+            RepositoryOperation sequenced = SequencerSessionService.ReadSequencerOperation(
+                Path.Combine(gitDir, "sequencer", "todo"));
+            if (sequenced != RepositoryOperation.None)
+            {
+                // No step count on purpose. In exactly this state the todo still lists
+                // the step that was just committed by hand — git only drops an entry
+                // when `--continue` advances past it (measured: the todo shrank from
+                // three lines to two only after the continue, not after the commit) —
+                // so a count built from "applied plus pending" counts that step twice
+                // and reads "step 2 of 4" for a three-commit series. A missing counter
+                // is silence; a wrong one is a lie about the repository.
+                return new RepositoryProgress(sequenced, bisect);
+            }
+
             return bisect
                 ? new RepositoryProgress(RepositoryOperation.None, true)
                 : RepositoryProgress.None;

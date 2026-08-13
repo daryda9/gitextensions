@@ -50,9 +50,19 @@ public sealed record SequencerCommandResult(bool Success, string Output);
 /// <param name="StoppedSha">
 ///  The commit git is stopped on — the content of <c>CHERRY_PICK_HEAD</c>/<c>REVERT_HEAD</c>,
 ///  abbreviated. For a revert this is the commit being <i>undone</i>, not the commit being
-///  created.
+///  created. Null when there is no marker to read it from — see
+///  <paramref name="HasStoppedMarker"/>; an invented one would name the wrong commit.
 /// </param>
 /// <param name="SequencerDir">The resolved <c>.git/sequencer</c> path, or "" when there is none.</param>
+/// <param name="HasStoppedMarker">
+///  True when this session was recognised by <c>CHERRY_PICK_HEAD</c>/<c>REVERT_HEAD</c>,
+///  false when only <c>.git/sequencer/todo</c> was left to recognise it by — which is the
+///  state a sequence is in after the stopped step has been committed by hand, because git
+///  deletes the marker on any commit without ending the sequence
+///  (<c>sequencer_post_commit_cleanup</c>). The distinction is not cosmetic: three of the
+///  facts below are only true while the marker is there, and each of them was measured
+///  rather than reasoned about.
+/// </param>
 public sealed record SequencerSessionState(
     bool InProgress,
     RepositoryOperation Operation = RepositoryOperation.None,
@@ -60,7 +70,8 @@ public sealed record SequencerSessionState(
     int PendingSteps = 0,
     int AppliedSteps = 0,
     string? StoppedSha = null,
-    string SequencerDir = "")
+    string SequencerDir = "",
+    bool HasStoppedMarker = false)
 {
     /// <summary>Nothing stopped — also the answer for "no repository" and for every failure.</summary>
     public static SequencerSessionState None { get; } = new(false);
@@ -77,8 +88,22 @@ public sealed record SequencerSessionState(
     /// </summary>
     public bool HasSequence => PendingSteps > 0;
 
-    /// <summary>True when a "step N of M" can be shown, i.e. there is a series.</summary>
-    public bool HasStepCount => PendingSteps > 0;
+    /// <summary>
+    ///  True when a "step N of M" can be shown: there is a series <b>and</b> the marker is
+    ///  still there to anchor the count.
+    ///
+    ///  <para><b>Why the marker is part of the condition.</b> The count is "already applied
+    ///  plus still listed", and those two sets overlap by exactly one entry once the stopped
+    ///  step has been committed by hand: git drops a todo entry only when <c>--continue</c>
+    ///  advances past it, never on a plain commit. Measured on git 2.43, three-commit pick
+    ///  stopped on the first and committed from a shell: <c>sequencer/head..HEAD</c> was
+    ///  <b>1</b> while the todo still listed <b>3</b> — so the counter would have read
+    ///  "Step 2 of 4" for a series of three, wrong in both numbers. There is nothing left on
+    ///  disk to correct it with (the todo does not say which of its entries is already
+    ///  committed), so the counter is suppressed instead of repaired. A missing counter is
+    ///  silence; a wrong one is a lie about the repository.</para>
+    /// </summary>
+    public bool HasStepCount => HasStoppedMarker && PendingSteps > 0;
 
     /// <summary>1-based number of the step git is stopped on.</summary>
     public int Step => AppliedSteps + 1;
@@ -91,6 +116,11 @@ public sealed record SequencerSessionState(
     ///  left. Same rule, and same reason, as
     ///  <see cref="RebaseSessionState.CanContinue"/> — git refuses to commit over an
     ///  unmerged index.
+    ///  <para>Deliberately not narrowed for the markerless state: measured on git 2.43, a
+    ///  three-commit pick whose first step was resolved and committed from a shell replayed
+    ///  the remaining two on <c>--continue</c> and exited 0, with the hand-made commit
+    ///  neither repeated nor rewritten. Continue is precisely the command git's own hint
+    ///  points at there.</para>
     /// </summary>
     public bool CanContinue => InProgress && !HasUnresolvedConflicts;
 
@@ -105,12 +135,23 @@ public sealed record SequencerSessionState(
     ///  outcome is a question the user has to answer without being able to. So the button
     ///  is not offered there; <c>Abort</c> already says what happens, in the words that are
     ///  true in every case.</para>
+    ///
+    ///  <para><b>Why not without the marker.</b> This is the one button whose rule the
+    ///  markerless state really does change, and only measuring showed it. From a sequence
+    ///  whose stopped step was committed by hand, git 2.43 refuses: <c>--skip</c> exits
+    ///  <b>128</b> with <i>"nothing to skip / have you committed already? try
+    ///  --continue"</i>, for both <c>cherry-pick</c> and <c>revert</c>, leaving the session
+    ///  exactly as it was. There is nothing to skip because the step git would drop has
+    ///  already produced its commit. Offering the button there would be offering a
+    ///  guaranteed error.</para>
     /// </summary>
-    public bool CanSkip => InProgress && HasSequence;
+    public bool CanSkip => InProgress && HasStoppedMarker && HasSequence;
 
     /// <summary>
     ///  <c>--abort</c> can run — for the whole duration. Destructive: the caller confirms
-    ///  first. See <see cref="SequencerSessionService.Abort"/> for exactly what it undoes.
+    ///  first. See <see cref="SequencerSessionService.Abort"/> for exactly what it undoes,
+    ///  including the one state where it undoes <b>nothing</b> and the confirmation has to
+    ///  say so (<see cref="HasStoppedMarker"/> false).
     /// </summary>
     public bool CanAbort => InProgress;
 
@@ -187,6 +228,12 @@ public sealed class SequencerSessionService
     ///  <see cref="RepositoryStateService.GetProgress"/> orders its own tests the same way
     ///  and for the same reason.</para>
     ///
+    ///  <para><b>The markers are not the only proof.</b> They are git's fast path and they
+    ///  are gone the moment the stopped step is committed by hand, while the sequence lives
+    ///  on; so when neither is there the todo file is asked instead, and what it can no
+    ///  longer answer is reported as unknown rather than reconstructed — see
+    ///  <see cref="SequencerSessionState.HasStoppedMarker"/>.</para>
+    ///
     ///  <para>Everything but the applied-step count is read off the disk, and the one git
     ///  process is only spawned once a session is confirmed, so an idle repository still
     ///  costs nothing.</para>
@@ -219,9 +266,11 @@ public sealed class SequencerSessionService
             // where git records the commit it is stopped on.
             string cherryPickHead = Path.Combine(gitDir, "CHERRY_PICK_HEAD");
             string revertHead = Path.Combine(gitDir, "REVERT_HEAD");
+            string sequencerDir = Path.Combine(gitDir, "sequencer");
+            string todo = Path.Combine(sequencerDir, "todo");
 
             RepositoryOperation operation;
-            string headMarker;
+            string? headMarker;
             if (File.Exists(revertHead))
             {
                 operation = RepositoryOperation.Revert;
@@ -234,19 +283,47 @@ public sealed class SequencerSessionService
             }
             else
             {
-                return SequencerSessionState.None;
-            }
+                // No marker, but possibly still a live sequence: git deletes
+                // CHERRY_PICK_HEAD/REVERT_HEAD on *any* commit and does not end the
+                // operation with it (sequencer_post_commit_cleanup), so committing the
+                // conflicted step from a terminal leaves the todo, and `git status`
+                // saying "Cherry-pick in progress", with no marker at all.
+                //
+                // The same fallback, read the same way, as
+                // RepositoryStateService.GetProgress — and literally the same code: this
+                // method is where it lives, and that one calls it. Two answers to "is a
+                // pick or a revert stopped here?" that could drift apart is a bug waiting
+                // to happen, and it would be an ugly one, since the state service decides
+                // whether the bar appears while this one decides whether it has buttons:
+                // disagreement is exactly the text-only dead end this unit exists to
+                // close. The verb of the first todo command is also git's own rule
+                // (wt-status.c -> sequencer_get_last_command).
+                //
+                // Ordering is safe: the rebase directory was refused above, and a
+                // `rebase -i` keeps its steps in rebase-merge/git-rebase-todo, never here.
+                operation = ReadSequencerOperation(todo);
+                if (operation == RepositoryOperation.None)
+                {
+                    return SequencerSessionState.None;
+                }
 
-            string sequencerDir = Path.Combine(gitDir, "sequencer");
+                headMarker = null;
+            }
 
             return new SequencerSessionState(
                 InProgress: true,
                 Operation: operation,
                 HasUnresolvedConflicts: HasUnresolvedConflicts(repoPath),
-                PendingSteps: CountCommands(Path.Combine(sequencerDir, "todo")),
+                PendingSteps: CountCommands(todo),
                 AppliedSteps: CountApplied(module, Path.Combine(sequencerDir, "head")),
-                StoppedSha: ReadHash(headMarker),
-                SequencerDir: Directory.Exists(sequencerDir) ? sequencerDir : string.Empty);
+                // Only ever the marker's own content. Without it the commit git is stopped
+                // on is not recorded anywhere this can read — the todo lists the whole
+                // series and does not say which entry is current — so the fact is left out
+                // rather than guessed from the first line, which would name a commit that
+                // has in fact already been applied.
+                StoppedSha: headMarker is null ? null : ReadHash(headMarker),
+                SequencerDir: Directory.Exists(sequencerDir) ? sequencerDir : string.Empty,
+                HasStoppedMarker: headMarker is not null);
         }
         catch
         {
@@ -304,6 +381,14 @@ public sealed class SequencerSessionService
     ///  added was gone from the work tree, and the index was clean. It restores, in one
     ///  word — including work the user did in the conflict and has not committed.
     ///  Destructive: the caller confirms first.
+    ///  <para><b>Except when the marker is gone</b> — the state described in
+    ///  <see cref="SequencerSessionState.HasStoppedMarker"/>. Measured on git 2.43, same
+    ///  three-commit pick with the stopped step committed by hand: <c>--abort</c> exits 0
+    ///  but prints <i>"you seem to have moved HEAD, not rewinding"</i> and leaves the branch,
+    ///  the files and the index untouched — it only ends the operation, which makes it
+    ///  <see cref="Quit"/> under another name. Git's own refusal to rewind past a commit it
+    ///  did not make; nothing here can or should override it, but the confirmation the user
+    ///  reads must not promise a restore that will not happen.</para>
     /// </summary>
     public SequencerCommandResult Abort(string repoPath, SequencerSessionState state, Action<string> emit)
         => Run(repoPath, state, "--abort", emit, env: null);
@@ -407,6 +492,65 @@ public sealed class SequencerSessionService
         }
 
         return new SequencerCommandResult(exit == 0, log.ToString());
+    }
+
+    /// <summary>
+    ///  Which operation a <c>.git/sequencer/todo</c> describes, taken from the verb of its
+    ///  first real command. <see cref="RepositoryOperation.None"/> when the file is absent,
+    ///  empty, unreadable or spelled with a verb this cannot vouch for.
+    ///
+    ///  <para>Git writes exactly two verbs into a sequencer todo — <c>pick</c> (also
+    ///  abbreviated <c>p</c>, which is what an edited todo can come back as) and
+    ///  <c>revert</c>, which has no abbreviation. A todo whose first command is neither is
+    ///  not something this port knows how to name, and answering
+    ///  <see cref="RepositoryOperation.None"/> merely hides the banner, which is the safe
+    ///  direction both callers are built on.</para>
+    ///
+    ///  <para>It lives here, next to the service that has to spell the commands with that
+    ///  verb, and <see cref="RepositoryStateService.GetProgress"/> calls it rather than
+    ///  keeping a second copy: the two are answering the same question about the same file,
+    ///  and if they ever answered it differently the bar would appear without buttons, or
+    ///  worse, send <c>cherry-pick --abort</c> to a repository that is reverting.</para>
+    ///
+    ///  <para>Blank lines and <c>#</c> comments are skipped: git generates none, but a todo
+    ///  that has been through an editor can carry them.</para>
+    /// </summary>
+    internal static RepositoryOperation ReadSequencerOperation(string todoPath)
+    {
+        try
+        {
+            if (!File.Exists(todoPath))
+            {
+                return RepositoryOperation.None;
+            }
+
+            foreach (string raw in File.ReadLines(todoPath))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0 || line[0] == '#')
+                {
+                    continue;
+                }
+
+                // The verb is the first whitespace-delimited word; everything after it is
+                // the commit and its subject, which say nothing about the operation.
+                int end = line.IndexOfAny([' ', '\t']);
+                string verb = end < 0 ? line : line[..end];
+
+                return verb switch
+                {
+                    "pick" or "p" => RepositoryOperation.CherryPick,
+                    "revert" => RepositoryOperation.Revert,
+                    _ => RepositoryOperation.None,
+                };
+            }
+
+            return RepositoryOperation.None;
+        }
+        catch
+        {
+            return RepositoryOperation.None;
+        }
     }
 
     /// <summary>
