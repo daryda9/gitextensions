@@ -1669,7 +1669,9 @@ public sealed class DiffView : UserControl
     /// </summary>
     private DiffSide ResolveSide(DiffFileRow row, bool newVersion)
     {
-        bool workingTree = _forceWorkingTreeCompare || _mode == CompareMode.WorkingTree;
+        // The forced comparison is answered on its own below; everything from here on
+        // is a list whose rows describe the very pair being shown.
+        bool workingTree = _mode == CompareMode.WorkingTree;
 
         // A rename or a copy has both sides; only a pure add or a pure delete is
         // missing one, and which one it is follows from the direction of the change.
@@ -1680,7 +1682,49 @@ public sealed class DiffView : UserControl
             _ => true,
         };
 
-        if (!_forceWorkingTreeCompare && IsArtificialMode)
+        // "Compare file to working directory" REDIRECTS the pair without rebuilding
+        // the list: the rows still describe the commit against its PARENT, while the
+        // two sides now shown are the selected commit and the file on disk. Every
+        // answer above is therefore about the wrong comparison here — row.Kind says
+        // what the commit DID to the file, not what either of these two sides holds —
+        // and the captions were stating three falsehoods that git contradicts:
+        // an added file's old side read "does not exist" while the pane showed
+        // `<commit>:<path>`, a deleted one's old side named a commit the path is
+        // absent from, and a rename's old side named the pre-rename path, which that
+        // commit no longer has. Resolved against the ACTUAL pair instead, and from
+        // data already in hand — no git call, so no probe for the UI thread to wait on.
+        if (_forceWorkingTreeCompare)
+        {
+            // Old side: the file as the selected commit left it, hence under its NEW
+            // name (the commit that renamed it has only that one) and present unless
+            // this very commit is what removed it — the one Kind that still answers a
+            // question about the commit's own tree.
+            // New side: the working tree, so existence is a fact about the disk. A
+            // stat of a local path is not a git run: no process, no repository lock,
+            // microseconds — the thing this must not do is block on git.
+            return newVersion
+                ? new DiffSide(null, row.Name, WorkingTreeHas(row.Name))
+                : new DiffSide(_commitHash, row.Name, row.Kind != DiffChangeKind.Deleted);
+        }
+
+        // A row that carries its own pair belongs to ONE section of a multi-revision
+        // list, and both of its sides are THAT section's — the same rule the patch
+        // loader already applies, and for the same reason: clicking a file under
+        // "Diff BASE with A" is asking about base..A, not about the pane's extremes.
+        // Measured before this was added, with two divergent tips selected: a file
+        // added under "Diff BASE with A" was captioned "does not exist ↔ @ <B tip>"
+        // while `git cat-file -p <B tip>:a_only.txt` says the path is not in B at all
+        // and the left pane was showing content — it had been read from the pane's own
+        // base (the A tip) instead of the section's. Existence needs no adjusting here:
+        // row.Kind describes precisely the pair being restored.
+        if (row.SecondRev is { Length: > 0 } && row.FirstRev is { Length: > 0 })
+        {
+            return newVersion
+                ? new DiffSide(row.SecondRev, row.Name, exists)
+                : new DiffSide(row.FirstRev, row.OldName ?? row.Name, exists);
+        }
+
+        if (IsArtificialMode)
         {
             bool index = _mode == CompareMode.Index;
             return new DiffSide(
@@ -1702,6 +1746,23 @@ public sealed class DiffView : UserControl
                     : _commitHash + "^",
             row.OldName ?? row.Name,
             exists);
+    }
+
+    // Whether the working tree holds <paramref name="path"/> at all — the only
+    // honest source for the "new" side of a comparison against the disk, since no
+    // revision records it. A directory counts: a submodule row IS one, and calling
+    // an initialised submodule absent would be the same class of false statement
+    // this method exists to prevent. Deliberately not inferred from the pane's
+    // content: a zero-byte file that exists reads exactly like an absent one.
+    private bool WorkingTreeHas(string path)
+    {
+        if (_repoPath is null)
+        {
+            return false;
+        }
+
+        string full = Path.Combine(_repoPath, path);
+        return File.Exists(full) || Directory.Exists(full);
     }
 
     /// <summary>
