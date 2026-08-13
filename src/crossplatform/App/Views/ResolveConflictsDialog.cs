@@ -57,6 +57,9 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     private readonly string _repoPath;
     private readonly ConflictService _service = new();
     private readonly ExternalToolService _externalTools = new();
+    private readonly RerereService _rerere = new();
+    private readonly SubmoduleConflictService _submodules = new();
+    private readonly MergeToolService _mergeService = new();
 
     private readonly ListBox _files;
     private readonly TextBlock _header;
@@ -73,6 +76,33 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     private readonly TextBlock _baseName;
     private readonly TextBlock _theirName;
 
+    // ---- rerere (reuse recorded resolution) ---------------------------------
+    // Everything git already does silently, made visible: whether it is on and WHY,
+    // what it has already resolved on the user's behalf, and the way out.
+    private readonly Border _rerereBanner;
+    private readonly TextBlock _rerereBannerTitle;
+    private readonly TextBlock _rerereBannerDetail;
+    private readonly CheckBox _rerereEnabled;
+    private readonly CheckBox _rerereAutoUpdate;
+    private readonly Button _rerereCache;
+    private readonly TextBlock _rerereReplayed;
+    private readonly Expander _rerereDiff;
+    private readonly TextBox _rerereDiffText;
+    private readonly RowDefinition _diffRow;
+
+    // ---- guided refusal ------------------------------------------------------
+    // Shown INSTEAD of an error when the built-in merge cannot open a file: the same
+    // sentence a message box would have carried, plus the ways out that actually
+    // apply to this file. A user told only "cannot merge" stops there.
+    private readonly Border _guided;
+    private readonly TextBlock _guidedWhy;
+    private readonly TextBlock _guidedNote;
+    private readonly Button _guidedOurs;
+    private readonly Button _guidedTheirs;
+    private readonly Button _guidedImages;
+    private readonly Button _guidedSubmodule;
+
+    private readonly MenuItem _ctxForget = new();
     private readonly MenuItem _ctxMergeHere = new();
     private readonly MenuItem _ctxOpenInTool = new();
     private readonly MenuItem _ctxMarkResolved = new();
@@ -86,6 +116,9 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     private readonly bool _inRebase;
 
     private IReadOnlyList<ConflictEntry> _conflicts;
+    private string? _refusedPath;
+    private RerereSnapshot _rerereState;
+    private IReadOnlyList<string> _rerereReplayedPaths;
     private bool _busy;
 
     /// <summary>
@@ -100,12 +133,16 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         string repoPath,
         IReadOnlyList<ConflictEntry> conflicts,
         string? mergeTool,
-        bool inRebase)
+        bool inRebase,
+        RerereSnapshot rerereState,
+        IReadOnlyList<string> rerereReplayedPaths)
     {
         _repoPath = repoPath;
         _conflicts = conflicts;
         _mergeTool = mergeTool;
         _inRebase = inRebase;
+        _rerereState = rerereState;
+        _rerereReplayedPaths = rerereReplayedPaths;
 
         IBrush text = Brush("App.Text", Brushes.Gainsboro);
         IBrush dim = Brush("App.TextDim", Brushes.Gray);
@@ -116,7 +153,11 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
         Title = T("FormResolveConflicts/$this.Text", "Resolve merge conflicts");
         Width = 720;
-        Height = 480;
+
+        // 480 before rerere; the extra height is what the banner and the replay rows
+        // need when they are all present — with the applied diff open as well — and it
+        // costs a taller empty window otherwise.
+        Height = 620;
         MinWidth = 460;
         MinHeight = 320;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -153,6 +194,10 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
             Foreground = text,
             BorderBrush = border,
             BorderThickness = new Thickness(1),
+
+            // The list is the point of the window: whatever else opens below it (the
+            // rerere diff, the replay note) may take the rest, never all of it.
+            MinHeight = 96,
         };
         _files.SelectionChanged += (_, _) => OnSelectionChanged();
         _files.DoubleTapped += (_, _) => OpenSelectedInMergeTool();
@@ -201,7 +246,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         {
             MinWidth = 130,
             HorizontalContentAlignment = HorizontalAlignment.Center,
-            Content = IconText.Header("Merge", T("FormResolveConflicts/merge.Text", "Merge")),
+            Content = IconText.Header("Merge", MergeCaption),
         };
 
         // The Merge button opens the port's OWN editor (MergeToolWindow), not the
@@ -273,6 +318,186 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         AddAt(sides, _labelTheirs, 2, 0);
         AddAt(sides, _theirName, 2, 1);
 
+        // ---- guided refusal --------------------------------------------------
+        // Built once and kept hidden. Its buttons do not implement anything of their
+        // own: they call the very actions the context menu calls, so a side kept from
+        // here and a side kept from there cannot drift apart.
+        _guidedWhy = new TextBlock
+        {
+            Foreground = text,
+            FontWeight = FontWeight.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        _guidedNote = new TextBlock
+        {
+            Foreground = dim,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = Metrics.Text.Caption,
+            Margin = new Thickness(0, Metrics.Space.Xs, 0, 0),
+        };
+
+        _guidedOurs = new Button { MinWidth = 150, Margin = new Thickness(0, Metrics.Space.Sm, Metrics.Space.Sm, 0) };
+        _guidedOurs.Click += (_, _) =>
+        {
+            HideGuided();
+            _ = ChooseSideAsync(ConflictChoice.Ours);
+        };
+
+        _guidedTheirs = new Button { MinWidth = 150, Margin = new Thickness(0, Metrics.Space.Sm, Metrics.Space.Sm, 0) };
+        _guidedTheirs.Click += (_, _) =>
+        {
+            HideGuided();
+            _ = ChooseSideAsync(ConflictChoice.Theirs);
+        };
+
+        _guidedImages = new Button
+        {
+            IsVisible = false,
+            Margin = new Thickness(0, Metrics.Space.Sm, Metrics.Space.Sm, 0),
+            Content = new TextBlock { Text = T("Compare them as pictures…") },
+        };
+        ToolTip.SetTip(_guidedImages, T(
+            "Opens the two versions side by side, one over the other, and as a map of the pixels "
+            + "that differ — the only way to decide between two images."));
+        _guidedImages.Click += (_, _) => _ = CompareImagesAsync();
+
+        _guidedSubmodule = new Button
+        {
+            IsVisible = false,
+            Margin = new Thickness(0, Metrics.Space.Sm, Metrics.Space.Sm, 0),
+            Content = new TextBlock { Text = ChooseCommitCaption },
+        };
+        _guidedSubmodule.Click += (_, _) => _ = ChooseSubmoduleCommitAsync();
+
+        // Wrapping and not a row: the two side buttons carry a size and a date, which
+        // is the whole point of them, and on a narrow window a row would push the
+        // second one off the edge — measured at 720px, the default width.
+        WrapPanel guidedButtons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Children = { _guidedOurs, _guidedTheirs, _guidedImages, _guidedSubmodule },
+        };
+
+        _guided = new Border
+        {
+            Background = Brush("App.PanelAlt", Brushes.DimGray),
+            BorderBrush = border,
+            BorderThickness = new Thickness(1),
+            CornerRadius = Metrics.Radius.MdCorner,
+            Padding = new Thickness(Metrics.Space.Md, Metrics.Space.Sm),
+            Margin = new Thickness(0, Metrics.Space.Sm, 0, 0),
+            IsVisible = false,
+            Child = new StackPanel { Children = { _guidedWhy, _guidedNote, guidedButtons } },
+        };
+
+        // ---- rerere ---------------------------------------------------------
+        // The banner exists ONLY while rerere is active, and it says which of the two
+        // ways it got there. The second one is the reason this whole block exists: an
+        // <git-dir>/rr-cache directory left behind by a past experiment turns rerere on
+        // with NOTHING in the configuration to point at, so git rewrites the user's
+        // conflicts and no view in any client explains why.
+        _rerereBannerTitle = new TextBlock
+        {
+            Foreground = text,
+            FontWeight = FontWeight.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        _rerereBannerDetail = new TextBlock
+        {
+            Foreground = dim,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = Metrics.Text.Caption,
+            Margin = new Thickness(0, Metrics.Space.Xs, 0, 0),
+        };
+        _rerereBanner = new Border
+        {
+            Background = Brush("App.PanelAlt", Brushes.DimGray),
+            BorderBrush = border,
+            BorderThickness = new Thickness(1),
+            CornerRadius = Metrics.Radius.MdCorner,
+            Padding = new Thickness(Metrics.Space.Md, Metrics.Space.Sm),
+            Margin = new Thickness(0, 0, 0, Metrics.Space.Sm),
+            Child = new StackPanel { Children = { _rerereBannerTitle, _rerereBannerDetail } },
+        };
+
+        // The switches live OUTSIDE the banner, in a strip that is always there: when
+        // rerere is off there is no banner to hang them on, and "how do I turn this on"
+        // is exactly the question a user who just lost an afternoon to a rebase has.
+        _rerereEnabled = new CheckBox
+        {
+            Content = new TextBlock { Text = T("Reuse recorded conflict resolutions (rerere)") },
+            Foreground = text,
+        };
+        ToolTip.SetTip(_rerereEnabled, T(
+            "git remembers how you resolve a conflict and replays that resolution the next time "
+            + "the same conflict appears — on a long rebase, the same hunk is otherwise resolved "
+            + "once per commit."));
+        _rerereEnabled.Click += (_, _) => _ = SetRerereEnabledAsync(_rerereEnabled.IsChecked == true);
+
+        _rerereAutoUpdate = new CheckBox
+        {
+            Content = new TextBlock { Text = T("Stage replayed resolutions automatically") },
+            Foreground = text,
+        };
+        ToolTip.SetTip(_rerereAutoUpdate, T(
+            "rerere.autoupdate. Off, a replayed resolution is written into the file but left "
+            + "unmerged, so you still have to look at it before staging — that review is the last "
+            + "moment a wrongly remembered resolution can be caught. On, it is staged for you."));
+        _rerereAutoUpdate.Click += (_, _) => _ = SetRerereAutoUpdateAsync(_rerereAutoUpdate.IsChecked == true);
+
+        _rerereCache = new Button
+        {
+            Content = new TextBlock { Text = T("Recorded resolutions…") },
+        };
+        ToolTip.SetTip(_rerereCache, T("Inspect what rerere has stored for this repository."));
+        _rerereCache.Click += (_, _) => _ = ShowRerereCacheAsync();
+
+        StackPanel rerereStrip = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Metrics.Space.Md,
+            Margin = new Thickness(0, 0, 0, Metrics.Space.Sm),
+            Children = { _rerereEnabled, _rerereAutoUpdate, _rerereCache },
+        };
+
+        // The gain, spelled out: these are the files the user does NOT have to resolve.
+        // Nothing else in the app would ever mention them — they simply are not in the
+        // conflict list any more, which is precisely how a wrong replay slips through.
+        _rerereReplayed = new TextBlock
+        {
+            Foreground = text,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, Metrics.Space.Sm, 0, 0),
+            IsVisible = false,
+        };
+
+        _rerereDiffText = new TextBox
+        {
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            FontFamily = new FontFamily("monospace"),
+            FontSize = Metrics.Text.Body,
+
+            // A diff that shows two lines is a diff nobody reads: the box asks for a
+            // hunk's worth of height and takes more when the window has it to give.
+            MinHeight = 120,
+            Background = Brush("App.Panel", Brushes.Black),
+            Foreground = text,
+        };
+        _rerereDiff = new Expander
+        {
+            Header = T("Show what rerere applied"),
+
+            // Without both of these the Expander shrinks to its header and the diff is
+            // read through a 200px window while the dialog has 700 to give.
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, Metrics.Space.Xs, 0, 0),
+            IsVisible = false,
+            Content = _rerereDiffText,
+        };
+
         _status = new TextBlock
         {
             Foreground = dim,
@@ -334,32 +559,51 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         Grid root = new()
         {
             Margin = new Thickness(12),
-            RowDefinitions = new RowDefinitions
-            {
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(new GridLength(1, GridUnitType.Star)),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-            },
+
+            // Only the conflict list grows; every rerere row is Auto and collapses to
+            // nothing when it has nothing to say, so a repository without rerere sees
+            // exactly the window it saw before.
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto"),
         };
-        Grid.SetRow(caption, 0);
-        Grid.SetRow(main, 1);
-        Grid.SetRow(infoRow, 2);
-        Grid.SetRow(sides, 3);
-        Grid.SetRow(_status, 4);
-        Grid.SetRow(help, 5);
+
+        // Expanding the diff must not eat the conflict list. An Auto row would take
+        // whatever the diff asks for and squeeze the star row above it to nothing —
+        // measured: the list collapsed to a sliver and the information strip landed on
+        // top of its header. So the diff row becomes a star row of its own while it is
+        // open, and the two share what is left.
+        _diffRow = root.RowDefinitions[7];
+        _rerereDiff.Expanded += (_, _) => _diffRow.Height = new GridLength(1, GridUnitType.Star);
+        _rerereDiff.Collapsed += (_, _) => _diffRow.Height = GridLength.Auto;
+        Grid.SetRow(_rerereBanner, 0);
+        Grid.SetRow(rerereStrip, 1);
+        Grid.SetRow(caption, 2);
+        Grid.SetRow(main, 3);
+        Grid.SetRow(infoRow, 4);
+
+        // Directly under the information strip and the Merge button that produced it:
+        // the answer to "why did nothing open?" has to be where the eye already is.
+        Grid.SetRow(_guided, 5);
+        Grid.SetRow(_rerereReplayed, 6);
+        Grid.SetRow(_rerereDiff, 7);
+        Grid.SetRow(sides, 8);
+        Grid.SetRow(_status, 9);
+        Grid.SetRow(help, 10);
         help.Margin = new Thickness(0, 12, 0, 0);
+        root.Children.Add(_rerereBanner);
+        root.Children.Add(rerereStrip);
         root.Children.Add(caption);
         root.Children.Add(main);
         root.Children.Add(infoRow);
+        root.Children.Add(_guided);
+        root.Children.Add(_rerereReplayed);
+        root.Children.Add(_rerereDiff);
         root.Children.Add(sides);
         root.Children.Add(_status);
         root.Children.Add(help);
 
         Content = root;
 
+        ApplyRerereState();
         BuildContextMenu();
         BindRows();
         if (_conflicts.Count > 0)
@@ -403,12 +647,28 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     public static async Task<bool> ShowAsync(Window owner, string repoPath)
     {
         ConflictService service = new();
-        (IReadOnlyList<ConflictEntry> conflicts, string? tool, bool inRebase) = await Task.Run(() => (
-            service.ListConflicts(repoPath),
-            service.GetMergeToolName(repoPath),
-            service.InTheMiddleOfRebase(repoPath)));
+        RerereService rerere = new();
 
-        ResolveConflictsDialog dialog = new(repoPath, conflicts, tool, inRebase);
+        // The rerere snapshot rides along in the SAME background hop: it is five git
+        // processes and it must be in hand before the window is built, or the banner
+        // would appear a beat after the dialog and read as a change of state.
+        (IReadOnlyList<ConflictEntry> conflicts,
+         string? tool,
+         bool inRebase,
+         RerereSnapshot rerereState,
+         IReadOnlyList<string> replayed) = await Task.Run(() =>
+        {
+            IReadOnlyList<ConflictEntry> entries = service.ListConflicts(repoPath);
+            RerereSnapshot snapshot = rerere.GetSnapshot(repoPath);
+            return (
+                entries,
+                service.GetMergeToolName(repoPath),
+                service.InTheMiddleOfRebase(repoPath),
+                snapshot,
+                ScanReplayed(repoPath, snapshot, [.. entries.Select(e => e.Path)]));
+        });
+
+        ResolveConflictsDialog dialog = new(repoPath, conflicts, tool, inRebase, rerereState, replayed);
         await dialog.ShowDialog(owner);
         return dialog.AllConflictsResolved;
     }
@@ -464,14 +724,39 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         // A submodule pointer has no text to merge: what conflicts is which COMMIT the
         // superproject records, so the merge tool has nothing to open and the answer is
         // always one of the two sides. Offering the tool would open it on an empty file.
-        bool mergeable = single is not null && !single.IsSubmodule;
+        bool submodule = single is { IsSubmodule: true };
+        bool mergeable = single is not null && !submodule;
         bool toolUsable = _mergeTool is not null && !_busy;
         _openInTool.IsEnabled = toolUsable && mergeable;
 
         // The built-in editor needs no configured tool, so it stays available when
         // merge.tool is unset — which on a fresh Linux box is the normal case, and
         // was until now the case where this window could do nothing but pick sides.
-        _merge.IsEnabled = !_busy && mergeable && single is { CanThreeWayMerge: true };
+        //
+        // For a submodule the same button leads somewhere else, and this is the whole
+        // of what changes for gitlinks: the action is still "settle this conflict",
+        // but the unit is a commit rather than a line, so it opens the commit chooser
+        // instead of the text editor. The caption says so — a button that reads
+        // "Merge" and opens a list of commits would be a second surprise.
+        //
+        // Enabled for ANY single selection, including the cases it will refuse. It used
+        // to be greyed out for them, which is how a user ends up staring at a dead
+        // button with no idea what to do instead: the refusal now carries the ways out,
+        // so pressing it is always worth something.
+        _merge.IsEnabled = !_busy && single is not null;
+        _merge.Content = IconText.Header("Merge", submodule ? ChooseCommitCaption : MergeCaption);
+        ToolTip.SetTip(_merge, submodule ? ChooseCommitTooltip : null);
+        _ctxMergeHere.Header = submodule ? ChooseCommitCaption : MergeHereCaption;
+        ToolTip.SetTip(_ctxMergeHere, submodule
+            ? ChooseCommitTooltip
+            : T("Open the built-in three-way merge editor"));
+
+        // The guided panel describes ONE file. Moving the selection makes it stale, and
+        // a stale panel offering "keep LOCAL" is a way to resolve the wrong path.
+        if (single?.Path != _refusedPath)
+        {
+            HideGuided();
+        }
         _startMergetool.IsEnabled = toolUsable && _conflicts.Any(e => !e.IsSubmodule);
         _rescan.IsEnabled = !_busy;
         _reset.IsEnabled = !_busy;
@@ -485,6 +770,19 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         // "Choose base" only when every selected conflict actually has a stage 1;
         // for an add/add there is nothing to revert to.
         _ctxChooseBase.IsEnabled = !_busy && selected.Count > 0 && selected.All(e => e.Base.Exists);
+
+        // Forget is offered only while the index is unmerged: with no conflicted merge
+        // in flight git accepts the command, reports success, and the resolution comes
+        // straight back — the work tree still holds the resolved text and rerere
+        // re-records it. An action that silently undoes itself must not be reachable.
+        _ctxForget.IsEnabled = !_busy
+            && single is not null
+            && _conflicts.Count > 0
+            && _rerereState.Configuration.IsActive;
+
+        _rerereEnabled.IsEnabled = !_busy;
+        _rerereAutoUpdate.IsEnabled = !_busy && _rerereState.Configuration.IsActive;
+        _rerereCache.IsEnabled = !_busy;
 
         bool onDisk = single is not null && File.Exists(Path.Combine(_repoPath, single.Path));
         _ctxOpen.IsEnabled = onDisk;
@@ -547,8 +845,12 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         if (entry.IsSubmodule)
         {
             return string.Format(
+                // Points at the chooser first and at the two sides second, because the
+                // sides are the weaker answer: they cannot express a commit that
+                // contains both, which is what the right answer usually is.
                 T("The submodule \"{0}\" points at different commits locally ({1}: {2}) and remotely ({3}: {4}). "
-                  + "Choose the side to record; the submodule is checked out there as well."),
+                  + "Use \"Choose the submodule commit…\" to see what lies between the two and pick one — or "
+                  + "keep a side from the right-click menu. The submodule is checked out to match."),
                 entry.Path,
                 local,
                 entry.Ours.ShortSha ?? T("FormResolveConflicts/_deleted.Text", "deleted"),
@@ -597,7 +899,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
 
     private void BuildContextMenu()
     {
-        _ctxMergeHere.Header = T("Merge here…");
+        _ctxMergeHere.Header = MergeHereCaption;
         ToolTip.SetTip(_ctxMergeHere, T("Open the built-in three-way merge editor"));
         _ctxMergeHere.InputGesture = new KeyGesture(Key.M);
         _ctxMergeHere.Click += (_, _) => _ = MergeSelectedHereAsync();
@@ -636,6 +938,13 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _ctxChooseBase.InputGesture = new KeyGesture(Key.B);
         _ctxChooseBase.Click += (_, _) => _ = ChooseSideAsync(ConflictChoice.Base);
 
+        _ctxForget.Header = T("Forget the recorded resolution…");
+        ToolTip.SetTip(_ctxForget, T(
+            "Drops what rerere remembers for this file and puts the original conflict markers "
+            + "back into it. Offered only while a conflicted merge is in progress: outside one "
+            + "the file still holds the resolved text and rerere records it straight back."));
+        _ctxForget.Click += (_, _) => _ = ForgetSelectedAsync();
+
         _ctxOpen.Header = T("FormResolveConflicts/openToolStripMenuItem.Text", "Open");
         _ctxOpen.Click += (_, _) => OpenWorkTreeFile();
 
@@ -655,6 +964,8 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
                 _ctxChooseOurs,
                 _ctxChooseTheirs,
                 _ctxChooseBase,
+                new Separator(),
+                _ctxForget,
                 new Separator(),
                 _ctxOpen,
                 _ctxShowInFolder,
@@ -679,7 +990,18 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
                 _ = ReloadAsync();
                 break;
             case Key.M:
-                OpenSelectedInMergeTool();
+                // The context menu advertises M on the item that, for a gitlink, is the
+                // commit chooser; the key has to reach the same place the menu says it
+                // does, or the shortcut quietly means something else on submodules.
+                if (SingleSelection() is { IsSubmodule: true })
+                {
+                    _ = MergeSelectedHereAsync();
+                }
+                else
+                {
+                    OpenSelectedInMergeTool();
+                }
+
                 break;
             case Key.L:
                 _ = ChooseSideAsync(ConflictChoice.Ours);
@@ -832,14 +1154,37 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
             return;
         }
 
-        if (!entry.CanThreeWayMerge)
+        // A gitlink never reaches the text editor: its own chooser IS the merge.
+        if (entry.IsSubmodule)
         {
-            _status.Text = Describe(entry) + " "
-                + T("Use the right-click menu to choose a side; there is no three-way merge to run.");
+            await ChooseSubmoduleCommitAsync();
             return;
         }
 
+        // Ask BEFORE opening anything. The editor would refuse just as correctly, but
+        // it would refuse from inside a window that then has to be closed, and the
+        // refusal would arrive as a line of status text with no way forward attached.
         SetBusy(true);
+        MergeRefusal? refusal;
+        try
+        {
+            refusal = await _mergeService.InspectAsync(_repoPath, entry);
+        }
+        catch (Exception ex)
+        {
+            _status.Text = ex.Message;
+            SetBusy(false);
+            return;
+        }
+
+        if (refusal is not null)
+        {
+            SetBusy(false);
+            ShowGuided(entry, refusal);
+            return;
+        }
+
+        HideGuided();
         try
         {
             (bool resolved, string? error) = await MergeToolWindow.ShowAsync(this, _repoPath, entry);
@@ -857,6 +1202,209 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
             SetBusy(false);
         }
 
+        await ReloadAsync();
+    }
+
+    // ---- guided refusal ------------------------------------------------------
+
+    /// <summary>
+    ///  Turns a typed <see cref="MergeRefusal"/> into the panel: one line saying why a
+    ///  line-by-line merge is impossible <i>for this file</i>, then the routes that do
+    ///  work on it.
+    ///
+    ///  <para>Every route is an action that already exists elsewhere in this window —
+    ///  the two side choices are the context menu's, the submodule route is the same
+    ///  chooser the Merge button opens for a gitlink. Nothing here resolves anything by
+    ///  itself: a second implementation of "keep ours" is a second thing that can be
+    ///  wrong in a different way.</para>
+    ///
+    ///  <para>The sizes and dates are the reason the panel exists in this shape. "Keep
+    ///  LOCAL or keep REMOTE" with nothing else on screen is a coin toss; "keep the
+    ///  180 kB one from today or the 43 kB one from March" is a decision.</para>
+    /// </summary>
+    private void ShowGuided(ConflictEntry entry, MergeRefusal refusal)
+    {
+        _refusedPath = entry.Path;
+
+        _guidedWhy.Text = entry.Path + " — " + refusal.Message;
+
+        _guidedOurs.Content = SideButtonContent(_ctxChooseOurs.Header as string, refusal.Ours);
+        _guidedTheirs.Content = SideButtonContent(_ctxChooseTheirs.Header as string, refusal.Theirs);
+
+        // Offered on the sniffed format, never on the name: a screenshot committed as
+        // "logo.dat" is still a PNG, and a "chart.png" produced by a build step often
+        // is not one.
+        _guidedImages.IsVisible = refusal.AnySideIsImage;
+
+        // Normally not seen: a gitlink goes straight to the chooser from the Merge
+        // button, which is the point of task A. It is here because this panel is what
+        // a refusal turns into, and a refusal that says "submodule" without offering
+        // the one thing that resolves a submodule would be a dead end.
+        _guidedSubmodule.IsVisible = refusal.Reason == MergeRefusalReason.Submodule;
+
+        List<string> notes = [];
+        if (refusal.Reason == MergeRefusalReason.Submodule)
+        {
+            notes.Add(T("You are not limited to the two sides: the chooser also lists commits that "
+                + "already contain both, which is usually the answer."));
+        }
+
+        if (_mergeTool is not null && refusal.Reason != MergeRefusalReason.Submodule)
+        {
+            // Said as an alternative and not as the answer: an external tool refuses
+            // binary content just as often, and a user who has kdiff3 configured should
+            // know it is still there without being sent to it first.
+            notes.Add(string.Format(
+                T("\"{0}\" is still available from the button on the right — {1} may be able to show "
+                  + "this file even though the built-in editor cannot."),
+                OpenInToolCaption(),
+                _mergeTool));
+        }
+
+        _guidedNote.Text = string.Join(" ", notes);
+        _guidedNote.IsVisible = notes.Count > 0;
+        _guided.IsVisible = true;
+    }
+
+    private void HideGuided()
+    {
+        _guided.IsVisible = false;
+        _refusedPath = null;
+    }
+
+    /// <summary>
+    ///  The action on one line and the facts under it, dimmed. On one line the two
+    ///  buttons are 400px wide each and the second falls off a 720px window; stacked,
+    ///  the facts also read as what they are — a description, not a second command.
+    /// </summary>
+    private static Control SideButtonContent(string? caption, MergeSideFacts facts) => new StackPanel
+    {
+        Children =
+        {
+            new TextBlock { Text = caption ?? string.Empty },
+            new TextBlock
+            {
+                Text = DescribeSide(facts),
+                Foreground = Brush("App.TextDim", Brushes.Gray),
+                FontSize = Metrics.Text.Caption,
+            },
+        },
+    };
+
+    /// <summary>Size, kind and age of one side, in a single readable clause.</summary>
+    private static string DescribeSide(MergeSideFacts facts)
+    {
+        if (!facts.Exists)
+        {
+            return T("this side has no such file");
+        }
+
+        string what = $"{HumanSize(facts.Size)}, {facts.ContentType}";
+        return facts.Date is { } when
+            ? what + ", " + when.ToLocalTime().ToString("d MMM yyyy HH:mm")
+            : what;
+    }
+
+    private static string HumanSize(long bytes) => bytes switch
+    {
+        < 1024 => string.Format(T("{0} bytes"), bytes),
+        < 1024 * 1024 => $"{bytes / 1024.0:0.#} kB",
+        _ => $"{bytes / (1024.0 * 1024):0.#} MB",
+    };
+
+    /// <summary>
+    ///  Shows the two versions as pictures. The bytes come from the index stages, not
+    ///  from the work tree: the work-tree file of a conflicted binary is whichever side
+    ///  git happened to leave there, so it is one of the two at best.
+    /// </summary>
+    private async Task CompareImagesAsync()
+    {
+        ConflictEntry? entry = _conflicts.FirstOrDefault(c => c.Path == _refusedPath);
+        if (entry is null || _busy)
+        {
+            return;
+        }
+
+        SetBusy(true);
+        try
+        {
+            byte[]? ours = await _mergeService.ReadStageAsync(_repoPath, entry.Ours);
+            byte[]? theirs = await _mergeService.ReadStageAsync(_repoPath, entry.Theirs);
+
+            // A message comes back only when NEITHER side could be decoded; otherwise
+            // the window was shown and there is nothing to report.
+            string? error = await ImageDiffWindow.ShowAsync(
+                this, ours, theirs, _labelOurs.Text ?? "LOCAL", _labelTheirs.Text ?? "REMOTE");
+            if (error is not null)
+            {
+                _status.Text = error;
+            }
+        }
+        catch (Exception ex)
+        {
+            _status.Text = ex.Message;
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    // ---- submodule -----------------------------------------------------------
+
+    /// <summary>
+    ///  The submodule route: show the two recorded commits with the history between
+    ///  them, take the one the user picks, and write it into the index.
+    ///
+    ///  <para>Why this is the <b>main</b> way for a gitlink and not an extra. Choosing
+    ///  a side blind is choosing a commit without having seen what is in it: the two
+    ///  pointers usually differ by a handful of commits, one side often already
+    ///  contains the other, and when they have genuinely diverged the right answer is
+    ///  frequently a third commit that contains both — which "keep ours" and "keep
+    ///  theirs" cannot express at all.</para>
+    ///
+    ///  <para>The list is rescanned afterwards exactly as every other action does:
+    ///  <c>update-index --cacheinfo</c> clears the three stages, so the path leaves the
+    ///  conflict list, and the window closes itself when it was the last one.</para>
+    /// </summary>
+    private async Task ChooseSubmoduleCommitAsync()
+    {
+        ConflictEntry? entry = SingleSelection();
+        if (entry is null || _busy || !entry.IsSubmodule)
+        {
+            return;
+        }
+
+        HideGuided();
+        SetBusy(true);
+        try
+        {
+            SubmoduleConflictDialog chooser = new(_repoPath, entry);
+            await chooser.ShowDialog(this);
+
+            if (chooser.ChosenSha is not string sha)
+            {
+                // Closed without choosing: nothing was written, and saying so beats
+                // leaving the previous action's message on screen.
+                _status.Text = string.Format(T("{0} was left unresolved."), entry.Path);
+                return;
+            }
+
+            ConflictActionResult result =
+                await Task.Run(() => _submodules.ChooseCommit(_repoPath, entry.Path, sha));
+            _status.Text = result.Message;
+        }
+        catch (Exception ex)
+        {
+            _status.Text = ex.Message;
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        // Outside the try: ReloadAsync may close the window, and it must not do so
+        // while _busy is still set.
         await ReloadAsync();
     }
 
@@ -999,6 +1547,11 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         int index = keep is null ? 0 : _conflicts.ToList().FindIndex(c => c.Path == keep);
         _files.SelectedIndex = index >= 0 ? index : 0;
         OnSelectionChanged();
+
+        // rerere's picture changes with every resolution: a merge tool run can hand a
+        // path back to rerere, and a forget puts one back into the conflict. Only when
+        // the window is staying open — the branch above closes it.
+        await RefreshRerereAsync();
     }
 
     private void OpenWorkTreeFile()
@@ -1041,6 +1594,349 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         {
             _status.Text = result.Message;
         }
+    }
+
+    // ---- rerere --------------------------------------------------------------
+
+    /// <summary>
+    ///  Paints the whole rerere area from <see cref="_rerereState"/>.
+    ///
+    ///  <para>The banner is shown only when git will actually record and replay here,
+    ///  and it distinguishes the two ways that can happen. <c>rerere.enabled=true</c> is
+    ///  a decision somebody took; an <c>rr-cache</c> directory with the key unset is
+    ///  <b>not</b> — git treats the directory itself as consent, so a repository where
+    ///  someone once tried rerere keeps replaying resolutions with nothing in the
+    ///  configuration to explain it. That is the case this banner exists for.</para>
+    /// </summary>
+    private void ApplyRerereState()
+    {
+        RerereConfiguration configuration = _rerereState.Configuration;
+        _rerereBanner.IsVisible = configuration.IsActive;
+        _rerereEnabled.IsChecked = configuration.IsActive;
+        _rerereAutoUpdate.IsChecked = configuration.AutoUpdateEffective;
+
+        // The cache is worth inspecting whenever there is one — including the case
+        // where rerere is switched off and a cache full of old resolutions is sitting
+        // there waiting for somebody to switch it back on.
+        _rerereCache.IsVisible = configuration.IsActive || configuration.CacheDirectoryExists;
+
+        if (configuration.IsActive)
+        {
+            _rerereBannerTitle.Text = configuration.Activation == RerereActivation.EnabledByCacheDirectory
+                ? T("rerere is on because this repository has an rr-cache directory — nothing in your configuration turns it on.")
+                : T("rerere is on: git is recording how you resolve these conflicts and will replay it next time.");
+
+            string autoUpdate = configuration.AutoUpdateEffective
+                ? T("Replayed resolutions are staged for you (rerere.autoupdate), so a replayed conflict never comes back for review.")
+                : T("Replayed resolutions are written into the file but left unstaged, so you still get to check them before committing.");
+
+            _rerereBannerDetail.Text = configuration.Activation == RerereActivation.EnabledByCacheDirectory
+                ? string.Format(
+                    T("git treats {0} as consent. Unticking the box below writes rerere.enabled=false, which is "
+                      + "what it takes to stop it: simply removing the setting would leave the directory in charge. {1}"),
+                    configuration.CacheDirectory ?? "rr-cache",
+                    autoUpdate)
+                : autoUpdate;
+        }
+
+        _rerereReplayed.IsVisible = _rerereReplayedPaths.Count > 0;
+        if (_rerereReplayedPaths.Count > 0)
+        {
+            _rerereReplayed.Text = string.Format(
+                T("rerere has already done these for you — {0} — and no conflict markers are left in them. "
+                  + "You do not have to redo that work, but review it before staging: the replay is silent, "
+                  + "and a resolution remembered wrongly looks exactly like a clean merge."),
+                string.Join(", ", _rerereReplayedPaths));
+        }
+
+        // Empty is normal and is NOT evidence that rerere did nothing (a completed
+        // replay reports an empty diff), so the row simply disappears instead of
+        // claiming anything.
+        bool hasDiff = _rerereState.ReplayedDiff.Trim().Length > 0;
+        _rerereDiff.IsVisible = hasDiff;
+        if (hasDiff)
+        {
+            _rerereDiffText.Text = _rerereState.ReplayedDiff;
+        }
+        else
+        {
+            // An invisible star row still claims its share of the window, so the row
+            // goes back to Auto whenever the diff disappears while it was open.
+            _rerereDiff.IsExpanded = false;
+            _diffRow.Height = GridLength.Auto;
+        }
+    }
+
+    /// <summary>
+    ///  The paths rerere has already resolved in this merge, which is harder to answer
+    ///  than it looks.
+    ///
+    ///  <para><b>git stops saying so the moment it is done.</b> The documented answer is
+    ///  "<c>rerere status</c> minus <c>rerere remaining</c>", and it works only while a
+    ///  replay is partial. Measured on git 2.43 after a complete replay: <c>status</c>,
+    ///  <c>remaining</c> and <c>diff</c> all empty <i>and</i> <c>MERGE_RR</c> truncated to
+    ///  zero bytes, while the index was still unmerged and the work tree already held the
+    ///  remembered resolution. Every git-side signal is gone precisely in the case the
+    ///  user most needs to be told about — a file that will be committed without ever
+    ///  having been looked at.</para>
+    ///
+    ///  <para><b>So the work tree is asked instead.</b> A path that is unmerged in the
+    ///  index but carries no conflict markers has had a resolution written into it, and
+    ///  with rerere active that is who wrote it. The wording in the banner states the
+    ///  checked fact — no markers left — rather than claiming authorship, because a user
+    ///  who hand-edited the file without staging it lands in the same state and the
+    ///  advice ("review it before staging") is right either way. Only asked when rerere
+    ///  is active, so a repository without rerere never sees this line.</para>
+    /// </summary>
+    private static IReadOnlyList<string> ScanReplayed(
+        string repoPath,
+        RerereSnapshot snapshot,
+        IReadOnlyList<string> conflictPaths)
+    {
+        if (!snapshot.Configuration.IsActive)
+        {
+            return [];
+        }
+
+        HashSet<string> remaining = new(snapshot.RemainingPaths, StringComparer.Ordinal);
+        List<string> replayed = [];
+        foreach (string path in conflictPaths)
+        {
+            // "remaining" is authoritative when it has something to say: git means
+            // exactly "the user still has to open this one".
+            if (remaining.Contains(path) || !LooksResolved(Path.Combine(repoPath, path)))
+            {
+                continue;
+            }
+
+            replayed.Add(path);
+        }
+
+        replayed.Sort(StringComparer.Ordinal);
+        return replayed;
+    }
+
+    /// <summary>
+    ///  True when the file exists and holds no conflict markers. Streamed line by line
+    ///  and stopped at the first marker: a conflicted file can be arbitrarily large and
+    ///  this runs for every path in the list. A binary or unreadable file answers false,
+    ///  which is the safe direction — it only means the banner stays quiet about it.
+    /// </summary>
+    private static bool LooksResolved(string fullPath)
+    {
+        try
+        {
+            if (!File.Exists(fullPath))
+            {
+                return false;
+            }
+
+            foreach (string line in File.ReadLines(fullPath))
+            {
+                if (line.StartsWith("<<<<<<<", StringComparison.Ordinal)
+                    || line.StartsWith(">>>>>>>", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private async Task RefreshRerereAsync()
+    {
+        List<string> paths = [.. _conflicts.Select(c => c.Path)];
+        try
+        {
+            (_rerereState, _rerereReplayedPaths) = await Task.Run(() =>
+            {
+                RerereSnapshot snapshot = _rerere.GetSnapshot(_repoPath);
+                return (snapshot, ScanReplayed(_repoPath, snapshot, paths));
+            });
+        }
+        catch (Exception ex)
+        {
+            _status.Text = ex.Message;
+            return;
+        }
+
+        ApplyRerereState();
+        OnSelectionChanged();
+    }
+
+    /// <summary>
+    ///  Turns rerere on or off for this repository, always by writing an explicit
+    ///  boolean and never by removing the key: with an <c>rr-cache</c> directory
+    ///  present an unset <c>rerere.enabled</c> still means <i>on</i>, so an "off" that
+    ///  unset the key would leave the tick box lying about the state of the repository.
+    /// </summary>
+    private async Task SetRerereEnabledAsync(bool enabled)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        SetBusy(true);
+        RerereActionResult result;
+        try
+        {
+            result = await Task.Run(() => _rerere.SetEnabled(_repoPath, enabled));
+        }
+        catch (Exception ex)
+        {
+            result = new RerereActionResult(false, ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        _status.Text = result.Success
+            ? (enabled
+                ? T("rerere is on: resolutions recorded from now on will be replayed when the same conflict returns.")
+                : T("rerere is off: git will no longer record or replay conflict resolutions here. What is already in the cache stays."))
+            : result.Message;
+
+        await RefreshRerereAsync();
+    }
+
+    private async Task SetRerereAutoUpdateAsync(bool autoUpdate)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        SetBusy(true);
+        RerereActionResult result;
+        try
+        {
+            result = await Task.Run(() => _rerere.SetAutoUpdate(_repoPath, autoUpdate));
+        }
+        catch (Exception ex)
+        {
+            result = new RerereActionResult(false, ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        _status.Text = result.Success
+            ? (autoUpdate
+                ? T("Replayed resolutions will be staged automatically. That removes the one moment at which a wrong remembered resolution would still have been visible.")
+                : T("Replayed resolutions will be left unstaged, so you can review them before committing."))
+            : result.Message;
+
+        await RefreshRerereAsync();
+    }
+
+    private async Task ShowRerereCacheAsync()
+    {
+        await RerereCacheWindow.ShowAsync(this, _repoPath);
+
+        // The cache window can expire entries, which changes what will be replayed.
+        await RefreshRerereAsync();
+    }
+
+    /// <summary>
+    ///  The safety valve: drops the remembered resolution for the selected path and
+    ///  restores the conflict as the merge produced it.
+    ///
+    ///  <para>Confirmed explicitly, because it throws away the current content of the
+    ///  file, and re-checked afterwards against the cache: <c>git rerere forget</c> on a
+    ///  path it knows nothing about exits 0 without a word, so a successful exit is not
+    ///  evidence that anything was forgotten. Counting the cache before and after is.</para>
+    /// </summary>
+    private async Task ForgetSelectedAsync()
+    {
+        ConflictEntry? entry = SingleSelection();
+        if (entry is null || _busy || _conflicts.Count == 0 || !_rerereState.Configuration.IsActive)
+        {
+            return;
+        }
+
+        bool confirmed = await ConfirmAsync(
+            string.Format(
+                T("Forget what rerere remembers about \"{0}\"?\n\n"
+                  + "The stored resolution is dropped and the conflict is armed again, so it is presented "
+                  + "for resolution instead of being replayed. git may also restore the conflict markers "
+                  + "into the file, discarding the text that is in it now.\n\n"
+                  + "Do this when the remembered resolution is WRONG: otherwise rerere keeps applying it to "
+                  + "every future occurrence of this conflict."),
+                entry.Path),
+            T("Forget the recorded resolution"));
+        if (!confirmed)
+        {
+            return;
+        }
+
+        SetBusy(true);
+        (RerereActionResult result, int before, int after, bool markersBack) outcome;
+        try
+        {
+            string path = entry.Path;
+            outcome = await Task.Run(() =>
+            {
+                // Counting the stored resolutions before and after is the only way to
+                // know whether anything happened: forget on a path rerere never heard of
+                // exits 0 without printing a word.
+                int before = _rerere.ListCache(_repoPath).Count(e => e.HasPostimage);
+                RerereActionResult result = _rerere.Forget(_repoPath, path);
+                int after = _rerere.ListCache(_repoPath).Count(e => e.HasPostimage);
+                return (result, before, after, !LooksResolved(Path.Combine(_repoPath, path)));
+            });
+        }
+        catch (Exception ex)
+        {
+            outcome = (new RerereActionResult(false, ex.Message), 0, 0, false);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        if (!outcome.result.Success)
+        {
+            _status.Text = outcome.result.Message.Length > 0
+                ? outcome.result.Message
+                : string.Format(T("Could not forget the recorded resolution for {0}."), entry.Path);
+        }
+        else if (outcome.after < outcome.before)
+        {
+            // Whether the work tree is rewritten is git's business and it does not
+            // always do it — measured on git 2.43: a replayed-but-unstaged path kept its
+            // resolved text after forget, while the cache entry did go. Saying "the
+            // markers are back" unconditionally would send the user to look for
+            // something that is not there, so the file is checked and reported as found.
+            _status.Text = string.Format(
+                outcome.markersBack
+                    ? T("Forgot the recorded resolution for {0}; the conflict markers are back in the file.")
+                    : T("Forgot the recorded resolution for {0}. git left the file's current text alone — it "
+                        + "still holds the resolution you can see — but the conflict is armed again and will "
+                        + "no longer be replayed."),
+                entry.Path);
+        }
+        else
+        {
+            // git said nothing and nothing changed: there was no stored resolution for
+            // this path. Reporting the success alone would have been a lie by omission.
+            _status.Text = string.Format(
+                T("git reported no error, but nothing left the cache: rerere had no recorded resolution for {0}."),
+                entry.Path);
+        }
+
+        await ReloadAsync();
     }
 
     // ---- state ---------------------------------------------------------------
@@ -1156,6 +2052,19 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     // Upstream appends the side word after a NO-BREAK SPACE
     // (DisplayWithSuffixUpdater / UpdateSuffixWithinParenthesis).
     private static string SuffixedLabel(string caption, string suffix) => $"{caption} ({suffix})";
+
+    private static string MergeCaption => T("FormResolveConflicts/merge.Text", "Merge");
+
+    private static string MergeHereCaption => T("Merge here…");
+
+    // Says what it does, not what it is: the user is picking WHICH COMMIT of the
+    // linked repository this project should record.
+    private static string ChooseCommitCaption => T("Choose the submodule commit…");
+
+    private static string ChooseCommitTooltip => T(
+        "Shows the commits that lie between the two recorded pointers and lets you pick one — "
+        + "including a later commit that already contains both sides, which is often the answer "
+        + "and which keeping one side cannot express.");
 
     private static string OursWord => T("FormResolveConflicts/_ours.Text", "ours");
 
