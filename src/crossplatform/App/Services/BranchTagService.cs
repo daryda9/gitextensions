@@ -124,6 +124,12 @@ public sealed record MergeDialogData(
 /// <param name="RebaseMerges"><c>--rebase-merges</c>: recreate the merge commits in the range instead of flattening them.</param>
 /// <param name="From">Exclusive start of the range to replay, or "" for the whole branch.</param>
 /// <param name="BranchToMove">Branch the range belongs to, or "" for the current branch.</param>
+/// <param name="UpdateRefs">
+///  <c>--update-refs</c> / <c>--no-update-refs</c>, or <see langword="null"/> to pass
+///  neither and let the repository's <c>rebase.updateRefs</c> decide. This is a
+///  per-run OVERRIDE of a git setting, not a plain option, which is why it is the one
+///  tri-state here — see <see cref="RebaseDialog"/> for how the dialog computes it.
+/// </param>
 public sealed record RebaseChoice(
     string Onto,
     bool Interactive = false,
@@ -133,7 +139,8 @@ public sealed record RebaseChoice(
     bool CommitterDateIsAuthorDate = false,
     bool RebaseMerges = false,
     string From = "",
-    string BranchToMove = "")
+    string BranchToMove = "",
+    bool? UpdateRefs = null)
 {
     /// <summary>True when both ends of upstream's "specific range" are filled in.</summary>
     public bool HasRange => !string.IsNullOrWhiteSpace(From) && !string.IsNullOrWhiteSpace(BranchToMove);
@@ -154,13 +161,19 @@ public sealed record RebaseChoice(
 /// </param>
 /// <param name="AutoStash">The remembered <c>AppSettings.RebaseAutoStash</c> (<c>FormRebase.cs:138</c>).</param>
 /// <param name="AutoSquashConfig">The repository's effective <c>rebase.autosquash</c> (<c>FormRebase.cs:132</c>).</param>
+/// <param name="UpdateRefsConfig">
+///  The repository's effective <c>rebase.updateRefs</c>. It is BOTH the update-refs
+///  box's starting value and the reference the dialog compares against: only a box
+///  that disagrees with the config sends a flag (<c>FormRebase.cs:331-335</c>).
+/// </param>
 public sealed record RebaseDialogData(
     string CurrentBranch,
     IReadOnlyList<string> Refs,
     IReadOnlyList<string> LocalBranches,
     bool IsDirty,
     bool AutoStash,
-    bool AutoSquashConfig)
+    bool AutoSquashConfig,
+    bool UpdateRefsConfig = false)
 {
     public static readonly RebaseDialogData Empty = new(string.Empty, [], [], false, false, false);
 }
@@ -1344,6 +1357,12 @@ public sealed class BranchTagService
             CommitterDateIsAuthorDate = choice.CommitterDateIsAuthorDate,
             PreserveMerges = choice.RebaseMerges,
             SupportRebaseMerges = true,
+
+            // null → no flag at all → git's own rebase.updateRefs decides. Measured on
+            // git 2.43: `git rebase master` in a repo with rebase.updateRefs=true really
+            // does move the stacked branches, so passing nothing is what makes the
+            // config work rather than an omission (see the dialog's remarks).
+            UpdateRefs = choice.UpdateRefs,
         };
 
         if (choice.HasRange)
@@ -1443,10 +1462,20 @@ public sealed class BranchTagService
 
         bool dirty = false;
         bool autoSquashConfig = false;
+        bool updateRefsConfig = false;
         try
         {
             dirty = module.IsDirtyDir();
             autoSquashConfig = module.GetEffectiveSetting<bool>("rebase.autosquash") is true;
+
+            // `is true` and not `== true`: the setting is a bool? and UNSET must read as
+            // git's own default (off). Upstream compares the nullable directly
+            // (FormRebase.cs:333), which makes an unset key differ from an unticked box
+            // and emits a redundant --no-update-refs on every default rebase.
+            // Lowercase spelling on purpose: the core normalises the name anyway but
+            // logs "Setting name should be lowercase" for anything else
+            // (GitConfigSettingsBase.NormalizeSettingName).
+            updateRefsConfig = module.GetEffectiveSetting<bool>("rebase.updaterefs") is true;
         }
         catch (Exception)
         {
@@ -1465,7 +1494,8 @@ public sealed class BranchTagService
             // Unreadable settings → git's own default, no autostash.
         }
 
-        return new RebaseDialogData(currentBranch, refs, locals, dirty, autoStash, autoSquashConfig);
+        return new RebaseDialogData(
+            currentBranch, refs, locals, dirty, autoStash, autoSquashConfig, updateRefsConfig);
     }
 
     /// <summary>

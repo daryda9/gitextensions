@@ -44,17 +44,19 @@ public sealed record RebaseDialogResult(
 ///    <c>fatal: --preserve-merges was replaced by --rebase-merges</c>. Upstream's
 ///    <c>chkPreserveMerges</c> is therefore reproduced with the modern flag and the
 ///    modern caption; see <see cref="BranchTagService.BuildRebaseArguments"/>.</item>
-///   <item><c>--update-refs</c> (upstream's <c>checkBoxUpdateRefs</c>): it only ever
-///    sends a value when it disagrees with the repository's effective
-///    <c>rebase.updaterefs</c> (<c>FormRebase.cs:331-335</c>), i.e. it is a
-///    per-run override of a git setting rather than a rebase option, and the port has
-///    no settings page for that key yet to override <em>from</em>. The core option
-///    exists (<c>Commands.RebaseOptions.UpdateRefs</c>), so this is a scope decision,
-///    not a blocked one.</item>
 ///   <item>the <b>commit picker</b> next to "From" (<c>btnChooseFromRevision</c>): the
 ///    port has no <c>FormChooseCommit</c> (established in M69). The field is a plain
 ///    text box instead, which accepts any commit-ish — a SHA, <c>HEAD~3</c>, a ref.</item>
 ///  </list>
+///
+///  <para><b>Update refs is an override, not an option.</b> The box mirrors the
+///  repository's effective <c>rebase.updateRefs</c> and a flag is sent ONLY when the
+///  user moves it away from that value (<c>FormRebase.cs:331-335</c>) — leaving it
+///  alone keeps the command line free of a flag git would have applied from the config
+///  anyway. Measured on git 2.43: with <c>rebase.updateRefs=true</c>, a bare
+///  <c>git rebase master</c> already reports "Updated the following refs with
+///  --update-refs", so the box exists to say NO to that config for one rebase, and to
+///  say yes without editing the config.</para>
 ///
 ///  <para><b>Interactive without an editor.</b> This port wires no editor to git, so
 ///  <c>-i</c> runs with <c>GIT_SEQUENCE_EDITOR=true</c> and the generated todo is
@@ -102,6 +104,7 @@ public sealed class RebaseDialog : Theming.ZoomWindow
     private readonly CheckBox _ignoreDate;
     private readonly CheckBox _committerDateIsAuthorDate;
     private readonly CheckBox _rebaseMerges;
+    private readonly CheckBox _updateRefs;
     private readonly TextBlock _interactiveNote;
 
     private readonly CheckBox _specificRange;
@@ -109,6 +112,7 @@ public sealed class RebaseDialog : Theming.ZoomWindow
     private readonly TextBox _from;
     private readonly TextBlock _toLabel;
     private readonly ComboBox _to;
+    private readonly TextBlock _rangeNote;
 
     private readonly TextBlock _commandPreview;
 
@@ -116,6 +120,10 @@ public sealed class RebaseDialog : Theming.ZoomWindow
     private readonly Button _cancelBtn;
 
     private readonly bool _isDirty;
+
+    // The repository's effective rebase.updateRefs. Kept because the flag is only sent
+    // when the checkbox DISAGREES with it (see the class remarks).
+    private readonly bool _updateRefsConfig;
 
     // Guards the mutual-exclusion handlers against re-entering each other: unchecking a
     // box from inside another box's handler raises IsCheckedChanged again.
@@ -137,10 +145,13 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         _repoPath = repoPath ?? string.Empty;
         _execute = execute;
         _isDirty = data.IsDirty;
+        _updateRefsConfig = data.UpdateRefsConfig;
 
         // Tall enough for the whole options block plus the range rows and the command
         // preview; the ScrollViewer below is the safety net for translations that wrap.
-        Height = 560;
+        // Raised from 560 when the update-refs box was added: at 560 the "To" row was
+        // already half under the docked preview on first open.
+        Height = 600;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("App.Window", Brushes.DimGray);
 
@@ -201,6 +212,11 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         _ignoreDate = MakeCheck();
         _committerDateIsAuthorDate = MakeCheck();
         _rebaseMerges = MakeCheck();
+        _updateRefs = MakeCheck();
+
+        // FormRebase.cs:333 — the config IS the starting value, so a repository already
+        // configured for update-refs shows a ticked box and produces no flag.
+        _updateRefs.IsChecked = data.UpdateRefsConfig;
 
         _interactiveNote = new TextBlock
         {
@@ -228,6 +244,7 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         _rebaseMerges.IsCheckedChanged += (_, _) => UpdatePreview();
         _autostash.IsCheckedChanged += (_, _) => UpdatePreview();
         _autosquash.IsCheckedChanged += (_, _) => UpdatePreview();
+        _updateRefs.IsCheckedChanged += (_, _) => UpdatePreview();
 
         // ---- Specific range -------------------------------------------------
         _specificRange = MakeCheck();
@@ -266,6 +283,21 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         }
 
         _to.Text = data.CurrentBranch;
+
+        // Half a range is silently NOT a range: upstream (FormRebase.cs:348) and the
+        // core both fall back to a plain `git rebase <onto>` when either field is blank,
+        // which is a different rebase from the one the user asked for by ticking the
+        // box. The command preview already shows the truth; this line says WHY it says
+        // that, because "I ticked specific range and got a full rebase" is otherwise
+        // only discoverable by reading the command line character by character.
+        _rangeNote = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = Metrics.Text.Caption,
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            Margin = new Thickness(0, Metrics.Space.Sm, 0, 0),
+            IsVisible = false,
+        };
 
         Grid rangeGrid = new()
         {
@@ -321,6 +353,7 @@ public sealed class RebaseDialog : Theming.ZoomWindow
                 _autosquash,
                 _autostash,
                 _rebaseMerges,
+                _updateRefs,
                 _ignoreDate,
                 _committerDateIsAuthorDate,
                 _specificRange,
@@ -359,8 +392,15 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         DockPanel body = new() { Margin = Metrics.Space.All(Metrics.Space.Md) };
         DockPanel.SetDock(footer, Dock.Bottom);
         DockPanel.SetDock(_commandPreview, Dock.Bottom);
+
+        // Docked, not inside the scrolling options, for the same reason as the preview
+        // it explains: the range rows sit at the very bottom of a panel that has just
+        // grown, so a note placed there is exactly the thing scrolled out of sight.
+        // Measured: with the note in the StackPanel it was off-screen on first open.
+        DockPanel.SetDock(_rangeNote, Dock.Bottom);
         body.Children.Add(footer);
         body.Children.Add(_commandPreview);
+        body.Children.Add(_rangeNote);
         body.Children.Add(new ScrollViewer
         {
             Content = _group,
@@ -520,6 +560,7 @@ public sealed class RebaseDialog : Theming.ZoomWindow
     /// </summary>
     private RebaseChoice CurrentChoice()
     {
+        bool updateRefs = _updateRefs.IsChecked == true;
         bool range = _specificRange.IsChecked == true;
         string from = range ? (_from.Text ?? string.Empty).Trim() : string.Empty;
         string to = range
@@ -535,7 +576,11 @@ public sealed class RebaseDialog : Theming.ZoomWindow
             CommitterDateIsAuthorDate: _committerDateIsAuthorDate.IsChecked == true,
             RebaseMerges: _rebaseMerges.IsChecked == true,
             From: from,
-            BranchToMove: to);
+            BranchToMove: to,
+
+            // FormRebase.cs:331-335: a flag only when the user contradicts the config —
+            // agreeing with it means git already does this and the command stays clean.
+            UpdateRefs: updateRefs == _updateRefsConfig ? null : updateRefs);
     }
 
     private void UpdatePreview()
@@ -547,10 +592,15 @@ public sealed class RebaseDialog : Theming.ZoomWindow
             return;
         }
 
+        // Only while the range is actually claimed AND incomplete: a ticked box with
+        // both ends filled needs no explanation, an unticked one has no range to lose.
+        RebaseChoice choice = CurrentChoice();
+        _rangeNote.IsVisible = _specificRange.IsChecked == true && !choice.HasRange;
+
         bool ready = Onto.Length > 0;
         _rebaseBtn.IsEnabled = ready;
         _commandPreview.Text = ready
-            ? "git " + BranchTagService.BuildRebaseArguments(CurrentChoice()).ToString()
+            ? "git " + BranchTagService.BuildRebaseArguments(choice).ToString()
             : string.Empty;
     }
 
@@ -629,6 +679,10 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         ToolTip.SetTip(_rebaseMerges, T(
             "Recreates the merge commits in the range instead of flattening them (--rebase-merges). Replaces git's removed --preserve-merges."));
 
+        Caption(_updateRefs, T("FormRebase/checkBoxUpdateRefs.Text", "Update refs"));
+        ToolTip.SetTip(_updateRefs, T(
+            "Moves the other local branches that point INSIDE the range being replayed, instead of leaving them on the old commits (--update-refs). Starts from this repository's rebase.updateRefs; a flag is only sent when you change it."));
+
         Caption(_ignoreDate, T("FormRebase/chkIgnoreDate.Text", "Ignore date"));
         ToolTip.SetTip(_ignoreDate, T(
             "FormRebase/chkIgnoreDate.toolTip1",
@@ -643,6 +697,8 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         Caption(_specificRange, T("FormRebase/chkSpecificRange.Text", "Specific range"));
         _fromLabel.Text = T("FormRebase/lblRangeFrom.Text", "From (exc.)");
         _toLabel.Text = T("FormRebase/lblRangeTo.Text", "To");
+        _rangeNote.Text = T(
+            "Both ends are needed. While either field is empty the range is ignored and the whole current branch is replayed — the command below is the one that will run.");
 
         _rebaseBtn.Content = T("FormRebase/btnRebase.Text", "Rebase");
         _cancelBtn.Content = T("Cancel");
