@@ -3418,6 +3418,317 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## Collaudo dei residui aperti (2026-08-13/14, M196–M203) — otto unità in parallelo, una regola sola
+
+Richiesta esplicita dell'utente: **provare** tutto quello che era rimasto dichiarato «non coperto» o
+«non provato», invece di continuare ad aggiungere. Otto unità di verifica sono girate **in parallelo**,
+ognuna con repository usa-e-getta propri e un display Xvfb proprio, con una regola sola: **misurare
+git, non ragionare su git**. Ne sono usciti otto commit — sei correzioni, una funzione mancante e un
+banco di prova — più un gruppo di voci che la prova ha trovato **sane**: sono registrate anche quelle,
+in fondo al blocco, perché un «funziona» misurato è un risultato e non un silenzio.
+
+Le milestone stanno in ordine decrescente come il resto del file, una per commit.
+
+## M203 (2026-08-14, `aebffd9e8`) — le didascalie del diff smettono di nominare una revisione in cui il file non c'è
+
+`DiffSide` era stato introdotto (M189) proprio perché un pannello non nominasse mai una revisione in
+cui il file non esiste. Due strade continuavano però a dedurre l'esistenza da `row.Kind`, che descrive
+**il confronto originale della riga**, non quello che si sta guardando.
+
+**«Confronta il file con la cartella di lavoro» redirige tutti e due i lati** e lasciava le didascalie
+sul confronto commit-contro-genitore. Un file **aggiunto** aveva a sinistra «non esiste» mentre quello
+stesso pannello mostrava le sue due righe (`cat-file -p <c>:f` le stampa); un file **cancellato**
+nominava una revisione dove `cat-file` risponde «fatal: path does not exist»; e una terza bugia che
+nessuno aveva segnalato — un file **rinominato** teneva in didascalia il path **vecchio** con il
+pannello vuoto, mentre al commit selezionato il file porta già il nome nuovo.
+
+**La selezione multi-revisione era messa peggio dell'ipotesi** «nomina gli estremi del pannello». Con
+tre sezioni generate da due tip divergenti, un file sotto «Diff BASE with A» prendeva il **blob** di
+sinistra dal tip A e la **didascalia** di destra dal tip B: due affermazioni false e per giunta il
+contenuto sbagliato. Le righe che si portano dietro la propria coppia risolvono ora **entrambi** i lati
+da quella coppia, esattamente come il caricatore della patch già faceva.
+
+Nessuna sonda git è stata aggiunta per niente di tutto questo: il lato vecchio viene da dati già
+caricati, il lato nuovo è **uno stat** di un path locale (`Directory.Exists` compreso, così un
+submodule inizializzato non viene dichiarato assente). Niente di nuovo sul thread della UI e nessun
+codice asincrono introdotto. Il contenuto del pannello non viene **mai** consultato: un file di zero
+byte esiste legittimamente.
+
+Ri-verificati invariati: added / deleted / rename del diff di commit, il range, e il confronto semplice
+con la cartella di lavoro.
+
+## M202 (2026-08-14, `8cea6b14e`) — il numero della scheda sopravvive all'elisione, e la scrollbar smette di cancellare le etichette
+
+Due difetti, trovati **solo** guardando la striscia nelle condizioni in cui non era mai stata: tema
+chiaro, entrambe le dimensioni della UI, nomi duplicati, path RTL/CJK/emoji, e più schede di quante ce
+ne stiano.
+
+**Il numero del duplicato era incollato in fondo alla stringa dell'etichetta**, e quella stringa non ha
+più separatori: l'elisione saltava direttamente a tagliare la foglia **dalla sua fine**, cioè tagliava
+per primo il numero. Due schede sulla stessa repository diventavano allora identiche byte per byte —
+esattamente ciò che la numerazione esiste per impedire — e succedeva a **qualunque** larghezza di
+finestra, perché basta il tetto di 220 px dell'etichetta. Il numero ora viaggia fuori banda ed è
+riservato nella larghezza: degrada il **nome**, il numero resta sempre.
+
+**La scrollbar dell'overflow cancellava le etichette.** La barra ad auto-nascondimento di Fluent
+sovrappone il proprio contenuto: è una striscia innocua lungo un pannello alto, ma qui copre da parte a
+parte una riga di 24 px — cioè nascondeva i nomi nell'unica situazione in cui leggerli conta davvero
+(più schede di quante ce ne stiano), e restava gonfia dopo che il puntatore se n'era andato. Ora occupa
+spazio di layout in una riga sua, e **solo** mentre la striscia va davvero in overflow.
+
+**Terza correzione, latente e dichiaratamente non dimostrata.** Il taglio di ultima istanza lavorava su
+indici UTF-16 grezzi, quindi poteva spezzare una coppia di surrogati o separare una lettera dal suo
+segno combinante — e siccome la ricerca prende il candidato **più lungo che entra** e un candidato
+tagliato a metà è più stretto, quei tagli sono proprio quelli che preferisce. Ora si taglia sui confini
+di grafema. **Nessun artefatto visibile è stato riprodotto**: su 57 larghezze con una foglia a emoji il
+surrogato orfano si disegnava come niente nello stack di font del banco di prova. Corretto lo stesso,
+perché il codice è sbagliato a prescindere da cosa faccia un font, e questo progetto è già stato morso
+da questa identica classe di bug nel diff intra-riga.
+
+**Verificato sano e lasciato stare**: tema chiaro in ogni stato, cambio dal vivo in entrambe le
+direzioni senza pennelli rimasti indietro (anche l'etichetta disegnata a mano si ridipinge), entrambe
+le dimensioni della UI compreso il pavimento di 96 px a 1,25×, numerazione dei duplicati con una scheda
+chiusa **in mezzo**, CJK, path profondi, 14 schede a piena larghezza.
+
+**Noto e lasciato lì, con la prova accanto**: un'etichetta araba mette i puntini di sospensione sulla
+**destra visiva** mentre il testo omesso sta a sinistra (`FormattedText` è cablato da sinistra a destra,
+e i path sono strutturalmente LTR); il tooltip mostra il path assoluto grezzo invece della forma con
+`~` usata altrove; il pulsante di chiusura non ha un feedback di hover suo; e quando il budget finisce
+è la scheda **più lunga** a tenersi la larghezza naturale. L'opzione tema **System non è stata
+esercitata**: il suo portal XDG non esiste sul display di prova.
+
+## M201 (2026-08-14, `32ef95531`) — rerere in un worktree collegato smette di essere invisibile
+
+**Il bug vero.** In un worktree collegato `MERGE_RR` è per-worktree, ma `rr-cache` vive **soltanto**
+nella common directory — misurato: la gitdir del worktree collegato contiene `HEAD`, `index`, `logs`,
+`MERGE_RR`, `commondir`, `gitdir`, `ORIG_HEAD` e nient'altro. Il port chiedeva
+`rev-parse --absolute-git-dir` per entrambe, quindi cercava la cache dove non c'è. **Riprodotto**: git
+riapplicava una risoluzione («Risolto conflitto in 'b.txt' usando la risoluzione precedente», il file su
+disco già risolto) mentre l'app non mostrava banner, teneva la casella rerere non spuntata, non offriva
+il pulsante della cache e non dava nessun avviso di «già risolto». Quel replay silenzioso è **esattamente**
+la cosa che questa funzione esiste per rendere visibile. `rr-cache` viene ora dalla common dir (via
+`--path-format=absolute --git-common-dir`, perché la forma semplice da una sottocartella risponde con un
+path relativo), `MERGE_RR` resta quella del worktree, con un ripiego per git < 2.31. La finestra della
+cache dice che la cache è **condivisa** con tutti i worktree della repository.
+
+**Il testo di cherry-pick / revert / am descriveva l'orizzonte sbagliato.** Diceva che la risoluzione
+sarebbe stata riapplicata «la prossima volta», perché lì il flag «dentro un rebase» è falso. Misurato
+dentro **un solo** `cherry-pick master..topic`: il passo 1 stampa «Risoluzione per 'a.txt' registrata» e
+il passo 2 **della stessa** esecuzione stampa «Risolto conflitto in 'b.txt' usando la risoluzione
+precedente» — il replay scatta al `--continue` successivo, esattamente come in un rebase. Una nuova
+sonda dell'operazione legge i marcatori per-worktree, che sono disgiunti: `rebase-merge/`,
+`rebase-apply/` senza `applying`, `rebase-apply/` **con** `applying` (am), `CHERRY_PICK_HEAD`,
+`REVERT_HEAD`, `MERGE_HEAD`. Guida **solo** il testo di rerere: le etichette ours/theirs continuano a
+seguire il flag del rebase, perché in un cherry-pick HEAD resta *ours* e scambiarle sarebbe sbagliato.
+
+**Misura che delimita l'affermazione**: `git am` semplice non coinvolge rerere per niente (nessuna
+`rr-cache`, niente di unmerged, exit 128). Solo `am -3` lo fa.
+
+**Verificato invece che supposto, e nessuna correzione necessaria**: un **submodule** a metà rebase
+risolve tutte e due le domande su `modules/<nome>`, la cui `rr-cache` contiene la voce, ed è quella che
+il port legge — il superprogetto non ha `rr-cache` affatto. E l'annuncio guardato di «già risolto»
+sopravvive a un merge che porta insieme conflitti **binari**, di **soli permessi**, delete/modify,
+rename/rename e su **symlink**: `rerere remaining` omette il binario e il solo-permessi, che è la
+trappola, e il dialogo ha annunciato soltanto il file che era stato davvero riapplicato.
+
+**Lacuna nota, invariata**: il ramo `am` del testo nuovo è **irraggiungibile**, perché nessun ingresso
+offre un dialogo dei conflitti durante un `am`.
+
+## M200 (2026-08-13, `8659f1868`) — l'editor della todo smette di contare gli `exec` come commit persi
+
+Trovato costruendo **una** todo che porta tutti i verbi insieme
+(`rebase -i --rebase-merges --update-refs -x … main`, con un `break` inserito perché la sessione si
+fermi con 17 passi pendenti).
+
+**Il riepilogo calcolava i commit persi come `_initialCount - _steps.Count`**, cioè come righe rimosse:
+cancellare un solo `exec` da una todo di 18 passi annunciava «16 steps left. 1 commit will not be in the
+rebased branch». È falso, ed è precisamente la frase su cui un utente agisce. La conferma della lista
+vuota condivideva lo stesso conteggio e avrebbe dichiarato 17 commit dove ne esistevano 4. Adesso
+entrambi contano **commit**, non righe.
+
+**`reword` e `squash` erano promessi dalla legenda e non consegnati da nessuno dei due.** `Continue`
+fissa `GIT_EDITOR=true` — che è ciò che impedisce alla PTY di restare appesa, e quella trappola è
+davvero chiusa — ma vuol dire anche che l'editor di git viene risposto **prima** che l'utente lo veda:
+un passo `reword` produceva un commit con il messaggio invariato, e `squash` produceva la
+concatenazione predefinita di git. La legenda ora lo dice e rimanda al comando «Reword commit…» già
+esistente per la cosa vera. La correzione funzionale (raccogliere prima i messaggi e piantarli con un
+`GIT_EDITOR` scriptato, il modello di `CommitEditService`) tocca il **chiamante** di `Continue`, quindi
+è **riportata, non tentata** qui.
+
+**Il discriminatore `Interactive` regge** — `interactive` viene scritto anche per un rebase semplice, il
+segnale vero è `drop_redundant_commits` — ma la sua documentazione nominava `-i --empty=drop` come
+**l'unico** falso negativo. Misurato, `--rebase-merges` senza `-i` è il secondo. Entrambi sbagliano
+verso l'**offrire meno**, quindi il pulsante «modifica todo» continua a non comparire dove non deve; la
+tabella misurata completa sta ora nel commento.
+
+**Verificato intatto da tutto questo**: ognuno di `exec`, `break`, `label`, `reset`, `merge` e
+`update-ref` si disegna per intero e sopravvive al giro di andata e ritorno **byte per byte**,
+controllato due volte — attraverso il parser da solo (17 righe identiche) e da un capo all'altro
+attraverso la finestra (file identico dopo Apply senza modifiche). Riordinarli e cancellarli lascia una
+todo che git esegue: «Successfully rebased and updated refs/heads/feature. Updated the following refs
+with --update-refs: refs/heads/side, refs/heads/stacked».
+
+**Pericolo che è di git, non del port**: cancellare un `label` che un `merge` successivo nomina viene
+accettato in silenzio e muore dopo, e non si può rimetterlo perché **nessun passo può essere aggiunto**
+— è tutto quello che la todo di git permette qui, e ora il testo lo dice; `Cancel` è l'annulla solo fino
+ad Apply.
+
+## M199 (2026-08-13, `004d3610d`) — il diff di immagini smette di spacciare una parte per il tutto, e di appendersi sul PNG a 16 bit
+
+Generato e aperto **ogni formato che la finestra non aveva mai visto**: ICO multi-dimensione, BMP RLE4 e
+RLE8, WEBP animata e ferma, GIF interlacciata e animata, JPEG progressiva e CMYK, PNG a 16 bit grigio e
+RGB, alpha sopra la scacchiera, più un file troncato di ciascuno come controllo.
+
+`ImageFormats.Detect` ha nominato correttamente tutti e 26 i campioni, troncati compresi, e **non ha
+avuto bisogno di nessuna modifica**. La decodifica è risultata sana proprio dove era sospettata:
+RLE4/RLE8 esatte al pixel, GIF interlacciata de-interlacciata correttamente, JPEG progressiva esatta, e
+JPEG **CMYK non invertita** (entro 1/255 dalla sorgente), che è il modo in cui la maggior parte dei
+decoder sbaglia qui.
+
+**Tre difetti veri.**
+
+1. **La modalità differenza restava appesa per sempre su un PNG grigio a 16 bit.** Skia restituisce una
+   superficie Gray8 il cui `Bitmap.Format` di Avalonia è null, `CopyPixels` lancia
+   `NotSupportedException`, e il pannello se ne stava su «Comparing pixel by pixel…» finché la finestra
+   non veniva chiusa, con l'unica traccia in console. `Pixels()` ripiega ora su un disegno in
+   `RenderTargetBitmap`, e `Difference()` è avvolta perché qualunque decoder esotico futuro dia **una
+   frase** invece di uno spinner permanente.
+2. **Un contenitore veniva presentato come se fosse tutto il file**: un `.ico` da 6 voci mostrava una
+   dimensione sola e una GIF da 4 fotogrammi mostrava il primo, senza dire niente. **L'icona troncata è
+   ciò che dimostra che conta**: scendeva in silenzio a 64×64 e si leggeva come un ridimensionamento. La
+   barra informativa dichiara adesso «una delle 6 dimensioni nel file», «fotogramma 1 di 4» e «16 bit per
+   canale, confrontati a 8», letti dai **byte** e mai dal decoder.
+3. **Due PNG a 16 bit che differiscono nel byte basso di ogni pixel decodificano identiche**, quindi la
+   finestra riportava «0 di 4096 pixel differenti» accanto a «la dimensione del file differisce di
+   +1 B». È la clausola sulla profondità di bit che rende leggibile quella coppia di frasi.
+
+I lati non decodificabili nominano ora il formato invece dell'errore nudo del loader.
+
+**Una nota vecchia va corretta**: su questo stack **Skia sceglie la voce ICO più GRANDE, non la
+prima** — quindi l'affermazione che un ICO degradi sempre a 16×16 era **falsa**. La correzione è
+registrata qui; la frase sbagliata **non sta in questi tre documenti** (nella roadmap §1.4 c'era solo
+«ICO mai provato»), quindi dove è scritta — nel codice — non è stata toccata da questo giro di
+documentazione.
+
+**NON corretto, ed è la lacuna più grossa rimasta**: un PNG/GIF/WEBP/BMP **troncato** disegna mezza
+immagine senza nessun avviso. Segnalarlo richiede il codice di risultato incompleto di `SKCodec`, e
+SkiaSharp **non è una dipendenza diretta** del progetto App.
+
+## M198 (2026-08-13, `409cbc747`) — il dialogo di rebase può rifiutare `--update-refs`, e smette di ignorare mezzo intervallo
+
+Tutti e due i cambi escono dal collaudo dei quattro comportamenti del rebase che **nessuno aveva mai
+esercitato**. Due dei quattro erano già corretti, e vanno registrati come tali:
+
+- un rebase **conflittuale avviato dall'albero di sinistra** pre-compila i rami giusti, e le opzioni
+  spuntate lì arrivano davvero a git — la console di processo ha ripetuto
+  `rebase -i --no-autosquash --rebase-merges "master"`. Conflitto, banner, risoluzione, continue e la
+  strada dell'abort si comportano;
+- **`--autosquash` accorpa davvero.** Strumentando git nudo si vede che sono coinvolti **tutti e due**
+  gli editor: `GIT_SEQUENCE_EDITOR` per la todo riordinata e `GIT_EDITOR` su `COMMIT_EDITMSG` per lo
+  `squash!`. Con nessuno dei due fissato **git lancia vi e muore** — la classe di blocco che questo port
+  continua a incontrare. `RebaseStreaming` li fissa entrambi, quindi l'app è al sicuro; verificato
+  lanciandola con **tutte e due le variabili non impostate**, così l'unica protezione fosse quella.
+
+**Quello che mancava davvero.** `--update-refs` non veniva passato in nessuna delle due forme, lasciando
+decidere alla configurazione della repo. È giusto per chi ha messo `rebase.updateRefs=true` — misurato,
+il branch impilato si sposta davvero — ma non c'era modo di **rifiutarlo** per un rebase solo, né di
+chiederlo senza modificare la configurazione. La casella è seminata dall'impostazione effettiva della
+repo e manda un flag **solo quando è in disaccordo** con la configurazione, che è la regola dell'upstream
+(`FormRebase.cs:331-335`). Una deviazione deliberata, commentata al punto della lettura: la
+configurazione è presa come `is true`, quindi una chiave non impostata equivale a casella non spuntata.
+L'upstream confronta direttamente il `bool?`, il che rende «non impostata» diverso da «false» ed emette
+un `--no-update-refs` inutile a ogni rebase predefinito.
+
+**Con «intervallo specifico» spuntato e un estremo vuoto**, il comando ripiegava in silenzio sul rebase
+dell'**intero branch**: l'utente chiedeva un intervallo e otteneva altro senza niente a schermo che lo
+dicesse. Il ripiego è comportamento dell'upstream, quindi il pulsante **non** viene bloccato; al suo
+posto una nota agganciata sopra l'anteprima del comando dice che l'intervallo viene ignorato e che il
+comando mostrato è quello che partirà.
+
+Il campo *From* è stato provato con un tag, uno sha corto, uno sha completo, un nome di branch e una
+stringa senza senso: si comportano tutti, e il caso senza senso **non lascia stato di rebase** dietro di
+sé. Un vero selettore di commit resta fuori: richiede un dialogo delle dimensioni della griglia delle
+revisioni, che questo port non ha.
+
+## M197 (2026-08-13, `ea84a9f07`) — un banco di prova per la palette, e il bug dei surrogati che ha trovato
+
+`PASS: 10037 casi` della palette dei comandi, tutte le invarianti tenute (fuzz di 10 000 coppie in
+137 ms). Nuovo progetto `Tests/CommandPaletteRegression/`, stessa forma di
+`Tests/InlineDiffRegression`: eseguibile da console, `Compile Include`
+esplicito, avviato con `dotnet run --project`. Ridirige `XDG_CONFIG_HOME` **prima** che il primo
+servizio venga costruito, così eseguire i test non può riordinare la MRU vera.
+
+**Il difetto che ha trovato**: la corrispondenza allineava **unità di codice UTF-16**, e ogni unità che
+segue una coppia di surrogati si legge come inizio di parola (`IsLetterOrDigit` è falso su un
+surrogato), quindi il bonus +8 di inizio parola batteva il +6 di contiguità e l'allineamento migliore
+prendeva **la metà alta di una emoji e la metà bassa di un'altra**. La finestra taglia la didascalia in
+`Run` esattamente a quegli indici, quindi quella risposta veniva disegnata come due metà di mojibake.
+Anche un mezzo surrogato isolato contava come corrispondenza. La metà bassa di una coppia può ora essere
+raggiunta **solo** dalla propria metà alta, imposto nei quattro punti in cui un allineamento tocca un
+confine. La regola è locale: il fuzz costa gli stessi 137 ms. **Verificato che il banco non sia vacuo**:
+togliendo due delle quattro guardie dà `FAIL: 267 of 10037`.
+
+Le asserzioni di ordinamento sono scritte come «A batte B», mai come punteggio letterale, così ritoccare
+i pesi non obbliga a riscrivere i test. Ordinamento, rilettura degli hit e precedenza della MRU erano
+**sani come consegnati**.
+
+**Tre lacune dichiarate di M195 si chiudono insieme.**
+
+- Le righe **a spunta** dicono ora «on»/«off» in una colonna loro. Non un glifo: una voce a spunta non
+  porta icona, quindi un glifo nella grondaia delle icone farebbe significare a una grondaia vuota sia
+  «spento» sia «questa riga non ha icona». Il menu se la cava perché lì le voci a spunta stanno fra
+  loro simili; la palette no.
+- **Le voci di lingua sono offerte, dopo tutto.** Erano state escluse per paura di didascalie vecchie, e
+  quella ragione **non sopravvive alla prova**: la lista delle righe viene ricostruita a ogni apertura e
+  accettare una riga chiude la finestra **prima** che il cambio parta, quindi non esiste un istante in
+  cui una riga mostri la lingua precedente.
+- Le righe **grigie** portano un motivo dove uno è **dimostrabile** — `Enable()` lo registra nell'unico
+  punto che lo conosce, e il motivo di un antenato raggiunge le foglie dentro un sottomenu grigio. Solo
+  due sono dimostrabili e solo quei due esistono. **Nessun motivo viene dedotto**: uno sbagliato è
+  peggio di nessuno.
+
+## M196 (2026-08-13, `7b8372768`) — la barra del sequencer smette di descrivere un git che non c'è
+
+Tre difetti, tutti trovati **eseguendo** lo stato invece che ragionandoci sopra.
+
+**Lo stato senza marcatore, con l'indice ancora in conflitto**, si raggiunge senza toccare file a mano:
+revert che va in conflitto → risoluzione → commit fatto a mano → `git update-index --unresolve`.
+Misurato lì, `--abort` esce **0**, stampa «Sembra che tu abbia spostato l'HEAD. Non eseguo il rewind»,
+rimuove **solo** `.git/sequencer`, e lascia i commit, i file e i tre stage dell'indice esattamente com'erano.
+Il tooltip di Abort prometteva **l'opposto** — che i commit sarebbero stati tolti e i file ripristinati —
+e la conferma un clic dopo contraddiceva a sua volta il tooltip. Il tooltip è ora consapevole del
+marcatore; dove il marcatore **c'è**, la vecchia formulazione è stata ri-misurata ed è vera, quindi
+resta.
+
+**Lo stesso Abort lasciava l'indice unmerged senza niente a schermo che lo dicesse.** `Quit` avvertiva
+già nello stato identico; adesso avverte anche Abort.
+
+**Il parser del verbo saltava righe vuote e commenti** prima di cercare l'operazione. git non fa così:
+legge la **prima** riga, e un commento è per lui un `TODO_COMMENT`. Una todo che inizia con un commento
+faceva quindi annunciare alla barra un cherry-pick che git nega, e offriva un Continue che git rifiuta —
+misurato: un `git cherry-pick <sha>` semplice sopra quello stato avvia allegramente un pick **nuovo**.
+Il parser legge ora la sola prima riga, continuando a togliere gli spazi, che è la regola vera di git.
+
+**Verificato invariato**: i worktree collegati leggono ciascuno il proprio stato del sequencer, con un
+revert conflittuale in corso **contemporaneamente** nel worktree principale, senza contaminazione in
+nessuna delle due direzioni.
+
+## Verificate senza scrivere codice (2026-08-14) — il budget dell'editor di merge, e le due finestre
+
+Due residui del collaudo sono stati misurati e **non** hanno prodotto codice. Vanno scritti lo stesso:
+
+- **L'editor di merge oltre il budget di allineamento.** Un conflitto da 10 000 × 10 000 righe si apre
+  in circa 1 s. Superato `MaxEdits = 1200`, il riepilogo dell'auto-merge viene sostituito da una frase
+  onesta invece che da un numero inventato; quando i due lati hanno lunghezze diverse **non** viene
+  disegnata nessuna marcatura intra-riga, invece di disegnarne di indovinate; e «Resolve trivial (N)»
+  resta vero perché il suo classificatore non ha un budget proprio.
+- **Due finestre di merge insieme.** Dentro un solo processo sono irraggiungibili — la finestra è
+  modale — quindi servono due istanze dell'app. Lettura all'apertura e ultimo-che-scrive-vince, senza
+  nessuna interferenza fra i contatori: giudicato difendibile e lasciato stare.
+- **Pericolo separato, che vale la pena registrare**: `ViewPrefsService.Update` è un
+  carica-modifica-salva **senza nessun lock fra processi**, quindi due istanze possono perdere una
+  preferenza che non c'entra niente. È **preesistente e non corretto**.
+
 ## M195 (2026-08-13, `515feaea2`) — una palette dei comandi raggiunge ogni voce di menu da tastiera (feature INEDITA)
 
 Voce §2.1 della roadmap, la prima dell'ordine proposto. **Upstream non ha niente di equivalente**:
