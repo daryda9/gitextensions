@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Media;
@@ -38,6 +39,32 @@ internal enum MergeChoice
     TheirsThenOurs,
 
     /// <summary>Something the user typed that is none of the above.</summary>
+    Custom,
+}
+
+/// <summary>
+///  What a region git merged by itself currently holds.
+///
+///  <para>Deliberately a second enum and not <see cref="MergeChoice"/>: the resting
+///  state of an automatic merge is "what git decided", which is not one of the
+///  answers a conflict can hold, and the two lists must not be assignable to each
+///  other by accident.</para>
+/// </summary>
+internal enum AutoChoice
+{
+    /// <summary>Still what <c>git merge-file</c> produced.</summary>
+    Git,
+
+    /// <summary>Overridden by hand with our version.</summary>
+    Ours,
+
+    /// <summary>Overridden by hand with their version.</summary>
+    Theirs,
+
+    /// <summary>Overridden by hand with the common ancestor: git's change undone.</summary>
+    Base,
+
+    /// <summary>Typed over: none of the above.</summary>
     Custom,
 }
 
@@ -93,6 +120,13 @@ public sealed class MergeToolWindow : ZoomWindow
 
     private readonly List<Region> _regions = [];
 
+    /// <summary>
+    ///  The regions git merged without asking. Not conflicts and never turned into
+    ///  them: they are already settled, and the list exists so that "settled" does
+    ///  not have to mean "invisible".
+    /// </summary>
+    private readonly List<AutoSpan> _autos = [];
+
     private readonly RegionHighlighter _resultHighlighter;
     private readonly RangeHighlighter _oursHighlighter = new();
     private readonly RangeHighlighter _baseHighlighter = new();
@@ -101,16 +135,36 @@ public sealed class MergeToolWindow : ZoomWindow
     private readonly Dictionary<MergeChoice, ToggleButton> _choiceButtons = [];
     private readonly ComboBox _inlineMode;
     private readonly TextBlock _counter;
+    private readonly TextBlock _summary;
+    private readonly TextBlock _autoNote;
     private readonly TextBlock _status;
     private readonly Button _save;
     private readonly Button _restore;
     private readonly Button _trivial;
+    private readonly Button _previousAuto;
+    private readonly Button _nextAuto;
 
     private readonly Dictionary<int, (LineRange Ours, LineRange Base, LineRange Theirs)> _sources = [];
 
     private int _current;
+
+    /// <summary>Which automatic merge is being inspected, or -1 for none.</summary>
+    private int _currentAuto = -1;
+
     private int _strays;
     private bool _updating;
+
+    /// <summary>
+    ///  What the context menu is about to act on, resolved from the pointer when the
+    ///  menu opens and left alone afterwards, so that every item in one opening of
+    ///  the menu acts on the region its caption named.
+    /// </summary>
+    private Region? _menuRegion;
+
+    private AutoSpan? _menuAuto;
+
+    /// <summary>Offset of the first character of the line right-clicked, or -1.</summary>
+    private int _menuOffset = -1;
 
     /// <summary>True once the file has been written and staged.</summary>
     public bool Resolved { get; private set; }
@@ -139,7 +193,7 @@ public sealed class MergeToolWindow : ZoomWindow
         _basePane = ReferenceEditor(document.BaseLines, _baseHighlighter);
         _theirsPane = ReferenceEditor(document.TheirsLines, _theirsHighlighter);
 
-        _resultHighlighter = new RegionHighlighter(_regions, () => _current);
+        _resultHighlighter = new RegionHighlighter(_regions, () => _current, _autos, () => _currentAuto);
 
         _result = new TextEditor
         {
@@ -157,7 +211,7 @@ public sealed class MergeToolWindow : ZoomWindow
         _result.Options.EnableEmailHyperlinks = false;
         _result.Options.AllowScrollBelowDocument = false;
         _result.TextArea.TextView.BackgroundRenderers.Add(_resultHighlighter);
-        _result.TextArea.LeftMargins.Insert(0, new ChoiceMargin(_regions));
+        _result.TextArea.LeftMargins.Insert(0, new ChoiceMargin(_regions, _autos));
 
         _counter = new TextBlock
         {
@@ -165,6 +219,42 @@ public sealed class MergeToolWindow : ZoomWindow
             Foreground = Brush("App.Text", Brushes.Gainsboro),
             FontWeight = Metrics.Text.ActiveWeight,
         };
+
+        // The line that answers the question kdiff3 answers with a dialog on open:
+        // how much of this merge is already done, and by whom. It is a line and not
+        // a modal because the answer is still worth having an hour later, and
+        // because an obstacle that must be dismissed before working is not
+        // information, it is a toll.
+        _summary = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, Metrics.Space.Xs, 0, 0),
+        };
+
+        // Which automatic merge is being looked at is a different fact from the
+        // file-wide tally, and it belongs beside "Conflict 1 of 2" — the two answer
+        // the same question about the two journeys through the file. Keeping it out
+        // of the summary is also what stops the summary from being trimmed away.
+        _autoNote = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Brush("App.TextDim", Brushes.Gray),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(Metrics.Space.Sm, 0, Metrics.Space.Sm, 0),
+        };
+
+        _previousAuto = ToolButton(
+            "◀ᴀ",
+            T("Previous region git merged by itself. These are already settled: this only shows you what "
+                + "was decided for you"),
+            () => GoToAuto(_currentAuto - 1));
+        _nextAuto = ToolButton(
+            "ᴀ▶",
+            T("Next region git merged by itself. These are already settled: this only shows you what "
+                + "was decided for you"),
+            () => GoToAuto(_currentAuto + 1));
         _status = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
@@ -237,6 +327,7 @@ public sealed class MergeToolWindow : ZoomWindow
         // position in a document, so the document must exist first, and the offsets
         // it is built from are only known while building it.
         Load(document);
+        AttachMenus();
 
         _result.TextChanged += (_, _) => Refresh();
         _result.TextArea.Caret.PositionChanged += (_, _) => FollowCaret();
@@ -309,6 +400,14 @@ public sealed class MergeToolWindow : ZoomWindow
                 ToolButton("▶", T("Next conflict"), () => GoTo(_current + 1)),
                 ToolButton("▶!", T("Next conflict nobody has decided yet"), GoToNextUnresolved),
                 Spacer(),
+
+                // A second pair and not a mode on the first: the two journeys are
+                // different questions ("what must I answer?" and "what was answered
+                // for me?"), and folding them into one ◀ ▶ would make the answer to
+                // the first one arrive at unpredictable moments.
+                _previousAuto,
+                _nextAuto,
+                Spacer(),
                 Choice(MergeChoice.Ours, T("Take LOCAL"), T("Keep our version here. Press again to put the conflict back")),
                 Choice(MergeChoice.Theirs, T("Take REMOTE"), T("Keep their version here. Press again to put the conflict back")),
                 Choice(MergeChoice.Base, T("Take BASE"), T("Drop both changes and go back to the common ancestor")),
@@ -343,7 +442,7 @@ public sealed class MergeToolWindow : ZoomWindow
 
         Grid bottom = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
             Margin = new Thickness(0, Metrics.Space.Xs, 0, 0),
         };
 
@@ -352,14 +451,17 @@ public sealed class MergeToolWindow : ZoomWindow
         // mixing the two kinds of control is how a merge tool gets clicked wrong.
         bottom.Children.Add(_inlineMode);
 
-        Grid.SetColumn(_counter, 1);
+        Grid.SetColumn(_autoNote, 1);
+        bottom.Children.Add(_autoNote);
+
+        Grid.SetColumn(_counter, 2);
         bottom.Children.Add(_counter);
 
         StackPanel bar = new()
         {
             Orientation = Orientation.Vertical,
             Margin = Metrics.Space.Hv(Metrics.Space.Sm, Metrics.Space.Xs),
-            Children = { top, bottom },
+            Children = { top, bottom, _summary },
         };
 
         return new Border
@@ -488,12 +590,19 @@ public sealed class MergeToolWindow : ZoomWindow
     {
         System.Text.StringBuilder text = new();
         List<(int Start, int End, MergeChunk Chunk)> spans = [];
+
+        // Where each stable chunk begins in the document, so an automatic merge
+        // reported as "chunk 4, line 2" can be turned into an offset without
+        // searching the text for it.
+        Dictionary<int, int> chunkStarts = [];
         int id = 0;
 
-        foreach (MergeChunk chunk in document.Chunks)
+        for (int c = 0; c < document.Chunks.Count; c++)
         {
+            MergeChunk chunk = document.Chunks[c];
             if (chunk.Kind == MergeChunkKind.Stable)
             {
+                chunkStarts[c] = text.Length;
                 foreach (string line in chunk.Text)
                 {
                     text.Append(line).Append('\n');
@@ -530,6 +639,153 @@ public sealed class MergeToolWindow : ZoomWindow
             to.MovementType = AnchorMovementType.AfterInsertion;
 
             _regions.Add(new Region(i + 1, chunk, from, to));
+        }
+
+        // The automatic merges are anchored too, for one reason: the conflicts above
+        // them change length every time a side is taken, and a mark kept as a line
+        // number would slide off the text it is describing on the first click.
+        IReadOnlyList<string?> ancestors = RecoverAutoBases(document);
+
+        for (int a = 0; a < document.AutoMerges.Count; a++)
+        {
+            AutoMerge auto = document.AutoMerges[a];
+            if (!chunkStarts.TryGetValue(auto.ChunkIndex, out int at))
+            {
+                continue;
+            }
+
+            IReadOnlyList<string> lines = document.Chunks[auto.ChunkIndex].Text;
+            int start = at;
+            for (int i = 0; i < auto.LineOffset && i < lines.Count; i++)
+            {
+                start += lines[i].Length + 1;
+            }
+
+            // The merged text is rebuilt from the very lines the offsets are summed
+            // from, so "what git put here" and "what lies between the anchors" cannot
+            // drift apart — which is what the whole restore path rests on.
+            System.Text.StringBuilder produced = new();
+            int end = start;
+            for (int i = auto.LineOffset; i < auto.LineOffset + auto.LineCount && i < lines.Count; i++)
+            {
+                produced.Append(lines[i]).Append('\n');
+                end += lines[i].Length + 1;
+            }
+
+            // Same movement rules as a conflict's anchors, and for the same reason:
+            // taking a side deletes the span and inserts in its place, and only
+            // BeforeInsertion/AfterInsertion keep the span wrapped around the new
+            // text instead of collapsing behind it. The price is that text typed
+            // exactly at a deletion mark joins the span — which is then reported as
+            // an edit rather than as git's work, so nothing is claimed falsely.
+            TextAnchor from = doc.CreateAnchor(Math.Min(start, doc.TextLength));
+            from.SurviveDeletion = true;
+            from.MovementType = AnchorMovementType.BeforeInsertion;
+            TextAnchor to = doc.CreateAnchor(Math.Min(end, doc.TextLength));
+            to.SurviveDeletion = true;
+            to.MovementType = AnchorMovementType.AfterInsertion;
+
+            _autos.Add(new AutoSpan(
+                _autos.Count + 1, auto, from, to, produced.ToString(), a < ancestors.Count ? ancestors[a] : null));
+        }
+    }
+
+    /// <summary>
+    ///  The ancestor lines each automatic merge replaced — the one thing
+    ///  <see cref="AutoMerge"/> does not carry and the one thing an override needs.
+    ///
+    ///  <para><b>Why it is recomputed here.</b> Knowing BASE is enough to know all
+    ///  three versions of an automatic merge: git only merged it silently because one
+    ///  side left the ancestor alone, so the quiet side's version <i>is</i> the
+    ///  ancestor and the loud side's is what is on screen. The service found these
+    ///  changes by diffing the ancestor against the merged text with the conflict
+    ///  blocks put back to the ancestor; the same comparison is repeated here and each
+    ///  automatic merge is matched to the stretch it came from by the position of its
+    ///  first produced line. Repeating one diff is cheaper and far safer than
+    ///  reconstructing the ancestor by adding up line counts, where a single stretch
+    ///  the service dropped would silently shift every ancestor after it — and an
+    ///  override built on the wrong ancestor is a merge tool writing text nobody
+    ///  wrote.</para>
+    ///
+    ///  <para>Anything that cannot be matched gets <see langword="null"/> and that
+    ///  span simply stays read-only, as it was before this existed.</para>
+    /// </summary>
+    private static IReadOnlyList<string?> RecoverAutoBases(MergeDocument document)
+    {
+        if (document.AutoMerges.Count == 0)
+        {
+            return [];
+        }
+
+        List<string> view = [];
+        Dictionary<(int Chunk, int Line), int> where = [];
+
+        for (int c = 0; c < document.Chunks.Count; c++)
+        {
+            MergeChunk chunk = document.Chunks[c];
+            bool stable = chunk.Kind == MergeChunkKind.Stable;
+            IReadOnlyList<string> lines = stable ? chunk.Text : chunk.Base;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                if (stable)
+                {
+                    where[(c, i)] = view.Count;
+                }
+
+                view.Add(lines[i]);
+            }
+
+            // A deletion at the very end of a chunk is reported one line past its
+            // last, which is a position and not a line: it still has to be findable.
+            if (stable)
+            {
+                where[(c, lines.Count)] = view.Count;
+            }
+        }
+
+        IReadOnlyList<LineDiff.Hunk>? hunks = LineDiff.Diff(document.BaseLines, view);
+        List<string?> answer = [];
+
+        foreach (AutoMerge auto in document.AutoMerges)
+        {
+            answer.Add(
+                hunks is not null
+                && where.TryGetValue((auto.ChunkIndex, auto.LineOffset), out int at)
+                && Origin(hunks, at, auto.LineCount) is LineDiff.Hunk hunk
+                    ? Ancestor(document.BaseLines, hunk)
+                    : null);
+        }
+
+        return answer;
+
+        static LineDiff.Hunk? Origin(IReadOnlyList<LineDiff.Hunk> hunks, int at, int produced)
+        {
+            foreach (LineDiff.Hunk hunk in hunks)
+            {
+                // A stretch that produced lines is found by containment; a deletion
+                // produced none, so it is found by the boundary it sits on.
+                bool match = produced > 0
+                    ? at >= hunk.RightStart && at < hunk.RightEnd
+                    : at == hunk.RightStart && hunk.RightEnd == hunk.RightStart;
+                if (match)
+                {
+                    return hunk;
+                }
+            }
+
+            return null;
+        }
+
+        static string Ancestor(IReadOnlyList<string> lines, LineDiff.Hunk hunk)
+        {
+            System.Text.StringBuilder text = new();
+            for (int i = hunk.LeftStart; i < hunk.LeftEnd && i < lines.Count; i++)
+            {
+                text.Append(lines[i]).Append('\n');
+            }
+
+            return text.ToString();
         }
     }
 
@@ -638,9 +894,39 @@ public sealed class MergeToolWindow : ZoomWindow
 
     private void Replace(Region region, string text)
     {
+        Rewrite(region.Start, region.End, text);
+        Refresh();
+        Reveal(region);
+    }
+
+    /// <summary>
+    ///  Puts <paramref name="choice"/> into an automatic merge, or git's own answer
+    ///  back. It is <see cref="Rewrite"/> and nothing else — the same call a conflict
+    ///  makes — so an overridden region is still just text between two anchors and
+    ///  the way back is another rewrite, not an undo stack.
+    /// </summary>
+    private void ApplyAuto(AutoSpan span, AutoChoice choice)
+    {
+        if (span.TextFor(choice) is not string text)
+        {
+            return;
+        }
+
+        Rewrite(span.Start, span.End, text);
+
+        // The region acted on becomes the one the review round and the note describe:
+        // a change whose effect is announced somewhere the user is not looking is a
+        // change they have to verify by hand.
+        _currentAuto = _autos.IndexOf(span);
+        Refresh();
+        _result.ScrollToLine(_result.Document.GetLineByOffset(span.Start.Offset).LineNumber);
+    }
+
+    private void Rewrite(TextAnchor from, TextAnchor to, string text)
+    {
         TextDocument doc = _result.Document;
-        int start = region.Start.Offset;
-        int length = Math.Max(region.End.Offset - start, 0);
+        int start = from.Offset;
+        int length = Math.Max(to.Offset - start, 0);
 
         _updating = true;
         try
@@ -651,9 +937,6 @@ public sealed class MergeToolWindow : ZoomWindow
         {
             _updating = false;
         }
-
-        Refresh();
-        Reveal(region);
     }
 
     /// <summary>
@@ -681,6 +964,16 @@ public sealed class MergeToolWindow : ZoomWindow
                     break;
                 }
             }
+        }
+
+        // Read back the same way, for the same reason: an automatic merge that has
+        // been overridden — or typed over — must say so, and the only witness that
+        // cannot go stale is the text itself.
+        foreach (AutoSpan span in _autos)
+        {
+            int start = span.Start.Offset;
+            int length = Math.Max(span.End.Offset - start, 0);
+            span.State = span.Derive(doc.GetText(start, length));
         }
 
         _strays = CountStrayMarkers(doc);
@@ -798,6 +1091,33 @@ public sealed class MergeToolWindow : ZoomWindow
     }
 
     /// <summary>
+    ///  Walks the regions git merged by itself. It <b>changes nothing</b>: the text
+    ///  is not touched, no choice is offered, the caret is not even moved — the only
+    ///  effect is that the region is brought into view and named. Reviewing an
+    ///  automatic merge is the one thing a merge tool never invites you to do, and a
+    ///  wrong automatic merge is worse than a wrong conflict precisely because it is
+    ///  the one nobody reads.
+    /// </summary>
+    private void GoToAuto(int index)
+    {
+        if (_autos.Count == 0)
+        {
+            return;
+        }
+
+        // Wrapping, unlike the conflict arrows: this is a review round, and a round
+        // that stops at the ends makes the user click back through the whole file to
+        // see the first one again.
+        _currentAuto = ((index % _autos.Count) + _autos.Count) % _autos.Count;
+
+        AutoSpan span = _autos[_currentAuto];
+        _result.ScrollToLine(_result.Document.GetLineByOffset(span.Start.Offset).LineNumber);
+        UpdateCounter();
+        _result.TextArea.TextView.InvalidateLayer(KnownLayer.Background);
+        InvalidateMargin();
+    }
+
+    /// <summary>
     ///  Makes the conflict under the caret the current one, so clicking in the
     ///  result pane is a way of choosing what the buttons act on — the same
     ///  expectation an editor sets everywhere else.
@@ -810,6 +1130,12 @@ public sealed class MergeToolWindow : ZoomWindow
         }
 
         int offset = _result.CaretOffset;
+
+        // Clicking inside an automatic merge names it in the summary line, so the
+        // question "what is this line doing here?" is answerable by clicking on it
+        // and not only by walking the review round.
+        _currentAuto = _autos.FindIndex(a => offset >= a.Start.Offset && offset < Math.Max(a.End.Offset, a.Start.Offset + 1));
+
         int found = _regions.FindIndex(r => offset >= r.Start.Offset && offset <= r.End.Offset);
         if (found >= 0 && found != _current)
         {
@@ -819,6 +1145,8 @@ public sealed class MergeToolWindow : ZoomWindow
         else
         {
             UpdateCounter();
+            InvalidateMargin();
+            _result.TextArea.TextView.InvalidateLayer(KnownLayer.Background);
         }
     }
 
@@ -1076,6 +1404,7 @@ public sealed class MergeToolWindow : ZoomWindow
                     : string.Empty);
 
         UpdateTrivialButton();
+        UpdateSummary(undecided);
 
         bool clean = undecided == 0 && _strays == 0;
         _counter.Foreground = clean
@@ -1108,6 +1437,102 @@ public sealed class MergeToolWindow : ZoomWindow
         }
 
         _restore.IsEnabled = _regions.Count > 0 && active != MergeChoice.Conflict;
+    }
+
+    /// <summary>
+    ///  The sentence that answers, on open and for as long as the window is up, the
+    ///  question kdiff3 answers with a dialog: how many changes there were, how many
+    ///  git settled by itself, how many are left.
+    ///
+    ///  <para><b>Why it is worth a line of the window.</b> <c>git merge-file</c> does
+    ///  most of the work and shows none of it: it fuses everything that does not
+    ///  clash and leaves only the wreckage on screen. A user arriving from kdiff3
+    ///  reads that silence as "the tool did nothing", and — worse — never learns that
+    ///  six decisions were taken in their name.</para>
+    ///
+    ///  <para>The automatic figures are facts about git's output and never change;
+    ///  what is left to decide is recomputed from the regions on every keystroke, so
+    ///  the line stays true while the user works instead of describing the file as it
+    ///  was when it opened.</para>
+    /// </summary>
+    private void UpdateSummary(int undecided)
+    {
+        int conflicts = _regions.Count;
+
+        _previousAuto.IsEnabled = _autos.Count > 0;
+        _nextAuto.IsEnabled = _autos.Count > 0;
+
+        if (!_doc.AutoMergeKnown)
+        {
+            // Saying "0 merged automatically" here would be a lie of the worst kind:
+            // a precise one. The versions were too far apart to recover the work git
+            // did, and that is what gets said.
+            _summary.Text = string.Format(
+                CultureInfo.CurrentCulture,
+                T("These versions differ too widely to say how much git merged on its own — {0} conflict(s) "
+                    + "are left for you."),
+                conflicts);
+            _autoNote.Text = string.Empty;
+            return;
+        }
+
+        int autos = _autos.Count;
+        int total = autos + conflicts;
+        int trivial = _regions.Count(r => r.Choice == MergeChoice.Conflict && r.Proposal is not null);
+
+        string line = string.Format(
+            CultureInfo.CurrentCulture,
+            T("{0} change(s) here — {1} merged automatically by git, {2} left for you to decide"),
+            total,
+            autos,
+            undecided);
+
+        if (autos > 0)
+        {
+            line += " (" + string.Join(
+                T(", "),
+                Breakdown(AutoMergeSide.Local, T("{0} from LOCAL"))
+                    .Concat(Breakdown(AutoMergeSide.Remote, T("{0} from REMOTE")))
+                    .Concat(Breakdown(AutoMergeSide.Both, T("{0} both sides made the same change")))) + ")";
+        }
+
+        // Counted separately from the breakdown above, which describes what git did
+        // and must keep describing it: this says what has been done about it since.
+        int overridden = _autos.Count(a => a.Overridden);
+        if (overridden > 0)
+        {
+            line += string.Format(
+                CultureInfo.CurrentCulture,
+                T(" — {0} of them overridden by hand"),
+                overridden);
+        }
+
+        if (trivial > 0)
+        {
+            line += string.Format(
+                CultureInfo.CurrentCulture,
+                T(" — {0} of those need no thought: press \"Resolve trivial\""),
+                trivial);
+        }
+
+        _summary.Text = line;
+
+        _autoNote.Text = _currentAuto >= 0 && _currentAuto < _autos.Count
+            ? string.Format(
+                CultureInfo.CurrentCulture,
+                T("Merged automatically {0} of {1} — {2}"),
+                _currentAuto + 1,
+                autos,
+                _autos[_currentAuto].Description)
+            : string.Empty;
+
+        IEnumerable<string> Breakdown(AutoMergeSide side, string format)
+        {
+            int count = _autos.Count(a => a.Merge.Side == side);
+            return count == 0
+                ? []
+                : [string.Format(CultureInfo.CurrentCulture, format, count)];
+        }
     }
 
     /// <summary>
@@ -1232,6 +1657,459 @@ public sealed class MergeToolWindow : ZoomWindow
         return new LineRange(from + 1, 0);
     }
 
+    // ------------------------------------------------------------ context menus
+
+    /// <summary>
+    ///  Puts the choice where the conflict is.
+    ///
+    ///  <para><b>Why the toolbar was not enough.</b> Reported from use, and the
+    ///  comparison was with kdiff3: there, the side is picked by right-clicking the
+    ///  block itself. Here it could only be picked at the top of the window, which
+    ///  means looking away from the text to answer a question about the text, and
+    ///  then looking back to check that the thing that changed was the thing you were
+    ///  reading. With more than one conflict on screen that check is not a formality.
+    ///  </para>
+    ///
+    ///  <para><b>The menu acts on the line under the pointer</b>, never on the
+    ///  "current" conflict the toolbar acts on. If the user right-clicks a conflict,
+    ///  they mean that conflict — a menu that silently retargeted to the selected one
+    ///  would be a way to answer the wrong question with a confident click. The
+    ///  region is named in the menu's first line for the same reason: the target is
+    ///  stated before it is acted on, not inferred from what moves afterwards. Acting
+    ///  then <i>makes</i> that region current, so the toolbar and the margin agree
+    ///  with what just happened.</para>
+    ///
+    ///  <para><b>It reports as much as it offers.</b> Each side is a radio item and
+    ///  the one the region is holding is the one marked, so the menu answers "where
+    ///  am I?" before "where can I go?" — a list of five identical-looking commands,
+    ///  one of which is already in force, is a list that has to be verified against
+    ///  the margin before it can be used.</para>
+    /// </summary>
+    private void AttachMenus()
+    {
+        AttachResultMenu();
+        AttachReferenceMenu(_oursPane, MergeChoice.Ours, T("LOCAL"), s => s.Ours);
+        AttachReferenceMenu(_basePane, MergeChoice.Base, T("BASE"), s => s.Base);
+        AttachReferenceMenu(_theirsPane, MergeChoice.Theirs, T("REMOTE"), s => s.Theirs);
+    }
+
+    private void AttachResultMenu()
+    {
+        // Two captions and not one sentence that grows: the popup measures itself
+        // the first time it opens and keeps that width, so a caption that gets
+        // longer when a region is overridden would have its ending clipped —
+        // silently, and exactly on the words that say what changed. The first line
+        // is fixed for as long as the menu points at the same region; the second
+        // appears when there is something to add and is always shorter.
+        MenuItem header = Caption(CaptionWidth);
+        MenuItem state = Caption(0);
+        MenuItem ours = Pick(T("Take LOCAL"), () => ChooseHere(MergeChoice.Ours));
+        MenuItem @base = Pick(T("Take BASE"), () => ChooseHere(MergeChoice.Base));
+        MenuItem theirs = Pick(T("Take REMOTE"), () => ChooseHere(MergeChoice.Theirs));
+        MenuItem oursThenTheirs = Pick(T("Both: LOCAL → REMOTE"), () => ChooseHere(MergeChoice.OursThenTheirs));
+        MenuItem theirsThenOurs = Pick(T("Both: REMOTE → LOCAL"), () => ChooseHere(MergeChoice.TheirsThenOurs));
+
+        // Two separate ways back because they undo two different things: a conflict
+        // returns to the marker block nobody has answered, while an automatic merge
+        // returns to an answer git already gave. One item saying "restore" would have
+        // to mean both, and the user would not know which they were getting.
+        MenuItem restore = Pick(T("Restore conflict"), () =>
+        {
+            if (_menuRegion is Region region)
+            {
+                ApplyTo(region, MergeChoice.Conflict);
+            }
+        });
+        MenuItem restoreAuto = Pick(T("Restore git's merge"), () =>
+        {
+            if (_menuAuto is AutoSpan span)
+            {
+                ApplyAuto(span, AutoChoice.Git);
+            }
+        });
+
+        Separator top = new();
+        Separator bottom = new();
+
+        // Cut/copy/paste stay, and stay at the bottom: the result pane is a real
+        // editor and the editing commands apply to every line of it, including the
+        // lines the merge commands have nothing to say about. The merge items go
+        // above them because they are why the menu was opened.
+        MenuItem cut = Command(T("Cut"), () => _result.Cut());
+        MenuItem copy = Command(T("Copy"), () => _result.Copy());
+        MenuItem paste = Command(T("Paste"), () => _result.Paste());
+
+        ContextMenu menu = new()
+        {
+            ItemsSource = new Control[]
+            {
+                header, state, top,
+                ours, @base, theirs, oursThenTheirs, theirsThenOurs, restore, restoreAuto,
+                bottom, cut, copy, paste,
+            },
+        };
+
+        menu.Opening += (_, _) =>
+        {
+            Target();
+
+            bool conflict = _menuRegion is not null;
+            bool auto = _menuAuto is not null;
+
+            // Hidden and not greyed when there is nothing under the pointer: a
+            // command that cannot run is noise, and five of them in a row read as a
+            // broken menu rather than as an answer. What is left still works — see
+            // the caption, which says why the merge items are gone.
+            ours.IsVisible = conflict || Distinct(AutoChoice.Ours);
+            @base.IsVisible = conflict || Distinct(AutoChoice.Base);
+            theirs.IsVisible = conflict || Distinct(AutoChoice.Theirs);
+            bool sides = ours.IsVisible || @base.IsVisible || theirs.IsVisible;
+            oursThenTheirs.IsVisible = conflict;
+            theirsThenOurs.IsVisible = conflict;
+            restore.IsVisible = conflict;
+            restoreAuto.IsVisible = auto;
+            top.IsVisible = sides || conflict || auto;
+
+            state.IsVisible = false;
+
+            if (_menuRegion is Region region)
+            {
+                header.Header = string.Format(
+                    CultureInfo.CurrentCulture,
+                    T("Conflict {0} of {1} — now {2}"),
+                    region.Id,
+                    _regions.Count,
+                    Describe(region.Choice));
+
+                if (region.Chunk.Trivial != TrivialKind.None)
+                {
+                    // The same argument the margin and the counter already make,
+                    // repeated where the decision is about to be taken.
+                    state.IsVisible = true;
+                    state.Header = TrivialText.Sentence(region.Chunk.Trivial);
+                }
+
+                Mark(ours, region.Choice == MergeChoice.Ours);
+                Mark(@base, region.Choice == MergeChoice.Base);
+                Mark(theirs, region.Choice == MergeChoice.Theirs);
+                Mark(oursThenTheirs, region.Choice == MergeChoice.OursThenTheirs);
+                Mark(theirsThenOurs, region.Choice == MergeChoice.TheirsThenOurs);
+                Mark(restore, region.Choice == MergeChoice.Conflict);
+            }
+            else if (_menuAuto is AutoSpan span)
+            {
+                // What git did, and only that: the line counts stay in the toolbar's
+                // note, which names the same region as soon as one of these items is
+                // used. A caption is a label on a target, not a report.
+                header.Header = string.Format(
+                    CultureInfo.CurrentCulture,
+                    T("Merged by git {0} of {1} — {2}"),
+                    span.Number,
+                    _autos.Count,
+                    span.Merge.Side switch
+                    {
+                        AutoMergeSide.Local => T("taken from LOCAL"),
+                        AutoMergeSide.Remote => T("taken from REMOTE"),
+                        _ => T("both sides agreed"),
+                    });
+
+                Mark(ours, span.State == AutoChoice.Ours);
+                Mark(@base, span.State == AutoChoice.Base);
+                Mark(theirs, span.State == AutoChoice.Theirs);
+                Mark(restoreAuto, span.State == AutoChoice.Git);
+
+                if (!span.CanOverride)
+                {
+                    // Said, not hidden in silence: the user can see the region is
+                    // marked AUTO and would otherwise read the missing commands as a
+                    // bug rather than as the honest limit they are.
+                    state.IsVisible = true;
+                    state.Header = T("Ancestor unknown: no side can be taken here");
+                }
+                else if (span.State != AutoChoice.Git)
+                {
+                    state.IsVisible = true;
+                    state.Header = span.State switch
+                    {
+                        AutoChoice.Ours => T("Overridden by hand: now LOCAL"),
+                        AutoChoice.Theirs => T("Overridden by hand: now REMOTE"),
+                        AutoChoice.Base => T("Overridden: git's change undone"),
+                        _ => T("Edited by hand"),
+                    };
+                }
+            }
+            else
+            {
+                header.Header = T("No conflict and no automatic merge on this line");
+            }
+
+            cut.IsEnabled = _result.SelectionLength > 0;
+            copy.IsEnabled = _result.SelectionLength > 0;
+        };
+
+        _result.TextArea.ContextMenu = menu;
+        WatchRightClicks(_result);
+
+        // Only the sides that would really put something else here.
+        //
+        // An automatic merge has three versions but rarely three answers: git merged
+        // it silently because one side left the ancestor alone, so that side's text
+        // IS the ancestor, and "take LOCAL" and "take BASE" would be two names for
+        // one command. Offering both is worse than useless — the state is read back
+        // out of the text, so whichever the user picked, the margin would name the
+        // other one half the time and look like a bug. What is dropped is a duplicate
+        // label, never a reachable text.
+        bool Distinct(AutoChoice choice)
+        {
+            if (_menuAuto is not AutoSpan span || !span.CanOverride || span.TextFor(choice) is not string text
+                || text == span.GitText)
+            {
+                return false;
+            }
+
+            // Ordered, so that of two identical options the first one wins and the
+            // decision does not depend on which item is being asked about.
+            foreach (AutoChoice other in new[] { AutoChoice.Ours, AutoChoice.Theirs, AutoChoice.Base })
+            {
+                if (other == choice)
+                {
+                    return true;
+                }
+
+                if (span.TextFor(other) == text)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // Resolving the target here and not in the click handlers: every item then
+        // acts on the same region the caption named, whatever the document did in
+        // between, and there is one place where "under the pointer" is defined.
+        void Target()
+        {
+            _menuRegion = null;
+            _menuAuto = null;
+            if (_menuOffset < 0)
+            {
+                return;
+            }
+
+            _menuRegion = _regions.FirstOrDefault(r => Covers(r.Start, r.End, _menuOffset));
+
+            // A conflict wins a tie. The two cannot overlap as the file is loaded —
+            // automatic merges live in the stable text between conflicts — but hand
+            // editing can bring the anchors together, and what is still to be decided
+            // outranks what is already settled.
+            if (_menuRegion is null)
+            {
+                _menuAuto = _autos.FirstOrDefault(a => Covers(a.Start, a.End, _menuOffset));
+            }
+        }
+    }
+
+    /// <summary>
+    ///  The menu of one read-only pane: "I can see the version I want, take it".
+    ///
+    ///  <para>The most direct gesture there is, and the one kdiff3 users reach for
+    ///  first. It offers exactly one command, because a reference pane can say only
+    ///  one thing about a conflict — this side — and offering the other two here
+    ///  would make the pane the user clicked in irrelevant to what happens.</para>
+    /// </summary>
+    private void AttachReferenceMenu(
+        TextEditor editor,
+        MergeChoice side,
+        string name,
+        Func<(LineRange Ours, LineRange Base, LineRange Theirs), LineRange> pick)
+    {
+        Region? target = null;
+
+        MenuItem header = Caption(CaptionWidth);
+        MenuItem take = Pick(string.Empty, () =>
+        {
+            if (target is Region region)
+            {
+                ApplyTo(region, side);
+            }
+        });
+
+        Separator rule = new();
+        MenuItem copy = Command(T("Copy"), editor.Copy);
+
+        ContextMenu menu = new()
+        {
+            ItemsSource = new Control[] { header, new Separator(), take, rule, copy },
+        };
+
+        menu.Opening += (_, _) =>
+        {
+            target = Locate();
+
+            take.IsVisible = target is not null;
+            rule.IsVisible = target is not null;
+
+            if (target is Region region)
+            {
+                header.Header = string.Format(
+                    CultureInfo.CurrentCulture,
+                    T("{0} — the version of conflict {1}, now {2}"),
+                    name,
+                    region.Id,
+                    Describe(region.Choice));
+                take.Header = string.Format(
+                    CultureInfo.CurrentCulture, T("Take {0} for conflict {1}"), name, region.Id);
+                Mark(take, region.Choice == side);
+            }
+            else
+            {
+                header.Header = string.Format(
+                    CultureInfo.CurrentCulture,
+                    T("{0} — this line belongs to no conflict"),
+                    name);
+            }
+
+            copy.IsEnabled = editor.SelectionLength > 0;
+        };
+
+        editor.TextArea.ContextMenu = menu;
+        WatchRightClicks(editor);
+
+        Region? Locate()
+        {
+            if (_menuOffset < 0 || _menuOffset > editor.Document.TextLength)
+            {
+                return null;
+            }
+
+            int line = editor.Document.GetLineByOffset(_menuOffset).LineNumber;
+            foreach (Region region in _regions)
+            {
+                if (_sources.TryGetValue(region.Id, out (LineRange Ours, LineRange Base, LineRange Theirs) source)
+                    && pick(source) is { Length: > 0 } range
+                    && line >= range.Start && line < range.End)
+                {
+                    return region;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///  Remembers which line a right-click landed on.
+    ///
+    ///  <para>Tunnelling, and on the text area: the position has to be taken on the
+    ///  way down, before the editor has decided anything about the click and before
+    ///  the menu opens. The caret is not consulted — it is where the user <i>was</i>,
+    ///  and the whole point of this menu is that it acts where they are pointing.</para>
+    /// </summary>
+    private void WatchRightClicks(TextEditor editor)
+        => editor.TextArea.AddHandler(
+            PointerPressedEvent,
+            (_, e) =>
+            {
+                if (e.GetCurrentPoint(editor.TextArea.TextView).Properties.PointerUpdateKind
+                    == PointerUpdateKind.RightButtonPressed)
+                {
+                    _menuOffset = LineOffsetAt(editor, e.GetPosition(editor.TextArea.TextView));
+                }
+            },
+            RoutingStrategies.Tunnel);
+
+    /// <summary>
+    ///  The first offset of the line under <paramref name="point"/>, or -1 below the
+    ///  last line — where the nearest line is a guess and the honest answer is that
+    ///  the click was on nothing.
+    /// </summary>
+    private static int LineOffsetAt(TextEditor editor, Point point)
+    {
+        TextView view = editor.TextArea.TextView;
+        view.EnsureVisualLines();
+        return view.GetVisualLineFromVisualTop(point.Y + view.VerticalOffset) is VisualLine line
+            ? line.FirstDocumentLine.Offset
+            : -1;
+    }
+
+    /// <summary>
+    ///  Whether <paramref name="offset"/> is inside a span. The end anchor sits on
+    ///  the first character of the following line, so it is excluded; a span holding
+    ///  nothing at all still owns the one position it collapsed onto, which is what
+    ///  makes a deleted stretch right-clickable.
+    /// </summary>
+    private static bool Covers(TextAnchor from, TextAnchor to, int offset)
+        => offset >= from.Offset && offset < Math.Max(to.Offset, from.Offset + 1);
+
+    private void ChooseHere(MergeChoice choice)
+    {
+        if (_menuRegion is Region region)
+        {
+            ApplyTo(region, choice);
+        }
+        else if (_menuAuto is AutoSpan span)
+        {
+            ApplyAuto(span, choice switch
+            {
+                MergeChoice.Ours => AutoChoice.Ours,
+                MergeChoice.Theirs => AutoChoice.Theirs,
+                MergeChoice.Base => AutoChoice.Base,
+                _ => AutoChoice.Git,
+            });
+        }
+    }
+
+    /// <summary>
+    ///  Applies a choice to a named conflict, whichever pane the user asked from.
+    ///
+    ///  <para>No toggling, unlike the toolbar button: there, pressing the pressed
+    ///  button is the way back. Here the state is shown as a radio and a radio that
+    ///  undoes itself on a second click is not a radio — "Restore conflict" is one
+    ///  item below and says what it does.</para>
+    /// </summary>
+    private void ApplyTo(Region region, MergeChoice choice)
+    {
+        int index = _regions.IndexOf(region);
+        if (index >= 0)
+        {
+            _current = index;
+        }
+
+        Replace(region, TextFor(region, choice));
+    }
+
+    /// <summary>
+    ///  Room reserved for the caption, so the popup is measured once at a width
+    ///  every caption fits in. Kept under the theme's cap on flyout width — past
+    ///  that cap a caption is not wrapped or ellipsised, it is simply cut off, and
+    ///  the words that get cut are the last ones, which is where the state is said.
+    /// </summary>
+    private const double CaptionWidth = 400;
+
+    /// <summary>The menu's first line: what is about to be acted on.</summary>
+    private static MenuItem Caption(double width) => new() { IsEnabled = false, MinWidth = width };
+
+    private static MenuItem Pick(string caption, Action action)
+    {
+        MenuItem item = new() { Header = caption, ToggleType = MenuItemToggleType.Radio };
+
+        // Click and not IsCheckedChanged, exactly as the toolbar buttons do it: the
+        // mark is a REPORT of what the document holds, written when the menu opens,
+        // and reacting to it changing would make that report look like a decision.
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    private static MenuItem Command(string caption, Action action)
+    {
+        MenuItem item = new() { Header = caption };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    private static void Mark(MenuItem item, bool active) => item.IsChecked = active;
+
     // ------------------------------------------------------------------ helpers
 
     private ToggleButton Choice(MergeChoice choice, string caption, string tip)
@@ -1346,6 +2224,161 @@ internal sealed class Region(int id, MergeChunk chunk, TextAnchor start, TextAnc
 }
 
 /// <summary>
+///  One region git merged by itself, pinned to the document the same way a conflict
+///  is.
+///
+///  <para><b>It is not a conflict, but it is not sealed either.</b> Git took the
+///  decision before the window opened and the resting state is that decision; what
+///  the span adds is the ability to <i>see</i> it — in the margin, and by walking
+///  through them — and to <i>disagree</i> with it. kdiff3 lets a side be picked on
+///  any region, not only on the ones it could not settle, and it is right to: an
+///  automatic merge is only "safe" because the other side did not touch those lines,
+///  which is an argument about the text, not about the intent. So the three versions
+///  travel with the span and any of them can be put in, exactly the way a conflict
+///  works — including the way back, which here is git's own answer.</para>
+///
+///  <para><b>The document is still the truth</b>, as it is for a conflict: nothing
+///  records what was picked. <see cref="Derive"/> re-reads it from the text between
+///  the anchors, so a hand edit inside an automatic merge shows up as one rather
+///  than being quietly reported as git's work.</para>
+/// </summary>
+/// <param name="gitText">What <c>git merge-file</c> put here, newline of the last line included.</param>
+/// <param name="baseText">
+///  The ancestor lines this change replaced, or <see langword="null"/> when they
+///  could not be recovered — in which case the span stays read-only rather than
+///  offering an override built on a guess.
+/// </param>
+internal sealed class AutoSpan(
+    int number, AutoMerge merge, TextAnchor start, TextAnchor end, string gitText, string? baseText)
+{
+    /// <summary>1-based position in the review round.</summary>
+    public int Number { get; } = number;
+
+    /// <summary>What the service recovered about this change.</summary>
+    public AutoMerge Merge { get; } = merge;
+
+    /// <summary>Start of the merged text.</summary>
+    public TextAnchor Start { get; } = start;
+
+    /// <summary>End of the merged text; equal to <see cref="Start"/> for a deletion.</summary>
+    public TextAnchor End { get; } = end;
+
+    /// <summary>What git produced here, which is what "restore" means for this span.</summary>
+    public string GitText { get; } = gitText;
+
+    /// <summary>The common ancestor's version of these lines, when it is known.</summary>
+    public string? BaseText { get; } = baseText;
+
+    /// <summary>
+    ///  Our version of these lines. The side that did <b>not</b> make the change
+    ///  still has the ancestor here — that is precisely why git did not have to ask
+    ///  — so the deduction costs nothing and invents nothing.
+    /// </summary>
+    public string? OursText => Merge.Side == AutoMergeSide.Remote ? BaseText : GitText;
+
+    /// <summary>Their version of these lines, by the same argument.</summary>
+    public string? TheirsText => Merge.Side == AutoMergeSide.Local ? BaseText : GitText;
+
+    /// <summary>Whether a side can be taken here at all.</summary>
+    public bool CanOverride => BaseText is not null;
+
+    /// <summary>What the span holds now. Derived, never remembered.</summary>
+    public AutoChoice State { get; set; } = AutoChoice.Git;
+
+    /// <summary>Whether the user has put something else here than git did.</summary>
+    public bool Overridden => State != AutoChoice.Git;
+
+    /// <summary>The text <paramref name="choice"/> would put here, or <c>null</c> if unknown.</summary>
+    public string? TextFor(AutoChoice choice) => choice switch
+    {
+        AutoChoice.Git => GitText,
+        AutoChoice.Ours => OursText,
+        AutoChoice.Theirs => TheirsText,
+        AutoChoice.Base => BaseText,
+        _ => null,
+    };
+
+    /// <summary>
+    ///  Reads the state back out of <paramref name="text"/>. Git's own answer is
+    ///  tested first on purpose: where one side changed nothing, "take that side"
+    ///  and "keep git's merge" are the same characters, and the honest report is the
+    ///  one that says the region is untouched.
+    /// </summary>
+    public AutoChoice Derive(string text)
+    {
+        if (text == GitText)
+        {
+            return AutoChoice.Git;
+        }
+
+        foreach (AutoChoice candidate in Overrides)
+        {
+            if (TextFor(candidate) is string option && text == option)
+            {
+                return candidate;
+            }
+        }
+
+        return AutoChoice.Custom;
+    }
+
+    private static readonly AutoChoice[] Overrides = [AutoChoice.Ours, AutoChoice.Theirs, AutoChoice.Base];
+
+    /// <summary>
+    ///  What the margin says beside it. The arrow points the way the text travelled —
+    ///  from a side into the result — because "AUTO LOCAL" would read like the name
+    ///  of a button that can be pressed.
+    ///
+    ///  <para>An overridden span says OVERRIDE and not the side alone: without that
+    ///  word the only trace that git had decided something else here would be gone,
+    ///  and the region would be indistinguishable from ordinary merged text.</para>
+    /// </summary>
+    public string Label => State switch
+    {
+        AutoChoice.Ours => "OVERRIDE ← LOCAL",
+        AutoChoice.Theirs => "OVERRIDE ← REMOTE",
+        AutoChoice.Base => "OVERRIDE ← BASE",
+        AutoChoice.Custom => "OVERRIDE ✎ EDIT",
+        _ => Merge.Side switch
+        {
+            AutoMergeSide.Local => "AUTO ← LOCAL",
+            AutoMergeSide.Remote => "AUTO ← REMOTE",
+            _ => "AUTO = both",
+        },
+    };
+
+    /// <summary>What git did here, in the words of the summary line.</summary>
+    public string GitDescription
+        => Merge.Side switch
+        {
+            AutoMergeSide.Local => T("taken from LOCAL"),
+            AutoMergeSide.Remote => T("taken from REMOTE"),
+            _ => T("both sides made this same change"),
+        }
+        + (Merge.LineCount == 0
+            ? string.Format(CultureInfo.CurrentCulture, T(" — {0} line(s) removed here"), Merge.RemovedLines)
+            : Merge.RemovedLines == 0
+                ? string.Format(CultureInfo.CurrentCulture, T(" — {0} line(s) added"), Merge.LineCount)
+                : string.Format(
+                    CultureInfo.CurrentCulture,
+                    T(" — {0} line(s) replaced {1}"),
+                    Merge.LineCount,
+                    Merge.RemovedLines));
+
+    /// <summary>The same fact, plus what the user has since done about it.</summary>
+    public string Description => GitDescription + (State switch
+    {
+        AutoChoice.Ours => T(" — overridden by hand: now LOCAL"),
+        AutoChoice.Theirs => T(" — overridden by hand: now REMOTE"),
+        AutoChoice.Base => T(" — overridden by hand: git's change undone"),
+        AutoChoice.Custom => T(" — edited by hand"),
+        _ => string.Empty,
+    });
+
+    private static string T(string english) => TranslationService.T(english);
+}
+
+/// <summary>
 ///  The words the window uses for <see cref="TrivialKind"/>. Kept here and not in
 ///  the service because a classification is a fact and a wording is an interface:
 ///  the service must stay sayable in any language the UI later grows.
@@ -1405,6 +2438,30 @@ internal static class ChoicePalette
         _ => ConflictBar,
     };
 
+    /// <summary>
+    ///  The wash for an automatic merge somebody has overridden, or <c>null</c> while
+    ///  it still holds git's answer — which has an ink of its own, quieter than any
+    ///  of these, because nobody has decided anything there.
+    /// </summary>
+    public static IBrush? Override(AutoChoice choice) => choice switch
+    {
+        AutoChoice.Ours => OursWash,
+        AutoChoice.Theirs => TheirsWash,
+        AutoChoice.Base => BaseWash,
+        AutoChoice.Custom => CustomWash,
+        _ => null,
+    };
+
+    /// <summary>The margin bar of an overridden automatic merge, or <c>null</c>.</summary>
+    public static IBrush? OverrideBar(AutoChoice choice) => choice switch
+    {
+        AutoChoice.Ours => OursBar,
+        AutoChoice.Theirs => TheirsBar,
+        AutoChoice.Base => BaseBar,
+        AutoChoice.Custom => CustomBar,
+        _ => null,
+    };
+
     /// <summary>The word shown in the margin.</summary>
     public static string Label(MergeChoice choice) => choice switch
     {
@@ -1442,9 +2499,21 @@ internal static class ChoicePalette
 ///  region contains empty lines and a transformer can only colour characters — an
 ///  empty line would punch a hole through the middle of the block.</para>
 /// </summary>
-internal sealed class RegionHighlighter(IReadOnlyList<Region> regions, Func<int> current) : IBackgroundRenderer
+internal sealed class RegionHighlighter(
+    IReadOnlyList<Region> regions,
+    Func<int> current,
+    IReadOnlyList<AutoSpan> autos,
+    Func<int> currentAuto) : IBackgroundRenderer
 {
     private static readonly IBrush MarkerWash = new SolidColorBrush(Color.FromArgb(0x38, 0xE0, 0xA7, 0x3C));
+
+    // One ink for every automatic merge whichever side it came from, and a faint
+    // one. It has to be visible enough to say "this line is not the ancestor's" and
+    // quiet enough not to look like a decision waiting to be taken; the side is
+    // spelled out in the margin, where a word can say it without a colour code
+    // nobody was taught.
+    private static readonly IBrush AutoWash = new SolidColorBrush(Color.FromArgb(0x16, 0x9B, 0xB4, 0xC8));
+    private static readonly IBrush AutoEdge = new SolidColorBrush(Color.FromRgb(0x6F, 0x9C, 0xB4));
     private static readonly IBrush OursWash = new SolidColorBrush(Color.FromArgb(0x24, 0x6A, 0xC7, 0x76));
     private static readonly IBrush BaseWash = new SolidColorBrush(Color.FromArgb(0x1C, 0x9B, 0x9B, 0x9B));
     private static readonly IBrush TheirsWash = new SolidColorBrush(Color.FromArgb(0x24, 0x5B, 0x9C, 0xFF));
@@ -1456,12 +2525,44 @@ internal sealed class RegionHighlighter(IReadOnlyList<Region> regions, Func<int>
     /// <inheritdoc/>
     public void Draw(TextView textView, DrawingContext drawingContext)
     {
-        if (regions.Count == 0 || textView.VisualLines.Count == 0 || textView.Document is not { } doc)
+        if (textView.VisualLines.Count == 0 || textView.Document is not { } doc)
         {
             return;
         }
 
         textView.EnsureVisualLines();
+
+        // Drawn before the conflicts so that a conflict's own wash always wins where
+        // the two happen to meet: what is still to be decided outranks what is done.
+        int activeAuto = currentAuto();
+        for (int i = 0; i < autos.Count; i++)
+        {
+            AutoSpan span = autos[i];
+            int firstLine = doc.GetLineByOffset(span.Start.Offset).LineNumber;
+            int lastLine = doc.GetLineByOffset(Math.Max(span.End.Offset - 1, span.Start.Offset)).LineNumber;
+
+            // A deletion produced no lines, so there is nothing to wash: only the
+            // margin can say that text went away here, and it does.
+            if (span.End.Offset > span.Start.Offset)
+            {
+                Fill(textView, drawingContext, firstLine, lastLine + 1,
+                    ChoicePalette.Override(span.State) ?? AutoWash);
+            }
+
+            if (i == activeAuto)
+            {
+                foreach (Rect rect in Rects(textView, firstLine, lastLine + 1))
+                {
+                    drawingContext.FillRectangle(AutoEdge, new Rect(rect.X, rect.Y, 3, rect.Height));
+                }
+            }
+        }
+
+        if (regions.Count == 0)
+        {
+            return;
+        }
+
         int active = current();
 
         for (int i = 0; i < regions.Count; i++)
@@ -1544,7 +2645,7 @@ internal sealed class RegionHighlighter(IReadOnlyList<Region> regions, Func<int>
 ///  Scrolling through a file with a dozen conflicts and seeing at a glance which
 ///  are still open is the difference between a tool and a form.</para>
 /// </summary>
-internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMargin
+internal sealed class ChoiceMargin(IReadOnlyList<Region> regions, IReadOnlyList<AutoSpan> autos) : AbstractMargin
 {
     private const double BarWidth = 4;
     private const double Gap = 4;
@@ -1553,6 +2654,16 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
     // literal rather than a scan of the regions: the width must not change while
     // the user works, or the text would shift sideways as conflicts are answered.
     private const string WidestNote = " ✓one side unchanged";
+
+    // The widest label, likewise. "OVERRIDE ← REMOTE" is longer than "CONFLICT", and
+    // a margin measured for a shorter one would clip the very thing this feature
+    // exists to show.
+    private const string WidestLabel = "OVERRIDE ← REMOTE";
+
+    // Same ink as the wash in the result pane, opaque here because a 4px bar in a
+    // 9% grey would not be a bar. Deliberately outside the choice palette: an
+    // automatic merge is not one of the answers a user can give.
+    private static readonly IBrush AutoInk = new SolidColorBrush(Color.FromRgb(0x6F, 0x9C, 0xB4));
 
     // Deliberately not one of the choice colours: the note answers a different
     // question ("why was this safe?") from the bar beside it ("what does it
@@ -1572,7 +2683,7 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
 
         _typeface = new Typeface(view.GetValue(TextBlock.FontFamilyProperty));
         _emSize = Math.Max(view.GetValue(TextBlock.FontSizeProperty) - 2, 8);
-        return new Size(BarWidth + Gap + Format("CONFLICT").Width + Format(WidestNote).Width + Gap, 0);
+        return new Size(BarWidth + Gap + Format(WidestLabel).Width + Format(WidestNote).Width + Gap, 0);
     }
 
     /// <inheritdoc/>
@@ -1602,6 +2713,26 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
         if (TextView is not { VisualLinesValid: true } view || view.Document is not { } doc)
         {
             return;
+        }
+
+        foreach (AutoSpan span in autos)
+        {
+            int from = doc.GetLineByOffset(span.Start.Offset).LineNumber;
+            int to = doc.GetLineByOffset(Math.Max(span.End.Offset - 1, span.Start.Offset)).LineNumber;
+            if (Extent(view, from, to) is not (double y, double height))
+            {
+                continue;
+            }
+
+            // A deletion covers no lines, so its bar is a tick on the boundary
+            // instead of a stripe down a block: it marks a place, not a stretch.
+            bool removal = span.End.Offset <= span.Start.Offset;
+            IBrush ink = ChoicePalette.OverrideBar(span.State) ?? AutoInk;
+            context.FillRectangle(ink, new Rect(0, y, BarWidth, removal ? 3 : height));
+
+            FormattedText auto = Format(span.Label + (removal ? " −" + span.Merge.RemovedLines : string.Empty));
+            auto.SetForegroundBrush(ink);
+            context.DrawText(auto, new Point(BarWidth + Gap, y));
         }
 
         foreach (Region region in regions)
@@ -1651,6 +2782,31 @@ internal sealed class ChoiceMargin(IReadOnlyList<Region> regions) : AbstractMarg
             note.SetForegroundBrush(TrivialInk);
             context.DrawText(note, new Point(BarWidth + Gap + label.Width, start));
         }
+    }
+
+    /// <summary>
+    ///  Where a run of document lines sits on screen, or <c>null</c> when none of it
+    ///  is visible — the ordinary case for a file that does not fit in the window.
+    /// </summary>
+    private static (double Y, double Height)? Extent(TextView view, int first, int last)
+    {
+        double? top = null;
+        double bottom = 0;
+
+        foreach (VisualLine visual in view.VisualLines)
+        {
+            int number = visual.FirstDocumentLine.LineNumber;
+            if (number < first || number > last)
+            {
+                continue;
+            }
+
+            double y = visual.VisualTop - view.VerticalOffset;
+            top ??= y;
+            bottom = y + visual.Height;
+        }
+
+        return top is double start ? (start, bottom - start) : null;
     }
 
     private FormattedText Format(string value)
