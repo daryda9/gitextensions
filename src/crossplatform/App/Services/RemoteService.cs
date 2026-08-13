@@ -729,6 +729,31 @@ public sealed class RemoteService
         if (!options.IsRebase)
         {
             arguments = InsertOption(arguments, "pull", "--no-rebase");
+
+            // AND IT MUST NOT ASK FOR A MESSAGE. A merging pull that is not a
+            // fast-forward writes a merge commit, and git opens core.editor on the
+            // prepared MERGE_MSG whenever stdin and stdout are the same terminal
+            // (builtin/merge.c, default_edit_option). That is exactly the shape of
+            // this port's process dialog: the interactive path runs git on a PTY, so
+            // git believes a human is at a terminal and starts a full-screen editor
+            // whose control sequences land in a text box that cannot render them and
+            // cannot be typed into. The pull then waits for an editor nobody can
+            // close — the dialog sits on "Running…" forever, showing a scrambled
+            // merge template. Verified in the GUI before and after this line.
+            //
+            // The FLAG, not GIT_EDITOR=true, because `git pull` has one and the flag
+            // is visible in the dialog's "Command to be executed" box: the user reads
+            // exactly what ran, and a merge message they never got to write is a
+            // decision the command line should confess to. The environment variable
+            // stays the tool for the commands that have NO equivalent switch —
+            // `merge --continue` and `rebase --continue` take no --no-edit, which is
+            // why MergeSessionService and RebaseSessionService set it instead. There
+            // is nothing left for it to cover here: git's own editor prompt on a pull
+            // exists only for the merge commit this flag answers.
+            //
+            // Conflicts are untouched: git stops before it ever prepares a message,
+            // so the notification bar's Continue/Abort flow works exactly as before.
+            arguments = InsertOption(arguments, "pull", "--no-edit");
         }
 
         return options.AutoStash
