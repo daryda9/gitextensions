@@ -565,10 +565,23 @@ public sealed class RepositoryProgressBanner : UserControl
         // operation. Both tips are written to be read next to each other, because that is
         // how they are on screen. Measured behaviour, not the manual's wording — see
         // SequencerSessionService.Abort and .Quit.
+        // …and Abort has a third reading, which is the one this tip used to get wrong: with
+        // the stopped marker gone, git refuses to rewind past the commit the user made by
+        // hand, so --abort undoes NOTHING and is byte-for-byte what --quit does. Measured on
+        // git 2.43, markerless revert of a three-commit series: `git revert --abort` exited
+        // 0 printing only "warning: You seem to have moved HEAD. Not rewinding, check your
+        // HEAD!", the log, the work tree and the unmerged index were all untouched, and only
+        // .git/sequencer disappeared. The old fixed tip promised the exact opposite —
+        // "the commits already made are removed and the files go back" — while the
+        // confirmation one click later said, truthfully, that nothing would be undone. A
+        // tooltip that contradicts the dialog behind it is the worse of the two, because it
+        // is what the user reads while deciding.
         ToolTip.SetTip(_abort, sequencer
             ? string.Format(
                 System.Globalization.CultureInfo.CurrentCulture,
-                T("Undo everything: the commits this operation already made are removed and the files go back to how they were before it started (git {0} --abort)"),
+                !_sequencerState.HasStoppedMarker
+                    ? T("End the operation. Nothing is undone here — the commit you made by hand moved the branch, so git refuses to rewind past it: no commit is removed and no file is restored, only the steps still to come are dropped (git {0} --abort)")
+                    : T("Undo everything: the commits this operation already made are removed and the files go back to how they were before it started (git {0} --abort)"),
                 verb)
             : rebase
                 ? T("Discard the rebase and put the branch back where it started (git rebase --abort)")
@@ -1173,7 +1186,18 @@ public sealed class RepositoryProgressBanner : UserControl
             // wrong confirmation: the user agrees to lose work and instead loses nothing,
             // and only finds out by inspecting the log afterwards.
             confirm: !_sequencerState.HasStoppedMarker
-                ? T("Stop the operation?\n\nGit will not undo anything here: the commit you made by hand moved the branch, so it refuses to rewind past it. Nothing is removed and no file is restored — the operation simply ends, and the commits of the series still to come are dropped.")
+                // …and with the index STILL unmerged in that markerless state, "nothing is
+                // restored" is true but dangerously incomplete: the unresolved conflict
+                // survives the abort, and this bar — the only thing on screen that explains
+                // why the index is in that shape — disappears with the sequencer directory.
+                // Measured on git 2.43, markerless revert with `UU a.txt`: after
+                // `git revert --abort` (exit 0, "not rewinding") `git ls-files -u` still
+                // listed all three stages of a.txt, and the banner was gone on the next
+                // refresh. Quit's confirmation already says this for the same state; Abort
+                // must, because here the two commands do literally the same thing.
+                ? _sequencerState.HasUnresolvedConflicts
+                    ? T("Stop the operation?\n\nGit will not undo anything here: the commit you made by hand moved the branch, so it refuses to rewind past it. No commit is removed and no file is restored, and the conflict you have not resolved yet stays in the index — you will have to finish or undo it by hand, with nothing left on screen to remind you. Only the commits of the series still to come are dropped.")
+                    : T("Stop the operation?\n\nGit will not undo anything here: the commit you made by hand moved the branch, so it refuses to rewind past it. Nothing is removed and no file is restored — the operation simply ends, and the commits of the series still to come are dropped.")
                 : _sequencerState.IsRevert
                     ? T("Abort the revert?\n\nEverything goes back to how it was before the revert started: the revert commits it has already made are removed, and your files are restored. Conflict resolutions you have not committed are lost.")
                     : T("Abort the cherry-pick?\n\nEverything goes back to how it was before the cherry-pick started: the commits it has already applied are removed, and your files are restored. Conflict resolutions you have not committed are lost."),

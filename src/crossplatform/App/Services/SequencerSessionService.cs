@@ -501,7 +501,11 @@ public sealed class SequencerSessionService
     ///
     ///  <para>Git writes exactly two verbs into a sequencer todo — <c>pick</c> (also
     ///  abbreviated <c>p</c>, which is what an edited todo can come back as) and
-    ///  <c>revert</c>, which has no abbreviation. A todo whose first command is neither is
+    ///  <c>revert</c>, which has no abbreviation — the single letter <c>r</c> is
+    ///  <c>reword</c>, a rebase-only command. Measured on git 2.43: a markerless sequencer
+    ///  whose todo began <c>"r 0feabf2 c3"</c> made <c>git status</c> report no operation at
+    ///  all, so mapping <c>r</c> to a revert would have named an operation git does not
+    ///  believe in. A todo whose first command is neither is
     ///  not something this port knows how to name, and answering
     ///  <see cref="RepositoryOperation.None"/> merely hides the banner, which is the safe
     ///  direction both callers are built on.</para>
@@ -512,8 +516,28 @@ public sealed class SequencerSessionService
     ///  and if they ever answered it differently the bar would appear without buttons, or
     ///  worse, send <c>cherry-pick --abort</c> to a repository that is reverting.</para>
     ///
-    ///  <para>Blank lines and <c>#</c> comments are skipped: git generates none, but a todo
-    ///  that has been through an editor can carry them.</para>
+    ///  <para><b>The FIRST line, comments included — because that is git's rule, and it
+    ///  was measured.</b> This used to skip blank lines and <c>#</c> comments before
+    ///  looking for a verb, on the reasoning that git writes none but an editor can leave
+    ///  some. Git does not do that: <c>sequencer_get_last_command</c> truncates the buffer
+    ///  at the first newline and parses that one line, and <c>parse_insn_line</c> turns a
+    ///  blank or <c>#</c> line into <c>TODO_COMMENT</c>, which is neither <c>TODO_PICK</c>
+    ///  nor <c>TODO_REVERT</c>, so the classification simply fails. Measured on git 2.43,
+    ///  a markerless sequencer whose todo began with <i>"# hand written"</i> and a blank
+    ///  line before two <c>p</c> entries: <c>git status</c> answered <i>"nothing to commit,
+    ///  working tree clean"</i> — no operation at all — and <c>git cherry-pick &lt;sha&gt;</c>
+    ///  started a brand new pick over it instead of refusing with "a cherry-pick is already
+    ///  in progress". Skipping the comment made this port announce a cherry-pick that git
+    ///  denies, and offer a <c>Continue</c> that git rejects (<c>--continue</c> there exits
+    ///  non-zero with the nonsensical <i>"cannot cherry-pick during a revert"</i>, because
+    ///  <c>read_populate_todo</c> demands every parsed entry be the requested command and a
+    ///  comment is not). Reading the first line and nothing else is the only rule whose
+    ///  answer the user's own <c>git status</c> will corroborate.</para>
+    ///
+    ///  <para>Leading and trailing whitespace on that line <b>is</b> ignored, which is also
+    ///  git's rule (<c>parse_insn_line</c> left-trims before matching): measured, a todo
+    ///  reading <c>"   p   0feabf2   c3"</c> is reported as a cherry-pick by
+    ///  <c>git status</c> and replayed by <c>--continue</c>.</para>
     /// </summary>
     internal static RepositoryOperation ReadSequencerOperation(string todoPath)
     {
@@ -527,13 +551,11 @@ public sealed class SequencerSessionService
             foreach (string raw in File.ReadLines(todoPath))
             {
                 string line = raw.Trim();
-                if (line.Length == 0 || line[0] == '#')
-                {
-                    continue;
-                }
 
                 // The verb is the first whitespace-delimited word; everything after it is
-                // the commit and its subject, which say nothing about the operation.
+                // the commit and its subject, which say nothing about the operation. An
+                // empty or commented first line falls through the switch to None, exactly
+                // as git's own parse fails there.
                 int end = line.IndexOfAny([' ', '\t']);
                 string verb = end < 0 ? line : line[..end];
 
