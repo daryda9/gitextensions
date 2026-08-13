@@ -43,15 +43,25 @@ public enum RerereActivation
 /// <param name="AutoUpdate"><c>rerere.autoupdate</c>: null when not set (git's default is false).</param>
 /// <param name="CacheDirectoryExists">Whether <c>&lt;git-dir&gt;/rr-cache</c> exists.</param>
 /// <param name="GitDirectory">
-///  The resolved git directory, or null when <paramref name="GitDirectory"/> could not be
+///  The resolved <b>per-worktree</b> git directory, or null when it could not be
 ///  determined. Never assume <c>repo/.git</c>: in a linked worktree it is
 ///  <c>main/.git/worktrees/&lt;name&gt;</c> and in a submodule <c>super/.git/modules/&lt;name&gt;</c>.
+///  This is where <c>MERGE_RR</c> lives.
+/// </param>
+/// <param name="CommonGitDirectory">
+///  The <b>common</b> git directory — the same as <paramref name="GitDirectory"/> everywhere
+///  except in a linked worktree, where it is the main repository's <c>.git</c>. This is where
+///  <c>rr-cache</c> lives, and the two must not be confused: measured on git 2.43 in a linked
+///  worktree, <c>MERGE_RR</c> was written to <c>main/.git/worktrees/link/MERGE_RR</c> while the
+///  resolution was read from and recorded into <c>main/.git/rr-cache</c>, with no
+///  <c>rr-cache</c> under the worktree's own directory at all.
 /// </param>
 public sealed record RerereConfiguration(
     bool? Enabled,
     bool? AutoUpdate,
     bool CacheDirectoryExists,
-    string? GitDirectory)
+    string? GitDirectory,
+    string? CommonGitDirectory)
 {
     /// <summary>Which of the four activation cases this repository is in.</summary>
     public RerereActivation Activation => Enabled switch
@@ -74,8 +84,22 @@ public sealed record RerereConfiguration(
     /// </summary>
     public bool AutoUpdateEffective => AutoUpdate ?? false;
 
-    /// <summary>The <c>rr-cache</c> path, or null when the git directory is unknown.</summary>
-    public string? CacheDirectory => GitDirectory is null ? null : Path.Combine(GitDirectory, "rr-cache");
+    /// <summary>
+    ///  The <c>rr-cache</c> path, or null when the git directory is unknown. Built from
+    ///  <see cref="CommonGitDirectory"/>, because the cache is shared by every worktree of the
+    ///  repository — a resolution recorded in a linked worktree is replayed in the main one.
+    /// </summary>
+    public string? CacheDirectory => CommonGitDirectory is null ? null : Path.Combine(CommonGitDirectory, "rr-cache");
+
+    /// <summary>
+    ///  True when this work tree is a linked worktree, i.e. the cache shown is shared with other
+    ///  checkouts of the same repository. Worth saying out loud in the cache window: "forget"
+    ///  there also un-remembers the resolution for every other worktree.
+    /// </summary>
+    public bool IsLinkedWorktree =>
+        GitDirectory is not null
+        && CommonGitDirectory is not null
+        && !string.Equals(GitDirectory, CommonGitDirectory, StringComparison.Ordinal);
 }
 
 /// <summary>
@@ -124,6 +148,45 @@ public sealed record RerereCacheEntry(
     public string ShortHash => Hash.Length >= 8 ? Hash[..8] : Hash;
 
     public override string ToString() => ConflictId;
+}
+
+/// <summary>
+///  Which conflict-producing operation is stopped in this work tree right now.
+///
+///  <para><b>Why rerere cares.</b> A merge conflicts once; the other four are <i>stepwise</i> —
+///  git stops, the user resolves, git goes on to the next commit and can hit the same conflict
+///  again immediately. Measured on git 2.43 with <c>git cherry-pick master..topic</c> over two
+///  commits whose conflicts have the identical shape: step one printed
+///  <c>Risoluzione per 'a.txt' registrata</c> and step two, in the <b>same</b> run, printed
+///  <c>Risolto conflitto in 'b.txt' usando la risoluzione precedente</c>. Telling that user that
+///  the resolution "will be replayed next time" describes the wrong horizon.</para>
+/// </summary>
+public enum RerereOperation
+{
+    /// <summary>Nothing in flight, or nothing this can recognise.</summary>
+    None,
+
+    /// <summary>An ordinary merge: <c>MERGE_HEAD</c>.</summary>
+    Merge,
+
+    /// <summary>
+    ///  A stopped rebase: <c>rebase-merge/</c> (merge backend, including <c>-i</c>), or
+    ///  <c>rebase-apply/</c> without the <c>applying</c> marker (the <c>--apply</c> backend).
+    /// </summary>
+    Rebase,
+
+    /// <summary>A stopped cherry-pick, single or a sequencer range: <c>CHERRY_PICK_HEAD</c>.</summary>
+    CherryPick,
+
+    /// <summary>A stopped revert, single or a sequencer range: <c>REVERT_HEAD</c>.</summary>
+    Revert,
+
+    /// <summary>
+    ///  <c>git am</c> stopped on a patch: <c>rebase-apply/</c> <b>with</b> the <c>applying</c>
+    ///  marker. Only <c>am -3</c> ever reaches rerere — measured, a plain <c>git am</c> that
+    ///  fails leaves no unmerged index entry, no <c>MERGE_RR</c> and no preimage at all.
+    /// </summary>
+    ApplyMailbox,
 }
 
 /// <summary>Outcome of a rerere action, with git's own output for display.</summary>
@@ -210,13 +273,83 @@ public sealed class RerereService
     {
         GitModule module = GitContext.CreateModule(repoPath);
         string? gitDir = GetGitDirectory(module);
-        bool cacheExists = gitDir is not null && Directory.Exists(Path.Combine(gitDir, "rr-cache"));
+
+        // The cache lives in the COMMON directory. Asking the per-worktree directory instead
+        // reported "not configured" for a linked worktree in which git was demonstrably
+        // replaying resolutions out of the main repository's rr-cache — the panel then hid the
+        // banner, the cache button and the "rerere already did this" notice for a file rerere
+        // had just rewritten.
+        string? commonDir = GetCommonGitDirectory(module) ?? gitDir;
+        bool cacheExists = commonDir is not null && Directory.Exists(Path.Combine(commonDir, "rr-cache"));
 
         return new RerereConfiguration(
             ParseBool(ReadConfig(module, EnabledKey)),
             ParseBool(ReadConfig(module, AutoUpdateKey)),
             cacheExists,
-            gitDir);
+            gitDir,
+            commonDir);
+    }
+
+    /// <summary>
+    ///  Which stepwise operation is stopped here, read from the marker files git leaves in the
+    ///  <b>per-worktree</b> git directory (each linked worktree has its own set, so a rebase in
+    ///  one is invisible to the other — verified by the layout, and the discriminating case is
+    ///  <c>MERGE_RR</c>, which is per-worktree too).
+    ///
+    ///  <para>Observed on git 2.43, one operation at a time and never two markers at once:
+    ///  <c>git rebase</c> and <c>git rebase -i</c> leave <c>rebase-merge/</c>;
+    ///  <c>git rebase --apply</c> leaves <c>rebase-apply/</c> <i>without</i> an <c>applying</c>
+    ///  file; <c>git am</c> leaves <c>rebase-apply/</c> <i>with</i> one; a cherry-pick leaves
+    ///  <c>CHERRY_PICK_HEAD</c> (plus <c>sequencer/</c> when it is a range) and a revert
+    ///  <c>REVERT_HEAD</c>. A rebase notably does <b>not</b> set <c>CHERRY_PICK_HEAD</c>, so the
+    ///  order below is a safety net rather than a necessity.</para>
+    /// </summary>
+    public RerereOperation GetOperation(string repoPath)
+    {
+        string? gitDir = GetGitDirectory(GitContext.CreateModule(repoPath));
+        if (gitDir is null)
+        {
+            return RerereOperation.None;
+        }
+
+        try
+        {
+            if (Directory.Exists(Path.Combine(gitDir, "rebase-merge")))
+            {
+                return RerereOperation.Rebase;
+            }
+
+            if (Directory.Exists(Path.Combine(gitDir, "rebase-apply")))
+            {
+                return File.Exists(Path.Combine(gitDir, "rebase-apply", "applying"))
+                    ? RerereOperation.ApplyMailbox
+                    : RerereOperation.Rebase;
+            }
+
+            if (File.Exists(Path.Combine(gitDir, "CHERRY_PICK_HEAD")))
+            {
+                return RerereOperation.CherryPick;
+            }
+
+            if (File.Exists(Path.Combine(gitDir, "REVERT_HEAD")))
+            {
+                return RerereOperation.Revert;
+            }
+
+            return File.Exists(Path.Combine(gitDir, "MERGE_HEAD"))
+                ? RerereOperation.Merge
+                : RerereOperation.None;
+        }
+        catch (IOException)
+        {
+            // An operation finishing underneath us: "nothing recognisable" is the honest answer,
+            // and it only costs the caller the generic wording.
+            return RerereOperation.None;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return RerereOperation.None;
+        }
     }
 
     /// <summary>
@@ -351,13 +484,20 @@ public sealed class RerereService
     ///  documented. The point is to make the cache inspectable: a user who is about to be handed
     ///  the same resolution forever should be able to see that it is in there.</para>
     ///
-    ///  <para>The git directory comes from <c>git rev-parse --absolute-git-dir</c>, never from
-    ///  <c>repoPath + "/.git"</c>, which is wrong in a linked worktree (it is a <i>file</i>
-    ///  pointing at <c>…/.git/worktrees/&lt;name&gt;</c>) and in a submodule.</para>
+    ///  <para>The directory comes from <c>git rev-parse --git-common-dir</c>, never from
+    ///  <c>repoPath + "/.git"</c> and — this is the part that was wrong — never from
+    ///  <c>--absolute-git-dir</c> either. In a linked worktree the two differ, and only the
+    ///  common one has an <c>rr-cache</c>: measured, a merge resolved inside
+    ///  <c>wt/link</c> wrote <c>main/.git/rr-cache/&lt;hash&gt;/postimage</c> while
+    ///  <c>main/.git/worktrees/link/</c> held only <c>MERGE_RR</c>. In a submodule the two are
+    ///  equal (<c>super/.git/modules/&lt;name&gt;</c>, verified mid-rebase), and the
+    ///  superproject's own <c>.git</c> has no <c>rr-cache</c>, so the submodule's own cache is
+    ///  what gets listed — which is what git uses there.</para>
     /// </summary>
     public IReadOnlyList<RerereCacheEntry> ListCache(string repoPath)
     {
-        string? gitDir = GetGitDirectory(GitContext.CreateModule(repoPath));
+        GitModule module = GitContext.CreateModule(repoPath);
+        string? gitDir = GetCommonGitDirectory(module) ?? GetGitDirectory(module);
         if (gitDir is null)
         {
             return [];
@@ -459,6 +599,12 @@ public sealed class RerereService
     ///  Reads <c>&lt;git-dir&gt;/MERGE_RR</c>, the map from conflict id to path for the merge that
     ///  is happening right now. Empty when no merge is in flight.
     ///
+    ///  <para><b>Per-worktree, unlike the cache.</b> This one really does come from
+    ///  <c>--absolute-git-dir</c>: in a linked worktree git wrote
+    ///  <c>main/.git/worktrees/link/MERGE_RR</c>, so two worktrees of the same repository can be
+    ///  stopped on two different conflicts while sharing one <c>rr-cache</c>, and reading the
+    ///  common directory here would report the other checkout's conflict.</para>
+    ///
     ///  <para>This is what makes <see cref="ListCache"/> readable: on its own a cache entry is a
     ///  40-character hash, but joined with this map the view can say "this stored resolution is
     ///  the one being applied to <c>src/Foo.cs</c>". The format is
@@ -531,6 +677,31 @@ public sealed class RerereService
     private static string? GetGitDirectory(GitModule module)
     {
         ExecutionResult result = Run(module, new GitArgumentBuilder("rev-parse") { "--absolute-git-dir" });
+        if (!result.ExitedSuccessfully)
+        {
+            return null;
+        }
+
+        string dir = result.StandardOutput.Trim();
+        return dir.Length == 0 ? null : dir;
+    }
+
+    /// <summary>
+    ///  The common git directory — the one holding <c>rr-cache</c>, which every worktree of the
+    ///  repository shares.
+    ///
+    ///  <para><c>--path-format=absolute</c> is not optional: plain <c>--git-common-dir</c> answers
+    ///  a path relative to the current directory (<c>../.git</c> when run one level down from the
+    ///  work tree root, measured), which would silently point the cache listing at nothing. Null
+    ///  when git is too old for the option (added in 2.31), and the caller then falls back to the
+    ///  per-worktree directory: identical outside a linked worktree, and no worse than the
+    ///  behaviour that shipped before.</para>
+    /// </summary>
+    private static string? GetCommonGitDirectory(GitModule module)
+    {
+        ExecutionResult result = Run(
+            module,
+            new GitArgumentBuilder("rev-parse") { "--path-format=absolute", "--git-common-dir" });
         if (!result.ExitedSuccessfully)
         {
             return null;

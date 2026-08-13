@@ -115,6 +115,15 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     private readonly string? _mergeTool;
     private readonly bool _inRebase;
 
+    /// <summary>
+    ///  Which operation is stopped here, used ONLY for the rerere wording. It is kept apart from
+    ///  <see cref="_inRebase"/>, which decides the ours/theirs labels: a cherry-pick, a revert and
+    ///  an <c>am -3</c> conflict all keep the merge orientation (HEAD is still <i>ours</i>), so
+    ///  they must not flip the labels — but they are stepwise like a rebase, so they must not be
+    ///  told "next time" either.
+    /// </summary>
+    private readonly RerereOperation _operation;
+
     private IReadOnlyList<ConflictEntry> _conflicts;
     private string? _refusedPath;
     private RerereSnapshot _rerereState;
@@ -134,6 +143,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         IReadOnlyList<ConflictEntry> conflicts,
         string? mergeTool,
         bool inRebase,
+        RerereOperation operation,
         RerereSnapshot rerereState,
         IReadOnlyList<string> rerereReplayedPaths)
     {
@@ -141,6 +151,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _conflicts = conflicts;
         _mergeTool = mergeTool;
         _inRebase = inRebase;
+        _operation = operation;
         _rerereState = rerereState;
         _rerereReplayedPaths = rerereReplayedPaths;
 
@@ -665,6 +676,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         (IReadOnlyList<ConflictEntry> conflicts,
          string? tool,
          bool inRebase,
+         RerereOperation operation,
          RerereSnapshot rerereState,
          IReadOnlyList<string> replayed) = await Task.Run(() =>
         {
@@ -674,11 +686,12 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
                 entries,
                 service.GetMergeToolName(repoPath),
                 service.InTheMiddleOfRebase(repoPath),
+                rerere.GetOperation(repoPath),
                 snapshot,
                 ScanReplayed(repoPath, snapshot, entries));
         });
 
-        ResolveConflictsDialog dialog = new(repoPath, conflicts, tool, inRebase, rerereState, replayed);
+        ResolveConflictsDialog dialog = new(repoPath, conflicts, tool, inRebase, operation, rerereState, replayed);
         await dialog.ShowDialog(owner);
         return dialog.AllConflictsResolved;
     }
@@ -1626,6 +1639,31 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     ///  someone once tried rerere keeps replaying resolutions with nothing in the
     ///  configuration to explain it. That is the case this banner exists for.</para>
     /// </summary>
+    /// <summary>
+    ///  The name of the operation in flight when it is <i>stepwise</i> — one that stops between
+    ///  commits and can hit the same conflict again at the next <c>--continue</c> — and
+    ///  <see langword="null"/> for a plain merge or for anything unrecognised, which is what
+    ///  falls back to the "next time" wording.
+    ///
+    ///  <para><b>Measured, not assumed, for each of them on git 2.43.</b> Cherry-pick: the
+    ///  conflict recorded (<c>Salvata preimmagine di 'f.txt'</c>) and, after the resolution was
+    ///  committed, the same cherry-pick run again replayed it (<c>Risolto conflitto in 'f.txt'
+    ///  usando la risoluzione precedente</c>) — and inside a single
+    ///  <c>git cherry-pick master..topic</c>, the resolution taken at commit one was replayed at
+    ///  commit two. Revert: identical, recorded then replayed. <c>git am -3</c>: identical,
+    ///  recorded then replayed. Plain <c>git am</c> is deliberately absent from that list — it
+    ///  fails with <c>.rej</c>-style errors, leaves nothing unmerged and never involves rerere,
+    ///  so this window does not open for it in the first place.</para>
+    /// </summary>
+    private string? StepwiseOperationName() => _operation switch
+    {
+        RerereOperation.Rebase => T("rebase"),
+        RerereOperation.CherryPick => T("cherry-pick"),
+        RerereOperation.Revert => T("revert"),
+        RerereOperation.ApplyMailbox => T("git am"),
+        _ => null,
+    };
+
     private void ApplyRerereState()
     {
         RerereConfiguration configuration = _rerereState.Configuration;
@@ -1642,24 +1680,47 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         {
             _rerereBannerTitle.Text = configuration.Activation == RerereActivation.EnabledByCacheDirectory
                 ? T("rerere is on because this repository has an rr-cache directory — nothing in your configuration turns it on.")
-                : _inRebase
+                : _operation == RerereOperation.Rebase
                     // During a rebase the sentence has to be about the commit, not about
                     // "next time": the replay is evaluated again at every --continue, and
                     // it fires only where the conflict comes back in the same shape.
                     ? T("rerere is on: git records how you resolve this commit's conflicts and replays them at "
                         + "each further step of the rebase where the same conflict comes back.")
-                    : T("rerere is on: git is recording how you resolve these conflicts and will replay it next time.");
+                    : StepwiseOperationName() is string stepwise
+                        // Same promise, same horizon, different word for the operation — a
+                        // cherry-pick, a revert and an `am -3` stop between commits exactly as a
+                        // rebase does. Measured: `git cherry-pick master..topic` recorded at the
+                        // first commit and replayed at the second within the one run. Kept as a
+                        // separate string rather than folded into the rebase one so that
+                        // sentence, which was reviewed against its own measurements, is untouched.
+                        // Both horizons, because unlike a rebase these are routinely
+                        // single-commit: a lone `git revert` has no "further step", and its user
+                        // is the one who cares that the resolution survives to the next run.
+                        // Both were measured — replay at commit two of one cherry-pick run, and
+                        // replay when the very same cherry-pick was run again afterwards.
+                        ? string.Format(
+                            T("rerere is on: git records how you resolve this commit's conflicts and replays them "
+                              + "wherever the same conflict comes back — at a further step of this {0}, or the "
+                              + "next time you run it."),
+                            stepwise)
+                        : T("rerere is on: git is recording how you resolve these conflicts and will replay it next time.");
 
             string autoUpdate = configuration.AutoUpdateEffective
-                ? _inRebase
+                ? StepwiseOperationName() is string stepwiseAuto
                     // Measured on git 2.43: with autoupdate on, a replayed step is staged
-                    // and the rebase STILL stops on that commit — but with nothing unmerged
+                    // and the operation STILL stops on that commit — but with nothing unmerged
                     // left, so it never reaches this window at all and the only trace is a
                     // staged change nobody asked to see. Claiming "it never stops" would be
                     // wrong; saying nothing would hide the one step that is never reviewed.
-                    ? T("Replayed resolutions are staged for you (rerere.autoupdate). On a rebase that skips the "
-                        + "review once per commit: a step resolved entirely by rerere leaves nothing unmerged, so "
-                        + "it never opens this window and goes on with its resolution staged unseen.")
+                    // Re-measured for the sequencer: `git cherry-pick master..topic` with
+                    // autoupdate on printed "'a.txt' aggiunto all'area di staging usando la
+                    // risoluzione precedente", left `git ls-files -u` empty, and still stopped
+                    // waiting for --continue. Identical behaviour, so one sentence covers all.
+                    ? string.Format(
+                        T("Replayed resolutions are staged for you (rerere.autoupdate). On a {0} that skips the "
+                          + "review once per commit: a step resolved entirely by rerere leaves nothing unmerged, so "
+                          + "it never opens this window and goes on with its resolution staged unseen."),
+                        stepwiseAuto)
                     : T("Replayed resolutions are staged for you (rerere.autoupdate), so a replayed conflict never comes back for review.")
                 : T("Replayed resolutions are written into the file but left unstaged, so you still get to check them before committing.");
 
@@ -1675,19 +1736,22 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _rerereReplayed.IsVisible = _rerereReplayedPaths.Count > 0;
         if (_rerereReplayedPaths.Count > 0)
         {
-            // Says "in this step" during a rebase because that is the whole of the
-            // promise: the replay covers the commit git is stopped on, and the next
+            // Says "in this step" during any stepwise operation because that is the whole
+            // of the promise: the replay covers the commit git is stopped on, and the next
             // --continue can stop again on the very same file.
-            _rerereReplayed.Text = string.Format(
-                _inRebase
-                    ? T("rerere has already done these for you in this step of the rebase — {0} — and no "
-                        + "conflict markers are left in them. You do not have to redo that work, but review it "
-                        + "before staging: the replay is silent, and a resolution remembered wrongly looks "
-                        + "exactly like a clean merge.")
-                    : T("rerere has already done these for you — {0} — and no conflict markers are left in them. "
-                        + "You do not have to redo that work, but review it before staging: the replay is silent, "
-                        + "and a resolution remembered wrongly looks exactly like a clean merge."),
-                string.Join(", ", _rerereReplayedPaths));
+            _rerereReplayed.Text = StepwiseOperationName() is string stepwise
+                ? string.Format(
+                    T("rerere has already done these for you in this step of the {0} — {1} — and no "
+                      + "conflict markers are left in them. You do not have to redo that work, but review it "
+                      + "before staging: the replay is silent, and a resolution remembered wrongly looks "
+                      + "exactly like a clean merge."),
+                    stepwise,
+                    string.Join(", ", _rerereReplayedPaths))
+                : string.Format(
+                    T("rerere has already done these for you — {0} — and no conflict markers are left in them. "
+                      + "You do not have to redo that work, but review it before staging: the replay is silent, "
+                      + "and a resolution remembered wrongly looks exactly like a clean merge."),
+                    string.Join(", ", _rerereReplayedPaths));
         }
 
         // Empty is normal and is NOT evidence that rerere did nothing (a completed

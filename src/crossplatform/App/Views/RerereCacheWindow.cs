@@ -240,7 +240,18 @@ public sealed class RerereCacheWindow : Theming.ZoomWindow
             {
                 _busy = false;
                 _active = active;
-                _location.Text = configuration.CacheDirectory ?? T("The rerere cache directory is unknown.");
+                // In a linked worktree the path shown is the MAIN repository's rr-cache: git
+                // keeps one cache per repository in the common directory (measured: a merge
+                // resolved inside the linked worktree wrote main/.git/rr-cache/<hash>/postimage,
+                // and the linked worktree's own directory never gets an rr-cache at all). Saying
+                // so matters, because "forget" here also un-remembers it for every other checkout.
+                _location.Text = configuration.CacheDirectory is null
+                    ? T("The rerere cache directory is unknown.")
+                    : configuration.IsLinkedWorktree
+                        ? string.Format(
+                            T("{0} — shared with every worktree of this repository."),
+                            configuration.CacheDirectory)
+                        : configuration.CacheDirectory;
 
                 // A NEW list instance each time: reassigning the same one leaves
                 // realised containers showing stale rows.
