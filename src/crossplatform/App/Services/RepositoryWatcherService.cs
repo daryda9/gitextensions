@@ -432,6 +432,13 @@ public sealed class RepositoryWatcherService : IDisposable
             string path = e.FullPath;
             string? gitDir = _gitDir;
 
+            // The work tree's own root, for the same reason as the git dir below: it is
+            // the container, and whatever changed inside it reports itself separately.
+            if (IsWatchedDirectoryItself(path))
+            {
+                return;
+            }
+
             // The work-tree watcher also sees the repository's own .git; route
             // those through the stricter git-dir rules instead of treating them as
             // ordinary file edits.
@@ -446,7 +453,7 @@ public sealed class RepositoryWatcherService : IDisposable
                 return;
             }
 
-            Schedule(RepositoryChangeKind.WorkTree);
+            Schedule(path, RepositoryChangeKind.WorkTree);
         }
         catch
         {
@@ -458,12 +465,29 @@ public sealed class RepositoryWatcherService : IDisposable
     {
         try
         {
+            // A notification whose path IS the git directory itself says only "something
+            // in here changed", and the something already arrives as its own event.
+            // Windows raises one of these on the directory entry for every write inside
+            // it, ON TOP of the event for the file that actually changed — so while each
+            // loose object, lock file and FETCH_HEAD was being correctly discarded below,
+            // the parent event sailed past every rule (it matches none of them) and asked
+            // for a refresh anyway. That is the app reacting to its own start-up git
+            // commands: four of them within four seconds of opening a repository, and a
+            // full reload of the grid and the tree at the five-second floor.
+            //
+            // Linux never showed it: inotify reports the child path, not the directory
+            // that contains it.
+            if (IsWatchedDirectoryItself(e.FullPath))
+            {
+                return;
+            }
+
             if (IsGitDirNoise(e.FullPath))
             {
                 return;
             }
 
-            Schedule(RepositoryChangeKind.GitDir);
+            Schedule(e.FullPath, RepositoryChangeKind.GitDir);
         }
         catch
         {
@@ -477,7 +501,7 @@ public sealed class RepositoryWatcherService : IDisposable
         // what. GitStatusMonitor schedules a refresh and so do we.
         try
         {
-            Schedule(RepositoryChangeKind.GitDir);
+            Schedule("(watcher buffer overflow)", RepositoryChangeKind.GitDir);
         }
         catch
         {
@@ -561,6 +585,41 @@ public sealed class RepositoryWatcherService : IDisposable
         return false;
     }
 
+    /// <summary>
+    ///  True when <paramref name="fullPath"/> is one of the directories being watched
+    ///  rather than something inside it — the git dir, its common dir, or the work tree.
+    ///  Such an event is a container notification and carries no information of its own.
+    /// </summary>
+    private bool IsWatchedDirectoryItself(string fullPath)
+    {
+        string? gitDir = _gitDir;
+        string? repo = _repoPath;
+
+        return (gitDir is not null && SamePath(fullPath, gitDir))
+            || (repo is not null && SamePath(fullPath, repo))
+            || (gitDir is not null && SamePath(fullPath, ResolveCommonDir(gitDir)));
+    }
+
+    private static bool SamePath(string path, string? other)
+    {
+        if (string.IsNullOrEmpty(other))
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(other)),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     private static bool IsTempName(string name)
         => name.StartsWith("tmp_", StringComparison.Ordinal)
         || name.StartsWith(".tmp", StringComparison.Ordinal)
@@ -593,8 +652,24 @@ public sealed class RepositoryWatcherService : IDisposable
 
     // ---- debounce ----------------------------------------------------------------
 
-    private void Schedule(RepositoryChangeKind kind)
+    /// <summary>
+    ///  Opt-in trace (<c>GE_WATCH_TRACE=1</c>) of what got through the noise filters.
+    ///  The window's own trace says a refresh happened; this says what asked for it,
+    ///  which is the only way to tell a real outside change from the app reacting to
+    ///  its own writes.
+    /// </summary>
+    private static void Trace(string path, RepositoryChangeKind kind)
     {
+        if (Environment.GetEnvironmentVariable("GE_WATCH_TRACE") == "1")
+        {
+            Console.Error.WriteLine($"[watch] {DateTime.Now:HH:mm:ss.fff} {kind,-8} {path}");
+        }
+    }
+
+    private void Schedule(string path, RepositoryChangeKind kind)
+    {
+        Trace(path, kind);
+
         lock (_gate)
         {
             if (_disposed || _repoPath is null || _suspendCount > 0)
