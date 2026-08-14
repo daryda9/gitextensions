@@ -1,0 +1,35 @@
+<!-- The Linux/Avalonia port's own solution.
+
+     The port is not part of GitExtensions.slnx at the repository root: that
+     solution is the Windows product, several of whose projects do not build on
+     Linux at all. Without a solution of its own, though, `dotnet build` here has
+     to be pointed at one project at a time, and in practice that meant the App —
+     so a harness left uncompilable by a refactoring of the code it tests stayed
+     broken until somebody ran it by hand, which could be weeks.
+
+     Listing every harness here makes that impossible: building the solution
+     compiles all of them, and Tests/run-all.sh (and CI) build exactly this file.
+     The Core.*/Compat projects are not listed because every one of them arrives
+     as a ProjectReference of the App and is built with it. -->
+<Solution>
+  <Folder Name="/app/">
+    <Project Path="App/GitExtensions.Avalonia.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="Tests/SubmoduleHierarchy.Harness.csproj" />
+    <Project Path="Tests/AnimProbe/AnimProbe.Harness.csproj" />
+    <Project Path="Tests/ChromeProbe/ChromeProbe.Harness.csproj" />
+    <Project Path="Tests/CommandPaletteRegression/CommandPaletteRegression.Harness.csproj" />
+    <Project Path="Tests/InlineDiffRegression/InlineDiffRegression.Harness.csproj" />
+    <Project Path="Tests/NavigationSnapshot/NavigationSnapshot.Harness.csproj" />
+    <Project Path="Tests/Perf/Perf.Harness.csproj" />
+    <Project Path="Tests/SettingsStoresRegression/SettingsStoresRegression.Harness.csproj" />
+    <Project Path="Tests/ViewPrefsRegression/ViewPrefsRegression.Harness.csproj" />
+  </Folder>
+  <Folder Name="/docs/">
+    <File Path="HANDOFF.md" />
+    <File Path="PORTING.md" />
+    <File Path="README.md" />
+    <File Path="ROADMAP.md" />
+  </Folder>
+</Solution>

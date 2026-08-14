@@ -37,11 +37,11 @@ for (int i = 1; i <= rounds; i++)
     // toolbar state, all concurrently.
     Task[] work =
     [
-        Timed("revisions", () => new RevisionService().LoadRevisions(repo, 200)),
-        Timed("refs", () => new BranchTagService().LoadRefs(repo)),
-        Timed("submodules", () => new SubmoduleService().DiscoverHierarchy(repo)),
-        Timed("worktrees", () => new WorktreeService().ListWorktrees(repo)),
-        Timed("statusbar", () =>
+        TimedAsync("revisions", () => new RevisionService().LoadRevisions(repo, 200)),
+        TimedAsync("refs", () => new BranchTagService().LoadRefs(repo)),
+        TimedAsync("submodules", () => new SubmoduleService().DiscoverHierarchy(repo)),
+        TimedAsync("worktrees", () => new WorktreeService().ListWorktrees(repo)),
+        TimedAsync("statusbar", () =>
         {
             GitCommands.GitModule m = GitContext.CreateModule(repo);
             string branch = m.GetSelectedBranch();
@@ -49,7 +49,7 @@ for (int i = 1; i <= rounds; i++)
             return m.GetAllChangedFiles();
         }),
     ];
-    Task.WaitAll(work);
+    await Task.WhenAll(work);
 
     sw.Stop();
     Report($"round {i}", sw.ElapsedMilliseconds);
@@ -161,7 +161,7 @@ static bool IsUnder(Type owner, string path, string root)
 
 // Runs one panel loader on the pool and prints how long it took, so a wall clock
 // longer than the slowest loader can be told apart from one loader being slow.
-static Task Timed<T>(string name, Func<T> load) => Task.Run(() =>
+static Task TimedAsync<T>(string name, Func<T> load) => Task.Run(() =>
 {
     Stopwatch sw = Stopwatch.StartNew();
     _ = load();

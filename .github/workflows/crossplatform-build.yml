@@ -1,0 +1,89 @@
+# Build and test the Linux/Avalonia port (src/crossplatform).
+#
+# The port has no coverage in app-build.yml: that workflow builds
+# GitExtensions.slnx, which does not contain a single one of these projects, and
+# most of it does not build on Linux at all. So until this file the port's
+# harnesses — which assert and exit non-zero, and have already caught a defect in
+# shipped code — ran only when somebody remembered to start them by hand.
+#
+# Everything below is one job on Linux, because that is the platform the port
+# targets and the harnesses are quick: about twenty seconds of assertions after
+# the build.
+name: Crossplatform build and test
+
+on:
+  push:
+    paths:
+      - 'src/crossplatform/**'
+      - 'src/app/GitCommands/**'
+      - 'src/app/GitExtensions.Extensibility/**'
+      - 'src/app/GitExtUtils/**'
+      - 'src/app/GitUIPluginInterfaces/**'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - '.github/workflows/crossplatform-build.yml'
+  pull_request:
+    paths:
+      - 'src/crossplatform/**'
+      - '.github/workflows/crossplatform-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: crossplatform-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  build-and-test:
+    name: Build and run the harnesses
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        submodules: recursive
+        # The App project stamps the build commit into assembly metadata (the
+        # About dialog reads it back), so it needs a real git checkout — but not
+        # the full history: fetch-depth 1 is enough for `git rev-parse HEAD`.
+        fetch-depth: 1
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+      with:
+        global-json-file: global.json
+
+    - name: Cache NuGet packages
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: ~/.nuget/packages
+        key: nuget-crossplatform-${{ runner.os }}-${{ hashFiles('src/crossplatform/Directory.Packages.props') }}
+        restore-keys: nuget-crossplatform-${{ runner.os }}-
+
+    # -warnaserror, not a report: the port's standing rule is a build with zero
+    # warnings, and a rule nothing enforces is a rule that decays. The build is
+    # left to run-all.sh below rather than repeated here.
+    - name: Build
+      working-directory: src/crossplatform
+      run: dotnet build GitExtensions.Avalonia.slnx -c Debug -warnaserror -v m --nologo
+
+    - name: Run the harnesses
+      working-directory: src/crossplatform
+      run: Tests/run-all.sh --no-build
+
+    # The suites that fail keep their sandbox; on a hosted runner it disappears
+    # with the machine unless it is collected here.
+    - name: Collect harness scratch on failure
+      if: failure()
+      run: |
+        mkdir -p harness-logs
+        cp -r /tmp/ge-harness-* harness-logs/ 2>/dev/null || true
+        find harness-logs -type f -name '*.log' -print
+
+    - name: Upload harness logs
+      if: failure()
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: crossplatform-harness-logs
+        path: harness-logs
+        if-no-files-found: ignore
