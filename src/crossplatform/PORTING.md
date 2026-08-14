@@ -3418,6 +3418,96 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## Le altre sei impostazioni (2026-08-14, M207–M210) — la difesa scritta una volta, applicata dove serviva
+
+M204 aveva messo in sicurezza **un** file, `view-prefs.json`, lasciando per iscritto che gli altri sei
+avevano lo stesso difetto e che il peggiore era `ui-state.json`. Questo giro li chiude tutti e sei. Le
+milestone stanno in ordine decrescente come il resto del file, una per commit.
+
+## M210 (2026-08-14, `c5152dd43`) — il banco di prova dei sei archivi, con la prova che non è vuoto
+
+Adottare il file condiviso non è **una** modifica ma due — il file va scritto in modo atomico **e** chi
+lo scrive deve smettere di riscrivere il documento intero — e ognuna delle due metà si può sbagliare da
+sola senza che se ne accorgano la compilazione, la revisione di un singolo punto di scrittura o la
+persona che usa il programma: l'impostazione semplicemente non c'è più la volta dopo.
+
+`Tests/SettingsStoresRegression`, 41 casi in ~6 s: quattro thread su quattro campi **diversi** di
+`app-settings`; gli stessi attraverso un confine di processo vero; l'istantanea di `ui-state` vecchia
+quanto la sessione che si chiude sopra le scritture di tre finestre di dialogo; due editori di
+`commit-info`; due istanze che aggiungono 120 preferiti ciascuna, una delle quali ne archivia uno in
+una categoria; 67 000 letture concorrenti di `ui-state` mentre quattro processi lo martellano; e un
+SIGKILL a metà scrittura contro `ui-state`, `scripts` e `hotkeys`, ognuno seguito da una scrittura che
+deve comunque riuscire.
+
+Ogni verifica legge i **byte grezzi** del file, mai la `Load()` del servizio: `Load` rigioca le
+mutazioni ancora in coda per cortesia, e maschererebbe proprio la scrittura che non è mai arrivata.
+
+**Non vacuità, misurata su una build sabotata, per entrambe le metà.** Far partire `WriteMerged` dai
+default invece che da una rilettura rompe **15 casi su 41**; rimettere `File.WriteAllText` rompe il
+caso delle letture spezzate, **541 letture su 23365** vedono un documento incompleto.
+
+## M209 (2026-08-14, `76d0504c4`) — chiudere il programma smette di annullare le impostazioni della sessione
+
+Ogni scrittore di questi due file faceva carica, modifica, salva. Il caso più largo era la finestra
+principale: carica `ui-state.json` **una volta** all'avvio, tiene quell'oggetto per tutta la sessione e
+alla chiusura riscriveva tutto — quindi la lingua, l'azione di pull predefinita e la scelta fatta a un
+push rifiutato, salvate ore prima da una finestra di dialogo, tornavano indietro **uscendo dal
+programma**. `app-settings.json` aveva la stessa forma con una dozzina di scrittori invece di uno.
+
+Ogni punto di scrittura ora manda un **delta** sui campi che possiede: la chiusura della finestra
+principale, le sue voci di lingua e aspetto, le due pagine della finestra Impostazioni, la finestra di
+push, il menu opzioni della finestra di commit, le due finestre di checkout e la spunta dell'auto-stash
+del rebase.
+
+**Le sei spunte del pannello del commit hanno richiesto una cosa in più.** Una scrittura fusa rigioca la
+sua delegata su quello che il file dice **al momento della scrittura**, quindi una delegata che
+**nega** finirebbe sul valore opposto ogni volta che gira più di una volta. Ogni spunta ora calcola
+prima il valore nuovo e lo **imposta**, sia sulla copia a schermo sia sul documento salvato.
+
+**Un campo arrivava al file solo perché quella scrittura totale se lo portava dietro**: l'ordine delle
+categorie del pannello di sinistra, scritto dalle sue voci «Sposta su/giù» e salvato da nessun'altra
+parte. Ora è nominato esplicitamente nel delta di chiusura — trovato leggendo tutti gli assegnamenti a
+`_uiState.*` prima di togliere la scrittura totale, non dopo.
+
+Verificato a schermo con Xvfb e `XDG_CONFIG_HOME` isolato: il programma parte, legge tema e
+disposizione, e il clic sulla × della barra del titolo lascia un `ui-state.json` completo di 32 campi.
+
+## M208 (2026-08-14, `df83ed36a`) — gli altri sei file di impostazioni smettono di perdere scritture
+
+`app-settings.json`, `ui-state.json`, `commit-info.json`, `favorites.json`, `scripts.json` e
+`hotkeys.json` erano scritti tutti con `WriteAllText`, che **tronca** il file prima di riempirlo. Un
+processo morto in quella finestra lasciava un file scritto a metà, e ogni `Load` lo legge come «nessuna
+impostazione» — dimensione della finestra, tema, scorciatoie o preferiti **azzerati in silenzio**. Tutti
+e sei ora passano da `JsonSettingsFile`: file temporaneo, `fsync`, `rename`, più il lock di lato che
+tiene due istanze fuori dal carica-modifica-salva l'una dell'altra.
+
+Guadagnano anche `Update()`, un delta applicato a quello che il file dice al momento della scrittura.
+`FavoritesService` lo usa già, perché aggiungi/togli/archivia sono per natura leggi-modifica-scrivi: due
+istanze che rendono preferite due repository diverse ora **tengono entrambe la propria**.
+
+`Save()` resta dove chi chiama possiede davvero il documento intero — la finestra Impostazioni, la lista
+degli script, la mappa delle scorciatoie — e lo dice nella propria documentazione.
+
+**Una trappola dell'ordine di inizializzazione, trovata rileggendo e non a runtime.** Il modello di
+`HotkeyService` è dichiarato **sopra** `Shared`: gli inizializzatori statici girano in ordine testuale e
+`Shared` costruisce un servizio nel proprio inizializzatore, quindi più in basso ogni istanza avrebbe
+ricevuto un modello nullo.
+
+## M207 (2026-08-14, `418036239`) — una sola implementazione di un file di impostazioni sicuro
+
+La sicurezza fra processi costruita per `view-prefs.json` — sostituzione atomica, carica-modifica-salva
+fuso, lock di lato — era scritta **dentro** `ViewPrefsService` e i sei archivi fratelli non potevano
+riusarla. Si sposta in `JsonSettingsFile<T>`, che sa scrivere un documento in sicurezza e **niente** su
+quale documento sia: le parti specifiche (lettura, scrittura, normalizzazione, default) arrivano come
+modello.
+
+`ViewPrefsService` ora vi delega e tiene solo il proprio schema. Il comportamento è invariato per
+costruzione, e `Tests/ViewPrefsRegression` — 41 casi fra thread, processi figli e SIGKILL — **passa
+ancora**: è quella la prova che l'estrazione è fedele.
+
+`SettingsPaths.Resolve` si unisce al giro: le sette copie di `ResolvePath` erano la stessa catena di
+ripiego su `XDG_CONFIG_HOME` scritta sette volte.
+
 ## Chiusura dei residui (2026-08-14, M204–M206) — tre unità, quello che il collaudo aveva lasciato scritto
 
 Il giro precedente aveva **misurato** e lasciato per iscritto quello che non aveva corretto. Questo
