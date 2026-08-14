@@ -570,14 +570,14 @@ public sealed class CheckoutBranchForm : Theming.ZoomWindow
 
         if (choice.SetLocalChangesAsDefault)
         {
+            // One field, so a delta and not a load-mutate-save: writing the whole document
+            // back would revert whatever another dialog stored while this one was open.
+            string chosen = choice.LocalChanges.ToString();
             _ = Task.Run(() =>
             {
                 try
                 {
-                    SettingsService settings = new();
-                    AppPreferences prefs = settings.Load();
-                    prefs.DefaultCheckoutLocalChangesAction = choice.LocalChanges.ToString();
-                    settings.Save(prefs);
+                    new SettingsService().Update(prefs => prefs.DefaultCheckoutLocalChangesAction = chosen);
                 }
                 catch
                 {

@@ -822,7 +822,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         try
         {
             _uiState.Language = language;
-            _uiStateService.Save(_uiState);
+            _uiStateService.Update(s => s.Language = language);
             await TranslationService.LoadAsync(language);
         }
         catch
@@ -872,7 +872,61 @@ public sealed class MainWindow : Theming.ZoomWindow
             _uiState.DiffStar = _diffRow.Height.Value;
             _uiState.GridViewOptions = new Dictionary<string, bool>(_revisions.PersistedViewOptions);
             _uiState.GridPageSize = _revisions.PageSize;
-            _uiStateService.Save(_uiState);
+
+            // A delta over exactly the fields this window owns, not the whole document.
+            // _uiState is loaded once at start-up and kept for the entire session, so
+            // writing all of it back on close reverted every setting any dialog had
+            // stored in between — the widest lost-update window in the port. Each value
+            // is read HERE and only assigned inside the delegate: the delegate can run
+            // later, on the pump thread, and must not go looking at live state again.
+            double windowWidth = _uiState.WindowWidth;
+            double windowHeight = _uiState.WindowHeight;
+            int? windowX = _uiState.WindowX;
+            int? windowY = _uiState.WindowY;
+            bool maximized = _uiState.WindowMaximized;
+            bool splitView = _uiState.SplitView;
+            string bottomTab = _uiState.BottomTab;
+            bool leftCollapsed = _uiState.LeftPanelCollapsed;
+            double treeWidth = _uiState.TreeWidth;
+            string commitInfoPosition = _uiState.CommitInfoPosition;
+            // Set by the left panel's "Move up/down" and never written anywhere else: it
+            // used to reach the file only because this save carried the whole document.
+            string categoryOrder = _uiState.LeftPanelCategoryOrder;
+            string systemThemeSeen = _uiState.SystemThemeSeen;
+            string? lastRepoPath = _uiState.LastRepoPath;
+            List<RepoTabState> openTabs = _uiState.OpenRepoTabs;
+            string? activeTab = _uiState.ActiveRepoTab;
+            double revisionsStar = _uiState.RevisionsStar;
+            double bottomStar = _uiState.BottomStar;
+            double detailStar = _uiState.DetailStar;
+            double diffStar = _uiState.DiffStar;
+            Dictionary<string, bool> gridViewOptions = _uiState.GridViewOptions;
+            int gridPageSize = _uiState.GridPageSize;
+
+            _uiStateService.Update(s =>
+            {
+                s.WindowWidth = windowWidth;
+                s.WindowHeight = windowHeight;
+                s.WindowX = windowX;
+                s.WindowY = windowY;
+                s.WindowMaximized = maximized;
+                s.SplitView = splitView;
+                s.BottomTab = bottomTab;
+                s.LeftPanelCollapsed = leftCollapsed;
+                s.TreeWidth = treeWidth;
+                s.CommitInfoPosition = commitInfoPosition;
+                s.LeftPanelCategoryOrder = categoryOrder;
+                s.SystemThemeSeen = systemThemeSeen;
+                s.LastRepoPath = lastRepoPath;
+                s.OpenRepoTabs = openTabs;
+                s.ActiveRepoTab = activeTab;
+                s.RevisionsStar = revisionsStar;
+                s.BottomStar = bottomStar;
+                s.DetailStar = detailStar;
+                s.DiffStar = diffStar;
+                s.GridViewOptions = gridViewOptions;
+                s.GridPageSize = gridPageSize;
+            });
         }
         catch
         {
@@ -1300,8 +1354,9 @@ public sealed class MainWindow : Theming.ZoomWindow
         _toolbar.OpenPullDialogRequested += OpenPullDialog;
         _toolbar.DefaultPullActionChanged += action =>
         {
-            _uiState.DefaultPullAction = action.ToString();
-            _uiStateService.Save(_uiState);
+            string chosen = action.ToString();
+            _uiState.DefaultPullAction = chosen;
+            _uiStateService.Update(s => s.DefaultPullAction = chosen);
         };
 
         _toolbar.PushRequested += OpenPushDialog;
@@ -4318,7 +4373,16 @@ public sealed class MainWindow : Theming.ZoomWindow
         }
 
         ApplyAppearance();
-        _uiStateService.Save(_uiState);
+
+        // Only the dimension(s) this call changed: the View menu's theme entry must not
+        // carry the whole session-old document back over the file.
+        string savedTheme = _uiState.Theme;
+        string savedStyle = _uiState.Style;
+        _uiStateService.Update(s =>
+        {
+            s.Theme = savedTheme;
+            s.Style = savedStyle;
+        });
     }
 
     // ---- window chrome (the title bar) ----------------------------------------------

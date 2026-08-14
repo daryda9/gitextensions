@@ -976,14 +976,15 @@ public sealed class CommitDialog : Theming.ZoomWindow
             Subject: (message ?? _messageBox.Text ?? string.Empty).Split('\n')[0].Trim(),
             Author: _committerName.Length > 0 ? $"{_committerName} <{_committerEmail}>" : string.Empty);
 
-    // Persists one options-menu toggle. The whole record is rewritten, so a
-    // concurrently changed sibling setting would be overwritten — the file is only
-    // written from the UI thread, and only by an explicit user click.
+    // Persists one options-menu toggle. The same delegate is applied twice: to the copy
+    // this dialog renders from, and — at write time, on whatever the file says then — to
+    // the stored document. That second application is what keeps one toggle here from
+    // reverting a sibling setting another surface changed while the dialog was open;
+    // rewriting the whole record used to do exactly that.
     private void SaveOption(Action<AppPreferences> change)
     {
         change(_prefs);
-        AppPreferences prefs = _prefs;
-        _ = Task.Run(() => _settings.Save(prefs));
+        _ = Task.Run(() => _settings.Update(change));
     }
 
     // Upstream's SelectStaged(): if nothing is selected in the staged list, put the

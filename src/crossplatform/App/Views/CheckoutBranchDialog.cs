@@ -232,13 +232,12 @@ public sealed class CheckoutBranchDialog : Theming.ZoomWindow
         LocalChangesAction action = dialog.SelectedAction;
         if (dialog.SetAsDefault)
         {
-            _ = Task.Run(() =>
-            {
-                SettingsService settings = new();
-                AppPreferences prefs = settings.Load();
-                prefs.DefaultCheckoutLocalChangesAction = action.ToString();
-                settings.Save(prefs);
-            });
+            // One field, so a delta and not a load-mutate-save: this dialog owns the
+            // default-local-changes answer and nothing else in app-settings.json, and
+            // writing the whole document back would revert whatever another dialog
+            // (or another instance) had stored while this one was open.
+            string chosen = action.ToString();
+            _ = Task.Run(() => new SettingsService().Update(prefs => prefs.DefaultCheckoutLocalChangesAction = chosen));
         }
 
         return action;

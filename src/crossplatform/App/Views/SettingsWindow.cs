@@ -1769,50 +1769,55 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         List<UserScript> scripts = [.. _scripts];
         _ = Task.Run(() =>
         {
-            SettingsService settings = new();
-            AppPreferences prefs = settings.Load();
-            prefs.DefaultCheckoutLocalChangesAction = checkoutAction;
-            prefs.CommitMessageWordWrap = wordWrap;
-            prefs.CommitValidationSecondLineMustBeEmpty = secondLineEmpty;
-            prefs.CommitValidationAutoWrap = autoWrap;
-            prefs.MarkIllFormedCommitLines = markIllFormed;
-            prefs.CommitValidationFirstLineMaxChars = firstLineLimit;
-            prefs.CommitValidationMaxCharsPerLine = lineLimit;
-            prefs.CommitDialogNumberOfPreviousMessages = previousMessages;
-            prefs.DiffVerticalRulerPosition = rulerPosition;
-            prefs.ShowEolMarkerAsGlyph = eolGlyph;
-            prefs.DiffContinuousScroll = continuous;
-            prefs.DiffContinuousScrollDelay = continuousDelay;
-            prefs.OmitUninterestingDiff = omitUninteresting;
-            prefs.UseHistogramDiffAlgorithm = histogram;
-            prefs.ShowDiffForAllParents = allParents;
-            prefs.GraphDrawNonRelativesTextGray = textGray;
-            prefs.GraphDrawAlternateBackColor = alternateRows;
-            prefs.MulticolorBranches = multicolor;
-            prefs.GraphColorPerBranch = colorPerBranch;
-            prefs.GraphColorAtRemoteMirror = colorAtRemoteMirror;
-            prefs.StraightenGraphDiagonals = straighten;
-            prefs.StraightenGraphSegmentsLimit = straightenLimit;
-            prefs.HighlightAuthoredRevisions = highlightAuthored;
-            prefs.ShowRevisionGridTooltips = gridTooltips;
-            prefs.IncludeUntrackedFilesInManualStash = untrackedManual;
-            prefs.IncludeUntrackedFilesInAutoStash = untrackedAuto;
-            prefs.AutoPopStashAfterCheckout = popAfterCheckout;
-            prefs.AutoPopStashAfterPull = popAfterPull;
-            prefs.RebaseAutoStash = rebaseAutoStash;
-            prefs.RecursiveSubmodules = recursiveSubmodules;
-            prefs.RecentRepositoriesHistorySize = historySize;
-            prefs.SortRecentRepos = sortRecent;
-            prefs.ShorteningRecentRepoPathStrategy = shortening;
-            prefs.TruncatePathMethod = truncate;
-            prefs.UiFontFamily = uiFont;
-            prefs.MonospaceFontFamily = monospaceFont;
-            prefs.UiFontSize = uiFontSize;
-            prefs.MonospaceFontSize = monospaceFontSize;
-            prefs.GitHubHost = githubHost;
-            prefs.GitHubIssueCommitMessages = githubIssues;
-            prefs.GitHubIssueCommitMessageCount = githubIssueCount;
-            settings.Save(prefs);
+            // A delta over the fields this page owns, not a load-mutate-save: every value
+            // below is already a local captured on the UI thread, and applying them to
+            // whatever the file says at write time is what keeps a toggle flipped
+            // meanwhile — in the commit dialog, or in a second instance — from being
+            // reverted by this OK.
+            new SettingsService().Update(prefs =>
+            {
+                prefs.DefaultCheckoutLocalChangesAction = checkoutAction;
+                prefs.CommitMessageWordWrap = wordWrap;
+                prefs.CommitValidationSecondLineMustBeEmpty = secondLineEmpty;
+                prefs.CommitValidationAutoWrap = autoWrap;
+                prefs.MarkIllFormedCommitLines = markIllFormed;
+                prefs.CommitValidationFirstLineMaxChars = firstLineLimit;
+                prefs.CommitValidationMaxCharsPerLine = lineLimit;
+                prefs.CommitDialogNumberOfPreviousMessages = previousMessages;
+                prefs.DiffVerticalRulerPosition = rulerPosition;
+                prefs.ShowEolMarkerAsGlyph = eolGlyph;
+                prefs.DiffContinuousScroll = continuous;
+                prefs.DiffContinuousScrollDelay = continuousDelay;
+                prefs.OmitUninterestingDiff = omitUninteresting;
+                prefs.UseHistogramDiffAlgorithm = histogram;
+                prefs.ShowDiffForAllParents = allParents;
+                prefs.GraphDrawNonRelativesTextGray = textGray;
+                prefs.GraphDrawAlternateBackColor = alternateRows;
+                prefs.MulticolorBranches = multicolor;
+                prefs.GraphColorPerBranch = colorPerBranch;
+                prefs.GraphColorAtRemoteMirror = colorAtRemoteMirror;
+                prefs.StraightenGraphDiagonals = straighten;
+                prefs.StraightenGraphSegmentsLimit = straightenLimit;
+                prefs.HighlightAuthoredRevisions = highlightAuthored;
+                prefs.ShowRevisionGridTooltips = gridTooltips;
+                prefs.IncludeUntrackedFilesInManualStash = untrackedManual;
+                prefs.IncludeUntrackedFilesInAutoStash = untrackedAuto;
+                prefs.AutoPopStashAfterCheckout = popAfterCheckout;
+                prefs.AutoPopStashAfterPull = popAfterPull;
+                prefs.RebaseAutoStash = rebaseAutoStash;
+                prefs.RecursiveSubmodules = recursiveSubmodules;
+                prefs.RecentRepositoriesHistorySize = historySize;
+                prefs.SortRecentRepos = sortRecent;
+                prefs.ShorteningRecentRepoPathStrategy = shortening;
+                prefs.TruncatePathMethod = truncate;
+                prefs.UiFontFamily = uiFont;
+                prefs.MonospaceFontFamily = monospaceFont;
+                prefs.UiFontSize = uiFontSize;
+                prefs.MonospaceFontSize = monospaceFontSize;
+                prefs.GitHubHost = githubHost;
+                prefs.GitHubIssueCommitMessages = githubIssues;
+                prefs.GitHubIssueCommitMessageCount = githubIssueCount;
+            });
 
             // Saving raises UserScriptService.Changed, which is what puts a new script in
             // the Tools menu and in the grid's context menu without a restart.
@@ -1844,20 +1849,35 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         // ---- Theme and style: persist + apply the pair (already previewed live).
         bool autoRefresh = _autoRefresh.IsChecked == true;
 
-        UiState ui = _uiStateService.Load();
-        ui.Theme = SelectedTheme;
-        ui.Style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
-        ui.UiSize = UiSizes.Name(SelectedUiSize);
-        ui.ColoredIcons = _coloredIcons.IsChecked == true;
-        ui.TitleBar = WindowChrome.Name(SelectedMergedTitleBar);
-        ui.RepoTabs = RepoTabsOption.Name(SelectedRepoTabs);
-        ui.DefaultPullAction = pullAction;
-        ui.AutoRefresh = autoRefresh;
+        // The nine fields this page owns, applied as a delta rather than as a whole
+        // document: the main window keeps its own UiState for the whole session and every
+        // other dialog writes its own field, so saving all of it here reverted them.
+        string theme = SelectedTheme;
+        string style = _style.SelectedIndex == 1 ? "Classic" : "Modern";
+        string uiSize = UiSizes.Name(SelectedUiSize);
+        bool coloredIcons = _coloredIcons.IsChecked == true;
+        string titleBar = WindowChrome.Name(SelectedMergedTitleBar);
+        string repoTabs = RepoTabsOption.Name(SelectedRepoTabs);
 
         // Trimmed on the way in: a stray trailing space would make the first token —
         // the executable — the empty string and silently disable the setting.
-        ui.TerminalCommand = (_terminalCommand.Text ?? string.Empty).Trim();
-        _uiStateService.Save(ui);
+        string terminalCommand = (_terminalCommand.Text ?? string.Empty).Trim();
+
+        _uiStateService.Update(s =>
+        {
+            s.Theme = theme;
+            s.Style = style;
+            s.UiSize = uiSize;
+            s.ColoredIcons = coloredIcons;
+            s.TitleBar = titleBar;
+            s.RepoTabs = repoTabs;
+            s.DefaultPullAction = pullAction;
+            s.AutoRefresh = autoRefresh;
+            s.TerminalCommand = terminalCommand;
+        });
+
+        // The live copy the rest of this method reports to the host with.
+        UiState ui = _uiStateService.Load();
         SystemTheme.Follow(ui.Theme == SystemTheme.Name);
         ThemeManager.Apply(SelectedVariant, SelectedStyle);
         UiScaling.Apply(SelectedUiSize);
@@ -1865,9 +1885,9 @@ public sealed class SettingsWindow : Theming.ZoomWindow
         WindowChrome.Apply(SelectedMergedTitleBar);
         RepoTabsOption.Apply(SelectedRepoTabs);
 
-        // The host owns the live UiState instance and re-serialises it on close, which
-        // would otherwise overwrite the value just written to the file. Telling it
-        // makes the change effective immediately AND survive the exit save.
+        // The host holds a UiState loaded at start-up and reads the pull action from it,
+        // so it would keep running the old one until the next launch. Telling it makes the
+        // change effective immediately, and keeps its copy from disagreeing with the file.
         _pullActionChanged?.Invoke(pullAction);
 
         // Same contract for automatic refresh, which additionally has to start or stop

@@ -1575,10 +1575,11 @@ public sealed class PushDialog : Theming.ZoomWindow
     {
         try
         {
-            UiStateService service = new();
-            UiState state = service.Load();
-            state.AutoPullOnPushRejected = action.ToString();
-            service.Save(state);
+            // One field, so a delta: the main window holds a session-old UiState and the
+            // Settings dialog holds its own, and a whole-document write from here would
+            // be reverted by — or would revert — either of them.
+            string chosen = action.ToString();
+            new UiStateService().Update(state => state.AutoPullOnPushRejected = chosen);
         }
         catch (Exception)
         {

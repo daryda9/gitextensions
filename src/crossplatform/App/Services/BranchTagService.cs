@@ -1509,15 +1509,9 @@ public sealed class BranchTagService
     {
         try
         {
-            SettingsService settings = new();
-            AppPreferences prefs = settings.Load();
-            if (prefs.RebaseAutoStash == value)
-            {
-                return;
-            }
-
-            prefs.RebaseAutoStash = value;
-            settings.Save(prefs);
+            // A delta, so the rebase dialog's one checkbox cannot revert a setting the
+            // commit dialog or the Settings window wrote while the rebase was running.
+            new SettingsService().Update(prefs => prefs.RebaseAutoStash = value);
         }
         catch (Exception)
         {

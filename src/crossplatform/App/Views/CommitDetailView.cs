@@ -237,23 +237,29 @@ public sealed class CommitDetailView : UserControl
 
         _showBranchesItem = Toggle(
             T("CommitInfo/showContainedInBranchesToolStripMenuItem.Text", "Show local branches containing this commit"),
-            () => _settings.ShowContainedInBranchesLocal = !_settings.ShowContainedInBranchesLocal);
+            static s => s.ShowContainedInBranchesLocal,
+            static (s, value) => s.ShowContainedInBranchesLocal = value);
         _showBranchesRemoteItem = Toggle(
             T("CommitInfo/showContainedInBranchesRemoteToolStripMenuItem.Text", "Show remote branches containing this commit"),
-            () => _settings.ShowContainedInBranchesRemote = !_settings.ShowContainedInBranchesRemote);
+            static s => s.ShowContainedInBranchesRemote,
+            static (s, value) => s.ShowContainedInBranchesRemote = value);
         _showBranchesRemoteIfNoLocalItem = Toggle(
             T("CommitInfo/showContainedInBranchesRemoteIfNoLocalToolStripMenuItem.Text",
                 "Show remote branches only when no local branch contains this commit"),
-            () => _settings.ShowContainedInBranchesRemoteIfNoLocal = !_settings.ShowContainedInBranchesRemoteIfNoLocal);
+            static s => s.ShowContainedInBranchesRemoteIfNoLocal,
+            static (s, value) => s.ShowContainedInBranchesRemoteIfNoLocal = value);
         _showTagsItem = Toggle(
             T("CommitInfo/showContainedInTagsToolStripMenuItem.Text", "Show tags containing this commit"),
-            () => _settings.ShowContainedInTags = !_settings.ShowContainedInTags);
+            static s => s.ShowContainedInTags,
+            static (s, value) => s.ShowContainedInTags = value);
         _showAnnotatedTagsItem = Toggle(
             T("CommitInfo/showMessagesOfAnnotatedTagsToolStripMenuItem.Text", "Show messages of annotated tags"),
-            () => _settings.ShowAnnotatedTagsMessages = !_settings.ShowAnnotatedTagsMessages);
+            static s => s.ShowAnnotatedTagsMessages,
+            static (s, value) => s.ShowAnnotatedTagsMessages = value);
         _showDerivesFromItem = Toggle(
             T("CommitInfo/showTagThisCommitDerivesFromMenuItem.Text", "Show the most recent tag this commit derives from"),
-            () => _settings.ShowTagThisCommitDerivesFrom = !_settings.ShowTagThisCommitDerivesFrom);
+            static s => s.ShowTagThisCommitDerivesFrom,
+            static (s, value) => s.ShowTagThisCommitDerivesFrom = value);
 
         _menu = new ContextMenu
         {
@@ -304,7 +310,10 @@ public sealed class CommitDetailView : UserControl
     ///  A checked visibility entry: flips its setting, persists it, and re-renders
     ///  the panel from the data at hand — upstream's <c>ReloadCommitInfo</c>.
     /// </summary>
-    private MenuItem Toggle(string header, Action flip)
+    private MenuItem Toggle(
+        string header,
+        Func<CommitInfoSettings, bool> read,
+        Action<CommitInfoSettings, bool> write)
     {
         MenuItem item = new()
         {
@@ -313,11 +322,20 @@ public sealed class CommitDetailView : UserControl
         };
         item.Click += (_, _) =>
         {
-            flip();
+            // The new value is computed once and then SET, here and on the stored
+            // document — never flipped twice. A merged write replays its delegate onto
+            // what the file says at write time, so a delegate that negated would land on
+            // the opposite value whenever it ran more than once.
+            bool value = !read(_settings);
+            write(_settings, value);
+
             _savingOwnToggle = true;
             try
             {
-                _settingsService.Save(_settings);
+                // One toggle, so a delta: the Settings dialog edits the same six flags in
+                // its own copy, and writing the whole record back reverted whichever of
+                // the two saved first.
+                _settingsService.Update(s => write(s, value));
             }
             finally
             {
