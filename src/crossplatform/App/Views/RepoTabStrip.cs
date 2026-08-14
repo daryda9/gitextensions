@@ -1,10 +1,12 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Styling;
 using GitExtensions.Avalonia.Services;
 using GitExtensions.Avalonia.Theming;
 
@@ -99,6 +101,10 @@ public sealed class RepoTabStrip : UserControl
     // The close affordance: small enough not to grow the row, big enough to hit.
     private const double CloseSize = 16;
 
+    // The extra class the ✕ carries on top of the bar-button one, so its hover fill can
+    // be raised without touching every other bar button in the app.
+    private const string CloseClass = "tabclose";
+
     private readonly List<RepoTabEntry> _tabs = [];
     private readonly Dictionary<RepoTabEntry, TabVisual> _visuals = [];
     private readonly TabsPanel _strip = new();
@@ -112,6 +118,25 @@ public sealed class RepoTabStrip : UserControl
         // The close buttons are bar buttons: flat, a fill only under the pointer. The
         // house look, installed on this control so it beats the app-wide Fluent one.
         BarButtonStyles.Apply(Styles);
+
+        // ...and then the ✕ is given a STRONGER fill than a bar button's, because on this
+        // one strip the bar button's own hover fill says nothing. A bar button hovers to
+        // App.Hover, and App.Hover is exactly what the tab UNDER the button is already
+        // painted with while the pointer is inside it — measured, both #41424A in the
+        // modern dark theme — so crossing from the tab onto the ✕ changed not one pixel
+        // of fill and the user could not tell whether the next click would close the tab
+        // or merely select it. App.Pressed is the next step of the same neutral ramp
+        // (#53545B dark, #BABAC0 light), which is a visible lift over App.Hover in both
+        // themes and needs no colour of its own. Declared AFTER BarButtonStyles.Apply so
+        // that, at equal specificity, this setter is the one that wins.
+        // The glyph turns App.IconRed at the same moment, which is the half of the feedback
+        // that says WHAT the button does — the one destructive control in the strip — and is
+        // legible where a single step of a neutral fill on its own is subtle. It has to be a
+        // style and not an assignment on the Button: Fluent's template repaints the CONTENT
+        // PRESENTER's Foreground in the pointerover state, and a setter on the presenter beats
+        // the Foreground the presenter inherits from the button's own local value — which is
+        // why the ✕ used to brighten a little under the pointer and never did anything else.
+        Styles.Add(CloseHover(B("App.Pressed"), B("App.IconRed")));
 
         _scroll = new ScrollViewer
         {
@@ -629,7 +654,7 @@ public sealed class RepoTabStrip : UserControl
             Content = "✕",
             FontSize = Metrics.Text.Caption,
             Foreground = B("App.TextDim"),
-            Classes = { BarButtonStyles.Class },
+            Classes = { BarButtonStyles.Class, CloseClass },
             Width = CloseSize,
             Height = CloseSize,
             MinWidth = 0,
@@ -700,7 +725,9 @@ public sealed class RepoTabStrip : UserControl
             ClipToBounds = true,
             Child = body,
         };
-        ToolTip.SetTip(root, entry.Path);
+        // Placeholder only, like the label above: Apply writes the real tip, and it writes
+        // it through PathDisplay.CollapseHome for the reason given there.
+        ToolTip.SetTip(root, PathDisplay.CollapseHome(entry.Path));
 
         TabVisual visual = new(entry, root, accent, label, close, checkout);
 
@@ -1045,6 +1072,12 @@ public sealed class RepoTabStrip : UserControl
     // just above the leaf, and it is also the one the user recognises.
     private static string Tail(string path, int segments)
     {
+        // Collapsed FIRST, so a label that reaches all the way up to the home directory
+        // spells it "~/work/api" and not "home/dario/work/api" — the same spelling the
+        // tooltip and the toolbar use, and two segments shorter into the bargain. It
+        // cannot merge two different repositories into one label: the substitution is a
+        // prefix rewrite of one fixed directory, so distinct paths stay distinct.
+        path = PathDisplay.CollapseHome(path);
         string[] parts = path.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0)
         {
@@ -1095,6 +1128,25 @@ public sealed class RepoTabStrip : UserControl
         }
     }
 
+    // The hover fill of the ✕, as a style: Fluent paints a button's chrome through the
+    // ContentPresenter inside its template, so the Button's own Background property never
+    // reaches the screen and this cannot be a plain assignment. The brush is the LIVE
+    // palette instance (see the class remarks): ThemeManager recolours it in place, so the
+    // fill follows a theme switch that happens after this style was built.
+    private static Style CloseHover(IBrush fill, IBrush glyph)
+    {
+        Style style = new(x => x.OfType<Button>()
+            .Class(BarButtonStyles.Class)
+            .Class(CloseClass)
+            .Class(":pointerover")
+            .Template()
+            .OfType<ContentPresenter>()
+            .Name("PART_ContentPresenter"));
+        style.Setters.Add(new Setter(ContentPresenter.BackgroundProperty, fill));
+        style.Setters.Add(new Setter(ContentPresenter.ForegroundProperty, glyph));
+        return style;
+    }
+
     private static IBrush B(string key) => Icons.Tint(key) ?? Brushes.Transparent;
 
     private static string T(string english) => TranslationService.T(english);
@@ -1114,10 +1166,23 @@ public sealed class RepoTabStrip : UserControl
     ///  floor does not fit — the floor being the point below which a tab stops being a
     ///  label and becomes a stub.</para>
     ///
-    ///  <para>The shrink is proportional rather than equal: a long label needs more of the
-    ///  room than a short one, and equal shares would elide <c>api</c> to make space no
-    ///  <c>api</c> needs. Tabs that reach the floor stop giving and the remainder is
-    ///  re-shared among the rest, which is why this iterates instead of scaling once.</para>
+    ///  <para><b>The widest tab pays first.</b> The room is shared by capping, not by
+    ///  scaling: one ceiling is found that every tab has to fit under, and a tab already
+    ///  narrower than it is left completely alone. So <c>api</c>, which needs 60px and
+    ///  costs nobody anything, keeps its 60px, and the pressure lands on the labels that
+    ///  have something to give. It is the standard max-min share, and it replaces a
+    ///  proportional scale that got the priority exactly backwards: the scale stopped as
+    ///  soon as the accumulated floors ate the budget and RETURNED, leaving every tab that
+    ///  had not yet been pinned at its FULL natural width — measured with 14 tabs at
+    ///  1000px, thirteen of them sat on the 96px floor while the one 240px tab kept all
+    ///  240 and the strip scrolled. The tab with the most to give was the only one giving
+    ///  nothing.</para>
+    ///
+    ///  <para>The 96px floor is unchanged, and so is the last resort: when even the floors
+    ///  do not fit, every tab is put ON its floor and the ScrollViewer takes over. That is
+    ///  also a correction — the row scrolled either way, but before it scrolled with the
+    ///  widest tab still at full length, so the tabs the user could reach without
+    ///  scrolling were the stubs.</para>
     /// </summary>
     private sealed class TabsPanel : Panel
     {
@@ -1197,66 +1262,62 @@ public sealed class RepoTabStrip : UserControl
             return new Size(Math.Max(x, finalSize.Width), finalSize.Height);
         }
 
-        // Scale everything by the same factor; whatever that would push under the floor is
-        // pinned there and taken out of the pot, and what is left is re-shared among the
-        // rest. At most one tab is pinned per round, so this terminates.
+        // Find the one ceiling that makes the row fit — sum of min(natural, cap) == budget
+        // — and put every tab under it. Tabs below the cap are untouched, so the whole
+        // reduction comes off the widest, which is where the slack is.
         private static void Squeeze(double[] widths, double budget)
         {
-            bool[] pinned = new bool[widths.Length];
-            for (int round = 0; round <= widths.Length; round++)
+            // A tab already narrower than the floor is left at its width rather than grown
+            // to it: the floor is a limit on shrinking, not a size.
+            double[] floors = new double[widths.Length];
+            double floorTotal = 0;
+            for (int i = 0; i < widths.Length; i++)
             {
-                double free = budget;
-                double flexible = 0;
-                for (int i = 0; i < widths.Length; i++)
-                {
-                    if (pinned[i])
-                    {
-                        free -= widths[i];
-                    }
-                    else
-                    {
-                        flexible += widths[i];
-                    }
-                }
+                floors[i] = Math.Min(MinTabWidth, widths[i]);
+                floorTotal += floors[i];
+            }
 
-                if (flexible <= 0 || free <= 0)
-                {
-                    // Even the floors overflow: the ScrollViewer takes it from here.
-                    return;
-                }
+            if (floorTotal >= budget)
+            {
+                // Not even the floors fit. Everyone goes to the floor and the ScrollViewer
+                // takes it from here — the alternative is to stop halfway and leave whoever
+                // happened not to be pinned yet at full size, which is the bug this is.
+                Array.Copy(floors, widths, widths.Length);
+                return;
+            }
 
-                double scale = free / flexible;
-                if (scale >= 1)
-                {
-                    return;
-                }
+            // The cap is solved for exactly rather than searched for. Sorted ascending, the
+            // k widest tabs are the ones the cap bites; the rest keep their natural width
+            // and their total is what is left of the budget for those k. Walking k upwards
+            // from 1, the answer is the first k whose cap still clears the widest tab NOT
+            // in the set — below that the k+1'th is over the cap too and belongs in it.
+            double[] sorted = (double[])widths.Clone();
+            Array.Sort(sorted);
 
-                bool hitFloor = false;
-                for (int i = 0; i < widths.Length; i++)
-                {
-                    // A tab already narrower than the floor is left alone rather than
-                    // grown to it: the floor is a limit on shrinking, not a size.
-                    double floor = Math.Min(MinTabWidth, widths[i]);
-                    if (!pinned[i] && widths[i] * scale < floor)
-                    {
-                        widths[i] = floor;
-                        pinned[i] = true;
-                        hitFloor = true;
-                    }
-                }
+            double natural = 0;
+            foreach (double width in sorted)
+            {
+                natural += width;
+            }
 
-                if (!hitFloor)
+            double cap = budget;
+            double keptNatural = natural;
+            for (int k = 1; k <= sorted.Length; k++)
+            {
+                keptNatural -= sorted[^k];
+                cap = (budget - keptNatural) / k;
+                if (k == sorted.Length || cap >= sorted[^(k + 1)])
                 {
-                    for (int i = 0; i < widths.Length; i++)
-                    {
-                        if (!pinned[i])
-                        {
-                            widths[i] = widths[i] * scale;
-                        }
-                    }
-
-                    return;
+                    break;
                 }
+            }
+
+            // floorTotal < budget guarantees the cap lands above the floor, but the clamp
+            // is written out anyway: this runs on every measure pass of every strip and a
+            // rounding artefact must not be able to produce a tab of two pixels.
+            for (int i = 0; i < widths.Length; i++)
+            {
+                widths[i] = Math.Max(floors[i], Math.Min(widths[i], cap));
             }
         }
     }
@@ -1289,6 +1350,24 @@ public sealed class RepoTabStrip : UserControl
     ///  and a row of them is noise at exactly the moment the tab is short of room. One
     ///  <c>…</c> says "there is more here" once and is the form editors, shells and file
     ///  choosers have already taught everyone.</para>
+    ///
+    ///  <para><b>A right-to-left name is trimmed at its own end, not at the left of the
+    ///  tab.</b> The paragraph direction stays <see cref="FlowDirection.LeftToRight"/>,
+    ///  because a path is not a sentence: it is a sequence of names read from the root
+    ///  towards the leaf, and that sequence runs left to right here whatever alphabet the
+    ///  names are written in. Handing the label the direction of its text instead would
+    ///  push the whole label against the right edge of its tab while its neighbours sat
+    ///  against the left, and would reverse <c>مشروع/src</c> into <c>src</c>-first, which
+    ///  is a path that does not exist. What DOES have to change is where the <c>…</c>
+    ///  goes: it is a neutral character, so at the end of an LTR line it is drawn at the
+    ///  visual RIGHT — and for Arabic or Hebrew the visual right is where the name BEGINS.
+    ///  Measured on <c>مشروع-التطوير-الكبير-جدا</c> and
+    ///  <c>פרויקט-פיתוח-גדול-מאוד</c>: the ellipsis sat against the close button, marking
+    ///  the first letter of a name whose missing tail ran off the other edge with nothing
+    ///  to mark it. Written BEFORE the kept text instead, it lands at the visual left, at
+    ///  the end of the reading direction, which is the side the text actually ran out on —
+    ///  and it lands there both in this renderer and in a strict bidi implementation, where
+    ///  a leading neutral in an LTR paragraph resolves to the paragraph direction.</para>
     ///
     ///  <para>Every candidate is MEASURED with the same typeface, size, weight and style
     ///  the text is drawn with — <c>pluma_orchestrator</c> and <c>iiiiiiiiiiiiiiiii</c> are
@@ -1480,10 +1559,21 @@ public sealed class RepoTabStrip : UserControl
             // so those cuts are not merely possible, they are what the search prefers.
             // This is the same bug this project already fixed once, in the inline diff.
             string leaf = parts[^1];
+
+            // The ellipsis goes on the side the text RUNS OUT, which for a right-to-left
+            // name is the visual left, so on those the "…" is written BEFORE the kept text
+            // instead of after it. See the remarks above.
+            bool rtl = StartsRtl(leaf);
             IReadOnlyList<int> starts = GraphemeStarts(leaf);
             for (int count = starts.Count - 1; count >= 1; count--)
             {
-                string candidate = leaf[..starts[count]] + Ellipsis;
+                string kept = rtl ? TrimTrailingNeutrals(leaf[..starts[count]]) : leaf[..starts[count]];
+                if (kept.Length == 0)
+                {
+                    continue;
+                }
+
+                string candidate = rtl ? Ellipsis + kept : kept + Ellipsis;
                 if (Fits(candidate, width))
                 {
                     return candidate;
@@ -1491,6 +1581,38 @@ public sealed class RepoTabStrip : UserControl
             }
 
             return Ellipsis;
+        }
+
+        // Drops the punctuation a cut can leave hanging off the end of a right-to-left
+        // name — the "-" of "مشروع-التطوير" cut after "مشروع-".
+        //
+        // A trailing "-" is a NEUTRAL character, and a neutral at the end of the line takes
+        // the paragraph's direction, which is left-to-right: it is drawn at the far RIGHT
+        // of the label, on the other side of the name from the letters it was written
+        // between, so the tab reads "…مشروع" with a stray dash out by the close button.
+        // Cutting one character earlier costs a hyphen that the ellipsis already stands
+        // for and removes the artefact entirely. Only for RTL names: on an LTR one the
+        // trailing neutral is already in its place.
+        private static string TrimTrailingNeutrals(string text)
+        {
+            int end = text.Length;
+            while (end > 0)
+            {
+                int start = end - 1;
+                if (start > 0 && char.IsLowSurrogate(text[start]))
+                {
+                    start--;
+                }
+
+                if (char.IsLetterOrDigit(text, start))
+                {
+                    break;
+                }
+
+                end = start;
+            }
+
+            return text[..end];
         }
 
         // The index at which each user-perceived character of <paramref name="text"/>
@@ -1521,6 +1643,12 @@ public sealed class RepoTabStrip : UserControl
             // already rounded, and losing a whole segment to that rounding is visible.
             Format(text + _suffix).Width <= width + 0.5;
 
+        /// <summary>
+        ///  The line as it is handed to the shaper. The paragraph is LEFT-TO-RIGHT
+        ///  whatever alphabet the path is written in, and that is deliberate — see
+        ///  <see cref="Choose"/> for the whole argument and for the one thing that does
+        ///  have to change when a segment is right-to-left.
+        /// </summary>
         private FormattedText Format(string text) => new(
             text,
             System.Globalization.CultureInfo.CurrentCulture,
@@ -1528,6 +1656,53 @@ public sealed class RepoTabStrip : UserControl
             new Typeface(this.GetValue(TextBlock.FontFamilyProperty), _fontStyle, _fontWeight),
             _fontSize,
             _foreground ?? Brushes.Transparent);
+
+        // Whether the first STRONG character of the text belongs to a right-to-left script,
+        // which is the direction the text will be laid out in. Neutrals (digits, brackets,
+        // "-", "…") are skipped, because they take their direction from what surrounds
+        // them and cannot decide it.
+        //
+        // A range test rather than a bidi-class lookup: .NET exposes no public bidi
+        // category. The ranges below are the RTL side of Unicode — Hebrew through the
+        // Arabic supplements (0590–08FF), the Arabic presentation forms (FB1D–FEFF), and
+        // the RTL scripts of plane 1 (Phoenician through Adlam) — and the strong LTR side
+        // is approximated by "a letter that is not one of those", which is all this needs
+        // to decide.
+        private static bool StartsRtl(string text)
+        {
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (char.IsHighSurrogate(c) && i + 1 < text.Length)
+                {
+                    int cp = char.ConvertToUtf32(c, text[i + 1]);
+                    if (cp is >= 0x10800 and <= 0x10FFF or >= 0x1E800 and <= 0x1EFFF)
+                    {
+                        return true;
+                    }
+
+                    if (char.IsLetter(text, i))
+                    {
+                        return false;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                if (c is >= '\u0590' and <= '\u08FF' or >= '\uFB1D' and <= '\uFEFF')
+                {
+                    return true;
+                }
+
+                if (char.IsLetter(c))
+                {
+                    return false;
+                }
+            }
+
+            return false;
+        }
     }
 
     /// <summary>
@@ -1588,9 +1763,17 @@ public sealed class RepoTabStrip : UserControl
             // read at a glance before double-clicking makes it permanent.
             label.FontStyle = entry.Pinned ? FontStyle.Normal : FontStyle.Italic;
             label.FontWeight = active ? Metrics.Text.ActiveWeight : Metrics.Text.BodyWeight;
+            // Both paths go through PathDisplay.CollapseHome, because both are shown to a
+            // user who is already reading "~/…" everywhere else: the toolbar's repository
+            // caption, its recent list and the grid's status line all collapse the home
+            // prefix, and the tab tooltip was the one place in the shell that answered the
+            // same question with "/home/<user>/…". Two spellings of one path read as two
+            // paths — and the absolute form is also the one that is too long to take in,
+            // which is the opposite of what a tooltip on a squeezed label is for.
             ToolTip.SetTip(root, checkoutPath is null
-                ? entry.Path
-                : entry.Path + "\n" + TranslationService.T("in checkout:") + " " + checkoutPath);
+                ? PathDisplay.CollapseHome(entry.Path)
+                : PathDisplay.CollapseHome(entry.Path) + "\n" + TranslationService.T("in checkout:")
+                    + " " + PathDisplay.CollapseHome(checkoutPath));
             Paint();
         }
 
