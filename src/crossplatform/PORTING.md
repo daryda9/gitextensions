@@ -3418,6 +3418,50 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M214 (2026-08-14, `0e1753bd9`) — l'intervallo del rebase ha un selettore di commit
+
+Il campo «From (exc.)» del dialogo di rebase era una casella di testo nuda, e la ragione scritta accanto
+dal M69 era che il port non aveva `FormChooseCommit`. Adesso c'è: `Views/ChooseCommitDialog`, aperto dal
+pulsante `…` di fianco al campo (l'upstream `btnChooseFromRevision`), e usabile da qualunque altro campo
+che voglia un commit.
+
+Il selettore **è la griglia vera** — grafo, decorazioni dei ref, colonne, menu di riga, ricerca rapida,
+scorciatoie di navigazione — in una **terza** istanza, per lo stesso motivo per cui la storia di un file
+ne usa una seconda: la griglia della shell porta il posto in cui la persona sta nella storia, e
+restringerla per la durata di un modale dirotterebbe la finestra dietro al modale. L'upstream deve
+salvare e ripristinare **quattro** impostazioni globali attorno al suo selettore proprio perché quella
+istanza è condivisa.
+
+La lista è limitata come la limita l'upstream: i commit del branch corrente, fino al merge base col
+bersaglio del rebase — tutto quello che sta più in basso è già sul bersaglio e non può far parte di quel
+che il rebase rigioca. Il limite è una **capacità nuova della griglia**, non un trucco:
+
+- `RevisionService.LoadRevisionPage` prende `excludeAncestorsOf` ed emette `HEAD ^<commit>`, con `HEAD`
+  scritto per esteso perché `git log ^<x>` da solo non cammina niente. Non si applica mentre si segue un
+  singolo path, dove il walk deve restare nella sola forma in cui git onora `--follow`.
+- `RevisionGridView.SetWalkBound` lo tiene per la griglia: nessuna voce di menu, non persistito, nessun
+  nome di ref coinvolto. **Il primo tentativo passava davvero `^<hash>` nell'insieme dei ref filtrati, ed
+  era sbagliato in un modo che solo un secondo walk mostra**: `SetRefCatalogue` scarta i ref che non sono
+  ref veri, quindi la prima lista era limitata e tutte le successive, in silenzio, no. Misurato a
+  schermo: la riga di stato diceva «filtered (no ref selected → HEAD)» mentre le righe erano ancora
+  quelle limitate. Ora la riga di stato nomina il limite.
+
+**Prova** (Xvfb, `XDG_CONFIG_HOME` isolato) su un branch di quattro commit divergente da un main che si è
+mosso: il selettore apre su quei quattro soli, il piede nomina il commit che OK restituirebbe, scegliere
+«feature commit 2» scrive `bb7c4556` nel campo e l'anteprima del comando diventa
+`rebase --onto <main> "bb7c4556" "feature"`. Eseguito, ha rigiocato i commit 3 e 4 sopra main e lasciato
+fuori 1 e 2 — la semantica **esclusiva** che la riga del selettore promette. Riaperto dopo il rebase
+ricalcola la base e offre due commit; forzare una ricarica dal menu View del selettore **mantiene** il
+limite, che è esattamente la regressione che il ref finto avrebbe avuto.
+
+Restano fuori, dichiarati: i due link ai genitori che l'upstream mette sotto la griglia (la griglia ha
+già `Ctrl+Shift+P` e Navigate → parent, e una seconda strada andrebbe tenuta in passo con la selezione a
+mano), e gli **altri** campi che upstream serve con lo stesso selettore — cherry-pick, archivio, il
+confronto fra due revisioni — che qui restano caselle di testo.
+
+In `Tests/SettingsStoresRegression`, trovato di striscio: una vittima uccisa **prima** di aver scritto
+salta due asserzioni, e il run riportava 39 casi invece di 41 senza dire perché. Adesso lo dice.
+
 ## M213 (2026-08-14, `efde6267b`) — `merge --continue` chiede il messaggio del commit di merge
 
 `git merge --continue` apre l'editor sul `MERGE_MSG` preparato. Questo port non ha un editor cablato a
