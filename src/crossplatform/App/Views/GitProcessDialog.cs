@@ -77,6 +77,14 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         Aborted,
         Success,
         Failed,
+
+        /// <summary>
+        ///  The run stopped because the user declined the question the exit hook asked —
+        ///  not because git could not do the work. Its own phase because
+        ///  <see cref="Phase.Failed"/> would be a lie: git did exactly what it was told,
+        ///  and the operation is still there to be finished.
+        /// </summary>
+        Cancelled,
         AuthRequired,
         Prompt,
     }
@@ -408,6 +416,36 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         Append(note ?? T("Retrying…"));
         Append(string.Empty);
         StartStreamingRun();
+    }
+
+    /// <summary>
+    ///  Settles this window as <b>cancelled by the user</b>: the exit hook asked a
+    ///  question — the message of a merge commit, of a reworded commit — and the answer
+    ///  was no.
+    ///
+    ///  <para>Without this the hook could only return "not handled", and the dialog would
+    ///  then report the run as <b>Failed</b> in red, over git's own
+    ///  <i>"there was a problem with the editor …"</i> line and the path of a temp script
+    ///  the user never asked about. Nothing had failed: the refusing editor is how the
+    ///  port asks the question, and the operation is still stopped exactly where it was,
+    ///  ready to be continued. <paramref name="note"/> is the caller's one line saying
+    ///  so, in the user's language.</para>
+    ///
+    ///  <para>Call it from the exit hook and return <see langword="true"/>: the hook has
+    ///  handled the outcome, so the dialog must not settle it a second time.</para>
+    /// </summary>
+    public void SettleCancelled(string note)
+    {
+        Append(string.Empty);
+        Append(note);
+        Append(string.Empty);
+        Append(T("Press Enter or Esc to exit…"));
+
+        SetPhase(Phase.Cancelled);
+
+        // No auto-close on either branch of the checkbox: the user is mid-decision, and
+        // a window that vanishes takes the note with it.
+        Dispatcher.UIThread.Post(() => _ok.Focus());
     }
 
     // When set, a failure whose output looks like an authentication failure
@@ -1042,6 +1080,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
         {
             Phase.Aborted => T("Aborted"),
             Phase.Success => T("CreatePullRequestForm/_strDone.Text", "Done"),
+            Phase.Cancelled => T("Cancelled"),
             // An authentication failure IS a failure: the header keeps saying so
             // while the status line explains what happens next.
             Phase.Failed or Phase.AuthRequired => T("Failed"),
@@ -1060,6 +1099,7 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             Phase.Aborted => T("Aborted"),
             Phase.Success => T("Success"),
             Phase.Failed => T("Failed"),
+            Phase.Cancelled => T("Cancelled"),
             Phase.AuthRequired => T("Authentication required — asking for credentials…"),
             _ => T("Running…"),
         };
@@ -1069,6 +1109,9 @@ public sealed class GitProcessDialog : Theming.ZoomWindow, Services.IGitPtyHost
             Phase.Success => Brush("App.DiffAdded", Brushes.LimeGreen),
             Phase.Aborting or Phase.Aborted or Phase.Failed or Phase.AuthRequired
                 => Brush("App.DiffRemoved", Brushes.OrangeRed),
+
+            // Deliberately the dim colour of a run that is simply over: red would tell
+            // the user something went wrong when they are the one who said no.
             _ => Brush("App.TextDim", Brushes.Gray),
         };
     }

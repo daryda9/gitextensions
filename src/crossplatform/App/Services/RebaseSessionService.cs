@@ -479,7 +479,7 @@ public sealed class RebaseSessionService
         try
         {
             File.WriteAllText(file, message);
-            script = WriteScript("cat \"$GEX_REBASE_MESSAGE\" > \"$1\"\n");
+            script = GitScriptedEditor.WriteScript("cat \"$GEX_REBASE_MESSAGE\" > \"$1\"\n");
 
             RebaseCommandResult amended = Run(
                 repoPath,
@@ -487,7 +487,7 @@ public sealed class RebaseSessionService
                 emit,
                 new Dictionary<string, string?>
                 {
-                    ["GIT_EDITOR"] = ShellQuote(script),
+                    ["GIT_EDITOR"] = GitScriptedEditor.Quote(script),
                     ["GEX_REBASE_MESSAGE"] = file,
                 });
 
@@ -506,10 +506,10 @@ public sealed class RebaseSessionService
         }
         finally
         {
-            TryDelete(file);
+            GitScriptedEditor.TryDelete(file);
             if (script.Length > 0)
             {
-                TryDelete(script);
+                GitScriptedEditor.TryDelete(script);
             }
         }
     }
@@ -536,7 +536,7 @@ public sealed class RebaseSessionService
 
         try
         {
-            script = WriteScript(
+            script = GitScriptedEditor.WriteScript(
                 "git stripspace --strip-comments < \"$1\" > \"$GEX_REBASE_CAPTURE\"\n" +
                 "exit 1\n");
 
@@ -546,7 +546,7 @@ public sealed class RebaseSessionService
                 emit,
                 new Dictionary<string, string?>
                 {
-                    ["GIT_EDITOR"] = ShellQuote(script),
+                    ["GIT_EDITOR"] = GitScriptedEditor.Quote(script),
                     ["GEX_REBASE_CAPTURE"] = capture,
                 });
 
@@ -570,10 +570,10 @@ public sealed class RebaseSessionService
         }
         finally
         {
-            TryDelete(capture);
+            GitScriptedEditor.TryDelete(capture);
             if (script.Length > 0)
             {
-                TryDelete(script);
+                GitScriptedEditor.TryDelete(script);
             }
         }
     }
@@ -681,8 +681,8 @@ public sealed class RebaseSessionService
         }
         finally
         {
-            TryDelete(script);
-            TryDelete(capture);
+            GitScriptedEditor.TryDelete(script);
+            GitScriptedEditor.TryDelete(capture);
         }
     }
 
@@ -725,7 +725,7 @@ public sealed class RebaseSessionService
             }
             finally
             {
-                TryDelete(script);
+                GitScriptedEditor.TryDelete(script);
             }
         }
         catch (Exception ex)
@@ -735,7 +735,7 @@ public sealed class RebaseSessionService
         }
         finally
         {
-            TryDelete(file);
+            GitScriptedEditor.TryDelete(file);
         }
     }
 
@@ -809,61 +809,15 @@ public sealed class RebaseSessionService
 
     /// <summary>
     ///  Writes a throw-away <c>GIT_SEQUENCE_EDITOR</c> script around <paramref name="body"/>,
-    ///  which receives the todo path as <c>$1</c>. Same device — and same reasoning — as
-    ///  <c>CommitEditService.WriteSequenceEditor</c>; it is duplicated rather than shared
-    ///  because the two services script different halves of git and have no other coupling.
-    ///  <para>The paths interpolated into the body are this method's own temp names
-    ///  (<c>gex-todo-</c> + a GUID under <see cref="Path.GetTempPath"/>), so they carry no
-    ///  quote, space or shell metacharacter; nothing user-supplied ever reaches the
-    ///  script.</para>
+    ///  which receives the todo path as <c>$1</c>. A name of its own over
+    ///  <see cref="GitScriptedEditor.WriteScript"/> because at the call sites it is the
+    ///  SEQUENCE editor that is being written, and the two are set from different
+    ///  variables and mean different things to git.
+    ///  <para>The paths interpolated into the body are this class's own temp names
+    ///  (a GUID under <see cref="Path.GetTempPath"/>), so they carry no quote, space or
+    ///  shell metacharacter; nothing user-supplied ever reaches the script.</para>
     /// </summary>
-    private static string WriteSequenceEditor(string body) => WriteScript(body);
-
-    /// <summary>
-    ///  Writes a throw-away <c>/bin/sh</c> script around <paramref name="body"/> and makes
-    ///  it executable. The one rule its callers obey: <b>nothing is interpolated into
-    ///  <paramref name="body"/> that this class did not spell out itself</b> — variable
-    ///  data reaches the script through the child process's environment, where quoting does
-    ///  not exist and a space, a quote or a symlinked path is just a byte.
-    /// </summary>
-    private static string WriteScript(string body)
-    {
-        string path = Path.Combine(Path.GetTempPath(), "gex-seqtodo-" + Guid.NewGuid().ToString("N") + ".sh");
-        File.WriteAllText(path, "#!/bin/sh\n" + body);
-        File.SetUnixFileMode(path,
-            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-            UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
-        return path;
-    }
-
-    /// <summary>
-    ///  Wraps a script path so git can invoke it. <b>Not decoration: measured.</b> git does
-    ///  not exec <c>GIT_EDITOR</c> / <c>GIT_SEQUENCE_EDITOR</c> directly, it hands the value
-    ///  to a shell — so the value is a shell WORD LIST, not a path. With
-    ///  <c>TMPDIR=/…/tmp dir 'with' quotes</c> the port's own throw-away script therefore
-    ///  never ran at all: git 2.43 reported <i>"/…/dario-job/tmp: not found"</i>, split at
-    ///  the first space, and the rebase failed with nothing to show for it. Single-quoting
-    ///  (with the <c>'\''</c> dance for an embedded quote) makes the whole path one word,
-    ///  and the same measurement then wrote the capture file as intended.
-    ///  <para>This bug predates the message interception — every scripted editor this
-    ///  class has ever written was exposed to it — and it is fixed here for all of
-    ///  them, because a temp directory is not something the user chose for us.</para>
-    /// </summary>
-    private static string ShellQuote(string path)
-        => "'" + path.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch
-        {
-            // Best-effort temp cleanup; a leftover script is harmless.
-        }
-    }
+    private static string WriteSequenceEditor(string body) => GitScriptedEditor.WriteScript(body);
 
     /// <summary>
     ///  The environment for an <c>--edit-todo</c>: the scripted sequence editor, plus a
@@ -875,7 +829,7 @@ public sealed class RebaseSessionService
     private static IReadOnlyDictionary<string, string?> EditorEnv(string sequenceEditor)
         => new Dictionary<string, string?>
         {
-            ["GIT_SEQUENCE_EDITOR"] = ShellQuote(sequenceEditor),
+            ["GIT_SEQUENCE_EDITOR"] = GitScriptedEditor.Quote(sequenceEditor),
             ["GIT_EDITOR"] = "true",
         };
 

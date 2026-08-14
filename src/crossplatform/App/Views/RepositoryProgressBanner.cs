@@ -1195,7 +1195,10 @@ public sealed class RepositoryProgressBanner : UserControl
                 T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
                 "merge --continue",
                 confirm: null,
-                (repo, emit) => Outcome(_merge.Continue(repo, emit)));
+                // Like the rebase above: git stops to ask for the merge commit's message,
+                // and the exit hook is where that question is put to the user.
+                (repo, emit) => Outcome(RememberPendingMerge(_merge.Continue(repo, emit))),
+                onExit: AskForMergeMessageAsync);
 
     // The verb of the stopped sequencer operation, for the process dialog's own title —
     // the command it announces has to be the command it runs.
@@ -1316,6 +1319,68 @@ public sealed class RepositoryProgressBanner : UserControl
         return result;
     }
 
+    /// <summary>The same hand-over as <see cref="_pendingMessage"/>, for the merge.</summary>
+    private MergeMessageRequest? _pendingMergeMessage;
+
+    private MergeCommandResult RememberPendingMerge(MergeCommandResult result)
+    {
+        _pendingMergeMessage = result.Pending;
+        return result;
+    }
+
+    /// <summary>
+    ///  Runs after an attempt of the merge Continue, inside the process dialog. With no
+    ///  pending message it returns false and the dialog reports the outcome as usual —
+    ///  which is what a <c>--continue</c> refused for unresolved paths must do. With one,
+    ///  it asks for the merge commit's message and finishes the merge <b>in the same
+    ///  window</b> (<see cref="GitProcessDialog.Retry"/>).
+    ///
+    ///  <para><b>Cancelling is a real answer</b>, and the dialog says so — <i>Cancelled</i>
+    ///  with a line explaining what is left (<see cref="GitProcessDialog.SettleCancelled"/>),
+    ///  not a red <i>Failed</i> over git's "problem with the editor" complaint. The merge
+    ///  stays exactly where it was: MERGE_HEAD in place, resolutions still staged, Continue
+    ///  and Abort both live on this bar — measured.</para>
+    /// </summary>
+    private async Task<bool> AskForMergeMessageAsync(GitProcessDialog dialog, GitProcessOutcome outcome)
+    {
+        MergeMessageRequest? request = _pendingMergeMessage;
+        _pendingMergeMessage = null;
+
+        if (request is null || _repoPath is not { Length: > 0 } repo)
+        {
+            return false;
+        }
+
+        string? message = await PromptMessageAsync(
+            dialog,
+            T("Merge commit message"),
+            T("The conflicts are resolved and the merge is ready to be committed. This is the message it will carry."),
+            T("Cancel leaves the merge where it is — your resolutions stay staged, and Continue is still there when you want it."),
+            request.Template);
+
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            // Two lines, not one: the console does not wrap (it shows git's output as git
+            // writes it), so a single long sentence is cut at the right edge — measured,
+            // with the half that matters off screen.
+            dialog.SettleCancelled(
+                T("Cancelled: no merge commit was made.")
+                + "\n"
+                + T("The merge is still in progress, your resolutions still staged — Continue is on the repository bar."));
+            return true;
+        }
+
+        dialog.Retry(
+            emit =>
+            {
+                using IDisposable? guard = SuspendWatcher?.Invoke();
+                return Outcome(RememberPendingMerge(_merge.ContinueWithMessage(repo, message, emit)));
+            },
+            note: T("Writing the message and recording the merge (git commit)…"));
+
+        return true;
+    }
+
     /// <summary>
     ///  Runs after every attempt of a rebase Continue / Skip, inside the process dialog.
     ///  With no pending message it returns false and the dialog reports the outcome as
@@ -1325,10 +1390,10 @@ public sealed class RepositoryProgressBanner : UserControl
     ///
     ///  <para>Answering is what makes <c>reword</c> and <c>squash</c> real; see
     ///  <see cref="RebaseSessionService.ContinueWithMessage"/>. <b>Cancelling is a real
-    ///  answer too</b>: false is returned, so the dialog settles showing git's own
-    ///  "problem with the editor" exit — and the rebase stays stopped, with Continue,
-    ///  Skip and Abort all live on this bar. Nothing is left that the app cannot
-    ///  describe.</para>
+    ///  answer too</b>, and is reported as one: the dialog settles as <i>Cancelled</i>
+    ///  (<see cref="GitProcessDialog.SettleCancelled"/>) rather than as a failure over
+    ///  git's "problem with the editor" line — nothing failed, and the rebase stays
+    ///  stopped with Continue, Skip and Abort all live on this bar.</para>
     /// </summary>
     private async Task<bool> AskForStepMessageAsync(GitProcessDialog dialog, GitProcessOutcome outcome)
     {
@@ -1340,10 +1405,30 @@ public sealed class RepositoryProgressBanner : UserControl
             return false;
         }
 
-        string? message = await PromptMessageAsync(dialog, request);
+        string? message = await PromptMessageAsync(
+            dialog,
+            request.Command switch
+            {
+                "reword" => T("Reword commit"),
+                "squash" => T("Squash: combined commit message"),
+
+                // A `fixup -c`, a `merge` step, or a done file we could not read: git asked
+                // for a message and we do not know which command for. Say exactly that
+                // rather than guess a caption that could name the wrong operation.
+                _ => T("Commit message for this rebase step"),
+            },
+            request.Command == "squash"
+                ? T("The rebase is melding this commit into the previous one. This is the message the combined commit will carry.")
+                : T("The rebase stopped to let you write this commit's message."),
+            T("Cancel leaves the rebase stopped where it is; continuing it afterwards keeps the message the commit already has."),
+            request.Template);
         if (string.IsNullOrWhiteSpace(message))
         {
-            return false;
+            dialog.SettleCancelled(
+                T("Cancelled: this step's message was left as it is.")
+                + "\n"
+                + T("The rebase is still stopped here — Continue, Skip and Abort are on the repository bar."));
+            return true;
         }
 
         dialog.Retry(
@@ -1358,24 +1443,29 @@ public sealed class RepositoryProgressBanner : UserControl
     }
 
     /// <summary>
-    ///  Asks for the message of the step git stopped on, prefilled with what git itself
-    ///  prepared — the commit's current message for a <c>reword</c>, the combined one for
-    ///  a <c>squash</c>. Same hand-built shape as the rest of this port's prompts
+    ///  Asks for a commit message git has stopped to wait for, prefilled with what git
+    ///  itself prepared. Same hand-built shape as the rest of this port's prompts
     ///  (<c>MainWindow.PromptAsync</c>, which is where reword and squash are asked for
     ///  from the revision grid), rather than a new window: what is being edited is a
     ///  commit message, and this port already has one way of asking for one.
-    ///  <para>The caption names the todo command, so the user knows whether they are
-    ///  renaming one commit or writing the message of a melded pair, and the note under
-    ///  the box says what Cancel does — which is the non-obvious part, because git will
-    ///  then keep the old message if the rebase is continued.</para>
+    ///
+    ///  <para>Every word is the caller's, because the three cases it serves — a rebase
+    ///  <c>reword</c>, a <c>squash</c>, a merge commit — differ in exactly the two things
+    ///  the user needs: which operation is waiting, and what cancelling costs. A shared
+    ///  wording would have had to be vague about both.</para>
     /// </summary>
-    private async Task<string?> PromptMessageAsync(Window owner, RebaseMessageRequest request)
+    private async Task<string?> PromptMessageAsync(
+        Window owner,
+        string title,
+        string intro,
+        string cancelNote,
+        string template)
     {
         TaskCompletionSource<string?> tcs = new();
 
         TextBox input = new()
         {
-            Text = request.Template,
+            Text = template,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
             MinHeight = 160,
@@ -1393,16 +1483,7 @@ public sealed class RepositoryProgressBanner : UserControl
 
         Theming.ZoomWindow dialog = new()
         {
-            Title = request.Command switch
-            {
-                "reword" => T("Reword commit"),
-                "squash" => T("Squash: combined commit message"),
-
-                // A `fixup -c`, a `merge` step, or a done file we could not read: git asked
-                // for a message and we do not know which command for. Say exactly that
-                // rather than guess a caption that could name the wrong operation.
-                _ => T("Commit message for this rebase step"),
-            },
+            Title = title,
             Width = 560,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1421,16 +1502,14 @@ public sealed class RepositoryProgressBanner : UserControl
             {
                 new TextBlock
                 {
-                    Text = request.Command == "squash"
-                        ? T("The rebase is melding this commit into the previous one. This is the message the combined commit will carry.")
-                        : T("The rebase stopped to let you write this commit's message."),
+                    Text = intro,
                     Foreground = Brush("App.Text", "#DCDCDC"),
                     TextWrapping = TextWrapping.Wrap,
                 },
                 input,
                 new TextBlock
                 {
-                    Text = T("Cancel leaves the rebase stopped where it is; continuing it afterwards keeps the message the commit already has."),
+                    Text = cancelNote,
                     Foreground = Brush("App.TextDim", "#9A9A9A"),
                     TextWrapping = TextWrapping.Wrap,
                 },
