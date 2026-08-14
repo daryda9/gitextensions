@@ -437,35 +437,28 @@ public sealed class SettingsService
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    private readonly string _path;
+    /// <summary>
+    ///  Everything the shared file machinery needs to know about this document. Built
+    ///  once and static, because <see cref="JsonSettingsFile{T}.For"/> keeps the first
+    ///  model it is given for a path.
+    /// </summary>
+    private static readonly JsonSettingsModel<AppPreferences> Model = new(
+        static () => new AppPreferences(),
+        static text => JsonSerializer.Deserialize<AppPreferences>(text, Options),
+        static settings => JsonSerializer.Serialize(settings, Options),
+        Sanitize,
+        "saving application settings",
+        static () => Changed?.Invoke());
 
-    public SettingsService() => _path = ResolvePath();
+    private readonly JsonSettingsFile<AppPreferences> _file;
+
+    public SettingsService() => _file = JsonSettingsFile<AppPreferences>.For(ResolvePath(), Model);
 
     /// <summary>The resolved JSON file path (for diagnostics/tests).</summary>
-    public string FilePath => _path;
+    public string FilePath => _file.Path;
 
     /// <summary>Loads persisted settings; returns defaults if absent/unreadable.</summary>
-    public AppPreferences Load()
-    {
-        try
-        {
-            if (File.Exists(_path))
-            {
-                string json = File.ReadAllText(_path);
-                AppPreferences? s = JsonSerializer.Deserialize<AppPreferences>(json, Options);
-                if (s is not null)
-                {
-                    return Sanitize(s);
-                }
-            }
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → defaults.
-        }
-
-        return new AppPreferences();
-    }
+    public AppPreferences Load() => _file.Load();
 
     /// <summary>
     ///  Raised after a successful <see cref="Save"/>, so a view already on screen adopts
@@ -479,29 +472,27 @@ public sealed class SettingsService
     /// </summary>
     public static event Action? Changed;
 
-    /// <summary>Writes the given settings; best-effort (never throws).</summary>
-    public void Save(AppPreferences settings)
-    {
-        try
-        {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+    /// <summary>
+    ///  Replaces the WHOLE settings document; best-effort (never throws).
+    ///
+    ///  <para>For the Settings dialog, whose OK button genuinely means "these are the
+    ///  settings now". Every other caller edits one or two fields and must use
+    ///  <see cref="Update"/> instead: this file has a dozen writers — the checkout
+    ///  dialogs, the commit dialog, the rebase flow — and a load-mutate-save from any of
+    ///  them reverts whatever another one wrote in between.</para>
+    /// </summary>
+    public void Save(AppPreferences settings) => _file.Save(settings);
 
-            File.WriteAllText(_path, JsonSerializer.Serialize(Sanitize(settings), Options));
-        }
-        catch
-        {
-            // Persistence is best-effort; a failure must not crash the app.
-            return;
-        }
+    /// <summary>
+    ///  Applies <paramref name="mutate"/> to what the file says at write time — the safe
+    ///  way for a dialog to remember its own one checkbox without reverting the rest of
+    ///  the document. See <see cref="JsonSettingsFile{T}.Update"/> for the rule the
+    ///  delegate has to respect (SET a value out of state captured before the call).
+    /// </summary>
+    public void Update(Action<AppPreferences> mutate) => _file.Update(mutate);
 
-        // Outside the try: a subscriber that throws is a bug in the subscriber, not a
-        // failed save, and swallowing it here would hide it forever.
-        Changed?.Invoke();
-    }
+    /// <summary>Waits for deferred writes to reach the disk. Tests and shutdown only; blocks.</summary>
+    public bool Flush(TimeSpan timeout) => _file.Flush(timeout);
 
     private static AppPreferences Sanitize(AppPreferences s)
     {
@@ -589,21 +580,5 @@ public sealed class SettingsService
         return s;
     }
 
-    private static string ResolvePath()
-    {
-        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        }
-
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config");
-        }
-
-        return Path.Combine(baseDir, "GitExtensions.Avalonia", "app-settings.json");
-    }
+    private static string ResolvePath() => SettingsPaths.Resolve("app-settings.json");
 }

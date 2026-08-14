@@ -46,12 +46,24 @@ public sealed class FavoritesService
 {
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    private readonly string _path;
+    /// <summary>
+    ///  Everything the shared file machinery needs to know about this document. Built
+    ///  once and static, because <see cref="JsonSettingsFile{T}.For"/> keeps the first
+    ///  model it is given for a path.
+    /// </summary>
+    private static readonly JsonSettingsModel<List<FavoriteRepo>> Model = new(
+        static () => [],
+        Parse,
+        Render,
+        Clean,
+        "saving favorites");
 
-    public FavoritesService() => _path = ResolvePath();
+    private readonly JsonSettingsFile<List<FavoriteRepo>> _file;
+
+    public FavoritesService() => _file = JsonSettingsFile<List<FavoriteRepo>>.For(ResolvePath(), Model);
 
     /// <summary>The resolved JSON file path (for diagnostics/tests).</summary>
-    public string FilePath => _path;
+    public string FilePath => _file.Path;
 
     /// <summary>Loads the favorite repository paths (in the stored order).</summary>
     public IReadOnlyList<string> Load()
@@ -75,53 +87,10 @@ public sealed class FavoritesService
     ///  the array is skipped rather than treated as a fatal parse error, so one bad
     ///  entry cannot cost the user the rest of the list.</para>
     /// </summary>
-    public IReadOnlyList<FavoriteRepo> LoadEntries()
-    {
-        try
-        {
-            if (!File.Exists(_path))
-            {
-                return Array.Empty<FavoriteRepo>();
-            }
+    public IReadOnlyList<FavoriteRepo> LoadEntries() => _file.Load();
 
-            if (JsonNode.Parse(File.ReadAllText(_path)) is not JsonArray array)
-            {
-                return Array.Empty<FavoriteRepo>();
-            }
-
-            List<FavoriteRepo> entries = new();
-            foreach (JsonNode? node in array)
-            {
-                switch (node)
-                {
-                    case JsonValue value when value.TryGetValue(out string? path):
-                        entries.Add(new FavoriteRepo(path, null));
-                        break;
-
-                    case JsonObject obj:
-                        string? objPath = obj.TryGetPropertyValue("path", out JsonNode? p)
-                            ? p?.GetValue<string>()
-                            : null;
-                        string? category = obj.TryGetPropertyValue("category", out JsonNode? c)
-                            ? c?.GetValue<string>()
-                            : null;
-                        if (objPath is not null)
-                        {
-                            entries.Add(new FavoriteRepo(objPath, category));
-                        }
-
-                        break;
-                }
-            }
-
-            return Clean(entries);
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → empty list.
-            return Array.Empty<FavoriteRepo>();
-        }
-    }
+    /// <summary>Waits for deferred writes to reach the disk. Tests and shutdown only; blocks.</summary>
+    public bool Flush(TimeSpan timeout) => _file.Flush(timeout);
 
     /// <summary>
     ///  Adds <paramref name="repoPath"/> as a favorite (moved/kept at the top),
@@ -138,22 +107,26 @@ public sealed class FavoritesService
             return Load();
         }
 
-        List<FavoriteRepo> list = new(LoadEntries());
-        string? category = Find(list, normalized)?.Category;
-        list.RemoveAll(e => SamePath(e.Path, normalized));
-        list.Insert(0, new FavoriteRepo(normalized, category));
-        Save(list);
-        return list.ConvertAll(e => e.Path);
+        // A delta rather than a load-mutate-save: the list it edits is read at write time,
+        // so a repository another instance favorited meanwhile is still there afterwards.
+        // Idempotent, as the merge requires — removing then inserting at the top lands on
+        // the same list however many times it runs.
+        _file.Update(list =>
+        {
+            string? category = Find(list, normalized)?.Category;
+            list.RemoveAll(e => SamePath(e.Path, normalized));
+            list.Insert(0, new FavoriteRepo(normalized, category));
+        });
+
+        return Load();
     }
 
     /// <summary>Removes <paramref name="repoPath"/> from favorites; returns the updated paths.</summary>
     public IReadOnlyList<string> Remove(string repoPath)
     {
         string normalized = Normalize(repoPath);
-        List<FavoriteRepo> list = new(LoadEntries());
-        list.RemoveAll(e => SamePath(e.Path, normalized));
-        Save(list);
-        return list.ConvertAll(e => e.Path);
+        _file.Update(list => list.RemoveAll(e => SamePath(e.Path, normalized)));
+        return Load();
     }
 
     /// <summary>
@@ -178,27 +151,28 @@ public sealed class FavoritesService
 
         string? trimmed = string.IsNullOrWhiteSpace(category) ? null : category.Trim();
 
-        List<FavoriteRepo> list = new(LoadEntries());
-        FavoriteRepo? existing = Find(list, normalized);
-
-        if (existing is null)
+        _file.Update(list =>
         {
-            if (trimmed is not null)
+            FavoriteRepo? existing = Find(list, normalized);
+
+            if (existing is null)
             {
-                list.Insert(0, new FavoriteRepo(normalized, trimmed));
+                if (trimmed is not null)
+                {
+                    list.Insert(0, new FavoriteRepo(normalized, trimmed));
+                }
             }
-        }
-        else if (trimmed is null)
-        {
-            list.RemoveAll(e => SamePath(e.Path, normalized));
-        }
-        else
-        {
-            list[list.IndexOf(existing)] = existing with { Category = trimmed };
-        }
+            else if (trimmed is null)
+            {
+                list.RemoveAll(e => SamePath(e.Path, normalized));
+            }
+            else
+            {
+                list[list.IndexOf(existing)] = existing with { Category = trimmed };
+            }
+        });
 
-        Save(list);
-        return list;
+        return LoadEntries();
     }
 
     /// <summary>
@@ -233,42 +207,67 @@ public sealed class FavoritesService
     public bool Contains(string repoPath)
         => Find(new List<FavoriteRepo>(LoadEntries()), Normalize(repoPath)) is not null;
 
-    private void Save(IReadOnlyList<FavoriteRepo> list)
+    // Text to entries. Anything that is not an array, and any array element that is
+    // neither of the two shapes, is skipped rather than treated as a fatal parse error, so
+    // one bad entry cannot cost the user the rest of the list.
+    private static List<FavoriteRepo>? Parse(string text)
     {
-        try
+        if (JsonNode.Parse(text) is not JsonArray array)
         {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+            return null;
+        }
 
-            // An uncategorised entry is written as a bare string, which is exactly
-            // the pre-category format: a user who never files anything keeps a file
-            // older builds can still read, and no spurious rewrite on first launch.
-            JsonArray array = new();
-            foreach (FavoriteRepo entry in Clean(list))
+        List<FavoriteRepo> entries = new();
+        foreach (JsonNode? node in array)
+        {
+            switch (node)
             {
-                if (entry.HasCategory)
-                {
-                    array.Add(new JsonObject
+                case JsonValue value when value.TryGetValue(out string? path):
+                    entries.Add(new FavoriteRepo(path, null));
+                    break;
+
+                case JsonObject obj:
+                    string? objPath = obj.TryGetPropertyValue("path", out JsonNode? p)
+                        ? p?.GetValue<string>()
+                        : null;
+                    string? category = obj.TryGetPropertyValue("category", out JsonNode? c)
+                        ? c?.GetValue<string>()
+                        : null;
+                    if (objPath is not null)
                     {
-                        ["path"] = entry.Path,
-                        ["category"] = entry.Category,
-                    });
-                }
-                else
-                {
-                    array.Add(entry.Path);
-                }
-            }
+                        entries.Add(new FavoriteRepo(objPath, category));
+                    }
 
-            File.WriteAllText(_path, array.ToJsonString(Options));
+                    break;
+            }
         }
-        catch
+
+        return entries;
+    }
+
+    // An uncategorised entry is written as a bare string, which is exactly the
+    // pre-category format: a user who never files anything keeps a file older builds can
+    // still read, and no spurious rewrite on first launch.
+    private static string Render(List<FavoriteRepo> list)
+    {
+        JsonArray array = new();
+        foreach (FavoriteRepo entry in list)
         {
-            // Best-effort; a persistence failure must not crash the app.
+            if (entry.HasCategory)
+            {
+                array.Add(new JsonObject
+                {
+                    ["path"] = entry.Path,
+                    ["category"] = entry.Category,
+                });
+            }
+            else
+            {
+                array.Add(entry.Path);
+            }
         }
+
+        return array.ToJsonString(Options);
     }
 
     private static FavoriteRepo? Find(List<FavoriteRepo> list, string normalizedPath)
@@ -279,6 +278,9 @@ public sealed class FavoritesService
     private static bool SamePath(string a, string b)
         => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
+    // Drops blank and duplicate paths and trims categories. Applied on the way in AND on
+    // the way out, so neither a hand-edited file nor a merged mutation can leave the list
+    // with two entries for one repository.
     private static List<FavoriteRepo> Clean(IEnumerable<FavoriteRepo> list)
     {
         List<FavoriteRepo> cleaned = new();
@@ -312,21 +314,5 @@ public sealed class FavoritesService
         return path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
-    private static string ResolvePath()
-    {
-        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        }
-
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config");
-        }
-
-        return Path.Combine(baseDir, "GitExtensions.Avalonia", "favorites.json");
-    }
+    private static string ResolvePath() => SettingsPaths.Resolve("favorites.json");
 }

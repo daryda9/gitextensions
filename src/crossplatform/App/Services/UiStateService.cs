@@ -411,54 +411,48 @@ public sealed class UiStateService
 {
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    private readonly string _path;
+    /// <summary>
+    ///  Everything the shared file machinery needs to know about this document. Built
+    ///  once and static, because <see cref="JsonSettingsFile{T}.For"/> keeps the first
+    ///  model it is given for a path.
+    /// </summary>
+    private static readonly JsonSettingsModel<UiState> Model = new(
+        static () => new UiState(),
+        static text => JsonSerializer.Deserialize<UiState>(text, Options),
+        static state => JsonSerializer.Serialize(state, Options),
+        Sanitize,
+        "saving UI state");
 
-    public UiStateService() => _path = ResolvePath();
+    private readonly JsonSettingsFile<UiState> _file;
+
+    public UiStateService() => _file = JsonSettingsFile<UiState>.For(ResolvePath(), Model);
 
     /// <summary>The resolved JSON file path (for diagnostics/tests).</summary>
-    public string FilePath => _path;
+    public string FilePath => _file.Path;
 
     /// <summary>Loads persisted state; returns defaults if absent or unreadable.</summary>
-    public UiState Load()
-    {
-        try
-        {
-            if (File.Exists(_path))
-            {
-                string json = File.ReadAllText(_path);
-                UiState? state = JsonSerializer.Deserialize<UiState>(json, Options);
-                if (state is not null)
-                {
-                    return Sanitize(state);
-                }
-            }
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → fall back to defaults below.
-        }
+    public UiState Load() => _file.Load();
 
-        return new UiState();
-    }
+    /// <summary>
+    ///  Replaces the WHOLE document; best-effort (never throws).
+    ///
+    ///  <para><b>Almost never the right call here.</b> This file has the widest lost-update
+    ///  window of the port's settings: the main window loads one <see cref="UiState"/> at
+    ///  start-up, keeps it for the whole session, and writes it back on close — so saving
+    ///  the whole object reverts everything any dialog wrote in between, all session long.
+    ///  Use <see cref="Update"/>, which sets only the fields the caller owns.</para>
+    /// </summary>
+    public void Save(UiState state) => _file.Save(state);
 
-    /// <summary>Writes the given state; best-effort (never throws).</summary>
-    public void Save(UiState state)
-    {
-        try
-        {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+    /// <summary>
+    ///  Applies <paramref name="mutate"/> to what the file says at write time, so a caller
+    ///  writes ITS fields and leaves everyone else's alone. See
+    ///  <see cref="JsonSettingsFile{T}.Update"/> for the rule the delegate has to respect.
+    /// </summary>
+    public void Update(Action<UiState> mutate) => _file.Update(mutate);
 
-            File.WriteAllText(_path, JsonSerializer.Serialize(Sanitize(state), Options));
-        }
-        catch
-        {
-            // Persistence is best-effort; a failure must not crash the app.
-        }
-    }
+    /// <summary>Waits for deferred writes to reach the disk. Tests and shutdown only; blocks.</summary>
+    public bool Flush(TimeSpan timeout) => _file.Flush(timeout);
 
     // Clamp values so a corrupt/zero entry can never collapse a panel or window.
     private static UiState Sanitize(UiState s)
@@ -689,21 +683,5 @@ public sealed class UiStateService
         return v;
     }
 
-    private static string ResolvePath()
-    {
-        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        }
-
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config");
-        }
-
-        return Path.Combine(baseDir, "GitExtensions.Avalonia", "ui-state.json");
-    }
+    private static string ResolvePath() => SettingsPaths.Resolve("ui-state.json");
 }

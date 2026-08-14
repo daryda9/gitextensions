@@ -71,58 +71,50 @@ public sealed class CommitInfoSettingsService
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    private readonly string _path;
+    /// <summary>
+    ///  Everything the shared file machinery needs to know about this document. Built
+    ///  once and static, because <see cref="JsonSettingsFile{T}.For"/> keeps the first
+    ///  model it is given for a path.
+    /// </summary>
+    private static readonly JsonSettingsModel<CommitInfoSettings> Model = new(
+        static () => new CommitInfoSettings(),
+        static text => JsonSerializer.Deserialize<CommitInfoSettings>(text, Options),
+        static settings => JsonSerializer.Serialize(settings, Options),
+        Sanitize,
+        "saving commit-info settings",
+        static () => Changed?.Invoke());
 
-    public CommitInfoSettingsService() => _path = ResolvePath();
+    private readonly JsonSettingsFile<CommitInfoSettings> _file;
+
+    public CommitInfoSettingsService()
+        => _file = JsonSettingsFile<CommitInfoSettings>.For(ResolvePath(), Model);
 
     /// <summary>The resolved JSON file path (for diagnostics/tests).</summary>
-    public string FilePath => _path;
+    public string FilePath => _file.Path;
 
     /// <summary>Loads persisted toggles; returns defaults if absent or unreadable.</summary>
-    public CommitInfoSettings Load()
-    {
-        try
-        {
-            if (File.Exists(_path))
-            {
-                CommitInfoSettings? loaded =
-                    JsonSerializer.Deserialize<CommitInfoSettings>(File.ReadAllText(_path), Options);
-                if (loaded is not null)
-                {
-                    return Sanitize(loaded);
-                }
-            }
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → defaults.
-        }
+    public CommitInfoSettings Load() => _file.Load();
 
-        return new CommitInfoSettings();
-    }
+    /// <summary>
+    ///  Writes the given toggles; best-effort (never throws).
+    ///
+    ///  <para>Whole-document, and legitimately so: both editors present all six toggles at
+    ///  once, so "these are the settings now" is what the user actually means. What the
+    ///  shared file adds is that the two editors cannot interleave into each other's write
+    ///  and that a kill mid-write cannot leave a file that reads back as defaults.</para>
+    /// </summary>
+    public void Save(CommitInfoSettings settings) => _file.Save(settings);
 
-    /// <summary>Writes the given toggles; best-effort (never throws).</summary>
-    public void Save(CommitInfoSettings settings)
-    {
-        try
-        {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+    /// <summary>
+    ///  Applies <paramref name="mutate"/> to what the file says at write time — for the
+    ///  caller that flips ONE toggle and must not revert the other five as they stood in
+    ///  another editor. See <see cref="JsonSettingsFile{T}.Update"/> for the rule the
+    ///  delegate has to respect.
+    /// </summary>
+    public void Update(Action<CommitInfoSettings> mutate) => _file.Update(mutate);
 
-            File.WriteAllText(_path, JsonSerializer.Serialize(Sanitize(settings), Options));
-        }
-        catch
-        {
-            // Persistence is best-effort; a failure must not crash the app.
-        }
-
-        // Announced even if the write failed: the in-memory intent still changed, and a
-        // listener re-reading the old file simply keeps what it had.
-        Changed?.Invoke();
-    }
+    /// <summary>Waits for deferred writes to reach the disk. Tests and shutdown only; blocks.</summary>
+    public bool Flush(TimeSpan timeout) => _file.Flush(timeout);
 
     // Nothing to clamp: every field is a bool, so a corrupt JSON value cannot
     // survive deserialisation as anything but false. The three branch flags are
@@ -131,21 +123,5 @@ public sealed class CommitInfoSettingsService
     // stored invariant.
     private static CommitInfoSettings Sanitize(CommitInfoSettings s) => s;
 
-    private static string ResolvePath()
-    {
-        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        }
-
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config");
-        }
-
-        return Path.Combine(baseDir, "GitExtensions.Avalonia", "commit-info.json");
-    }
+    private static string ResolvePath() => SettingsPaths.Resolve("commit-info.json");
 }

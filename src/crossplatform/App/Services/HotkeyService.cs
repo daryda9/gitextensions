@@ -246,6 +246,23 @@ public sealed class HotkeyService
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
+    /// <summary>
+    ///  Everything the shared file machinery needs to know about this document. Built
+    ///  once and static, because <see cref="JsonSettingsFile{T}.For"/> keeps the first
+    ///  model it is given for a path.
+    ///
+    ///  <para>Declared ABOVE <see cref="Shared"/> deliberately: static initializers run in
+    ///  textual order, and <see cref="Shared"/> constructs a service — which reads this —
+    ///  in its own initializer. Below it, every instance would get a null model.</para>
+    /// </summary>
+    private static readonly JsonSettingsModel<Dictionary<string, string>> Model = new(
+        static () => [],
+        static text => JsonSerializer.Deserialize<Dictionary<string, string>>(text, Options),
+        static flat => JsonSerializer.Serialize(flat, Options),
+        static flat => flat,
+        "saving hotkeys");
+
+
     private readonly Dictionary<BrowseCommand, HotkeyGesture> _bindings;
 
     // The six per-control scopes, keyed by scope then by upstream command name. Held
@@ -258,13 +275,13 @@ public sealed class HotkeyService
     private readonly Dictionary<HotkeyScope, Dictionary<HotkeyGesture, string>> _scopedByGesture = [];
     private readonly Dictionary<BrowseCommand, Action> _actions = [];
     private readonly Dictionary<HotkeyGesture, BrowseCommand> _byGesture = [];
-    private readonly string _path;
+    private readonly JsonSettingsFile<Dictionary<string, string>> _file;
 
     private Func<BrowseCommand, HotkeyGesture, bool>? _reserved;
 
     public HotkeyService()
     {
-        _path = ResolvePath();
+        _file = JsonSettingsFile<Dictionary<string, string>>.For(ResolvePath(), Model);
         _bindings = Load();
         LoadScoped();
         Reindex();
@@ -287,7 +304,7 @@ public sealed class HotkeyService
     public event Action? Changed;
 
     /// <summary>The JSON overrides file (for diagnostics and the hotkeys settings page).</summary>
-    public string FilePath => _path;
+    public string FilePath => _file.Path;
 
     /// <summary>
     ///  Replaces the bindings of the given commands — a null gesture clears the
@@ -487,51 +504,50 @@ public sealed class HotkeyService
         action();
     }
 
-    /// <summary>Writes the current map; best-effort (never throws).</summary>
+    /// <summary>
+    ///  Writes the current map; best-effort (never throws).
+    ///
+    ///  <para>Whole-document, and legitimately so: the map written here is the complete
+    ///  desired state — every scoped command and every cleared one is spelled out, exactly
+    ///  so that an absent entry can keep meaning "take the default". There is one editor
+    ///  (the Settings dialog's Hotkeys page) and one service instance per process, so
+    ///  there is nothing of another writer's to merge; what the shared file adds is the
+    ///  atomic replace and the cross-process interlock.</para>
+    /// </summary>
     public void Save()
     {
-        try
+        Dictionary<string, string> flat = _bindings.ToDictionary(p => p.Key.ToString(), p => p.Value.ToString());
+
+        // The scoped entries share the file, under "Scope:Command" keys. One file,
+        // because they are one thing to the user — "my hotkeys" — and because a
+        // window command and a grid command can collide, which is only visible if
+        // both are in front of whoever reads it.
+        foreach ((HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture> defaults) in HotkeyScopes.All)
         {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
+            foreach (string command in defaults.Keys)
             {
-                Directory.CreateDirectory(dir);
+                HotkeyGesture? gesture = GestureFor(scope, command);
+                flat[$"{scope}:{command}"] = gesture?.ToString() ?? string.Empty;
             }
-
-            Dictionary<string, string> flat = _bindings.ToDictionary(p => p.Key.ToString(), p => p.Value.ToString());
-
-            // The scoped entries share the file, under "Scope:Command" keys. One file,
-            // because they are one thing to the user — "my hotkeys" — and because a
-            // window command and a grid command can collide, which is only visible if
-            // both are in front of whoever reads it.
-            foreach ((HotkeyScope scope, IReadOnlyDictionary<string, HotkeyGesture> defaults) in HotkeyScopes.All)
-            {
-                foreach (string command in defaults.Keys)
-                {
-                    HotkeyGesture? gesture = GestureFor(scope, command);
-                    flat[$"{scope}:{command}"] = gesture?.ToString() ?? string.Empty;
-                }
-            }
-
-            // A command the user cleared is simply absent from _bindings, and an absent
-            // entry means "take the default" on the next Load — so clearing would undo
-            // itself at the next start. Write it out explicitly as the empty string,
-            // which Load already understands as "cleared".
-            foreach (BrowseCommand command in Defaults.Keys)
-            {
-                if (!_bindings.ContainsKey(command))
-                {
-                    flat[command.ToString()] = string.Empty;
-                }
-            }
-
-            File.WriteAllText(_path, JsonSerializer.Serialize(flat, Options));
         }
-        catch
+
+        // A command the user cleared is simply absent from _bindings, and an absent
+        // entry means "take the default" on the next Load — so clearing would undo
+        // itself at the next start. Write it out explicitly as the empty string,
+        // which Load already understands as "cleared".
+        foreach (BrowseCommand command in Defaults.Keys)
         {
-            // Persistence is best-effort; a failure must not crash the app.
+            if (!_bindings.ContainsKey(command))
+            {
+                flat[command.ToString()] = string.Empty;
+            }
         }
+
+        _file.Save(flat);
     }
+
+    /// <summary>Waits for deferred writes to reach the disk. Tests and shutdown only; blocks.</summary>
+    public bool Flush(TimeSpan timeout) => _file.Flush(timeout);
 
     // Defaults, with any parseable entry of the JSON file layered on top. An empty
     // string clears a binding (the command keeps existing, unreachable by keyboard).
@@ -539,40 +555,21 @@ public sealed class HotkeyService
     {
         Dictionary<BrowseCommand, HotkeyGesture> map = new(Defaults);
 
-        try
+        foreach ((string name, string value) in _file.Load())
         {
-            if (!File.Exists(_path))
+            if (!Enum.TryParse(name, ignoreCase: true, out BrowseCommand command))
             {
-                return map;
+                continue;
             }
 
-            Dictionary<string, string>? flat =
-                JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_path), Options);
-            if (flat is null)
+            if (string.IsNullOrWhiteSpace(value))
             {
-                return map;
+                map.Remove(command);
             }
-
-            foreach ((string name, string value) in flat)
+            else if (HotkeyGesture.TryParse(value, out HotkeyGesture gesture))
             {
-                if (!Enum.TryParse(name, ignoreCase: true, out BrowseCommand command))
-                {
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    map.Remove(command);
-                }
-                else if (HotkeyGesture.TryParse(value, out HotkeyGesture gesture))
-                {
-                    map[command] = gesture;
-                }
+                map[command] = gesture;
             }
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → the defaults above.
         }
 
         return map;
@@ -587,72 +584,37 @@ public sealed class HotkeyService
             _scoped[scope] = new Dictionary<string, HotkeyGesture>(defaults, StringComparer.Ordinal);
         }
 
-        try
+        foreach ((string name, string value) in _file.Load())
         {
-            if (!File.Exists(_path))
+            int separator = name.IndexOf(':', StringComparison.Ordinal);
+            if (separator <= 0
+                || !Enum.TryParse(name[..separator], ignoreCase: true, out HotkeyScope scope)
+                || !_scoped.TryGetValue(scope, out Dictionary<string, HotkeyGesture>? map))
             {
-                return;
+                continue;
             }
 
-            Dictionary<string, string>? flat =
-                JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_path), Options);
-            if (flat is null)
+            string command = name[(separator + 1)..];
+            if (!map.ContainsKey(command)
+                && !(HotkeyScopes.All.TryGetValue(scope, out IReadOnlyDictionary<string, HotkeyGesture>? defaults)
+                     && defaults.ContainsKey(command)))
             {
-                return;
+                // A command this build does not have (an older/newer file): kept out
+                // rather than resurrected, so it cannot shadow a live gesture.
+                continue;
             }
 
-            foreach ((string name, string value) in flat)
+            if (string.IsNullOrWhiteSpace(value))
             {
-                int separator = name.IndexOf(':', StringComparison.Ordinal);
-                if (separator <= 0
-                    || !Enum.TryParse(name[..separator], ignoreCase: true, out HotkeyScope scope)
-                    || !_scoped.TryGetValue(scope, out Dictionary<string, HotkeyGesture>? map))
-                {
-                    continue;
-                }
-
-                string command = name[(separator + 1)..];
-                if (!map.ContainsKey(command)
-                    && !(HotkeyScopes.All.TryGetValue(scope, out IReadOnlyDictionary<string, HotkeyGesture>? defaults)
-                         && defaults.ContainsKey(command)))
-                {
-                    // A command this build does not have (an older/newer file): kept out
-                    // rather than resurrected, so it cannot shadow a live gesture.
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    map.Remove(command);
-                }
-                else if (HotkeyGesture.TryParse(value, out HotkeyGesture gesture))
-                {
-                    map[command] = gesture;
-                }
+                map.Remove(command);
             }
-        }
-        catch
-        {
-            // Missing/corrupt/unreadable → the defaults above.
+            else if (HotkeyGesture.TryParse(value, out HotkeyGesture gesture))
+            {
+                map[command] = gesture;
+            }
         }
     }
 
-    // Same directory as ui-state.json (see UiStateService.ResolvePath).
-    private static string ResolvePath()
-    {
-        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrEmpty(baseDir))
-        {
-            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        }
-
-        if (string.IsNullOrEmpty(baseDir))
-        {
-            baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config");
-        }
-
-        return Path.Combine(baseDir, "GitExtensions.Avalonia", "hotkeys.json");
-    }
+    // Same directory as ui-state.json.
+    private static string ResolvePath() => SettingsPaths.Resolve("hotkeys.json");
 }

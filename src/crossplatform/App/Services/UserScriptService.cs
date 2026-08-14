@@ -164,55 +164,48 @@ public sealed class UserScriptService
 
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    private readonly string _path;
+    /// <summary>
+    ///  Everything the shared file machinery needs to know about this document. Built
+    ///  once and static, because <see cref="JsonSettingsFile{T}.For"/> keeps the first
+    ///  model it is given for a path.
+    /// </summary>
+    private static readonly JsonSettingsModel<List<UserScript>> Model = new(
+        static () => [],
+        static text => JsonSerializer.Deserialize<List<UserScript>>(text, Options),
+        static scripts => JsonSerializer.Serialize(scripts, Options),
+        static scripts => scripts,
+        "saving user scripts",
+        static () => Changed?.Invoke());
 
-    public UserScriptService() => _path = ResolvePath();
+    private readonly JsonSettingsFile<List<UserScript>> _file;
+
+    public UserScriptService() => _file = JsonSettingsFile<List<UserScript>>.For(ResolvePath(), Model);
 
     /// <summary>Raised after <see cref="Save"/>, so open menus can rebuild.</summary>
     public static event Action? Changed;
 
     /// <summary>The resolved JSON path (for diagnostics and for the Settings page's note).</summary>
-    public string FilePath => _path;
+    public string FilePath => _file.Path;
 
-    /// <summary>Every script, in file order. Missing/corrupt file yields none.</summary>
-    public IReadOnlyList<UserScript> Load()
-    {
-        try
-        {
-            if (File.Exists(_path))
-            {
-                return JsonSerializer.Deserialize<List<UserScript>>(File.ReadAllText(_path), Options) ?? [];
-            }
-        }
-        catch
-        {
-            // A hand-edited file with a typo must not stop the app from starting; the
-            // Settings page is where the user can see and rewrite the list.
-        }
+    /// <summary>
+    ///  Every script, in file order. Missing/corrupt file yields none — a hand-edited file
+    ///  with a typo must not stop the app from starting; the Settings page is where the
+    ///  user can see and rewrite the list.
+    /// </summary>
+    public IReadOnlyList<UserScript> Load() => _file.Load();
 
-        return [];
-    }
+    /// <summary>
+    ///  Writes the list; best-effort, then raises <see cref="Changed"/>.
+    ///
+    ///  <para>Whole-document, and legitimately so: the only editor is the Settings page's
+    ///  script list, whose Save button means "these are the scripts now". What the shared
+    ///  file adds is the atomic replace — a kill mid-write used to leave a truncated file,
+    ///  which <see cref="Load"/> reads as "no scripts at all".</para>
+    /// </summary>
+    public void Save(IReadOnlyList<UserScript> scripts) => _file.Save([.. scripts]);
 
-    /// <summary>Writes the list; best-effort, then raises <see cref="Changed"/>.</summary>
-    public void Save(IReadOnlyList<UserScript> scripts)
-    {
-        try
-        {
-            string? dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            File.WriteAllText(_path, JsonSerializer.Serialize(scripts, Options));
-        }
-        catch
-        {
-            return;
-        }
-
-        Changed?.Invoke();
-    }
+    /// <summary>Waits for deferred writes to reach the disk. Tests and shutdown only; blocks.</summary>
+    public bool Flush(TimeSpan timeout) => _file.Flush(timeout);
 
     /// <summary>The enabled scripts bound to <paramref name="scriptEvent"/>, in file order.</summary>
     public IReadOnlyList<UserScript> For(UserScriptEvent scriptEvent)
@@ -418,21 +411,5 @@ public sealed class UserScriptService
         }
     }
 
-    private static string ResolvePath()
-    {
-        string? baseDir = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        }
-
-        if (string.IsNullOrWhiteSpace(baseDir))
-        {
-            baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config");
-        }
-
-        return Path.Combine(baseDir, "GitExtensions.Avalonia", "scripts.json");
-    }
+    private static string ResolvePath() => SettingsPaths.Resolve("scripts.json");
 }
