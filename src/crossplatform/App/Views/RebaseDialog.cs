@@ -44,9 +44,12 @@ public sealed record RebaseDialogResult(
 ///    <c>fatal: --preserve-merges was replaced by --rebase-merges</c>. Upstream's
 ///    <c>chkPreserveMerges</c> is therefore reproduced with the modern flag and the
 ///    modern caption; see <see cref="BranchTagService.BuildRebaseArguments"/>.</item>
-///   <item>the <b>commit picker</b> next to "From" (<c>btnChooseFromRevision</c>): the
-///    port has no <c>FormChooseCommit</c> (established in M69). The field is a plain
-///    text box instead, which accepts any commit-ish — a SHA, <c>HEAD~3</c>, a ref.</item>
+///   <item>~~the <b>commit picker</b> next to "From"~~ — <b>it exists since M214</b>
+///    (<see cref="ChooseCommitDialog"/>, the port of <c>FormChooseCommit</c>), reached
+///    from the <c>…</c> button beside the field and bounded the same way upstream bounds
+///    it: the current branch, down to its merge base with the target. The field stays a
+///    text box as well, and still accepts any commit-ish — a SHA, <c>HEAD~3</c>, a
+///    ref.</item>
 ///  </list>
 ///
 ///  <para><b>Update refs is an override, not an option.</b> The box mirrors the
@@ -110,6 +113,7 @@ public sealed class RebaseDialog : Theming.ZoomWindow
     private readonly CheckBox _specificRange;
     private readonly TextBlock _fromLabel;
     private readonly TextBox _from;
+    private readonly Button _chooseFrom;
     private readonly TextBlock _toLabel;
     private readonly ComboBox _to;
     private readonly TextBlock _rangeNote;
@@ -299,9 +303,23 @@ public sealed class RebaseDialog : Theming.ZoomWindow
             IsVisible = false,
         };
 
+        // Upstream's btnChooseFromRevision (FormRebase.Designer.cs), which this port had
+        // to leave out until the commit picker existed. The caption is the ellipsis
+        // upstream uses; what it opens says the rest.
+        _chooseFrom = new Button
+        {
+            Content = "…",
+            IsEnabled = false,
+            MinWidth = 36,
+            MinHeight = Metrics.Density.ControlMinHeight,
+            VerticalAlignment = VerticalAlignment.Center,
+            [ToolTip.TipProperty] = T("Pick the commit from the history…"),
+        };
+        _chooseFrom.Click += (_, _) => _ = ChooseFromAsync();
+
         Grid rangeGrid = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
             RowDefinitions = new RowDefinitions("Auto,Auto"),
             ColumnSpacing = Metrics.Space.Md,
             RowSpacing = Metrics.Space.Sm,
@@ -309,14 +327,21 @@ public sealed class RebaseDialog : Theming.ZoomWindow
         };
         AddAt(rangeGrid, _fromLabel, 0, 0);
         AddAt(rangeGrid, _from, 0, 1);
+        AddAt(rangeGrid, _chooseFrom, 0, 2);
         AddAt(rangeGrid, _toLabel, 1, 0);
         AddAt(rangeGrid, _to, 1, 1);
+
+        // The "To" row has no picker of its own — only a local branch can be the branch
+        // that gets moved, and that is a combo of names, not a commit — so its field
+        // takes the width the button leaves on the row above.
+        Grid.SetColumnSpan(_to, 2);
 
         _specificRange.IsCheckedChanged += (_, _) =>
         {
             // FormRebase.chkUseFromOnto_CheckedChanged (:391-396).
             bool on = _specificRange.IsChecked == true;
             _from.IsEnabled = on;
+            _chooseFrom.IsEnabled = on;
             _to.IsEnabled = on;
             UpdatePreview();
         };
@@ -481,6 +506,40 @@ public sealed class RebaseDialog : Theming.ZoomWindow
 
     private string Onto
         => (_ontoCombo.SelectedItem as string ?? _ontoCombo.Text ?? string.Empty).Trim();
+
+    /// <summary>
+    ///  Opens the commit picker for the "From" field and writes back the short hash of
+    ///  whatever the user chose (upstream's <c>btnChooseFromRevision_Click</c>,
+    ///  <c>FormRebase.cs:400-441</c>).
+    ///
+    ///  <para>The list is bounded the way upstream bounds it: the commits of the current
+    ///  branch, ending at its merge base with the rebase target. Anything older than that
+    ///  base is already on the target and cannot be part of what this rebase replays, so
+    ///  offering it would be offering a range git will do nothing with.</para>
+    ///
+    ///  <para>A cancel leaves the field alone — including a field the user typed by hand,
+    ///  which the picker is an alternative to and not a replacement for.</para>
+    /// </summary>
+    private async Task ChooseFromAsync()
+    {
+        ChosenCommit? chosen = await ChooseCommitDialog.ShowAsync(
+            this,
+            _repoPath,
+            new ChooseCommitRequest(
+                T("Choose the commit the range starts after"),
+                // The field is "From (exc.)" and the parenthesis is the whole meaning: the
+                // commit picked here is the LAST one kept as it is. Said in words, because
+                // an off-by-one here silently rebases one commit too many or too few.
+                T("The rebase replays the commits AFTER this one. The commit you pick is not itself rebased."),
+                Preselect: (_from.Text ?? string.Empty).Trim(),
+                CurrentBranchOnly: true,
+                ExcludeAncestorsOf: Onto));
+
+        if (chosen is not null)
+        {
+            _from.Text = chosen.ShortHash;
+        }
+    }
 
     /// <summary>
     ///  Keeps the window exactly as wide as the options column plus whatever the

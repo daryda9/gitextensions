@@ -685,6 +685,12 @@ public sealed class RevisionService
     ///  arguments, so the filter applies to the whole history rather than to the pages
     ///  already loaded, and paging keeps working — <c>--skip</c>/<c>--max-count</c> then
     ///  index into the FILTERED walk. Its "Limit" caps the total across pages.</para>
+    ///
+    ///  <para><paramref name="excludeAncestorsOf"/> ENDS the walk at a commit: that commit
+    ///  and everything it reaches are left out (<c>git log HEAD ^&lt;commit&gt;</c>), which
+    ///  is how a caller asks for "the commits of this branch only" once it has computed
+    ///  the merge base itself. It bounds whatever the scope walks and is ignored while a
+    ///  single path is being followed.</para>
     /// </summary>
     public RevisionPage LoadRevisionPage(
         string repoPath,
@@ -698,6 +704,7 @@ public sealed class RevisionService
         bool topoOrder = false,
         RevisionFilter? filter = null,
         bool authorDateOrder = false,
+        string? excludeAncestorsOf = null,
         CancellationToken cancellationToken = default)
     {
         RevisionFilter criteria = filter ?? RevisionFilter.None;
@@ -814,6 +821,22 @@ public sealed class RevisionService
             scopeArgs = filteredRefs is { Count: > 0 }
                 ? string.Join(' ', filteredRefs)
                 : "HEAD";
+        }
+
+        // The bound of the walk: `^<commit>` excludes that commit and everything it
+        // reaches, so `HEAD ^<merge-base>` is the commits of this branch alone. Written
+        // as an exclusion rather than as the `a..b` shorthand because the positive side
+        // is whatever the scope above decided, and the two compose without parsing it.
+        //
+        // Not applied while following a single path: that walk deliberately runs in the
+        // one shape git honours --follow in (no explicit revisions), and adding one would
+        // silently drop the tail of the history.
+        if (!following && !string.IsNullOrWhiteSpace(excludeAncestorsOf))
+        {
+            // An empty scope means git's own default starting point, which has to be
+            // spelled out before an exclusion can be added to it: `git log ^<x>` alone
+            // walks nothing at all.
+            scopeArgs = (scopeArgs.Length == 0 ? "HEAD" : scopeArgs) + " ^" + excludeAncestorsOf.Trim();
         }
 
         // Walk order, mirroring the original's RevisionSortOrder (GitDefault /

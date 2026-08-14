@@ -316,6 +316,11 @@ public sealed class RevisionGridView : UserControl
     // "origin/main", "v1.0"), which is what git log accepts as revision arguments.
     private IReadOnlyList<string> _filteredRefs = [];
 
+    // Where the walk STOPS: this commit and everything it reaches are left out (see
+    // SetWalkBound). Never persisted and never set from a menu — it belongs to the
+    // caller that opened this grid for a purpose, which today is the commit picker.
+    private string? _walkBound;
+
     // Every ref of the repository with its kind ('b' local branch, 'r' remote
     // branch, 't' tag), refreshed alongside the walk by RefreshRefContext. The
     // picker is built from this, never from a git call of its own.
@@ -1839,6 +1844,7 @@ public sealed class RevisionGridView : UserControl
         bool showStashes = _showStashes;
         bool topoOrder = _topoOrder;
         bool authorDateOrder = _authorDateSort;
+        string? walkBound = _walkBound;
         int pageSize = maxCount > 0 ? maxCount : _pageSize;
         RevisionFilter filter = _gitFilter;
 
@@ -1925,6 +1931,7 @@ public sealed class RevisionGridView : UserControl
                     topoOrder: topoOrder,
                     filter: filter,
                     authorDateOrder: authorDateOrder,
+                    excludeAncestorsOf: walkBound,
                     cancellationToken: cancellation);
 
                 // Merge and rebuild the DAG here, still off the UI thread.
@@ -2072,15 +2079,27 @@ public sealed class RevisionGridView : UserControl
 
     // Human label for the current branch scope, shown in the status line so the
     // effect of the toggle (and the resulting commit count) is visible.
-    private string ScopeLabel => _branchScope switch
+    private string ScopeLabel
     {
-        BranchScope.AllBranches => T("all branches"),
-        BranchScope.CurrentBranch => T("current branch"),
-        BranchScope.Filtered => _filteredRefs.Count == 0
-            ? T("filtered (no ref selected → HEAD)")
-            : string.Format(T("filtered ({0})"), string.Join(", ", _filteredRefs)),
-        _ => T("all branches"),
-    };
+        get
+        {
+            string scope = _branchScope switch
+            {
+                BranchScope.CurrentBranch => T("current branch"),
+                BranchScope.Filtered => _filteredRefs.Count == 0
+                    ? T("filtered (no ref selected → HEAD)")
+                    : string.Format(T("filtered ({0})"), string.Join(", ", _filteredRefs)),
+                _ => T("all branches"),
+            };
+
+            // A bounded walk shows FEWER commits than its scope names, and the count next
+            // to this label is the visible consequence: saying only "current branch" for
+            // `HEAD ^<merge-base>` would make the two disagree with no explanation.
+            return _walkBound is { Length: > 0 } bound
+                ? scope + string.Format(T(", down to {0}"), bound[..Math.Min(8, bound.Length)])
+                : scope;
+        }
+    }
 
     /// <summary>
     ///  SUBMITS a search term, the way pressing Enter in the grid's own filter box
@@ -3826,6 +3845,32 @@ public sealed class RevisionGridView : UserControl
         _refPickerSummary.Text = _filteredRefs.Count == 0
             ? T("No ref selected — \"Filtered branches\" walks HEAD.")
             : string.Format(T("Walking {0}"), string.Join(", ", _filteredRefs));
+    }
+
+    /// <summary>
+    ///  Ends the walk at <paramref name="hash"/>: that commit and everything it reaches
+    ///  are left out, so with the current-branch scope the grid shows the commits of
+    ///  this branch alone (<c>git log HEAD ^&lt;merge-base&gt;</c>). <see langword="null"/>
+    ///  removes the bound.
+    ///
+    ///  <para>For a grid opened to answer one question — the commit picker of
+    ///  <see cref="ChooseCommitDialog"/> is the first caller — and deliberately NOT a
+    ///  view option: it has no menu entry, is not persisted, and no ref name is involved,
+    ///  so unlike the filtered-ref set it cannot be dropped when the ref catalogue
+    ///  arrives (which is exactly what happened when this was first tried by passing
+    ///  <c>^&lt;hash&gt;</c> as a fake ref: the first walk was bounded, the next one
+    ///  silently was not).</para>
+    /// </summary>
+    public void SetWalkBound(string? hash)
+    {
+        string? wanted = string.IsNullOrWhiteSpace(hash) ? null : hash.Trim();
+        if (string.Equals(wanted, _walkBound, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _walkBound = wanted;
+        Reload();
     }
 
     /// <summary>

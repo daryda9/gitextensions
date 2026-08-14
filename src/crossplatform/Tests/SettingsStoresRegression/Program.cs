@@ -387,6 +387,12 @@ Stopwatch total = Stopwatch.StartNew();
         {
             // The victim may have been killed before it ever wrote; nothing to check, and
             // an absent file is not a corrupt one.
+            //
+            // SAID OUT LOUD, because this branch drops the two assertions below and the
+            // run then reports a smaller case count for no visible reason — measured, 39
+            // instead of 41. A suite whose totals move on their own is a suite nobody can
+            // read a regression out of.
+            Console.WriteLine($"  kills: {name} was killed before it ever wrote — 2 assertions skipped for it");
             continue;
         }
         catch (JsonException ex)
