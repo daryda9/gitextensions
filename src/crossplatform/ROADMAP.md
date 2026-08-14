@@ -26,6 +26,7 @@ Stato dei riferimenti: agosto 2026. Le fonti sono in fondo.
 
 | | |
 |---|---|
+| **M204–M206** | **Chiusura dei residui** (2026-08-14, tre unità). Tre commit: sicurezza fra processi di `ViewPrefsService` con il banco di prova `Tests/ViewPrefsRegression` (`99e1c74b4`, `PASS: 41 casi`, dimostrato non vacuo), `reword`/`squash` che chiedono davvero il messaggio più l'uscita da un `am --3way` in conflitto (`2c5bcdf26`), quattro difetti minori della striscia delle schede (`7b84e9824`). Chiuse così le voci che il giro precedente aveva **misurato e lasciato scritte**: reword/squash, l'ingresso per i conflitti di `am`, l'ellissi in RTL, la forma del path nel tooltip, l'hover del pulsante di chiusura, la priorità dello `Squeeze` e il carica-modifica-salva senza lock delle preferenze di vista. Registrato e **non** corretto: gli altri sei archivi JSON hanno lo stesso difetto. |
 | **M196–M203** | **Collaudo dei residui aperti** (2026-08-13/14, otto unità in parallelo, ognuna con repository usa-e-getta e display Xvfb propri, regola sola: **misurare git, non ragionare su git**). Otto commit: barra del sequencer (`7b8372768`), banco di prova della palette (`ea84a9f07`), dialogo di rebase (`409cbc747`), diff di immagini (`004d3610d`), editor della todo (`8659f1868`), rerere nei worktree collegati (`32ef95531`), striscia delle schede (`8cea6b14e`), didascalie del diff (`aebffd9e8`). Diverse voci sono state chiuse **con una misura**, non con una riscrittura: formati immagine che decodificano bene, `--autosquash` che accorpa davvero, verbi esotici della todo che tornano byte per byte, editor di merge oltre il budget. Quello che resta aperto è elencato qui sotto. |
 | **M195** | **Palette dei comandi (§2.1).** `Ctrl+Shift+P`. La lista **è il menu vero**, percorso all'apertura, quindi la disponibilità la decide il menu che già la calcola e non c'è un secondo registro da tenere in vita. Recenti salvati per id non tradotto; comandi non disponibili in grigio, non nascosti. **Deviazione dichiarata**: `QuickPull` passa a `Shift+F8`. |
 | **M194** | **Ricerca nel contenuto dei commit (§2.1).** Il motore pickaxe c'era **già** (`RevisionFilter.DiffContent` → `git log -S`/`-G`): questa voce della roadmap era **vecchia** su questo punto. Aggiunti l'ingresso dal diff («Search history for …» sulla selezione) e la scelta letterale/regex nella tendina della casella di ricerca; più l'annullamento della camminata precedente. |
@@ -38,19 +39,18 @@ Stato dei riferimenti: agosto 2026. Le fonti sono in fondo.
 | **M173** | **Collaudo del merge su conflitti veri** (5431 righe, UTF-8, CRLF, senza newline finale): due difetti trovati e chiusi. |
 | **M172** | **Editor di merge a tre vie interno.** `git merge-file --diff3` fa il merge, `MergeToolService` lo trasforma in chunk tipizzati, `MergeToolWindow` mostra LOCAL / BASE / REMOTE in sola lettura e il risultato modificabile sotto. Con `merge.tool` vuoto i pulsanti esterni sono disabilitati e **Merge funziona lo stesso**. kdiff3 resta dov'era. |
 
-### Residui ancora aperti dopo il collaudo M196–M203
+### Residui ancora aperti dopo M204–M206
 
-Il giro ha chiuso molto; questi **non** sono chiusi, e restano scritti per non sparire in silenzio.
+I due giri hanno chiuso molto; questi **non** sono chiusi, e restano scritti per non sparire in silenzio.
 
 | Residuo | Stato |
 |---|---|
 | **Immagine troncata** (PNG/GIF/WEBP/BMP) | Disegna mezza immagine **senza nessun avviso**. È la lacuna più grossa rimasta del diff di immagini: segnalarla richiede il codice di risultato incompleto di `SKCodec`, e SkiaSharp **non è dipendenza diretta** del progetto App. |
-| **`reword` e `squash` dall'editor della todo** | La legenda ora dice che non funzionano e rimanda a «Reword commit…», ma **funzionalmente non sono stati corretti**: `Continue` fissa `GIT_EDITOR=true`, quindi risponde all'editor di git prima che l'utente lo veda. La correzione tocca il **chiamante** di `Continue` (modello `CommitEditService`): riportata, non tentata. |
-| **Ramo `am` del testo di rerere** | **Irraggiungibile**: nessun ingresso offre un dialogo dei conflitti durante un `am`. (Misurato al contorno: `git am` semplice non coinvolge rerere per niente, solo `am -3`.) |
-| **Ellissi in RTL sulle schede** | Un'etichetta araba mette i puntini di sospensione sulla **destra visiva** mentre il testo omesso sta a sinistra: `FormattedText` è cablato da sinistra a destra e i path sono strutturalmente LTR. |
-| **Tooltip della scheda** | Mostra il path **assoluto grezzo** invece della forma con `~` usata altrove. Insieme a: il pulsante di chiusura non ha feedback di hover suo, e a budget esaurito è la scheda **più lunga** a tenersi la larghezza naturale. |
-| **`ViewPrefsService.Update`** | Carica-modifica-salva **senza lock fra processi**: due istanze dell'app possono perdere una preferenza che non c'entra niente. **Preesistente, non corretto.** |
+| **Gli altri sei archivi JSON** | M204 ha messo in sicurezza **solo** `view-prefs.json`. Tutti e sette gli archivi JSON del port condividono la scrittura non atomica, e sei su sette il carica-modifica-salva senza lock: `favorites.json`, `ui-state.json`, `app-settings.json`, `hotkeys.json`, `commit-info.json`, `scripts.json` e la lista dei repository recenti. Il peggiore è `ui-state.json`, che riscrive l'oggetto intero da un'istantanea presa all'avvio: la finestra di perdita è **l'intera sessione**. **Non corretto.** |
+| **Messaggio di `merge --continue`** | `MergeSessionService` fissa ancora `GIT_EDITOR=true`: la richiesta del messaggio ha la stessa forma di quella chiusa in M205 per il rebase, ma **non è fatta**. |
+| **Selettore di commit per il campo *From* del rebase** | Il campo accetta tag, sha corto e completo, nome di branch e stringhe senza senso (provati in M198), ma un vero selettore richiede un dialogo delle dimensioni della griglia delle revisioni, che il port non ha. |
 | **Tema System sulla striscia delle schede** | **Non esercitato**: il portal XDG che serve non esiste sul display di prova. |
+| **Coda dell'RTL sulle schede** | Con nome RTL + duplicato + elisione i puntini finiscono, nell'ordine di lettura, **dopo** il `(1)`; due repository le cui etichette si riducono alla stessa coda restano indistinguibili al pavimento (preesistente); artefatto di arrotondamento sub-pixel al confine del tetto dello `Squeeze`. |
 | **Rifiuto oltre 16 megapixel, pan col trascinamento, scorciatoie di zoom** (diff immagini) | Restano come erano: non esercitati a schermo il primo, assenti gli altri due. |
 | **Cache rerere multi-variante, path non ASCII o con spazi** | Restano non provati: il giro ha coperto worktree collegati, submodule e conflitti misti, non questi. |
 
@@ -71,11 +71,20 @@ Quello che è rimasto scoperto **dentro** queste voci, dichiarato e non nascosto
 
 | Voce | Scoperto |
 |---|---|
-| §1.2 | Nessuna suite che protegga `InlineDiff` dalle regressioni. Con più regioni cambiate la granularità resta la parola: `alpha_beta` → `alpha_gamma` marca l'intera parola se accanto c'è un'altra modifica. Nessuna opzione «ignora spazi» intra-riga. Il pannello MERGE RESULT non ha marcature. La modalità intra-riga dell'editor di merge non è persistita fra sessioni. |
+| §1.2 | ~~Nessuna suite che protegga `InlineDiff` dalle regressioni~~ — **era falso quando è stato scritto**: `Tests/InlineDiffRegression/` esiste, ed è stato il modello dei due banchi arrivati dopo. ~~La modalità intra-riga dell'editor di merge non è persistita fra sessioni~~ — **falso anch'esso**: è persistita da M186 in `view-prefs.json` (`MergeToolPrefs.InlineMode`, letta da `MergeToolWindow.RestoredInlineMode`). Restano scoperti: con più regioni cambiate la granularità resta la parola — `alpha_beta` → `alpha_gamma` marca l'intera parola se accanto c'è un'altra modifica; nessuna opzione «ignora spazi» intra-riga; il pannello MERGE RESULT non ha marcature. |
 | §1.3 | Non provati: submodule inizializzato ma con gli oggetti di un lato mancanti, add/add di gitlink senza BASE, liste oltre 200 commit, path con spazi. |
 | §1.4 | ~~Firme WEBP/GIF/BMP/ICO implementate ma provate solo su PNG e JPEG~~ — **chiuso in M199**: 26 campioni generati e aperti, `ImageFormats.Detect` li nomina tutti (troncati compresi) e non è stato toccato; BMP RLE4/RLE8, GIF interlacciata, JPEG progressiva e CMYK **decodificano correttamente**, misurate. Sono usciti invece tre difetti (blocco su PNG a 16 bit, contenitore spacciato per il tutto, 16 bit confrontati a 8) e **una nota da correggere**: Skia sceglie la voce ICO **più grande**, non la prima. Restano: **immagine troncata senza avviso** (vedi §0), rifiuto oltre 16 megapixel non esercitato a schermo, niente pan col trascinamento né scorciatoie di zoom. |
 | §1.5 | Non provati a schermo: file oltre 20 MB, e il pannello su un repo senza `merge.tool` configurato. |
-| §1.6 | Conflitti di rebase provati in M187; **worktree collegati provati in M201, e lì c'era il bug**: `MERGE_RR` è per-worktree ma `rr-cache` vive solo nella common directory, e il port chiedeva `--absolute-git-dir` per entrambe — git riapplicava una risoluzione con l'app che non mostrava niente. Provati e sani nello stesso giro: submodule a metà rebase (`modules/<nome>`) e un merge con conflitti binari, di soli permessi, delete/modify, rename/rename e symlink insieme. Restano non provati **cache multi-variante** e **path non ASCII o con spazi**; resta irraggiungibile il ramo `am` del testo (vedi §0). `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
+| §1.6 | Conflitti di rebase provati in M187; **worktree collegati provati in M201, e lì c'era il bug**: `MERGE_RR` è per-worktree ma `rr-cache` vive solo nella common directory, e il port chiedeva `--absolute-git-dir` per entrambe — git riapplicava una risoluzione con l'app che non mostrava niente. Provati e sani nello stesso giro: submodule a metà rebase (`modules/<nome>`) e un merge con conflitti binari, di soli permessi, delete/modify, rename/rename e symlink insieme. Restano non provati **cache multi-variante** e **path non ASCII o con spazi**; il ramo `am` del testo **non è più irraggiungibile** — M205 ha aggiunto l'ingresso, ma solo dove esiste davvero: misurato, un `git am` semplice non lascia niente di unmerged e non coinvolge rerere, solo `am --3way` lo fa, quindi banner e `ApplyPatchDialog` offrono la risoluzione **solo** con l'indice unmerged. `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
+
+**Stato onesto del collaudo automatico.** Il port ha oggi **tre** banchi di prova di regressione:
+`Tests/InlineDiffRegression` (il primo, e il modello degli altri due), `Tests/CommandPaletteRegression`
+(M197) e `Tests/ViewPrefsRegression` (M204); accanto restano le sonde e gli snapshot preesistenti
+(`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). Sono progetti a sé,
+lanciati **a mano**: nessuno di essi è agganciato alla soluzione o a un workflow di CI, quindi niente
+li riesegue da solo. Tutto il resto non ha collaudo automatico e viene verificato **a schermo**: il
+motore di merge e i suoi chunk, i servizi del diff, `RebaseSessionService` / `MergeSessionService` /
+rerere, il diff di immagini, la striscia delle schede e la UI in generale.
 
 Trasversale: le stringhe nuove passano da `T(english)` come le altre, quindi a schermo
 restano in inglese finché non esiste un catalogo italiano attivo — è una decisione di
@@ -207,9 +216,9 @@ Quello che resta, riordinato di conseguenza:
    inventato.
 5. **2.3 rebase interattivo per trascinamento** — l'interruzione a metà è già gestita
    (`RebaseSessionService`) e `--edit-todo` passa già da un editor scriptato (M191), quindi il
-   trascinamento è la parte che manca; resta la voce **grossa** del gruppo. Da fare **prima o
-   insieme**: `reword` e `squash` oggi non funzionano davvero (M200) perché `Continue` fissa
-   `GIT_EDITOR=true`, e nessun passo può essere **aggiunto** alla todo.
+   trascinamento è la parte che manca; resta la voce **grossa** del gruppo. `reword` e `squash`
+   **non sono più un prerequisito**: chiedono davvero il messaggio da M205. Resta che nessun passo
+   può essere **aggiunto** alla todo.
 6. **2.2 prestazioni del grafo su repo enormi** — **da misurare prima di decidere se esiste un
    problema**: oggi non c'è nessuna misura, quindi non c'è nessun lavoro giustificato.
 7. **2.4 / 2.5 branch impilati e forge oltre GitHub** — ultimi: molto lavoro, e utili solo a chi sta

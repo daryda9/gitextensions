@@ -3418,6 +3418,141 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## Chiusura dei residui (2026-08-14, M204–M206) — tre unità, quello che il collaudo aveva lasciato scritto
+
+Il giro precedente aveva **misurato** e lasciato per iscritto quello che non aveva corretto. Questo
+giro prende tre di quelle voci e le chiude scrivendo codice: la sicurezza fra processi delle
+preferenze di vista, `reword`/`squash` che non chiedevano niente più l'uscita da un `am` in conflitto,
+e i quattro difetti minori della striscia delle schede. Le milestone stanno in ordine decrescente come
+il resto del file, una per commit.
+
+## M206 (2026-08-14, `7b84e9824`) — quattro difetti minori della striscia delle schede, con la prova accanto
+
+**L'argomento sull'RTL era mezzo giusto, e adesso è spezzato in due.** Il paragrafo resta da sinistra
+a destra: un path non è una frase ma una sequenza letta da radice a foglia, e dedurre la direzione dal
+testo allineerebbe un'etichetta RTL al bordo **opposto** rispetto alle vicine e rovescerebbe
+`مشروع/src` in un path che non esiste. Ma «un path è strutturalmente LTR» non ha mai autorizzato la
+**posizione** dei puntini di sospensione. Il `…` è un carattere neutro, quindi in fondo a una riga LTR
+viene disegnato alla destra visiva — che per l'arabo o l'ebraico è dove il nome **comincia**. Misurato:
+i puntini stavano appoggiati al pulsante di chiusura a marcare la prima lettera, mentre la coda omessa
+usciva dall'altro bordo senza marcatura. Ora, quando la foglia inizia in RTL, i puntini sono scritti
+**prima** del testo tenuto.
+
+**Vicolo cieco, registrato perché è costato tempo vero.** La correzione da manuale — avvolgere i
+segmenti RTL in isolate FSI/PDI — qui **non fa niente**: il layout di testo di Avalonia li ignora,
+dimostrato da un path con due segmenti RTL adiacenti che si disegna byte per byte identico con e senza.
+La stessa prova ha tolto di mezzo anche il pericolo che gli isolate dovevano prevenire: il separatore
+fra due segmenti RTL **non** li scambia in questo renderer, quindi il caso non si presenta. Gli isolate
+sono stati tolti invece che spediti come codice giustificato solo da uno standard che il renderer non
+implementa.
+
+**Tooltip ed etichetta multi-segmento** passano ora da `PathDisplay.CollapseHome`, come già facevano
+barra degli strumenti e riga di stato.
+
+**Il pulsante di chiusura** ha un hover suo, preso dalle risorse vive della palette e controllato in
+entrambi i temi e nello stile Classic.
+
+**`Squeeze` riscritto** da scalatura proporzionale a un tetto max-min: si risolve **un** tetto perché i
+totali entrino, e le schede che stanno già sotto restano intatte. L'algoritmo è stato incrociato con
+20 000 casi casuali; il pavimento di 96 px è rimasto.
+
+**Deliberatamente invariato**: con un nome RTL il numero del duplicato è disegnato alla sua sinistra.
+È bidi standard ed è corretto — letta da destra a sinistra la scheda dice «nome (1)».
+
+**Resta aperto**: con RTL + duplicato + elisione i puntini finiscono, nell'ordine di lettura, **dopo**
+il `(1)`; due repository le cui etichette si riducono alla stessa coda restano indistinguibili al
+pavimento (preesistente); e c'è un artefatto di arrotondamento sub-pixel al confine del tetto.
+
+## M205 (2026-08-14, `2c5bcdf26`) — `reword` e `squash` chiedono davvero il messaggio, e un `am` in conflitto ha un'uscita
+
+Erano due promesse che la UI faceva e non manteneva.
+
+**`reword`/`squash`.** Il pin che tiene il PTY dall'appendersi (`GIT_EDITOR=true`) rispondeva anche
+all'editor di git prima che l'utente lo vedesse: un reword era un no-op e uno squash produceva la
+concatenazione di default di git. Togliere il pin non è un'opzione — un `vi` ereditato appende il
+terminale, e questo port ci è cascato **tre volte**. Il pin punta quindi ora a un editor che
+**rifiuta**: git stampa «There was a problem with the editor 'false'», esce 1 e lascia il rebase
+**fermo** con l'indice pulito e il commit del passo già fatto. È il modo di fallire di git stesso a
+consegnare sia il momento giusto sia il testo già preparato.
+
+**Fermarsi e chiedere, non raccogliere in anticipo.** Una coda consumata in lock-step è esattamente
+quello che un rebase non garantisce: un conflitto a metà serie, un `--edit-todo` o uno `--skip` la
+desincronizzano e il testo finisce in silenzio sul commit sbagliato. Guidato dal punto in cui git
+arriva, non può succedere.
+
+**Nessuna finestra nuova**: la richiesta è la casella multi-riga che il reword della griglia già usa,
+eseguita dentro il process dialog esistente. **Annullare** lascia il rebase fermo con tutti i pulsanti
+vivi, e la richiesta dichiara la cautela misurata: un `--continue` semplice successivo **non** riapre
+l'editor, quindi continuare dopo un annullamento tiene il messaggio vecchio.
+
+**`fixup` è lasciato stare**, perché è proprio lì che differisce: misurato, un rebase con `fixup` sotto
+un editor che rifiuta esce comunque **0** — git l'editor non lo apre affatto.
+
+**Pulizia** con `--cleanup=whitespace`; togliere la legenda di git è delegato a `git stripspace
+--strip-comments`, che rispetta `core.commentChar` — dimostrato con `core.commentChar=';'`, dove
+togliere i `#` a mano avrebbe cancellato una riga vera e tenuto la legenda.
+
+**Difetto di sicurezza preesistente trovato per strada**: git passa `GIT_EDITOR` a una **shell**,
+quindi il path dello script viene spezzato sugli spazi. Sotto un TMPDIR con spazi e virgolette
+l'editor scriptato non partiva affatto e il rebase falliva senza niente da mostrare. Tutti e tre i
+punti che usano un editor scriptato ora quotano per la shell, e tutto ciò che è variabile viaggia
+nell'ambiente.
+
+**`am`.** Misurato: un `git am` semplice non lascia niente di unmerged — non c'è conflitto e non c'è
+rerere. Solo `am --3way`, l'unica forma che questo port esegue, produce stadi unmerged; lì
+`--continue` esce 128 e `--quit` lascia l'indice unmerged dietro di sé. Il criterio è quindi l'indice
+unmerged: il banner aggiunge **un solo** pulsante `Resolve…` finché c'è unmerged, e `ApplyPatchDialog`
+guadagna il «Solve conflicts» dell'upstream alla stessa condizione. Il commento vecchio che dichiarava
+questo port privo di un dialogo dei conflitti è stato riscritto.
+
+Verificato con path di repository contenenti spazi, uno aperto attraverso un symlink, e un messaggio
+con virgolette, un trattino lungo, accenti, giapponese e una riga che inizia per `#`: tutto intatto
+byte per byte.
+
+**Resta aperto**: `MergeSessionService` fissa ancora `GIT_EDITOR=true`, quindi la richiesta del
+messaggio su `merge --continue` ha la stessa forma e **non** è fatta.
+
+## M204 (2026-08-14, `99e1c74b4`) — due copie in esecuzione smettono di distruggersi le preferenze a vicenda
+
+**Prima riprodotto, in modo deterministico e con due processi veri**, che si danno appuntamento
+attraverso file perché l'interleaving sia forzato e non fortunato: A entra in `Update` e aspetta, B
+aggiorna una chiave **diversa** e finisce, A salva la copia che aveva caricato prima che B esistesse.
+La scrittura di B sparisce, senza un errore da nessuna parte.
+
+**Tre difese, perché coprono guasti diversi.**
+
+1. **Un lock su file `.lock` di lato**, tenuto per tutto il carica-modifica-salva. Di lato perché la
+   scrittura ora finisce con una `rename`, quindi un lock sull'inode del JSON custodirebbe un inode su
+   cui nessuno scrive. Su Linux `FileShare.None` è una `flock`, che **il kernel rilascia quando chi la
+   tiene muore**: nessun lock stantìo e nessuna euristica di scadenza da sbagliare.
+2. **Rilettura e merge dentro il lock.** È costato zero, perché `Update` era già un delta: la delegata
+   vede lo stato letto all'ultimo momento utile prima della scrittura.
+3. **Sostituzione atomica.** Il codice vecchio era un nudo `File.WriteAllText`: un processo che moriva
+   a metà scrittura lasciava un file troncato, che si deserializza a valori di default e **azzera in
+   silenzio** tutto. Ora file temporaneo, `fsync`, `rename`.
+
+**La UI non si blocca mai**: il lock è tentato **una volta sola e senza attesa**, quindi una scrittura
+non contesa — cioè ogni scrittura di un'istanza sola — avviene ancora in linea. Solo quella contesa
+passa a una pompa di sfondo.
+
+**Costi onesti, documentati.** Una mutazione differita gira più tardi, su un altro thread, ed
+eventualmente **due volte**: una delegata che chiude su una variabile **che cambia** adesso si comporta
+male. Tutti e undici i call-site sono stati controllati e nessuno ne è toccato, ma è un contratto
+nuovo. Nel solo caso conteso restano pochi millisecondi di esposizione a un SIGKILL. E nessuno chiama
+`Flush` alla chiusura.
+
+**Banco di prova `Tests/ViewPrefsRegression`**: `PASS: 41 casi` in 6,6 s — 8 thread, 4 processi figli,
+8822 letture concorrenti, 6 SIGKILL a metà scrittura. **Non vacuo**, dimostrato togliendo la sola
+difesa contro la perdita di aggiornamento: `FAIL: 4 di 41`, e a rompersi sono esattamente i casi della
+perdita di aggiornamento.
+
+**Da registrare bene, e NON corretto: gli altri sei archivi JSON hanno lo stesso difetto.** Tutti e
+sette gli archivi JSON di questo port condividono la scrittura non atomica, e sei su sette
+condividono il carica-modifica-salva senza lock: `favorites.json`, `ui-state.json`,
+`app-settings.json`, `hotkeys.json`, `commit-info.json`, `scripts.json` e la lista dei repository
+recenti. Il peggiore è `ui-state.json`, che riscrive l'oggetto intero a partire da un'istantanea presa
+all'avvio: la sua finestra di perdita è **l'intera sessione**.
+
 ## Collaudo dei residui aperti (2026-08-13/14, M196–M203) — otto unità in parallelo, una regola sola
 
 Richiesta esplicita dell'utente: **provare** tutto quello che era rimasto dichiarato «non coperto» o
