@@ -167,6 +167,13 @@ fi
 for name in "${FAILED[@]}"; do
     echo "----- $name -----"
     cat "$SCRATCH/$name.log" 2>/dev/null || echo "(no output)"
+    # A harness killed by the timeout above has usually printed nothing at all, and
+    # an empty block here reads like a missing log rather than the actual finding:
+    # that the suite hung. Say which it is — but only when the harness really ran and
+    # said nothing, which is not the same as never having been started.
+    if [[ -f "$SCRATCH/$name.log" && ! -s "$SCRATCH/$name.log" ]]; then
+        echo "(the log is empty: $name produced no output before it was stopped — it hung rather than failed)"
+    fi
     echo
 done
 echo "FAILED: ${FAILED[*]}"
