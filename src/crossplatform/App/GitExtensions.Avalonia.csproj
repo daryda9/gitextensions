@@ -125,6 +125,10 @@
     <PackageReference Include="Avalonia.Themes.Fluent" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.AvaloniaEdit" />
+    <!-- Not a new library in the process — Avalonia.Skia already loads it — but a
+         direct reference, so ImageDiffWindow can use SKCodec. See the comment on
+         the PackageVersion in Directory.Packages.props. -->
+    <PackageReference Include="SkiaSharp" />
   </ItemGroup>
 
   <ItemGroup>

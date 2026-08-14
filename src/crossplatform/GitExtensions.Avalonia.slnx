@@ -20,6 +20,7 @@
     <Project Path="Tests/AnimProbe/AnimProbe.Harness.csproj" />
     <Project Path="Tests/ChromeProbe/ChromeProbe.Harness.csproj" />
     <Project Path="Tests/CommandPaletteRegression/CommandPaletteRegression.Harness.csproj" />
+    <Project Path="Tests/ImageIntegrityRegression/ImageIntegrityRegression.Harness.csproj" />
     <Project Path="Tests/InlineDiffRegression/InlineDiffRegression.Harness.csproj" />
     <Project Path="Tests/NavigationSnapshot/NavigationSnapshot.Harness.csproj" />
     <Project Path="Tests/Perf/Perf.Harness.csproj" />

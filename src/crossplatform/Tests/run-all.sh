@@ -46,6 +46,7 @@ HARNESSES=(
     "submodule-hierarchy|SubmoduleHierarchy.Harness|180|"
     "view-prefs|ViewPrefsRegression.Harness|300|"
     "settings-stores|SettingsStoresRegression.Harness|300|"
+    "image-integrity|ImageIntegrityRegression.Harness|180|"
     "inline-diff|InlineDiffRegression.Harness|300|"
     "command-palette|CommandPaletteRegression.Harness|300|"
 )

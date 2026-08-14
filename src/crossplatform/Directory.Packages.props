@@ -17,6 +17,15 @@
     <PackageVersion Include="JetBrains.Annotations" Version="2021.2.0" />
     <PackageVersion Include="Microsoft.VisualStudio.Composition" Version="17.2.41" />
     <PackageVersion Include="Microsoft.VisualStudio.Threading" Version="17.13.61" />
+    <!-- Skia is already in the process: it is Avalonia's rendering backend, and
+         every Bitmap the port shows was decoded by it. Referenced directly so the
+         image diff can ask the decoder a question Avalonia's Bitmap has no API
+         for — "did the bytes run out before the picture did?" — which is the
+         difference between a half-downloaded PNG shown as if it were the file and
+         a half-downloaded PNG labelled as one. Pinned to the exact version
+         Avalonia.Skia 11.3.14 depends on: two SkiaSharp builds in one process
+         would fight over the same native library. -->
+    <PackageVersion Include="SkiaSharp" Version="2.88.9" />
     <PackageVersion Include="StrongOf" Version="1.2.4" />
     <PackageVersion Include="System.Configuration.ConfigurationManager" Version="10.0.0" />
     <PackageVersion Include="System.IO.Abstractions" Version="22.0.12" />

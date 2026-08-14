@@ -958,8 +958,9 @@ public sealed class ImageDiffWindow : ZoomWindow
     }
 
     /// <summary>
-    ///  What the container holds beyond the one picture that got decoded, or
-    ///  <see langword="null"/> when it holds nothing more.
+    ///  What the file holds beyond the one picture that got decoded — and, first of all,
+    ///  whether that picture is the whole file — or <see langword="null"/> when there is
+    ///  nothing to add.
     ///
     ///  <para><b>Why this exists.</b> Three of the formats this window is offered for are
     ///  containers, and the renderer silently takes one image out of them: an .ico with
@@ -975,6 +976,16 @@ public sealed class ImageDiffWindow : ZoomWindow
     private static string? Contents(byte[] bytes, string? format)
     {
         List<string> parts = [];
+
+        // First, and in capitals, because it is not a detail about the picture the way
+        // the others are — it says the picture on screen is not the file. Everything
+        // below it (the frame count, the bit depth, and the pixel-difference count the
+        // window computes from these bitmaps) is measured on a partial image once this
+        // is true.
+        if (ImageIntegrity.IsTruncated(bytes))
+        {
+            parts.Add(TranslationService.T("TRUNCATED FILE: the part that never arrived is drawn blank"));
+        }
 
         int count = format switch
         {
