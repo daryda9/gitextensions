@@ -87,6 +87,11 @@ lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/r
 deterministici ognuno in una sandbox propria, e `.github/workflows/crossplatform-build.yml` fa
 entrambe le cose con `-warnaserror` sui path che toccano il port. Esclusi dal runner, con la ragione
 scritta: `AnimProbe` e `ChromeProbe` (vogliono uno schermo), `Perf` (è una misura, non un verdetto).
+**Il primo run della CI si è già pagato da solo** (M215): `navigation-snapshot` si appendeva per tutti i
+120 s di timeout, con il log vuoto, su un runner ospitato — mai qui, nemmeno strozzato a due core. Era
+il banco a parcheggiare un worker del pool aspettando codice che, per girare, aveva bisogno del pool;
+adesso quella sezione ha un thread proprio, ogni parcheggio è limitato e il runner dice quando un log
+vuoto significa «appeso» e non «log perduto».
 Tutto il resto non ha collaudo automatico e viene verificato **a schermo**: il
 motore di merge e i suoi chunk, i servizi del diff, `RebaseSessionService` / `MergeSessionService` /
 rerere, il diff di immagini, la striscia delle schede e la UI in generale.

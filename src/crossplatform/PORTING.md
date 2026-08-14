@@ -3418,6 +3418,50 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M215 (2026-08-14, `1b9d40c66`) — il primo giro di CI trova uno stallo che nessuna macchina di sviluppo mostrava
+
+Il primo run del workflow aggiunto dal M211 è **rosso**, e sbagliava nell'unico modo che un rituale a
+mano non poteva far vedere: `navigation-snapshot` **appeso** per tutti i suoi 120 secondi di timeout, con
+il log **vuoto**, su un runner ospitato — mentre qui passa in 0,3 s, anche strozzato a due core. Il
+resto del job era verde, compilazione compresa a zero avvisi.
+
+Il difetto è **del banco**, non del servizio. Il banco tiene un caricamento parcheggiato dentro il
+delegato-factory perché la generazione successiva lo sorpassi, e apriva quel cancello dal codice **dopo**
+l'`await` della seconda generazione. Meccanismo, misurato e non dedotto:
+
+- dopo il primo `await`, il flusso di questo file gira su un worker del pool;
+- quindi le sue `Task.Run` accodano nella coda **locale** di quel worker, e un accodamento locale **non**
+  chiede un altro thread al pool: si dà per scontato che ci arrivi il worker stesso;
+- quel worker invece si parcheggia dentro un lavoro precedente, e tutto quello che ha dietro nella sua
+  coda resta **arenato**, senza nessuno svegliato per rubarlo.
+
+Strumentando lo stallo si vedeva esattamente questo: il factory della seconda generazione **già
+ritornato**, due lavori ancora `pending`, e il pool sceso all'unico thread parcheggiato. Alzare i thread
+minimi **non** cura niente ed è stato scartato dopo la misura: nessun numero di thread conta, se nessuno
+viene svegliato a guardare.
+
+Ora la sezione che parcheggia gira su un **thread del banco**, così i suoi caricamenti partono da fuori
+dal pool e finiscono nella coda **globale**, dove un worker mancante viene chiesto. E aspetta che il
+primo factory sia dentro **prima** di invalidare: niente ordinava le due `Task.Run`, e con un core solo la
+coda locale è **LIFO**, quindi il factory della generazione 2 entrava per primo, si prendeva l'identità
+«old» e l'asserzione moriva con `'old'` dove voleva `'new'`. Ogni parcheggio è **limitato**: il prossimo
+ciclo di questa forma nomina il cancello su cui è morto invece di zittirsi.
+
+**Prove.** 20 esecuzioni verdi appuntate a uno, due, quattro e sedici core — dove il banco di prima
+andava in stallo **ogni volta** con un core; banco al completo verde appuntato a un core; e **non
+vacuo**, perché togliendo lo sfratto dalla cache in `Invalidate` fallisce con `FAIL: invalidation creates
+a new Task` sia a un core sia a sedici.
+
+Due cose attorno, entrambe nate da questo fallimento:
+
+- `run-all.sh` dice quando il log di un banco fallito è **vuoto**: un blocco vuoto sotto l'intestazione si
+  legge come un log perduto, mentre è il reperto vero — il banco si è appeso, non ha fallito. Solo se il
+  banco è davvero partito e non ha detto niente, non se non è mai stato lanciato (provato in entrambi i
+  casi con un banco finto che dorme).
+- il workflow raccoglie i **file regolari per path relativo** invece di copiare la sandbox in blocco: così
+  prendeva anche il `TMPDIR` sandboxato, con il suo socket unix per ogni processo `dotnet`, e il passo
+  dell'artefatto avvisava `ENTRYNOTSUPPORTED` dieci volte per voci che nessuno aveva chiesto.
+
 ## M214 (2026-08-14, `0e1753bd9`) — l'intervallo del rebase ha un selettore di commit
 
 Il campo «From (exc.)» del dialogo di rebase era una casella di testo nuda, e la ragione scritta accanto
