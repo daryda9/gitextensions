@@ -3418,6 +3418,105 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M213 (2026-08-14, `efde6267b`) — `merge --continue` chiede il messaggio del commit di merge
+
+`git merge --continue` apre l'editor sul `MERGE_MSG` preparato. Questo port non ha un editor cablato a
+git, quindi la risposta era `GIT_EDITOR=true`: il messaggio di git accettato così com'è. Sicuro, ma
+**togliere la scelta**: l'unico commit di un merge — il posto dove chi rilegge cerca *perché* i due rami
+si sono uniti e come sono stati sciolti i conflitti — non era descrivibile dall'app.
+
+Ora fa quello che il rebase fa da M205: l'editor **rifiuta** (esce 1), il testo preparato da git viene
+catturato e mostrato in una casella, e la risposta chiude il merge con
+`git commit --cleanup=whitespace`. Misurato su git 2.43: con l'editor che esce 1, `MERGE_HEAD` resta e
+l'indice tiene le risoluzioni in stage — quindi annullare non costa niente; con `MERGE_HEAD` presente,
+`git commit` fa lo stesso commit a due genitori che farebbe `merge --continue`. `--cleanup=whitespace` e
+non `strip`, perché la legenda di commento di git era già stata rimossa prima di mostrare il testo:
+tutto quello che sta nella casella l'ha scritto la persona, quindi una riga che comincia per `#` è
+**contenuto**.
+
+Il meccanismo dell'editor a script esce da `RebaseSessionService` e diventa `Services/GitScriptedEditor`:
+una sola implementazione dello script, della pulizia dei temporanei e del **quoting** la cui assenza
+faceva fallire in silenzio ogni editor a script del port sotto un `TMPDIR` con uno spazio nel nome.
+
+**Annullare adesso è riportato come annullare.** Prima il rifiuto tornava «non gestito» e il dialogo si
+chiudeva con un **Failed** rosso sopra la riga di git *"there was a problem with the editor
+'/tmp/gex-editor-….sh'"* — non era fallito niente, e quel path è un dettaglio interno che la persona non
+ha chiesto. `GitProcessDialog.SettleCancelled` chiude la finestra come **Cancelled** con la riga del
+chiamante che dice cosa resta e dove riprendere, su **due** righe perché la console non manda a capo
+(misurato: una riga sola veniva tagliata al bordo destro, con la metà che conta fuori schermo). Ne
+beneficia anche il `reword`/`squash` del rebase.
+
+**Prova.** A schermo su un merge in conflitto (Xvfb, `XDG_CONFIG_HOME` isolato): Continue mostra la
+casella con «Merge branch 'side'», OK registra il merge **nella stessa finestra** e il banner sparisce
+con i due genitori nella griglia; Cancel lascia `MERGE_HEAD`, la risoluzione in stage e Continue/Abort
+vivi sulla barra. Una sonda usa-e-getta contro il servizio vero copre sei casi: la richiesta pendente e
+il suo prefill, indice e `MERGE_HEAD` intatti dopo il rifiuto, un messaggio con virgolette, riga
+iniziale `#` e non-ASCII che sopravvive **alla lettera**, i path non risolti e il «nessun merge in
+corso» riportati come i fallimenti semplici che sono (mai come una domanda), un merge `--no-commit` che
+propone quello che la persona aveva scritto in `MERGE_MSG`, e nessun temporaneo lasciato indietro —
+tutto sotto un `TMPDIR` con uno spazio e un apostrofo nel nome.
+
+## M212 (2026-08-14, `ca488bb75`) — il diff di immagini dice quando un file è troncato
+
+Skia decodifica un'immagine troncata in un bitmap della dimensione dichiarata **intera**, con le righe
+mancanti in bianco, e non lo dice. Misurato su un campione 16x16 tagliato ai prefissi dei suoi byte:
+`SKBitmap.Decode` — che è quello che sta dentro il `Bitmap` di Avalonia — restituisce un 16x16
+apparentemente completo per PNG, GIF e BMP fino al **2%** del file, e per JPEG e WEBP fino a circa il
+70%, senza eccezioni e senza niente nel risultato che distingua un file intatto.
+
+Nel diff di immagini quel silenzio è la risposta peggiore possibile: mezza figura accanto a una intera
+sembra esattamente una modifica fatta da qualcuno, e la riga «N pixel su M differiscono» qui sotto dà
+poi un numero preciso su un file che non c'è.
+
+`SKCodec` è lo stesso decodificatore col codice di risultato **lasciato visibile**: `IncompleteInput`
+per quei file, `Success` per gli intatti. Quindi `ImageIntegrity` glielo chiede — una decodifica in più,
+nessuna libreria nuova nel processo, perché `Avalonia.Skia` carica già SkiaSharp; ora è referenziata
+**diretta**, fissata alla 2.88.9 di cui dipende Avalonia 11.3.14 così le due non possono litigare sulla
+libreria nativa. La risposta diventa la prima clausola della barra informativa, in maiuscolo, prima del
+numero di fotogrammi e della profondità: non è un dettaglio sull'immagine, dice che **l'immagine non è
+il file**.
+
+Tre limiti dichiarati dove vengono presi: un file a cui manca **solo** il marcatore di fine non viene
+segnalato (tutti i pixel sono arrivati, e l'unico avviso della finestra deve essere credibile); sopra i
+16 megapixel la domanda non si fa, perché la verifica costa una seconda decodifica a quattro byte per
+pixel; dati che nessun codec riconosce, e dati rotti oltre la decodifica, rispondono `false` — per
+quelli la finestra dice già «could not be decoded», da un'altra strada.
+
+`Tests/ImageIntegrityRegression` lo fissa con **124 casi**. Quello centrale è un **invariante** invece
+di una tabella di risposte attese per formato e taglio — per ogni prefisso di ogni campione, se Skia lo
+decodifica ancora in un bitmap allora deve essere segnalato — così sopravvive alla rigenerazione dei
+campioni. Con la verifica disabilitata in albero, **108 dei 124** falliscono.
+
+## M211 (2026-08-14, `becadd6f8`) — i banchi di prova girano da una soluzione, un runner e la CI
+
+I banchi deterministici sotto `Tests/` asseriscono ed escono non-zero, e **non li lanciava nessuno**:
+ognuno era stato avviato a mano il giorno in cui era stato scritto. Uno di loro aveva già trovato un
+difetto in codice spedito il giorno prima, che è precisamente il caso che un rituale a mano si perde.
+
+Tre pezzi, perché la lacuna ha due metà — un banco che non compila più, e un banco che compila ma non
+parte mai:
+
+- **`GitExtensions.Avalonia.slnx`** elenca l'App e tutti e nove i progetti di prova. Il port è assente
+  dalla soluzione alla radice del repository (quella è il prodotto Windows e in gran parte non compila
+  su Linux), quindi `dotnet build` qui era puntato sulla sola App e un banco rotto da un refactoring del
+  codice che verifica restava rotto **in silenzio**. Compilare la soluzione li compila tutti.
+- **`Tests/run-all.sh`** costruisce quella soluzione e lancia i banchi deterministici, ognuno in una
+  sandbox propria: `XDG_CONFIG_HOME` e `TMPDIR` dentro una directory di lavoro (parecchi corrompono,
+  martellano e SIGKILL-ano i propri file di impostazioni, e non devono poter raggiungere il `~/.config`
+  vero), e `GIT_CONFIG_GLOBAL`/`SYSTEM` silenziati così un `commit.gpgsign` locale non decide se i
+  banchi che usano git passano. Timeout per banco, così uno stallo diventa un fallimento; la directory
+  di lavoro **sopravvive** a un fallimento, perché è la prova. I banchi esclusi sono nominati con la
+  ragione: due vogliono uno schermo, uno è una misura di tempo e non un verdetto.
+- **`.github/workflows/crossplatform-build.yml`** costruisce con `-warnaserror` e poi lancia il runner,
+  sui path che possono toccare il port. La regola dello zero-warning era tenuta solo dall'abitudine.
+
+Compilare la soluzione ha fatto uscire due avvisi nel banco `Perf`, che non era mai stato parte di una
+build: VSTHRD200 (`Timed` → `TimedAsync`) e VSTHRD002 (`Task.WaitAll` → `await Task.WhenAll` in un
+top-level statement). Corretti lì, così la build `-warnaserror` è verde.
+
+**Runner verificato non vacuo:** invertita un'asserzione nel banco di navigazione, riporta quel banco
+FAILED, ristampa il suo output ed esce 1; rimessa a posto, tutti verdi in circa diciotto secondi.
+
 ## Le altre sei impostazioni (2026-08-14, M207–M210) — la difesa scritta una volta, applicata dove serviva
 
 M204 aveva messo in sicurezza **un** file, `view-prefs.json`, lasciando per iscritto che gli altri sei

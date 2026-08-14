@@ -46,9 +46,9 @@ I due giri hanno chiuso molto; questi **non** sono chiusi, e restano scritti per
 
 | Residuo | Stato |
 |---|---|
-| **Immagine troncata** (PNG/GIF/WEBP/BMP) | Disegna mezza immagine **senza nessun avviso**. È la lacuna più grossa rimasta del diff di immagini: segnalarla richiede il codice di risultato incompleto di `SKCodec`, e SkiaSharp **non è dipendenza diretta** del progetto App. |
+| **Immagine troncata** (PNG/GIF/WEBP/BMP) | **CHIUSO in M212.** `ImageIntegrity` chiede a `SKCodec` il codice di risultato (`IncompleteInput`), SkiaSharp è ora dipendenza diretta fissata alla 2.88.9 di Avalonia 11.3.14, e la barra informativa apre con «TRUNCATED FILE». `Tests/ImageIntegrityRegression`: 124 casi, 108 falliscono con la verifica disabilitata. Restano fuori, dichiarati: un file a cui manca **solo** il marcatore di fine non viene segnalato, e sopra i 16 megapixel la domanda non si fa. |
 | **Gli altri sei archivi JSON** | **CHIUSO in M207–M210.** Tutti e sei passano da `JsonSettingsFile`: sostituzione atomica, lock di lato e `Update()` che manda un delta. Resta fuori la lista dei repository recenti, che è **dello strato condiviso** e non un archivio JSON del port. |
-| **Messaggio di `merge --continue`** | `MergeSessionService` fissa ancora `GIT_EDITOR=true`: la richiesta del messaggio ha la stessa forma di quella chiusa in M205 per il rebase, ma **non è fatta**. |
+| **Messaggio di `merge --continue`** | **CHIUSO in M213.** Editor a script che rifiuta, testo di git catturato e mostrato, risposta chiusa con `git commit --cleanup=whitespace`; annullare lascia il merge dov'era ed è riportato come **Cancelled**, non come un fallimento. Il meccanismo dell'editor a script è ora uno solo (`Services/GitScriptedEditor`), condiviso col rebase. |
 | **Selettore di commit per il campo *From* del rebase** | Il campo accetta tag, sha corto e completo, nome di branch e stringhe senza senso (provati in M198), ma un vero selettore richiede un dialogo delle dimensioni della griglia delle revisioni, che il port non ha. |
 | **Tema System sulla striscia delle schede** | **Non esercitato**: il portal XDG che serve non esiste sul display di prova. |
 | **Coda dell'RTL sulle schede** | Con nome RTL + duplicato + elisione i puntini finiscono, nell'ordine di lettura, **dopo** il `(1)`; due repository le cui etichette si riducono alla stessa coda restano indistinguibili al pavimento (preesistente); artefatto di arrotondamento sub-pixel al confine del tetto dello `Squeeze`. |
@@ -74,16 +74,20 @@ Quello che è rimasto scoperto **dentro** queste voci, dichiarato e non nascosto
 |---|---|
 | §1.2 | ~~Nessuna suite che protegga `InlineDiff` dalle regressioni~~ — **era falso quando è stato scritto**: `Tests/InlineDiffRegression/` esiste, ed è stato il modello dei due banchi arrivati dopo. ~~La modalità intra-riga dell'editor di merge non è persistita fra sessioni~~ — **falso anch'esso**: è persistita da M186 in `view-prefs.json` (`MergeToolPrefs.InlineMode`, letta da `MergeToolWindow.RestoredInlineMode`). Restano scoperti: con più regioni cambiate la granularità resta la parola — `alpha_beta` → `alpha_gamma` marca l'intera parola se accanto c'è un'altra modifica; nessuna opzione «ignora spazi» intra-riga; il pannello MERGE RESULT non ha marcature. |
 | §1.3 | Non provati: submodule inizializzato ma con gli oggetti di un lato mancanti, add/add di gitlink senza BASE, liste oltre 200 commit, path con spazi. |
-| §1.4 | ~~Firme WEBP/GIF/BMP/ICO implementate ma provate solo su PNG e JPEG~~ — **chiuso in M199**: 26 campioni generati e aperti, `ImageFormats.Detect` li nomina tutti (troncati compresi) e non è stato toccato; BMP RLE4/RLE8, GIF interlacciata, JPEG progressiva e CMYK **decodificano correttamente**, misurate. Sono usciti invece tre difetti (blocco su PNG a 16 bit, contenitore spacciato per il tutto, 16 bit confrontati a 8) e **una nota da correggere**: Skia sceglie la voce ICO **più grande**, non la prima. Restano: **immagine troncata senza avviso** (vedi §0), rifiuto oltre 16 megapixel non esercitato a schermo, niente pan col trascinamento né scorciatoie di zoom. |
+| §1.4 | ~~Firme WEBP/GIF/BMP/ICO implementate ma provate solo su PNG e JPEG~~ — **chiuso in M199**: 26 campioni generati e aperti, `ImageFormats.Detect` li nomina tutti (troncati compresi) e non è stato toccato; BMP RLE4/RLE8, GIF interlacciata, JPEG progressiva e CMYK **decodificano correttamente**, misurate. Sono usciti invece tre difetti (blocco su PNG a 16 bit, contenitore spacciato per il tutto, 16 bit confrontati a 8) e **una nota da correggere**: Skia sceglie la voce ICO **più grande**, non la prima. ~~Restano: **immagine troncata senza avviso** (vedi §0)~~ — **chiuso in M212** (`SKCodec.IncompleteInput`, clausola «TRUNCATED FILE» in testa alla barra informativa, 124 casi in `Tests/ImageIntegrityRegression`). Restano: rifiuto oltre 16 megapixel non esercitato a schermo, niente pan col trascinamento né scorciatoie di zoom. |
 | §1.5 | Non provati a schermo: file oltre 20 MB, e il pannello su un repo senza `merge.tool` configurato. |
 | §1.6 | Conflitti di rebase provati in M187; **worktree collegati provati in M201, e lì c'era il bug**: `MERGE_RR` è per-worktree ma `rr-cache` vive solo nella common directory, e il port chiedeva `--absolute-git-dir` per entrambe — git riapplicava una risoluzione con l'app che non mostrava niente. Provati e sani nello stesso giro: submodule a metà rebase (`modules/<nome>`) e un merge con conflitti binari, di soli permessi, delete/modify, rename/rename e symlink insieme. Restano non provati **cache multi-variante** e **path non ASCII o con spazi**; il ramo `am` del testo **non è più irraggiungibile** — M205 ha aggiunto l'ingresso, ma solo dove esiste davvero: misurato, un `git am` semplice non lascia niente di unmerged e non coinvolge rerere, solo `am --3way` lo fa, quindi banner e `ApplyPatchDialog` offrono la risoluzione **solo** con l'indice unmerged. `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
 
-**Stato onesto del collaudo automatico.** Il port ha oggi **quattro** banchi di prova di regressione:
-`Tests/InlineDiffRegression` (il primo, e il modello degli altri tre), `Tests/CommandPaletteRegression`
-(M197), `Tests/ViewPrefsRegression` (M204) e `Tests/SettingsStoresRegression` (M210); accanto restano le sonde e gli snapshot preesistenti
-(`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). Sono progetti a sé,
-lanciati **a mano**: nessuno di essi è agganciato alla soluzione o a un workflow di CI, quindi niente
-li riesegue da solo. Tutto il resto non ha collaudo automatico e viene verificato **a schermo**: il
+**Stato onesto del collaudo automatico.** Il port ha oggi **cinque** banchi di prova di regressione:
+`Tests/InlineDiffRegression` (il primo, e il modello degli altri), `Tests/CommandPaletteRegression`
+(M197), `Tests/ViewPrefsRegression` (M204), `Tests/SettingsStoresRegression` (M210) e
+`Tests/ImageIntegrityRegression` (M212); accanto restano le sonde e gli snapshot preesistenti
+(`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). **Da M211 non si
+lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia i sette
+deterministici ognuno in una sandbox propria, e `.github/workflows/crossplatform-build.yml` fa
+entrambe le cose con `-warnaserror` sui path che toccano il port. Esclusi dal runner, con la ragione
+scritta: `AnimProbe` e `ChromeProbe` (vogliono uno schermo), `Perf` (è una misura, non un verdetto).
+Tutto il resto non ha collaudo automatico e viene verificato **a schermo**: il
 motore di merge e i suoi chunk, i servizi del diff, `RebaseSessionService` / `MergeSessionService` /
 rerere, il diff di immagini, la striscia delle schede e la UI in generale.
 
