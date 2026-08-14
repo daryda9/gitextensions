@@ -48,10 +48,14 @@ namespace GitExtensions.Avalonia.Views;
 ///    argument form is equivalent for git while additionally showing the user which
 ///    files are being applied. Sorting is a fix, not a deviation: upstream feeds
 ///    <c>Directory.GetFiles</c> order, which is unspecified.</item>
-///   <item>upstream's <b>Solve conflicts</b> button opens <c>FormResolveConflicts</c>,
-///    which the port does not have — so there is no such button here (a button that
-///    cannot do anything is worse than its absence). The conflicted state is still
-///    reported, and the files are resolvable in the Commit view / an external tool.</item>
+///   <item>upstream's <b>Solve conflicts</b> button opens <c>FormResolveConflicts</c>;
+///    here it opens <see cref="ResolveConflictsDialog"/>, which is this port's equivalent
+///    and knows the <c>am</c> case by name (down to what rerere can and cannot do for it).
+///    <b>This bullet used to say the port had no such dialog and therefore no such
+///    button</b> — true when it was written, stale for several milestones afterwards,
+///    during which a conflicted <c>am</c> was a dead end on every surface that could see
+///    it. The button is live only while the index is really unmerged, for the reason
+///    <see cref="EnableButtons"/> records.</item>
 ///   <item>upstream's <b>Add files</b> opens <c>FormAddFiles</c>; here the same effect
 ///    is one honest command, <c>git add -A</c>, labelled as such — it is what makes
 ///    "Conflicts resolved" reachable after a manual resolution.</item>
@@ -79,6 +83,7 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
     private readonly CheckBox _signOff;
 
     private readonly Button _apply;
+    private readonly Button _solve;
     private readonly Button _stageAll;
     private readonly Button _resolved;
     private readonly Button _skip;
@@ -203,6 +208,18 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
         _apply = new Button { Content = T("FormApplyPatch/Apply.Text", "Apply"), MinWidth = 92 };
         _apply.Click += (_, _) => _ = ApplyAsync();
 
+        // Upstream's "Solve conflicts" (FormApplyPatch), which this port could not offer
+        // until ResolveConflictsDialog existed. It does — with the am-specific rerere
+        // wording already written and correct — so the button is the entry point that was
+        // missing, not a new mechanism.
+        _solve = new Button
+        {
+            Content = T("FormApplyPatch/SolveMergeconflicts.Text", "Solve conflicts"),
+            MinWidth = 92,
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        _solve.Click += (_, _) => _ = SolveConflictsAsync();
+
         _stageAll = new Button
         {
             Content = T("Stage all (git add -A)"),
@@ -326,7 +343,7 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(12, 10, 12, 12),
-            Children = { _apply, _stageAll, _resolved, _skip, _abort, close },
+            Children = { _apply, _solve, _stageAll, _resolved, _skip, _abort, close },
         };
 
         DockPanel root = new();
@@ -430,6 +447,13 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
         _patchDir.IsEnabled = !inProgress && _dirMode.IsChecked == true;
         _browseDir.IsEnabled = !inProgress && _dirMode.IsChecked == true;
 
+        // Only where there is something to resolve. Measured on git 2.43: a plain
+        // `git am` that fails to apply leaves NOTHING unmerged (status and `ls-files -u`
+        // both empty), so an always-live button would open a dialog with an empty list
+        // for exactly the failure that is not a conflict. `am --3way` — which is the only
+        // form this port ever runs, and the only one rerere can serve — is what produces
+        // the `UU` entries this flag reads.
+        _solve.IsEnabled = inProgress && conflicted;
         _stageAll.IsEnabled = inProgress;
         _resolved.IsEnabled = inProgress && !conflicted;
         _skip.IsEnabled = inProgress;
@@ -458,7 +482,7 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
         _sessionBanner.Text = conflicted
             ? TF(
                 "A git am session is IN PROGRESS and stopped on {0} with CONFLICTS in the index. "
-                + "Resolve the files, stage them (Stage all / the Commit view), then use "
+                + "Use \"Solve conflicts\" (or resolve and stage the files yourself), then "
                 + "\"Conflicts resolved\". Skip drops this patch; Abort restores the branch.",
                 where)
             : TF(
@@ -644,6 +668,26 @@ public sealed class ApplyPatchDialog : Theming.ZoomWindow
 
         // Upstream clears its Skipped list on abort — the series no longer exists.
         _skipped.Clear();
+        await RefreshStateAsync();
+    }
+
+    /// <summary>
+    ///  Opens the port's conflict dialog on this repository — upstream's <b>Solve
+    ///  conflicts</b>, reaching <see cref="ResolveConflictsDialog"/> rather than a second
+    ///  dialog built for <c>am</c>: what has to be resolved is an unmerged index, which is
+    ///  the same object whatever operation produced it, and the dialog already recognises
+    ///  the <c>am</c> session it is standing in.
+    ///
+    ///  <para>Straight to the dialog, not through <see cref="ConflictFlow"/>: that flow
+    ///  exists to <i>ask</i> "there are conflicts, solve them now?" after a command that
+    ///  produced them, and here the user has just answered that question by pressing the
+    ///  button. The state is re-read afterwards, which is what turns "Conflicts resolved"
+    ///  back on once nothing is unmerged.</para>
+    /// </summary>
+    private async Task SolveConflictsAsync()
+    {
+        await ResolveConflictsDialog.ShowAsync(this, _repoPath);
+        RepositoryChanged = true;
         await RefreshStateAsync();
     }
 

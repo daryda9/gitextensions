@@ -3,10 +3,39 @@ using GitCommands;
 
 namespace GitExtensions.Avalonia.Services;
 
+/// <summary>
+///  A step the rebase reached that <b>needs a commit message from the user</b> — a
+///  <c>reword</c>, a <c>squash</c>, and anything else git opens its message editor for
+///  (a <c>fixup -c</c>, a <c>merge</c> step). Handed back by
+///  <see cref="RebaseSessionService.Continue"/> / <see cref="RebaseSessionService.Skip"/>
+///  instead of the message being answered behind the user's back.
+/// </summary>
+/// <param name="Command">
+///  The todo command git was executing, expanded (<c>reword</c>, <c>squash</c>, …), read
+///  from the last line of <c>rebase-merge/done</c> — <b>structural</b>, not taken from
+///  git's localised prose. Empty when the file could not be read, which only costs the
+///  caller a generic caption.
+/// </param>
+/// <param name="Template">
+///  What git put in front of its editor, with git's own legend removed by git itself
+///  (<c>git stripspace --strip-comments</c>, so <c>core.commentChar</c> is honoured). For
+///  a <c>reword</c> this is the commit's current message; for a <c>squash</c> it is the
+///  concatenation of the melded messages — the combined message the todo legend promises
+///  and that this port used to never deliver.
+/// </param>
+public sealed record RebaseMessageRequest(string Command, string Template);
+
 /// <summary>The outcome of one rebase-session command: git's exit code, plus everything it printed.</summary>
 /// <param name="Success">True when git exited with code 0. The only success signal used here.</param>
 /// <param name="Output">Everything git wrote, in order, for the process dialog and the log.</param>
-public sealed record RebaseCommandResult(bool Success, string Output);
+/// <param name="Pending">
+///  Non-null when git stopped <i>because it wanted a message</i> and this service refused
+///  to invent one — see <see cref="RebaseSessionService.Continue"/>. <see cref="Success"/>
+///  is false in that case (git exits 1 when its editor fails), but it is a
+///  <b>recoverable</b> failure: the caller asks the user for the text and calls
+///  <see cref="RebaseSessionService.ContinueWithMessage"/>.
+/// </param>
+public sealed record RebaseCommandResult(bool Success, string Output, RebaseMessageRequest? Pending = null);
 
 /// <summary>
 ///  Snapshot of the rebase state machine for one repository — the facts upstream
@@ -242,18 +271,57 @@ public static class RebaseTodo
 ///  so message matching would be broken on arrival. Success is likewise only ever the
 ///  exit code.</para>
 ///
-///  <para><b>Why <c>--continue</c> gets <c>GIT_EDITOR=true</c>.</b> Same trap
+///  <para><b>Why <c>--continue</c> never inherits the user's editor.</b> Same trap
 ///  <see cref="MergeSessionService"/> pays for, and worse here: <c>git rebase --continue</c>
-///  opens an editor whenever the step it is finishing needs a commit message — which is
-///  <i>every</i> stop on an interactive <c>edit</c>, and every conflicted <c>squash</c>.
-///  Upstream can afford it because it points git's editor at itself; this port has no
-///  editor wired to git, so the inherited <c>vi</c> would hang the process dialog for
-///  ever with no visible prompt and no way out but killing git mid-rebase.
-///  <c>GIT_EDITOR=true</c> accepts git's own prepared message unchanged — the same commit
-///  the user gets by saving an untouched editor. Anyone who wants to write the message by
-///  hand amends afterwards from the commit dialog, which is this port's normal way to
-///  write a message. Pinned on <c>--skip</c> too, which continues the series and can hit
-///  the same prompt on a later step.</para>
+///  opens an editor whenever the step it is finishing needs a commit message. Upstream can
+///  afford it because it points git's editor at itself; this port has no editor wired to
+///  git, so the inherited <c>vi</c> would hang the process dialog for ever with no visible
+///  prompt and no way out but killing git mid-rebase — a hang this project has paid for
+///  three times. <b>Something</b> must therefore always be pinned into
+///  <c>GIT_EDITOR</c>; the only question is what.</para>
+///
+///  <para><b>It used to be <c>true</c>, and that made two todo commands lie.</b>
+///  <c>GIT_EDITOR=true</c> answers git's question before the user ever sees it: git takes
+///  the buffer unchanged, so a <c>reword</c> produced a commit whose message was
+///  <i>identical</i> — a complete no-op — and a <c>squash</c> produced git's default
+///  concatenation rather than a message anybody wrote. Measured on git 2.43, a
+///  <c>reword</c> of "commit 3" under <c>GIT_EDITOR=true</c>: exit 0, rebase finished,
+///  <c>git log --format=%B</c> still "commit 3".</para>
+///
+///  <para><b>What is pinned instead: an editor that REFUSES.</b>
+///  <see cref="WriteMessageInterceptor"/> copies git's prepared buffer out and exits
+///  non-zero. Measured, that is not a broken rebase — it is the state git itself
+///  documents: <i>"There was a problem with the editor … You can amend the commit now
+///  with git commit --amend … then git rebase --continue"</i>, exit 1, the rebase left
+///  <b>stopped</b> with a clean index, the step's commit already made (for a
+///  <c>reword</c>) or its changes already staged (for a <c>squash</c>). So the refusal
+///  hands us the exact place, and the exact prepared text, where the user should be
+///  asked — and <see cref="ContinueWithMessage"/> finishes it with git's own recipe.</para>
+///
+///  <para><b>Why stop-and-ask rather than collect-up-front.</b> Reading the todo before
+///  <c>--continue</c> and asking for every <c>reword</c>/<c>squash</c> message in advance
+///  would need a queue consumed in lock-step by the scripted editor, and the lock-step is
+///  exactly what a rebase does not guarantee: a conflict can land between two
+///  <c>reword</c>s (the series stops, the user resolves, continues again), the user can
+///  <c>--edit-todo</c> in the middle, or <c>--skip</c> a step — after any of which the
+///  queued message would be handed to the <i>wrong</i> commit, silently. Being driven by
+///  git actually reaching the step cannot desynchronise: every prompt is caused by the
+///  step it belongs to. It also asks for a <c>squash</c> message only once git has
+///  computed the real combination, conflicts and all.</para>
+///
+///  <para><b>What it does not disturb.</b> Measured: a plain <c>edit</c> stop never opens
+///  the message editor — not when it stops, not on the <c>--continue</c> that ends it —
+///  and a <c>fixup</c> never opens it either (<c>GIT_EDITOR=false</c> and the whole rebase
+///  still exits 0). So <c>fixup</c> stays silent, which is the one thing that distinguishes
+///  it from <c>squash</c>, and <c>edit</c> behaves exactly as before this change.</para>
+///
+///  <para><b>The failure path.</b> If the user cancels the prompt, nothing further is run:
+///  the rebase stays stopped, index clean, and the banner describes it as the paused
+///  session it is, with Continue / Skip / Abort all live. It must be said out loud though
+///  — measured — that a later plain <c>--continue</c> does <b>not</b> re-open the editor:
+///  git commits the step with the message it already has and moves on. Cancelling therefore
+///  means "leave it stopped, and keep the old message if you continue", which is what the
+///  prompt tells the user.</para>
 ///
 ///  <para>Every command method blocks until git exits: call them from a background task
 ///  (they are built for <see cref="Views.GitProcessDialog.RunStreamingAsync"/>), never
@@ -364,14 +432,185 @@ public sealed class RebaseSessionService
     ///  <c>GIT_EDITOR</c>.
     /// </summary>
     public RebaseCommandResult Continue(string repoPath, Action<string> emit)
-        => Run(repoPath, "rebase --continue", emit, GitEditorless);
+        => RunAskingForMessages(repoPath, "rebase --continue", emit);
 
     /// <summary>
     ///  <c>git rebase --skip</c>: throws away the step the rebase is stopped on — its
-    ///  changes do not reach the rebased branch — and replays the rest.
+    ///  changes do not reach the rebased branch — and replays the rest. Carries the same
+    ///  message interception as <see cref="Continue"/>, because skipping one step replays
+    ///  every step after it and can therefore reach a <c>reword</c> of its own.
     /// </summary>
     public RebaseCommandResult Skip(string repoPath, Action<string> emit)
-        => Run(repoPath, "rebase --skip", emit, GitEditorless);
+        => RunAskingForMessages(repoPath, "rebase --skip", emit);
+
+    /// <summary>
+    ///  Finishes the step git stopped on with <paramref name="message"/> and replays the
+    ///  rest — the answer to a <see cref="RebaseCommandResult.Pending"/> request.
+    ///
+    ///  <para>It is <b>git's own two-command recipe</b>, the one git prints when its editor
+    ///  fails: <c>git commit --amend</c> then <c>git rebase --continue</c>. Measured on git
+    ///  2.43 for both shapes, and the pair is not a coincidence — for a <c>reword</c> the
+    ///  step's commit already exists and <c>--amend</c> rewrites its message; for a
+    ///  <c>squash</c> the melded changes are already staged on top of the previous commit
+    ///  (<c>git status --porcelain</c> showed <c>A f4.txt</c>) and the very same
+    ///  <c>--amend</c> is what performs the meld. One recipe, two meanings, both git's.</para>
+    ///
+    ///  <para><b>The message never touches a command line or a script body.</b> It is
+    ///  written to a temp file whose path travels in the <i>environment</i> to a scripted
+    ///  <c>GIT_EDITOR</c> that copies it over git's buffer. Nothing is interpolated into
+    ///  shell text and nothing is quoted into an argument string, so a message full of
+    ///  quotes, newlines and non-ASCII — and a temp directory with spaces in its name —
+    ///  are all just bytes. UTF-8 without BOM, which is what git reads.</para>
+    ///
+    ///  <para><c>--cleanup=whitespace</c>, deliberately, where git's own editor path would
+    ///  use <c>strip</c>: git strips <c>#</c> lines because <i>its</i> buffer is full of
+    ///  its own legend, and this port already removed that legend before showing the text.
+    ///  Everything left in the box was typed by the user, so a line they began with
+    ///  <c>#</c> ("#1234 fix the thing") is content, not a comment, and must survive.</para>
+    ///
+    ///  <para>The <c>--continue</c> half intercepts messages again, so a series with two
+    ///  <c>reword</c>s asks twice — once per step, as they are reached.</para>
+    /// </summary>
+    public RebaseCommandResult ContinueWithMessage(string repoPath, string message, Action<string> emit)
+    {
+        string file = Path.Combine(Path.GetTempPath(), "gex-msg-" + Guid.NewGuid().ToString("N"));
+        string script = string.Empty;
+
+        try
+        {
+            File.WriteAllText(file, message);
+            script = WriteScript("cat \"$GEX_REBASE_MESSAGE\" > \"$1\"\n");
+
+            RebaseCommandResult amended = Run(
+                repoPath,
+                "commit --amend --cleanup=whitespace",
+                emit,
+                new Dictionary<string, string?>
+                {
+                    ["GIT_EDITOR"] = ShellQuote(script),
+                    ["GEX_REBASE_MESSAGE"] = file,
+                });
+
+            // Stop on a failed amend rather than continuing: a --continue here would commit
+            // the step with the OLD message and move on, i.e. it would quietly do the very
+            // no-op this whole unit exists to remove. The rebase stays stopped and the
+            // banner keeps offering the step.
+            return amended.Success
+                ? RunAskingForMessages(repoPath, "rebase --continue", emit)
+                : amended;
+        }
+        catch (Exception ex)
+        {
+            emit(ex.Message);
+            return new RebaseCommandResult(false, ex.Message);
+        }
+        finally
+        {
+            TryDelete(file);
+            if (script.Length > 0)
+            {
+                TryDelete(script);
+            }
+        }
+    }
+
+    /// <summary>
+    ///  Runs a rebase command with an editor that <b>refuses</b> instead of accepting
+    ///  git's prepared message, and reports what git wanted written as
+    ///  <see cref="RebaseCommandResult.Pending"/>. See the class remarks for why.
+    ///
+    ///  <para>The script body is a constant — the capture path travels in the environment
+    ///  — so no path is ever interpolated into shell text: a temp directory containing a
+    ///  space, a quote or a symlink cannot break it, and nothing user-supplied is anywhere
+    ///  near the script.</para>
+    ///
+    ///  <para>The legend is stripped by <c>git stripspace --strip-comments</c> rather than
+    ///  by this port: git owns that format, and <c>core.commentChar</c> is a repository
+    ///  setting — verified on the field with <c>core.commentChar=';'</c>, where stripping
+    ///  <c>#</c> ourselves would have deleted a real line and kept git's legend.</para>
+    /// </summary>
+    private RebaseCommandResult RunAskingForMessages(string repoPath, string arguments, Action<string> emit)
+    {
+        string capture = Path.Combine(Path.GetTempPath(), "gex-cap-" + Guid.NewGuid().ToString("N"));
+        string script = string.Empty;
+
+        try
+        {
+            script = WriteScript(
+                "git stripspace --strip-comments < \"$1\" > \"$GEX_REBASE_CAPTURE\"\n" +
+                "exit 1\n");
+
+            RebaseCommandResult result = Run(
+                repoPath,
+                arguments,
+                emit,
+                new Dictionary<string, string?>
+                {
+                    ["GIT_EDITOR"] = ShellQuote(script),
+                    ["GEX_REBASE_CAPTURE"] = capture,
+                });
+
+            // The capture file exists only if git actually opened the message editor. A
+            // success cannot have gone through it (the script always exits 1), so the two
+            // conditions together are the exact signal "git is waiting for a message".
+            if (result.Success || !File.Exists(capture))
+            {
+                return result;
+            }
+
+            return result with
+            {
+                Pending = new RebaseMessageRequest(LastDoneCommand(repoPath), File.ReadAllText(capture)),
+            };
+        }
+        catch (Exception ex)
+        {
+            emit(ex.Message);
+            return new RebaseCommandResult(false, ex.Message);
+        }
+        finally
+        {
+            TryDelete(capture);
+            if (script.Length > 0)
+            {
+                TryDelete(script);
+            }
+        }
+    }
+
+    /// <summary>
+    ///  The todo command git executed last, expanded — the one the pending message belongs
+    ///  to. git appends each command to <c>done</c> as it starts it, so the tail of that
+    ///  file is the step in flight. "" when there is nothing to read, which only costs the
+    ///  caller a generic caption.
+    /// </summary>
+    private static string LastDoneCommand(string repoPath)
+    {
+        try
+        {
+            string dir = RebaseDirOf(repoPath);
+            string done = dir.Length == 0 ? string.Empty : Path.Combine(dir, "done");
+            if (done.Length == 0 || !File.Exists(done))
+            {
+                return string.Empty;
+            }
+
+            foreach (string raw in File.ReadLines(done).Reverse())
+            {
+                string line = raw.Trim();
+                if (line.Length > 0 && line[0] != '#')
+                {
+                    return RebaseTodo.Expand(line.Split(' ', 2)[0]);
+                }
+            }
+        }
+        catch
+        {
+            // A caption is not worth an exception on a path that is already recovering.
+        }
+
+        return string.Empty;
+    }
 
     /// <summary>
     ///  <c>git rebase --abort</c>: throws the whole rebase away and puts the branch and
@@ -578,7 +817,16 @@ public sealed class RebaseSessionService
     ///  quote, space or shell metacharacter; nothing user-supplied ever reaches the
     ///  script.</para>
     /// </summary>
-    private static string WriteSequenceEditor(string body)
+    private static string WriteSequenceEditor(string body) => WriteScript(body);
+
+    /// <summary>
+    ///  Writes a throw-away <c>/bin/sh</c> script around <paramref name="body"/> and makes
+    ///  it executable. The one rule its callers obey: <b>nothing is interpolated into
+    ///  <paramref name="body"/> that this class did not spell out itself</b> — variable
+    ///  data reaches the script through the child process's environment, where quoting does
+    ///  not exist and a space, a quote or a symlinked path is just a byte.
+    /// </summary>
+    private static string WriteScript(string body)
     {
         string path = Path.Combine(Path.GetTempPath(), "gex-seqtodo-" + Guid.NewGuid().ToString("N") + ".sh");
         File.WriteAllText(path, "#!/bin/sh\n" + body);
@@ -588,6 +836,22 @@ public sealed class RebaseSessionService
             UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         return path;
     }
+
+    /// <summary>
+    ///  Wraps a script path so git can invoke it. <b>Not decoration: measured.</b> git does
+    ///  not exec <c>GIT_EDITOR</c> / <c>GIT_SEQUENCE_EDITOR</c> directly, it hands the value
+    ///  to a shell — so the value is a shell WORD LIST, not a path. With
+    ///  <c>TMPDIR=/…/tmp dir 'with' quotes</c> the port's own throw-away script therefore
+    ///  never ran at all: git 2.43 reported <i>"/…/dario-job/tmp: not found"</i>, split at
+    ///  the first space, and the rebase failed with nothing to show for it. Single-quoting
+    ///  (with the <c>'\''</c> dance for an embedded quote) makes the whole path one word,
+    ///  and the same measurement then wrote the capture file as intended.
+    ///  <para>This bug predates the message interception — every scripted editor this
+    ///  class has ever written was exposed to it — and it is fixed here for all of
+    ///  them, because a temp directory is not something the user chose for us.</para>
+    /// </summary>
+    private static string ShellQuote(string path)
+        => "'" + path.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
     private static void TryDelete(string path)
     {
@@ -602,8 +866,8 @@ public sealed class RebaseSessionService
     }
 
     /// <summary>
-    ///  The environment for an <c>--edit-todo</c>: the scripted sequence editor, plus the
-    ///  no-op message editor of <see cref="GitEditorless"/>. The second is belt and braces —
+    ///  The environment for an <c>--edit-todo</c>: the scripted sequence editor, plus a
+    ///  no-op <c>GIT_EDITOR</c>. The second is belt and braces —
     ///  <c>--edit-todo</c> has no message to write — but this is the command that most
     ///  invites a stray editor, and the M183 rule is that nothing reaching the process
     ///  surface may be able to open one.
@@ -611,15 +875,9 @@ public sealed class RebaseSessionService
     private static IReadOnlyDictionary<string, string?> EditorEnv(string sequenceEditor)
         => new Dictionary<string, string?>
         {
-            ["GIT_SEQUENCE_EDITOR"] = sequenceEditor,
+            ["GIT_SEQUENCE_EDITOR"] = ShellQuote(sequenceEditor),
             ["GIT_EDITOR"] = "true",
         };
-
-    // "true" is the shell no-op that exits 0: git treats the message file as accepted
-    // and unmodified. GIT_EDITOR wins over core.editor, GIT_SEQUENCE_EDITOR's siblings
-    // and every EDITOR variable, so this needs no repository configuration.
-    private static readonly IReadOnlyDictionary<string, string?> GitEditorless
-        = new Dictionary<string, string?> { ["GIT_EDITOR"] = "true" };
 
     /// <summary>
     ///  "Step N of M" for whichever backend is running.

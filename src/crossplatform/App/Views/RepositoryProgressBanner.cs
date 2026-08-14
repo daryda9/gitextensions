@@ -40,11 +40,15 @@ namespace GitExtensions.Avalonia.Views;
 ///  <c>Resolve...</c>, so the buttons here are this port's own — see
 ///  <see cref="SequencerSessionService"/>.</para>
 ///
-///  <para>The one state still deliberately without buttons is <c>git am</c>: it has its
-///  own dialog (<see cref="ApplyPatchDialog"/>), which owns that state machine, so the bar
-///  names the git command instead. A button that cannot do its job is worse than no
-///  button — which is why revert and cherry-pick were text-only until the service behind
-///  them existed. It does now.</para>
+///  <para><c>git am</c> keeps its state machine in its own dialog
+///  (<see cref="ApplyPatchDialog"/>), so this bar does not grow a second copy of it and
+///  still names the git commands in its hint. It contributes <b>one</b> button, and only
+///  while the index is unmerged: <c>Resolve…</c>. That was the one real dead end left —
+///  a conflicted <c>am</c> could be seen from here and resolved from nowhere, while
+///  <see cref="ResolveConflictsDialog"/> had existed (with correct <c>am</c> rerere
+///  wording) for milestones. The gate is the unmerged index, which is also exactly the
+///  <c>am --3way</c> case: measured, a plain <c>git am</c> that fails leaves nothing
+///  unmerged at all, so the button cannot appear for a state it could not help.</para>
 ///
 ///  <para><b>The two stopped-session states.</b> Upstream splits a stopped merge — and a
 ///  stopped rebase — in two by asking <c>Module.InTheMiddleOfConflictedMerge()</c>
@@ -373,7 +377,18 @@ public sealed class RepositoryProgressBanner : UserControl
             // while a merge is actually stopped, so an idle repository still costs no
             // git process. Upstream asks on every refresh instead
             // (InteractiveGitActionControl.cs:82).
-            bool hasConflicts = progress.Operation == RepositoryOperation.Merge
+            // `git am` is asked the same question, through the same probe: a stopped am is
+            // the other state whose only way forward is resolving the index. It is worth
+            // saying why the probe is the RIGHT gate there and not merely a convenient one:
+            // measured on git 2.43, a plain `git am` that fails to apply leaves NOTHING
+            // unmerged (`git status --porcelain` and `git ls-files -u` both empty, exit
+            // 128) — only `am --3way` produces a real merge, `UU` entries and three index
+            // stages. So an unmerged index during an am IS the three-way case, which is
+            // also the only one where rerere has anything to say (RerereOperation
+            // .ApplyMailbox). Gating on the index therefore cannot offer a conflict dialog
+            // for a state that has no conflicts, nor promise rerere where it cannot happen.
+            bool hasConflicts = progress.Operation
+                    is RepositoryOperation.Merge or RepositoryOperation.ApplyMailbox
                 && _merge.HasUnresolvedConflicts(repo);
 
             // Same discipline again: the rebase state machine is only read while a
@@ -441,8 +456,14 @@ public sealed class RepositoryProgressBanner : UserControl
             // false the bar falls back to the old text-only behaviour rather than offering
             // commands that would fail.
             bool sequencing = IsSequencer(progress.Operation) && sequencer.InProgress;
+
+            // `git am` needs no session gate of its own: unlike the rebase and the
+            // sequencer, whose marker directories are also written by OTHER operations,
+            // RepositoryStateService only reports ApplyMailbox for rebase-apply WITH the
+            // `applying` marker — which is git's own definition of a stopped am.
+            bool patching = progress.Operation == RepositoryOperation.ApplyMailbox;
             bool canResolve = ResolveConflictsRequested is not null;
-            bool conflicts = merge
+            bool conflicts = merge || patching
                 ? hasConflicts
                 : rebasing
                     ? rebase.HasUnresolvedConflicts
@@ -454,7 +475,15 @@ public sealed class RepositoryProgressBanner : UserControl
             _actionHint.Text = hint;
             _actionHint.IsVisible = hint.Length > 0;
 
-            _sessionButtons.IsVisible = merge || rebasing || sequencing;
+            // The am state contributes exactly ONE button, and only when it can do
+            // something: the row appears for it solely to carry Resolve…
+            bool amResolve = patching && conflicts && canResolve;
+            _sessionButtons.IsVisible = merge || rebasing || sequencing || amResolve;
+
+            // Abort is the one button every OTHER state keeps, so it is set here rather
+            // than in each branch: the am row is the only one that hides it, and hiding it
+            // there must not survive into the next state the bar shows.
+            _abort.IsVisible = !amResolve;
 
             // Only the sequencer has a --quit; offering it anywhere else would be a button
             // for a command that does not exist.
@@ -509,8 +538,25 @@ public sealed class RepositoryProgressBanner : UserControl
                 SetSessionTips();
                 EnableSessionButtons(true);
             }
+            else if (amResolve)
+            {
+                // Deliberately Resolve… ALONE. The am state machine belongs to
+                // ApplyPatchDialog — it is the surface that knows the patch series, which
+                // patch git stopped on, and what Skip means for the rest of it — so this bar
+                // does not grow a second, thinner copy of it. What it does own is the dead
+                // end: before this, a conflicted am offered nothing anywhere, because the
+                // dialog had no conflict entry point either (it does now, same dialog).
+                // Continue is left off rather than greyed, unlike the rebase's: there is no
+                // state of an am in which THIS bar would enable it, so a permanently dead
+                // button would be decoration.
+                _editTodo.IsVisible = false;
+                _resolve.IsVisible = true;
+                _continue.IsVisible = false;
+                _skipStep.IsVisible = false;
+                EnableSessionButtons(true);
+            }
 
-            _conflicted = (merge || rebasing || sequencing) && conflicts;
+            _conflicted = (merge || rebasing || sequencing || patching) && conflicts;
             PaintActionBar(_conflicted);
         }
 
@@ -973,8 +1019,15 @@ public sealed class RepositoryProgressBanner : UserControl
                 : string.Empty
             : T("Resolve the conflicts, then run: git rebase --continue / --skip / --abort"),
 
-        RepositoryOperation.ApplyMailbox =>
-            T("Resolve the conflicts, then run: git am --continue / --skip / --abort"),
+        // The am keeps its commands in ApplyPatchDialog, so the hint's job here is to say
+        // where the rest of the way out is — a bar carrying only Resolve… would otherwise
+        // leave the user resolved and still stopped. Naming the git commands as well is
+        // kept for the state where this port offers no button at all.
+        RepositoryOperation.ApplyMailbox => hasConflicts
+            ? canResolve
+                ? T("Resolve the conflicts, then finish the patch from the Apply patch dialog (\"Conflicts resolved\").")
+                : T("Resolve the conflicts from the Commit tab, then finish the patch from the Apply patch dialog (\"Conflicts resolved\").")
+            : T("Finish the series from the Apply patch dialog, or run: git am --continue / --skip / --abort"),
         // Same shape as the rebase above: with the session confirmed the buttons speak for
         // themselves, and the terminal hint survives only for a session the service could
         // not confirm (see Apply) — which is now the only way a user can end up reading it.
@@ -1136,7 +1189,8 @@ public sealed class RepositoryProgressBanner : UserControl
                 T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
                 "rebase --continue",
                 confirm: null,
-                (repo, emit) => Outcome(_rebaseSession.Continue(repo, emit)))
+                (repo, emit) => Outcome(RememberPending(_rebaseSession.Continue(repo, emit))),
+                onExit: AskForStepMessageAsync)
             : RunSessionAsync(
                 T("InteractiveGitActionControl/ContinueButton.Text", "Continue"),
                 "merge --continue",
@@ -1169,7 +1223,10 @@ public sealed class RepositoryProgressBanner : UserControl
             // outright, while a stop on an interactive `edit` has already applied the commit
             // and only the pending amend is abandoned — verified in GUI on both.
             confirm: T("Skip this step?\n\nThe rebase abandons the step it stopped on and carries on with the rest of the series. What that step was going to change will not be in the rebased branch, and git keeps no way back to it."),
-            (repo, emit) => Outcome(_rebaseSession.Skip(repo, emit)));
+            // Skipping replays every step after this one, so it can reach a `reword` just
+            // as Continue can — and must ask for its message the same way.
+            (repo, emit) => Outcome(RememberPending(_rebaseSession.Skip(repo, emit))),
+            onExit: AskForStepMessageAsync);
 
     private void OnAbort() => _ = _sequencerState.InProgress
         ? RunSessionAsync(
@@ -1239,6 +1296,160 @@ public sealed class RepositoryProgressBanner : UserControl
                 : T("Stop and keep everything as it is?\n\nGit forgets the operation but changes nothing else: the commits it has already made stay on your branch, and your files stay exactly as they are, staged and uncommitted. Any commits of the series still to come are dropped."),
         (repo, emit) => Outcome(_sequencer.Quit(repo, _sequencerState, emit)));
 
+    // ---- the message a rebase step asks for -------------------------------------------
+
+    /// <summary>
+    ///  The message request the last rebase command came back with, handed from the
+    ///  background operation to <see cref="AskForStepMessageAsync"/> on the UI thread.
+    ///  <para>A field rather than a return value because
+    ///  <see cref="GitProcessDialog.RunStreamingAsync"/>'s two halves are typed
+    ///  separately: the operation must produce a <see cref="GitProcessOutcome"/>, which
+    ///  carries only success and text. The hand-over is safe without a lock — the dialog
+    ///  awaits the operation's completion before invoking the exit hook, and that
+    ///  completion is the memory barrier — and it is single-shot: the reader clears it.</para>
+    /// </summary>
+    private RebaseMessageRequest? _pendingMessage;
+
+    private RebaseCommandResult RememberPending(RebaseCommandResult result)
+    {
+        _pendingMessage = result.Pending;
+        return result;
+    }
+
+    /// <summary>
+    ///  Runs after every attempt of a rebase Continue / Skip, inside the process dialog.
+    ///  With no pending message it returns false and the dialog reports the outcome as
+    ///  usual; with one, it asks the user for the text and re-runs the command <b>in the
+    ///  same window</b> (<see cref="GitProcessDialog.Retry"/>), which is what keeps a
+    ///  three-<c>reword</c> series one dialog with three questions instead of six windows.
+    ///
+    ///  <para>Answering is what makes <c>reword</c> and <c>squash</c> real; see
+    ///  <see cref="RebaseSessionService.ContinueWithMessage"/>. <b>Cancelling is a real
+    ///  answer too</b>: false is returned, so the dialog settles showing git's own
+    ///  "problem with the editor" exit — and the rebase stays stopped, with Continue,
+    ///  Skip and Abort all live on this bar. Nothing is left that the app cannot
+    ///  describe.</para>
+    /// </summary>
+    private async Task<bool> AskForStepMessageAsync(GitProcessDialog dialog, GitProcessOutcome outcome)
+    {
+        RebaseMessageRequest? request = _pendingMessage;
+        _pendingMessage = null;
+
+        if (request is null || _repoPath is not { Length: > 0 } repo)
+        {
+            return false;
+        }
+
+        string? message = await PromptMessageAsync(dialog, request);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        dialog.Retry(
+            emit =>
+            {
+                using IDisposable? guard = SuspendWatcher?.Invoke();
+                return Outcome(RememberPending(_rebaseSession.ContinueWithMessage(repo, message, emit)));
+            },
+            note: T("Writing the message and carrying on (git commit --amend, then git rebase --continue)…"));
+
+        return true;
+    }
+
+    /// <summary>
+    ///  Asks for the message of the step git stopped on, prefilled with what git itself
+    ///  prepared — the commit's current message for a <c>reword</c>, the combined one for
+    ///  a <c>squash</c>. Same hand-built shape as the rest of this port's prompts
+    ///  (<c>MainWindow.PromptAsync</c>, which is where reword and squash are asked for
+    ///  from the revision grid), rather than a new window: what is being edited is a
+    ///  commit message, and this port already has one way of asking for one.
+    ///  <para>The caption names the todo command, so the user knows whether they are
+    ///  renaming one commit or writing the message of a melded pair, and the note under
+    ///  the box says what Cancel does — which is the non-obvious part, because git will
+    ///  then keep the old message if the rebase is continued.</para>
+    /// </summary>
+    private async Task<string?> PromptMessageAsync(Window owner, RebaseMessageRequest request)
+    {
+        TaskCompletionSource<string?> tcs = new();
+
+        TextBox input = new()
+        {
+            Text = request.Template,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 160,
+            FontFamily = Theming.AppFonts.Monospace,
+        };
+
+        Button ok = new() { Content = T("OK"), MinWidth = 80, IsDefault = false };
+        Button cancel = new()
+        {
+            Content = T("FormCommit/Cancel.Text", "Cancel"),
+            MinWidth = 80,
+            Margin = new Thickness(8, 0, 0, 0),
+            IsCancel = true,
+        };
+
+        Theming.ZoomWindow dialog = new()
+        {
+            Title = request.Command switch
+            {
+                "reword" => T("Reword commit"),
+                "squash" => T("Squash: combined commit message"),
+
+                // A `fixup -c`, a `merge` step, or a done file we could not read: git asked
+                // for a message and we do not know which command for. Say exactly that
+                // rather than guess a caption that could name the wrong operation.
+                _ => T("Commit message for this rebase step"),
+            },
+            Width = 560,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brush("App.Window", "#1E1E1E"),
+        };
+
+        ok.Click += (_, _) => { tcs.TrySetResult(input.Text); dialog.Close(); };
+        cancel.Click += (_, _) => { tcs.TrySetResult(null); dialog.Close(); };
+        dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(16),
+            Spacing = 10,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = request.Command == "squash"
+                        ? T("The rebase is melding this commit into the previous one. This is the message the combined commit will carry.")
+                        : T("The rebase stopped to let you write this commit's message."),
+                    Foreground = Brush("App.Text", "#DCDCDC"),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                input,
+                new TextBlock
+                {
+                    Text = T("Cancel leaves the rebase stopped where it is; continuing it afterwards keeps the message the commit already has."),
+                    Foreground = Brush("App.TextDim", "#9A9A9A"),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Children = { ok, cancel },
+                },
+            },
+        };
+
+        // No InstallEscapeClose beyond the Cancel button's IsCancel: the box accepts
+        // Return as text (it is a commit message), so the usual default-button wiring
+        // would swallow the very key the user needs.
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
     // The three session services report the same shape through three distinct record types;
     // these keep the runner below indifferent to which one ran.
     private static GitProcessOutcome Outcome(MergeCommandResult result)
@@ -1265,7 +1476,8 @@ public sealed class RepositoryProgressBanner : UserControl
         string label,
         string command,
         string? confirm,
-        Func<string, Action<string>, GitProcessOutcome> operation)
+        Func<string, Action<string>, GitProcessOutcome> operation,
+        Func<GitProcessDialog, GitProcessOutcome, Task<bool>>? onExit = null)
     {
         if (_repoPath is not { Length: > 0 } repo
             || TopLevel.GetTopLevel(this) is not Window owner)
@@ -1290,6 +1502,7 @@ public sealed class RepositoryProgressBanner : UserControl
                     using IDisposable? guard = SuspendWatcher?.Invoke();
                     return operation(repo, emit);
                 },
+                onExit: onExit,
                 interactive: false);
         }
         catch (Exception ex)
