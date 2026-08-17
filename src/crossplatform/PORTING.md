@@ -3418,6 +3418,40 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M217 (2026-08-17) — le voci «diverso dall'originale» del README, verificate una per una contro il sorgente upstream
+
+Il README nuovo elencava diciotto cose come differenze dall'originale. Nove erano **sbagliate o mal
+inquadrate**, e sono uscite solo leggendo `src/app` invece di ricordare. Tabella, perché il prossimo che
+scrive «questo non c'è nell'originale» deve partire da qui:
+
+| Cosa credevo nuovo | Cosa c'è davvero in upstream | Come è scritto adesso |
+|---|---|---|
+| Barra sopra un'operazione ferma | **C'è**: `UserControls/InteractiveGitActionControl` — bisect/rebase/merge/patch con *Resolve…*, *Continue*, *Abort*, *More…* e la stessa frase «{0} is currently in progress with merge conflicts» | «la barra dice **di più**»: passo su quanti, branch, commit dove si è fermata, *Skip* e *Edit todo…* sulla barra |
+| Terminale integrato | **C'è**: ospita **ConEmu** (`externals/conemu-inside`) o mintty, dipendenza esterna, solo Windows | «con niente da installare»: pty proprio, quindi gira su Linux |
+| Editor della todo del rebase | **C'è**: `btnEditTodo` → `git rebase --edit-todo` in `FormProcess`, cioè il file grezzo nell'editor (il proprio `FormEditor`, se GE è l'editor di git) | «resa **come passi**» invece del file grezzo |
+| Confronto di immagini | **Mezzo**: `ViewMode.Image` mostra l'immagine invece della patch — ma **una** revisione, senza affiancate/sovrapposte/differenza | «upstream la **mostra**, questo le **confronta**» |
+| Selettore di commit | **C'è**: `UserControls/CommitPickerSmallControl`, usato da FormRebase, FormCherryPick, FormArchive, FormDiff | **rimossa** dalle differenze; nella parte onesta: qui è cablato su un campo dei quattro |
+| Storia di un file + blame in finestra propria | **C'è**: `FormFileHistory` con le stesse quattro schede | sezione ribattezzata «non tutto qui è uno scarto»; resta la differenza vera, il grafo che non è una scaletta di monconi |
+| Collaudo automatico | **C'è**, ed è grosso: `tests/app`, `tests/plugins`, `app-build.yml` | «il port ha i **suoi** test perché quelli di upstream non lo raggiungono»: compilano la soluzione WinForms, che non contiene nessuno di questi progetti |
+| Tema | **Ci sono** `invariant`/`light+`/`dark`/`dark+` scelti a mano; **non** segue il sistema (nessun `UserPreferenceChanged`/`AppsUseLightTheme` nel sorgente) | è nuovo **solo** `System`, che segue il desktop dal portal |
+| GitHub senza plugin | **C'è** come plugin: `src/plugins/GitHub3` | «**incorporato** invece che plugin — per questo là si può disattivare e qui no» |
+| Livello di traduzione | I cataloghi sono di upstream, ed è upstream a tradurre | spostato fra i limiti: le stringhe **nuove** non hanno traduzione, quindi restano in inglese |
+| «kdiff3 per default» | Upstream sa guidare kdiff3, Meld, Beyond Compare 3/4, P4Merge, DiffMerge, Araxis e **chiede** di nominarne uno | riscritto senza «per default» |
+
+Sono invece confermate nuove, verificate per assenza nel sorgente upstream: **schede di repository**
+(nessun `TabStrip`, una finestra per repository) e con esse i chip per checkout, **palette dei comandi**
+(nessuna occorrenza), **editor di merge a tre vie interno** (`FormResolveConflicts` risponde «there is no
+mergetool configured… set a mergetool!»), **confronto affiancato interno** (`ViewMode` non ha una modalità
+affiancata: c'è `Difftastic`, che è l'output di un tool esterno), **rerere nel flusso** (upstream ha solo la
+spunta `rerere.enabled` in `GitConfigAdvancedSettingsPage`), **menu nella barra del titolo**, **UI size**,
+**larghezza delle colonne persistita** (upstream salva quali colonne mostrare, non quanto larghe),
+**icone vettoriali colorate per ruolo**, **impostazioni JSON sotto XDG con sostituzione atomica** (upstream:
+`GitExtensions.settings` XML più import dal registro di Windows) e il **`.deb`**.
+
+Regola che ne esce, per il prossimo giro: **una differenza si dichiara solo dopo avere cercato la cosa in
+`src/app`**, e la ricerca va scritta accanto alla voce. Metà delle nove sbagliate erano funzioni che
+upstream ha da anni.
+
 ## M216 (2026-08-17, `c7a17147a`) — una cartella che si chiama `.git` non è un checkout
 
 Trovato **fotografando il README**, non leggendo il codice: la richiesta era mostrare i colori che

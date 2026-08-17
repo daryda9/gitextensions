@@ -33,7 +33,7 @@ OK — reverted on Cancel:
 
 | Setting | What it does |
 |---|---|
-| **Theme** | Light, Dark, or **System** — the desktop's own preference, followed live through the XDG portal |
+| **Theme** | Light, Dark, or **System**. Upstream ships light and dark themes too, chosen by hand; **System** is new — it follows the desktop's own preference, live, through the XDG portal |
 | **Style** | **Modern** (vector icon set, neutral palette, flat chrome) or **Classic** (the earlier look) |
 | **UI size** | Zooms the whole interface — text, icons, spacing, grid, diff — with no restart |
 | **Title bar** | Menu **inside** the window's own title bar (VS Code style, with a `…` overflow measured at runtime) or the desktop's title bar with a separate menu row |
@@ -118,9 +118,10 @@ worked before. The choice applies immediately, with no restart.
 
 ### Diffs, merges and image comparisons are done in-house
 
-Upstream hands conflicts and side-by-side comparison to an external tool —
-kdiff3 by default. That still works and is still offered. But **with no external
-tool configured at all, none of it is unavailable**: the engine is git itself
+Upstream hands conflicts and side-by-side comparison to an external program — it
+knows how to drive kdiff3, Meld, Beyond Compare, P4Merge, DiffMerge and Araxis,
+and asks you to name one. That still works and is still offered here. But **with
+nothing configured at all, none of it is unavailable**: the engine is git itself
 (`git merge-file --diff3`, `git diff --no-index`), and the panels are the
 application's own.
 
@@ -136,40 +137,50 @@ hunk headers, with intra-line marks showing which *characters* moved:
 
 ![Side-by-side comparison of two revisions](docs/screenshots/side-by-side-diff.png)
 
-And images, which a text diff can only describe as "binary files differ": side by
-side, overlaid with adjustable opacity, or as a per-pixel difference, with the
-byte sizes and dimensions named underneath. The format is recognised **from the
+And images. Upstream's viewer already *shows* an image instead of the patch — what
+it does not do is put the two revisions next to each other. This one compares them:
+side by side, overlaid with adjustable opacity, or as a per-pixel difference, with
+the dimensions and byte sizes named underneath. The format is recognised **from the
 file's bytes**, not its extension, and a file that decodes only partially is
 declared as `TRUNCATED FILE` rather than shown as an image with silently blank
-rows.
+rows — which is what a decoder does with a truncated PNG if nobody asks it.
 
 ![Comparing two revisions of an image](docs/screenshots/image-diff.png)
 
 ### Conflicts say what they are, and rerere is visible
 
-The conflict list explains in one line what kind of conflict each file has and
-which ways out exist — including the cases where a three-way merge is not
-possible at all (deleted on one side, a submodule pointer, a symlink). `git
-rerere` is not a hidden setting: it can be switched on from here, it reports what
-it has already replayed, its cache has a window of its own, and `forget` asks
+Upstream's conflict window answers "there is no mergetool configured, please go to
+settings and set a mergetool" — the resolution itself is somebody else's program.
+Here the same window explains in one line what kind of conflict each file has and
+which ways out exist, including the cases where a three-way merge is not possible
+at all (deleted on one side, a submodule pointer, a symlink), and the **Merge**
+button opens the editor above rather than looking for `merge.tool`.
+
+`git rerere` is a checkbox in upstream's advanced git-config page and nothing more.
+Here it is part of the flow: switched on from this window, reporting what it has
+already replayed, with a window of its own for the cache and a `forget` that asks
 first.
 
 ![The conflict panel](docs/screenshots/conflict-dialog.png)
 
-### An operation that stops has a bar, not a dead end
+### The bar over a stopped operation says more
 
-Merge, rebase, cherry-pick, revert and `git am` all leave the repository in a
-state that needs a decision. The bar names the state, the step, the branch and
-where it stopped, and offers only the buttons git will actually accept:
+This one is **not** new: upstream has a bar for exactly this — bisect, rebase, merge
+and patch, with *Resolve…*, *Continue*, *Abort* and a *More…* that opens the matching
+dialog. The port keeps it and makes it say more, because the buttons alone leave you
+guessing where in the operation you are:
 
 ![The sequencer bar during an interactive rebase](docs/screenshots/sequencer-bar.png)
 
-`Continue` answers git's editor for you when a step wants a message (`reword`,
-`squash`, a merge commit), and cancelling that question is reported as
-**cancelled** — the operation is left exactly where it was, resolutions still
-staged.
+The state, **the step out of how many, the branch and the commit it stopped at**, and
+*Skip* and *Edit todo…* on the bar rather than one dialog further in. And when a step
+wants a message — `reword`, `squash`, a merge commit — declining the question is
+reported as **cancelled** rather than as a failure: the operation is left exactly
+where it was, resolutions still staged.
 
-The todo list of an interactive rebase is rendered rather than dumped into `$EDITOR`:
+Upstream also has *Edit todo…*, which hands the todo file to a text editor (its own,
+when Git Extensions is configured as git's editor). Here the same list is **rendered
+as steps**, with the verbs as buttons and the consequence of each spelled out:
 
 ![The interactive-rebase todo editor](docs/screenshots/rebase-todo.png)
 
@@ -183,11 +194,14 @@ back first.
 
 ![The command palette](docs/screenshots/command-palette.png)
 
-### A terminal inside the window
+### A terminal inside the window, with nothing to install
 
-The `Console` tab is a real pty running your shell in the repository's directory
-— colours, prompt, `less`, `git add -p`, anything. `Ctrl+G` still launches an
-external terminal if you prefer one.
+Upstream has an embedded console too, and it gets there by hosting **ConEmu** (or
+mintty) — a separate program, checked in as an external dependency, and Windows-only.
+This port implements the terminal itself: a pty of its own, so the `Console` tab is
+your shell in the repository's directory with nothing to install and nothing to
+configure — colours, prompt, `less`, `git add -p`, anything. `Ctrl+G` still launches
+an external terminal if you prefer one.
 
 ![The embedded terminal](docs/screenshots/embedded-terminal.png)
 
@@ -199,14 +213,20 @@ amend, and the committer identity plus the push target named along the bottom.
 
 ![The commit dialog](docs/screenshots/commit-dialog.png)
 
-### File history and blame in a window of their own
+### Not everything here is a departure
 
-Following renames, the graph of a single file with its branches intact (git
-rewrites parents for the collected historical names, so the file's history is one
-line rather than a ladder of stumps), and blame per line with the commit behind
-it:
+Most of the application is upstream's design rebuilt, and this page is not the place
+to claim otherwise. The commit dialog above is `FormCommit`; the window below is
+`FormFileHistory`, with the same four tabs and the same rename following — put here
+so that the shape of the port is visible, not because it is new:
 
 ![File history with blame](docs/screenshots/file-history.png)
+
+One detail inside it is different, and it is the kind that only shows on Linux: for a
+file that was renamed, git does not rewrite parents under `--follow`, so the graph
+arrived as a ladder of disconnected stumps. The port collects the historical names
+first and then walks with those as the pathspec, which git *does* rewrite parents
+for — one line of history instead of rubble.
 
 ### Settings are files, and they survive a crash
 
@@ -223,32 +243,37 @@ this, with real processes and `SIGKILL`.
 Git's own configuration is still git's: the settings window writes it through
 `git config`, at the level you choose.
 
-### It is tested, and the tests run themselves
+### The port carries its own tests, because upstream's do not reach it
 
-Five regression harnesses (inline diff, command palette, view preferences,
-settings stores, image integrity) plus the older probes and snapshots.
-`Tests/run-all.sh` runs the seven deterministic ones, each in a sandbox of its
-own (isolated `XDG_CONFIG_HOME` and `TMPDIR`, global and system git config
-silenced, a timeout per harness, the scratch directory kept on failure because it
-is the evidence), and `.github/workflows/crossplatform-build.yml` does that plus
-a `-warnaserror` build of the whole solution on every push that touches the port.
-Excluded from the runner, with the reason written down: the two probes that need
-a display, and the performance measurement that is a timing rather than a verdict.
+Upstream is well tested — `tests/app` and `tests/plugins` hold a large suite, and
+`app-build.yml` runs it. None of it covers this tree: those tests build against the
+WinForms solution, which does not contain a single one of these projects and mostly
+does not compile on Linux. So the port has tests of its own.
 
-Everything else is verified on screen, and `PORTING.md` records how.
+Five regression harnesses (inline diff, command palette, view preferences, settings
+stores, image integrity) plus the older probes and snapshots. `Tests/run-all.sh` runs
+the seven deterministic ones, each in a sandbox of its own (isolated
+`XDG_CONFIG_HOME` and `TMPDIR`, global and system git config silenced, a timeout per
+harness, the scratch directory kept on failure because it is the evidence), and
+`.github/workflows/crossplatform-build.yml` does that plus a `-warnaserror` build of
+the whole solution on every push that touches the port. Excluded from the runner,
+with the reason written down: the two probes that need a display, and the performance
+measurement that is a timing rather than a verdict.
+
+Everything else is verified on screen, and `PORTING.md` records how — including the
+first CI run, which caught a harness that deadlocked only on a small machine.
 
 ### Smaller things you will notice
 
-- **Translation layer.** Every new string goes through `T(english)`, keyed to
-  upstream's catalogue entry where one exists, so a translated build has
-  somewhere to put them.
-- **Grid columns are resizable**, and their widths persist — upstream's do not.
-- **Commit picker** for the rebase range, bounded to the current branch down to
-  the merge base with the target.
-- **Loading is visible**: a delayed spinner (250 ms, so short reloads do not
-  flicker) over the grid and the tree.
-- **GitHub**: fork and clone, add the upstream remote, list pull requests and
-  create one — without a plugin.
+- **Grid column widths persist.** Both grids let you drag a column edge; upstream
+  keeps which columns are *shown*, not how wide you made them, so every start-up
+  measured them again.
+- **Loading is visible**: a spinner over the grid and the tree, delayed by 250 ms so
+  that the reloads which finish sooner than that never flicker one up.
+- **GitHub is built in** rather than a plugin: fork and clone, add the upstream
+  remote, list pull requests and create one. Upstream ships the same capability as
+  `GitHub3`, one of the plugins — which is also why it can be switched off there and
+  not here.
 - **A `.deb`**: `packaging/build-deb.sh` produces a self-contained package that
   needs no .NET on the target, installs under `/opt/gitextensions`, and declares
   `git` as its only dependency.
@@ -268,9 +293,14 @@ Stated plainly, because a README that only lists wins is a sales page:
 - The image comparison has no drag-pan or zoom shortcuts, and does not refuse
   images above 16 megapixels on screen (the check exists, it has not been driven
   through the UI).
+- **Translations.** Upstream's catalogues are the port's catalogues, and every new
+  string is keyed into them — but the strings this port added have no translations
+  yet, so they read in English even in a translated build.
+- The commit picker upstream offers on four fields (rebase, cherry-pick, archive,
+  compare) is wired to one of them here.
 - Assorted measured-and-recorded gaps: right-to-left tab labels eliding awkwardly,
-  the commit picker not yet offered by every field that could use it, rerere
-  untested with a multi-variant cache or non-ASCII paths.
+  rerere untested with a multi-variant cache or non-ASCII paths, submodule conflicts
+  with objects missing on one side.
 
 `ROADMAP.md` keeps that list current, with what was measured and what was only
 reasoned about. `PORTING.md` is the milestone-by-milestone record, `HANDOFF.md`
