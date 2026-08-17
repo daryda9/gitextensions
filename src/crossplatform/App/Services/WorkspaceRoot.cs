@@ -74,13 +74,54 @@ public static class WorkspaceRoot
 
     /// <summary>
     ///  Whether <paramref name="directory"/> is the top of a working tree. A
-    ///  submodule's <c>.git</c> is a FILE holding a gitdir pointer rather than a
-    ///  directory, so both shapes count — testing only for the directory would miss
-    ///  every submodule, which is the case this class exists for.
+    ///  submodule's or linked worktree's <c>.git</c> is a FILE holding a gitdir
+    ///  pointer rather than a directory, so both shapes count — testing only for the
+    ///  directory would miss every submodule, which is the case this class exists for.
+    ///
+    ///  <para><b>The entry has to look like git's, not merely be named after it.</b>
+    ///  The first version accepted any <c>.git</c>, and an <b>empty</b> <c>/tmp/.git</c>
+    ///  directory — the kind a script leaves behind — made every repository under
+    ///  <c>/tmp</c> answer "<c>/tmp</c>" here. git itself says "not a repository" to
+    ///  that path, but the tab strip believed it: one checkout for every tab, so the
+    ///  colour that tells two checkouts apart stayed off and the tooltip named a
+    ///  checkout that does not exist. A directory therefore has to hold <c>HEAD</c>,
+    ///  and a file has to start with <c>gitdir:</c>; anything else is a folder that
+    ///  happens to be called <c>.git</c>. Both checks are one stat and 8 bytes, on a
+    ///  path already walked once per tab and cached for the process.</para>
     /// </summary>
     private static bool IsWorkingTree(string directory)
     {
         string dot = Path.Combine(directory, ".git");
-        return Directory.Exists(dot) || File.Exists(dot);
+
+        if (Directory.Exists(dot))
+        {
+            return File.Exists(Path.Combine(dot, "HEAD"));
+        }
+
+        return File.Exists(dot) && PointsAtGitDir(dot);
+    }
+
+    /// <summary>
+    ///  Whether a <c>.git</c> file is git's pointer file. Read as bytes and compared
+    ///  to ASCII: the prefix git writes is fixed, and a file too short or unreadable
+    ///  is simply not one.
+    /// </summary>
+    private static bool PointsAtGitDir(string file)
+    {
+        try
+        {
+            using FileStream stream = File.OpenRead(file);
+            Span<byte> head = stackalloc byte[8];
+            return stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false) == head.Length
+                && head.SequenceEqual("gitdir: "u8);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }
