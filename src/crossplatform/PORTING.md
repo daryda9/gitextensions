@@ -3418,6 +3418,35 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M216 (2026-08-17, `c7a17147a`) — una cartella che si chiama `.git` non è un checkout
+
+Trovato **fotografando il README**, non leggendo il codice: la richiesta era mostrare i colori che
+distinguono le schede di repository venuti da cartelle diverse, e nelle catture non c'erano. Il chip di
+3 px per checkout esiste da quando esiste la striscia, e si accende solo con **due** checkout aperti —
+quindi «spento» era una risposta legittima e sospetta insieme.
+
+Strumentando `RepoTabStrip.BuildCheckouts` (una `Console.Error` temporanea, poi rimossa) è uscito il
+motivo in una riga: `roots=[/tmp] distinct=1`. Tutti i repository di prova stavano sotto `/tmp`, e in
+`/tmp` c'era una **cartella `.git` vuota** lasciata da una sonda del 7 agosto. `WorkspaceRoot.IsWorkingTree`
+accettava qualunque voce chiamata `.git`, cartella o file, quindi la risalita si fermava a `/tmp` e ogni
+scheda finiva nello stesso checkout: nessun colore, e il tooltip che nomina «in checkout:» indicava una
+cosa che non esiste. **git stesso** a quel path risponde «non è un repository»; la striscia gli credeva.
+
+Ora la voce deve **avere la forma** di quella di git, non solo il nome: una cartella deve contenere
+`HEAD`, e un file `.git` deve cominciare con `gitdir: ` — la forma che scrivono sia un submodule sia un
+worktree collegato. Un `stat` e otto byte, su una risalita che gira già una volta per scheda ed è in
+cache per la vita del processo.
+
+**Prova, con la striscia come testimone** (due cloni dello stesso progetto, `work/api` e `review/api`,
+ognuno col suo submodule, tutti sotto `/tmp` con il `.git` vuoto rimesso al suo posto): prima del
+cambiamento **nessun chip**, dopo **quattro** — blu per `work/api` e per il submodule aperto da lì, ambra
+per `review/api` e per il suo. Sette banchi verdi, soluzione a zero avvisi.
+
+Nota di collaudo, per la prossima volta: la prima build strumentata **non compilava**
+(`Avalonia.Media` risolto dentro il namespace `GitExtensions.Avalonia` → CS0234, serve `global::`) e
+l'errore era stato mangiato da un `| tail -2` su una build `-v q`. Ho misurato per un giro il dll
+**vecchio** credendolo nuovo. Una build va guardata, non troncata.
+
 ## M215 (2026-08-14, `1b9d40c66`) — il primo giro di CI trova uno stallo che nessuna macchina di sviluppo mostrava
 
 Il primo run del workflow aggiunto dal M211 è **rosso**, e sbagliava nell'unico modo che un rituale a

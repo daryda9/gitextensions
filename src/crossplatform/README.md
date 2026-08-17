@@ -90,6 +90,28 @@ is a linked worktree of it; `user-guide` is a different project; `parser-lib` in
 italic is the submodule opened as a preview. All in one window, one process, one
 menu.
 
+#### Colour says which checkout a tab came from
+
+Two clones of one project are the case where labels alone give up. `~/work/api`
+and `~/review/api` contain submodules with the same names, so their submodule tabs
+carry the same word — and the strip's answer, lengthening each label until the
+paths differ, produces two long strings whose difference sits in the *middle*.
+That is read, not seen. So each tab also carries a 3-pixel chip in the colour of
+its **checkout**: the outermost repository above it, which for a submodule is its
+superproject.
+
+![Four tabs: two clones of one project and one submodule from each, chips blue for one clone and amber for the other](docs/screenshots/tab-colours.png)
+
+Blue is `~/work/api` and everything opened from inside it, amber is `~/review/api`
+and everything from inside that one. Two clones, four tabs, and the question "am I
+looking at the review copy?" answered without reading a path.
+
+The chips follow the same rule as the labels — **disambiguate what is ambiguous
+and leave the rest alone** — so with a single checkout open nothing is painted at
+all. The colours come from the theme's own icon hues in the order each checkout
+first appears, not from a hash of the path, so renaming a folder does not shuffle
+them, and switching theme recolours them.
+
 If you would rather have none of it, **Appearance → Repository tabs → Single
 repository** hides the strip and gives the window one repository at a time, as it
 worked before. The choice applies immediately, with no restart.
