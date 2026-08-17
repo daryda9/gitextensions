@@ -39,20 +39,60 @@ OK — reverted on Cancel:
 | **Title bar** | Menu **inside** the window's own title bar (VS Code style, with a `…` overflow measured at runtime) or the desktop's title bar with a separate menu row |
 | **Repository tabs** | One window holding several repositories, or one repository at a time as before |
 
-The icon set is drawn as vectors rather than shipped as bitmaps, and in Modern
-style it is **coloured by what the command does** — green to create, red to
-delete, blue to talk to a remote, purple for the index, cyan for branches and
-submodules, amber for stashes and tags. That is a switch, and turning it off
-loses nothing.
+#### The icons are drawn, not shipped
+
+Upstream ships its icons as bitmap resources. This port draws them as vectors, so
+they stay sharp at any UI size — and in Modern style it paints each
+one by **what the command does**: green to create, red to delete, blue to talk to
+a remote, purple for the index, cyan for branches and submodules, amber for
+stashes and tags. Commands with no such role stay neutral.
+
+![The same toolbar in Modern coloured, Modern one-colour, and Classic](docs/screenshots/icons-toolbar.png)
+
+![The repository tree in Modern coloured, Modern one-colour, and Classic](docs/screenshots/icons-tree.png)
+
+Three settings, one toolbar and one tree, nothing else changed between the rows.
+The roles are a checkbox — turn it off and you keep the same vector set in one
+colour — and the whole original bitmap set is still there under **Classic**, for
+anyone who wants the interface they already know. Nothing is lost either way: no
+icon means anything by its colour alone.
 
 ### One window, several repositories
 
-Submodules, worktrees and any repository you open land on a strip of tabs at the
-top of the window. A single click on a submodule or worktree opens it as a
-**preview** (italic, replaced by the next one); a double click pins it. Tabs can
-be dragged to reorder, `Ctrl+W` closes, `Ctrl+PgUp`/`PgDn` cycle, and the open
-set is remembered across restarts. Each tab keeps its own selected commit, so
-switching costs a click rather than a reload.
+This is the largest departure from upstream, where one repository means one
+window. Here every repository you open — including the submodules and linked
+worktrees of the one you are in — lands on a strip of tabs at the top, VS Code
+style:
+
+![Four repository tabs: three pinned, one preview, with the worktrees and the submodule in the tree](docs/screenshots/repository-tabs.png)
+
+The behaviour is the one that strip trains you to expect:
+
+- **A single click on a submodule or worktree opens a preview** — the italic tab.
+  It is *replaced* by the next preview instead of piling up, so browsing through
+  eight submodules leaves one tab behind, not eight.
+- **A double click pins it.** So does dragging it, and so does opening a
+  repository any other way (`Ctrl+O`, recent, favourites, clone).
+- **Each tab keeps its own place**: the commit it had selected and the bottom tab
+  it was on. Switching costs a click, not a reload — which is the point,
+  because the alternative was one window per repository and a taskbar full of
+  identically named windows.
+- **Tabs are draggable** to reorder, `Ctrl+W` closes one, `Ctrl+PgUp` / `Ctrl+PgDn`
+  cycle, and the open set is restored on the next start.
+- **The same repository can be open twice.** "Duplicate tab" gives you two views
+  of one repository — one on the branch you are writing, one on the history you
+  are reading — and the labels number themselves so you can tell them apart:
+
+![A duplicated repository numbered (1) and (2), next to a worktree, a second project, and a preview tab](docs/screenshots/tab-strip.png)
+
+`sample-project (1)` and `(2)` are the same repository; `sample-project-release`
+is a linked worktree of it; `user-guide` is a different project; `parser-lib` in
+italic is the submodule opened as a preview. All in one window, one process, one
+menu.
+
+If you would rather have none of it, **Appearance → Repository tabs → Single
+repository** hides the strip and gives the window one repository at a time, as it
+worked before. The choice applies immediately, with no restart.
 
 ### Diffs, merges and image comparisons are done in-house
 
