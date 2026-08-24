@@ -55,6 +55,28 @@ I due giri hanno chiuso molto; questi **non** sono chiusi, e restano scritti per
 | **Rifiuto oltre 16 megapixel, pan col trascinamento, scorciatoie di zoom** (diff immagini) | Restano come erano: non esercitati a schermo il primo, assenti gli altri due. |
 | **Cache rerere multi-variante, path non ASCII o con spazi** | Restano non provati: il giro ha coperto worktree collegati, submodule e conflitti misti, non questi. |
 
+### Fuori perimetro, misurato: smartphone (2026-08-18)
+
+Domanda arrivata dall'utente, risposta con i numeri del codice e non a intuito. **Non** è una
+ricompilazione con un altro target:
+
+- **il motore è un processo.** `GitCommands/Git/Executable.cs` fa `Process.Start`; 138 riferimenti nel
+  core, **116** punti di chiamata nel port, **20** file del port che avviano processi (git, mergetool
+  esterni, terminali, editor). Su **iOS** `fork`/`exec` sono proibiti dalla piattaforma; su **Android**
+  non esiste un `git` a bordo e l'esecuzione di binari da directory scrivibili è bloccata per le app
+  che puntano ad API 29+. Servirebbe riscrivere lo strato di esecuzione su **libgit2**, cioè proprio
+  quello che questo port riusa di proposito;
+- **la UI è da scrivania.** **47** classi `Window`, **101** `ShowDialog`, `Avalonia.Desktop`, tre avvii
+  con `StartWithClassicDesktopLifetime`, codice specifico X11 in 8 file (atomi, drag-and-drop, barra del
+  titolo senza decorazioni, maniglie di ridimensionamento). Su mobile Avalonia è single-view: niente
+  finestre, niente modali;
+- **il terminale** è dieci P/Invoke a `libc` più `setsid` e `/bin/sh`.
+
+Sopravvivrebbero le parti pure: `InlineDiff`, `ImageIntegrity` (SkiaSharp gira su mobile),
+`JsonSettingsFile`, i parser di revisioni e diff. Su 189 file e ~126.000 righe di `App`, sono la
+minoranza. Conclusione: una versione mobile è **un'app diversa** che condivide i parser — non una voce
+di questa roadmap.
+
 I due mattoni dell'indipendenza sono posati: conflitti e confronto si fanno in
 casa, e in entrambi i casi **il motore resta git** — `merge-file` e `diff`. Sono
 anche l'infrastruttura su cui appoggiare buona parte del resto di questo
