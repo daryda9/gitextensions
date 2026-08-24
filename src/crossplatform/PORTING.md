@@ -3470,6 +3470,19 @@ vacuo**: rimettendo lo stage incondizionato fallisce esattamente sui tre sintomi
 Trappola del fixture, da non riscoprire: due conflitti troppo vicini git li fonde in **un** blocco —
 il banco ha dovuto allontanare le due regioni con righe di contesto identiche perché ne restassero due.
 
+**M222bis (`eadb910a7`) — il primo push di M222 e' andato rosso in CI, e la colpa era del metodo.**
+`CS0162` (codice non raggiungibile) nel banco nuovo: un `const string Filler` messo **dopo** il
+`return` dei top-level statements, fra le funzioni locali — legale da scrivere, mai raggiunto, quindi
+avviso, quindi errore sotto `-warnaserror`. Il difetto non era invisibile: la build che **compilava**
+il banco aveva stampato `Errori: 1` e l'ho archiviato come artefatto del mio `| tail`, poi ho
+riguardato un log **intero** di una build **incrementale** che non ricompilava piu' niente e non
+aveva nulla da ristampare. Le due regole che ne escono, ora scritte in HANDOFF §3: una build
+incrementale non ristampa gli errori dei progetti che non tocca, quindi prima di committare si compila
+**a freddo come la CI** (`-p:UseSharedCompilation=false --no-incremental`, guardando l'exit code); e un
+`Errori: N` non e' mai un artefatto del terminale — si spiega prima di andare avanti. Riprodotto
+clonando il commit pushato e compilandolo a freddo (fallisce ogni volta), corretto spostando la
+costante sopra il primo statement, riverificato a freddo: exit 0, zero avvisi, `ALL GREEN: 9`.
+
 Prossima milestone libera: **M223**.
 
 ## M221 (2026-08-24, `2897877bf`) — una `@` nuda congelava l'app intera dentro lo scanner della sintassi

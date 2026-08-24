@@ -994,6 +994,12 @@ REGOLE, non negoziabili:
   scrive accanto alla voce (M217: nove affermazioni su diciotto erano sbagliate)
 - una build si guarda per intero: non troncarla con | tail (M216: un errore mangiato ha fatto
   misurare il dll vecchio per un giro)
+- **una build incrementale non ristampa gli errori dei progetti che non ricompila**: prima di
+  dichiarare verde, e SEMPRE prima di committare, build a freddo come la CI —
+  `dotnet build GitExtensions.Avalonia.slnx -c Debug -warnaserror -p:UseSharedCompilation=false --no-incremental`
+  e si guarda l'exit code. E un `Errori: N` visto una volta non e' mai un artefatto del terminale:
+  va spiegato prima di andare avanti (M222bis: CS0162 in un banco nuovo, verde in locale per
+  incremento, rosso in CI)
 - per un run headless il dll dell'app e' bin/GitExtensions.Avalonia/Debug/net10.0/…: MAI
   "find bin | head -1", che pesca il dll di un harness vecchio (successo in M218-M220)
 - misurare git, non ragionare su git: se il dubbio e' su cosa fa git, si esegue e si guarda
@@ -1002,6 +1008,8 @@ REGOLE, non negoziabili:
 AMBIENTE:
 - export DOTNET_ROOT=$HOME/.dotnet PATH=$HOME/.dotnet:$PATH  (altrimenti "dotnet: comando non trovato")
 - build: dotnet build GitExtensions.Avalonia.slnx -c Debug -warnaserror   (deve dare zero avvisi)
+- build come la CI, obbligatoria prima di committare: aggiungere
+  -p:UseSharedCompilation=false --no-incremental  (l'incrementale tace sui progetti che non ricompila)
 - banchi: Tests/run-all.sh --no-build   (deve dire ALL GREEN: 9 harnesses)
 - GUI: Xvfb + clic/tasti via python3-xlib (xdotool NON e' installato); cattura con
   import -window <id>. Le finestre si posizionano/ridimensionano da Xlib perche' non c'e' un WM.
