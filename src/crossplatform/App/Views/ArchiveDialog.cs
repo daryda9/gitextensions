@@ -30,9 +30,12 @@ namespace GitExtensions.Avalonia.Views;
 ///
 ///  <para>
 ///  Upstream picks the "other" revision with <c>btnChooseRevision</c> →
-///  <c>FormChooseCommit</c>. The port has no reusable commit picker, so the
-///  revision is typed instead (any expression git understands) and validated with
-///  <c>rev-parse</c> before use; wiring a real picker is left for when one exists.
+///  <c>FormChooseCommit</c> (<c>FormArchive.cs:170-174</c>), and the revision
+///  filter with <c>btnDiffChooseRevision</c> (<c>:188-190</c>). Both fields here
+///  carry the same pair: free text (any expression git understands, validated
+///  with <c>rev-parse</c> before use) plus a <c>…</c> button that opens
+///  <see cref="ChooseCommitDialog"/> — the picker this form's notes used to say
+///  did not exist, added in M214 for the rebase and wired here since.
 ///  </para>
 ///
 ///  <para>
@@ -56,11 +59,12 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
     private readonly TextBlock _revisionAuthor;
 
     // Upstream's btnChooseRevision (FormArchive.cs:167-174) re-targets the archive at
-    // another commit through FormChooseCommit. The port has no commit picker, so the
-    // revision is typed and resolved with rev-parse; _archiveHash is what actually
-    // gets archived and is re-resolved on every Load / Archive.
+    // another commit through FormChooseCommit; here the same choice is typed OR picked
+    // (the "…" opens ChooseCommitDialog). _archiveHash is what actually gets archived
+    // and is re-resolved on every Load / Archive, because the box stays free text.
     private readonly TextBox _revisionInput;
     private readonly Button _loadRevision;
+    private readonly Button _pickRevision;
     private string _archiveHash;
 
     private readonly ComboBox _format;
@@ -70,6 +74,7 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
     private readonly TextBox _paths;
     private readonly CheckBox _useRevisionFilter;
     private readonly TextBox _sinceRevision;
+    private readonly Button _pickSince;
 
     private readonly TextBlock _status;
     private readonly Button _archive;
@@ -147,14 +152,27 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
         };
         _loadRevision.Click += (_, _) => _ = LoadRevisionAsync();
 
+        // Upstream's btnChooseRevision. The caption is the ellipsis convention the
+        // rebase dialog's picker button established; the tooltip says what it opens.
+        _pickRevision = new Button
+        {
+            Content = "…",
+            MinWidth = 36,
+            Margin = new Thickness(8, 0, 0, 0),
+            [ToolTip.TipProperty] = T("Pick the commit from the history…"),
+        };
+        _pickRevision.Click += (_, _) => _ = PickArchiveRevisionAsync();
+
         Grid revisionRow = new()
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
             Margin = new Thickness(0, 4, 0, 0),
         };
         Grid.SetColumn(_revisionInput, 0);
-        Grid.SetColumn(_loadRevision, 1);
+        Grid.SetColumn(_pickRevision, 1);
+        Grid.SetColumn(_loadRevision, 2);
         revisionRow.Children.Add(_revisionInput);
+        revisionRow.Children.Add(_pickRevision);
         revisionRow.Children.Add(_loadRevision);
 
         _format = new ComboBox
@@ -210,8 +228,28 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
             Watermark = T("Revision to compare with (hash, branch, tag, HEAD~1…)"),
             FontFamily = Monospace,
             FontSize = 12,
+        };
+
+        // Upstream's btnDiffChooseRevision, enabled with its checkbox exactly as the
+        // text box is (FormArchive.cs:199-203, mirrored by SyncFilters here).
+        _pickSince = new Button
+        {
+            Content = "…",
+            MinWidth = 36,
+            Margin = new Thickness(8, 0, 0, 0),
+            [ToolTip.TipProperty] = T("Pick the commit from the history…"),
+        };
+        _pickSince.Click += (_, _) => _ = PickSinceRevisionAsync();
+
+        Grid sinceRow = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
             Margin = new Thickness(0, 4, 0, 0),
         };
+        Grid.SetColumn(_sinceRevision, 0);
+        Grid.SetColumn(_pickSince, 1);
+        sinceRow.Children.Add(_sinceRevision);
+        sinceRow.Children.Add(_pickSince);
 
         // Upstream's two filters are mutually exclusive: checking one unchecks the
         // other (FormArchive.cs:176-192). The port used to let both be checked and
@@ -277,7 +315,7 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
                 _usePathFilter,
                 _paths,
                 _useRevisionFilter,
-                _sinceRevision,
+                sinceRow,
                 _status,
                 new StackPanel
                 {
@@ -391,6 +429,51 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
         });
     }
 
+    /// <summary>
+    ///  Opens the commit picker for the revision to archive (upstream's
+    ///  <c>btnChooseRevision_Click</c>, <c>FormArchive.cs:170-174</c>) and, on a
+    ///  choice, loads it into the summary panel the way typing + Load does. A cancel
+    ///  leaves the field alone — the box is free text and the picker is an
+    ///  alternative to it, not a replacement.
+    /// </summary>
+    private async Task PickArchiveRevisionAsync()
+    {
+        ChosenCommit? chosen = await ChooseCommitDialog.ShowAsync(
+            this,
+            _repoPath,
+            new ChooseCommitRequest(
+                T("Choose the commit to archive"),
+                T("The archive will contain this commit's whole tree (or the filtered part of it)."),
+                Preselect: (_revisionInput.Text ?? string.Empty).Trim()));
+
+        if (chosen is not null)
+        {
+            _revisionInput.Text = chosen.ShortHash;
+            await LoadRevisionAsync();
+        }
+    }
+
+    /// <summary>
+    ///  Opens the commit picker for the revision filter (upstream's
+    ///  <c>btnDiffChooseRevision_Click</c>, <c>FormArchive.cs:188-190</c>). Only fills
+    ///  the box: the filter is resolved and applied when Archive runs.
+    /// </summary>
+    private async Task PickSinceRevisionAsync()
+    {
+        ChosenCommit? chosen = await ChooseCommitDialog.ShowAsync(
+            this,
+            _repoPath,
+            new ChooseCommitRequest(
+                T("Choose the revision to compare with"),
+                T("Only the files that changed since this revision end up in the archive."),
+                Preselect: (_sinceRevision.Text ?? string.Empty).Trim()));
+
+        if (chosen is not null)
+        {
+            _sinceRevision.Text = chosen.ShortHash;
+        }
+    }
+
     private bool _syncingFilters;
 
     private void OnFilterToggled(CheckBox toggled, CheckBox other)
@@ -420,6 +503,7 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
     {
         _paths.IsEnabled = _usePathFilter.IsChecked == true;
         _sinceRevision.IsEnabled = _useRevisionFilter.IsChecked == true;
+        _pickSince.IsEnabled = _useRevisionFilter.IsChecked == true;
     }
 
     // Keeps the output path's extension in sync with the chosen format.
@@ -595,6 +679,8 @@ public sealed class ArchiveDialog : Theming.ZoomWindow
         _useRevisionFilter.IsEnabled = !busy;
         _paths.IsEnabled = !busy && _usePathFilter.IsChecked == true;
         _sinceRevision.IsEnabled = !busy && _useRevisionFilter.IsChecked == true;
+        _pickSince.IsEnabled = !busy && _useRevisionFilter.IsChecked == true;
+        _pickRevision.IsEnabled = !busy;
     }
 
     private static string[] Lines(string? text)
