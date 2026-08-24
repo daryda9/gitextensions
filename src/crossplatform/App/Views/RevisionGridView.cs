@@ -6594,6 +6594,13 @@ public sealed class RevisionGridView : UserControl
         AddRouted(compare, "Compare to working directory", ctx => ctx.SingleCommit);
         AddRouted(compare, "Compare to branch…", ctx => ctx.SingleCommit);
 
+        // No upstream menu twin: upstream picks an arbitrary commit from INSIDE its
+        // compare window (FormDiff's btnAnotherFirstCommit/btnAnotherSecondCommit →
+        // FormChooseCommit, FormDiff.cs:231-240). The port's compare surface is the
+        // shared DiffView, which has no chrome of its own, so the picker is offered
+        // here, next to the other compare entries.
+        AddRouted(compare, "Compare to commit…", ctx => ctx.SingleCommit);
+
         MenuItem compareSelected = new()
         {
             Header = Strip(T("RevisionGridControl/compareSelectedCommitsMenuItem.Text", "Compare &selected commits")),

@@ -1733,6 +1733,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         Register("Compare to BASE", CompareToBase);
         Register("Compare to working directory", CompareToWorkingDirectory);
         Register("Compare to branch…", hash => _ = CompareToBranchAsync(hash));
+        Register("Compare to commit…", hash => _ = CompareToCommitAsync(hash));
 
         // Bisect. These four act on an ALREADY OPEN session and the grid disables
         // them when there is none (RevisionGridView.IsBisectInProgress, wired below,
@@ -2413,6 +2414,42 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         string shortOther = hash.Length > 8 ? hash[..8] : hash;
         _statusBar.SetText(TF("Comparing {0} .. {1}", chosen.Name, shortOther));
+    }
+
+    // Lets the user pick ANY commit from the real grid (ChooseCommitDialog) and diffs
+    // it against the selected one — picked commit as the "old" side, selected as the
+    // "new", the same orientation as "Compare to branch…" above. Upstream reaches this
+    // choice from inside its compare window (FormDiff's btnAnotherFirstCommit /
+    // btnAnotherSecondCommit → FormChooseCommit, FormDiff.cs:231-240); the port's
+    // compare surface is the shared DiffView, which has no chrome of its own, so the
+    // picker is an entry of the grid's Compare submenu instead. The remembered compare
+    // BASE, if any, preselects the picker — it is the best guess at "the other side".
+    private async Task CompareToCommitAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        ChosenCommit? chosen = await ChooseCommitDialog.ShowAsync(
+            this,
+            _repoPath,
+            new ChooseCommitRequest(
+                T("Choose the commit to compare with"),
+                T("The commit picked here is the OLD side of the comparison; the commit selected in the grid is the new side."),
+                Preselect: _compareBaseHash));
+
+        if (chosen is null)
+        {
+            return;
+        }
+
+        _diffShowsRange = true;
+        _diff.ShowRange(_repoPath, chosen.Hash, hash);
+        FocusDiff();
+
+        string shortOther = hash.Length > 8 ? hash[..8] : hash;
+        _statusBar.SetText(TF("Comparing {0} .. {1}", chosen.ShortHash, shortOther));
     }
 
     // Modal single-select branch picker; returns the chosen branch, or null on cancel.
