@@ -49,6 +49,7 @@ HARNESSES=(
     "image-integrity|ImageIntegrityRegression.Harness|180|"
     "inline-diff|InlineDiffRegression.Harness|300|"
     "command-palette|CommandPaletteRegression.Harness|300|"
+    "syntax-tokenize|SyntaxTokenizeRegression.Harness|120|"
 )
 
 # Deliberately not run here, with the reason, so their absence reads as a

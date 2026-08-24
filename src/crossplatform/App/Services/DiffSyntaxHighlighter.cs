@@ -580,10 +580,17 @@ public static class DiffSyntaxHighlighter
                 continue;
             }
 
-            // identifier / keyword
+            // identifier / keyword. The extension starts PAST the first character:
+            // IsWordStart already accepted it, and '@' is a word STARTER only (C#
+            // @identifiers, Python decorators, SQL variables) — it is not in
+            // IsWordChar, so extending from i itself left j == i and the cursor
+            // never advanced: the first bare '@' of a patch pinned the UI thread at
+            // 100% inside this loop, from AvaloniaEdit's measure pass, with no
+            // error anywhere (Tests/SyntaxTokenizeRegression is the suite that
+            // hangs — by name, via its watchdog — if this regresses).
             if (IsWordStart(c))
             {
-                int j = i;
+                int j = i + 1;
                 while (j < line.Length && IsWordChar(line[j]))
                 {
                     j++;

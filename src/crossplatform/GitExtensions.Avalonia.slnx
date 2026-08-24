@@ -25,6 +25,7 @@
     <Project Path="Tests/NavigationSnapshot/NavigationSnapshot.Harness.csproj" />
     <Project Path="Tests/Perf/Perf.Harness.csproj" />
     <Project Path="Tests/SettingsStoresRegression/SettingsStoresRegression.Harness.csproj" />
+    <Project Path="Tests/SyntaxTokenizeRegression/SyntaxTokenizeRegression.Harness.csproj" />
     <Project Path="Tests/ViewPrefsRegression/ViewPrefsRegression.Harness.csproj" />
   </Folder>
   <Folder Name="/docs/">
