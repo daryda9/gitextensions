@@ -35,6 +35,23 @@ using GitExtensions.Avalonia.Services;
 // itself — the app does exactly this at startup.
 GitUI.CrossPlatformBootstrap.InitializeThreading();
 
+// The filler is load-bearing: git merges two conflicts into ONE block when they are
+// closer than its context, and this suite needs two separate regions — the shape of
+// the real merge it came from (an import line and a method body).
+const string Filler = """
+
+class Service {
+    private one = 1
+    private two = 2
+    private three = 3
+    private four = 4
+
+    public untouched(): void {
+        // nothing here is edited by either side
+    }
+
+""";
+
 List<string> failures = [];
 int cases = 0;
 
@@ -237,22 +254,6 @@ ConflictEntry OnlyConflict(string repo)
         : new ConflictEntry("service.ts", ConflictSide.Missing, ConflictSide.Missing, ConflictSide.Missing);
 }
 
-// The filler is load-bearing: git merges two conflicts into ONE block when they are
-// closer than its context, and this suite needs two separate regions — the shape of
-// the real merge it came from (an import line and a method body).
-const string Filler = """
-
-class Service {
-    private one = 1
-    private two = 2
-    private three = 3
-    private four = 4
-
-    public untouched(): void {
-        // nothing here is edited by either side
-    }
-
-""";
 
 static string Base() => "import { a } from './a'" + Filler + "    public remove(): void {\n        drop()\n    }\n}\n";
 
