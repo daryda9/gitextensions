@@ -529,6 +529,139 @@ public sealed class ConflictService
     }
 
     /// <summary>
+    ///  Puts a resolved path <b>back</b> into conflict: <c>git checkout --merge --
+    ///  &lt;path&gt;</c>, which rebuilds index stages 1/2/3 and rewrites the work-tree
+    ///  file with the conflict markers.
+    ///
+    ///  <para><b>Why this exists.</b> Staging is what ends a conflict, and it ends it
+    ///  for every tool at once: after <c>git add</c> the stages are gone, so
+    ///  <c>ls-files --unmerged</c> is empty, <c>git mergetool</c> answers "No files
+    ///  need merging", and neither kdiff3 nor this port's own editor can be pointed
+    ///  at the file again. A user who staged a half-finished resolution — which
+    ///  <see cref="MergeToolService.Save"/> no longer does by itself, but a hand-run
+    ///  <c>git add</c> still does — was locked out with no way back offered anywhere
+    ///  in the UI. git has one; it just has no button.</para>
+    ///
+    ///  <para><b>Destructive, and the caller must say so</b>: the work-tree file is
+    ///  overwritten by the conflicted version, so whatever resolution was saved is
+    ///  gone (measured on git 2.43: stages come back, the resolved text does not).
+    ///  Upstream offers nothing of the kind — searched: <c>FormResolveConflicts</c>
+    ///  never runs <c>checkout -m</c> — so this is original work, and the confirm
+    ///  dialog is where its cost is stated.</para>
+    /// </summary>
+    public ConflictActionResult ReopenConflict(string repoPath, string path)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        GitArgumentBuilder args = new("checkout")
+        {
+            "--merge",
+            "--",
+            Quote(path),
+        };
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new ConflictActionResult(result.ExitedSuccessfully, result.AllOutput);
+    }
+
+    /// <summary>
+    ///  The staged paths whose <b>indexed content still carries conflict markers</b> —
+    ///  files git considers resolved and would commit as they are.
+    ///
+    ///  <para>This is the state that used to be invisible: the conflict list is built
+    ///  from <c>ls-files --unmerged</c>, so a file staged with markers still in it
+    ///  drops out of the list entirely and the merge looks finished. git does not
+    ///  object either — measured: <c>git commit</c> commits the markers without a
+    ///  word.</para>
+    ///
+    ///  <para>Asked of the <b>index</b> (<c>git grep --cached</c>), not of the work
+    ///  tree, because the index is what a commit would take, and only of the paths
+    ///  the commit would touch (<c>diff --cached</c>), so an inert repository is not
+    ///  scanned at all. A file must carry <b>both</b> an opening and a closing marker
+    ///  to count: requiring the pair is what keeps a Markdown <c>=======</c> rule, or
+    ///  a document that quotes one marker (this port's own notes do), out of the
+    ///  answer.</para>
+    /// </summary>
+    public IReadOnlyList<string> ListStagedWithMarkers(string repoPath)
+    {
+        try
+        {
+            GitModule module = GitContext.CreateModule(repoPath);
+
+            GitArgumentBuilder staged = new("diff")
+            {
+                "--cached",
+                "--name-only",
+                "--diff-filter=ACMR",
+            };
+            ExecutionResult listed = module.GitExecutable.Execute(staged, throwOnErrorExit: false);
+            if (!listed.ExitedSuccessfully)
+            {
+                return [];
+            }
+
+            string[] paths = listed.StandardOutput
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (paths.Length == 0)
+            {
+                return [];
+            }
+
+            // Chunked: the paths become one command line that git re-splits, and a
+            // merge of a large branch can stage hundreds of them.
+            HashSet<string> opened = new(StringComparer.Ordinal);
+            HashSet<string> closed = new(StringComparer.Ordinal);
+            foreach (string[] chunk in Chunk(paths, 50))
+            {
+                Collect(module, "^<<<<<<< ", chunk, opened);
+                Collect(module, "^>>>>>>> ", chunk, closed);
+            }
+
+            opened.IntersectWith(closed);
+            List<string> both = [.. opened];
+            both.Sort(StringComparer.Ordinal);
+            return both;
+        }
+        catch (Exception)
+        {
+            // A probe must never break the dialog that calls it (HANDOFF §3).
+            return [];
+        }
+    }
+
+    private static IEnumerable<string[]> Chunk(string[] paths, int size)
+    {
+        for (int i = 0; i < paths.Length; i += size)
+        {
+            yield return paths[i..Math.Min(i + size, paths.Length)];
+        }
+    }
+
+    // `git grep --cached -l <pattern> -- <paths>`: exit 1 means "nothing matched",
+    // which is an answer and not a failure, so the exit code is not consulted.
+    private static void Collect(GitModule module, string pattern, string[] paths, HashSet<string> into)
+    {
+        GitArgumentBuilder args = new("grep")
+        {
+            "--cached",
+            "-l",
+            "-e",
+            pattern.Quote(),
+            "--",
+        };
+
+        foreach (string path in paths)
+        {
+            args.Add(Quote(path));
+        }
+
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        foreach (string line in result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            into.Add(line);
+        }
+    }
+
+    /// <summary>
     ///  Aborts the whole resolution with <c>git reset --hard</c>, upstream's
     ///  <b>Reset</b> button (<c>FormResolveConflicts.cs:770-779</c> →
     ///  <c>Module.Reset(ResetMode.Hard)</c>). Destructive: the caller must have

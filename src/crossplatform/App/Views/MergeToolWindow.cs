@@ -107,6 +107,15 @@ internal enum AutoChoice
 ///  which is the only pane that decides anything. The result pane carries a margin
 ///  showing, per conflict, what it currently holds.</para>
 /// </summary>
+/// <summary>
+///  What the merge editor did. Three states, not two: <b>resolved</b> (written and
+///  staged), <b>saved but still unresolved</b> (written with markers left in it, so
+///  every tool can still be pointed at the file) and <b>closed without saving</b>.
+///  The middle one used to be impossible, and reporting it as "left unresolved" would
+///  read as if the edits had been thrown away.
+/// </summary>
+public sealed record MergeEditorOutcome(bool Resolved, bool Saved, int Left, string? Error);
+
 public sealed class MergeToolWindow : ZoomWindow
 {
     private readonly string _repoPath;
@@ -168,6 +177,27 @@ public sealed class MergeToolWindow : ZoomWindow
 
     /// <summary>True once the file has been written and staged.</summary>
     public bool Resolved { get; private set; }
+
+    /// <summary>
+    ///  True once the text has been written to the work tree, whether or not the file
+    ///  was also staged. A save that leaves markers behind is a real save — the work
+    ///  is on disk — and the caller has to say so instead of reporting "left
+    ///  unresolved", which reads like the edits were dropped.
+    /// </summary>
+    public bool Saved { get; private set; }
+
+    /// <summary>Conflicts still undecided when the window closed (0 when it closed clean).</summary>
+    public int Left { get; private set; }
+
+    // The two resizable rows of the layout, kept so the splitter's position can be
+    // read at close and restored at open (ViewPrefs.Merge.ResultShare).
+    private RowDefinition? _sourcesRow;
+    private RowDefinition? _resultRow;
+
+    // "Only the result": folds the three read-only panes away, for the case the panes
+    // cannot serve — a conflict that has to be typed out by hand.
+    private ToggleButton? _foldSources;
+    private double _shareBeforeFold = MergeToolPrefs.DefaultResultShare;
 
     private MergeToolWindow(string repoPath, MergeDocument document)
     {
@@ -357,7 +387,7 @@ public sealed class MergeToolWindow : ZoomWindow
     ///  (binary, a missing stage, a submodule) reports why instead of opening an
     ///  empty window.
     /// </summary>
-    public static async Task<(bool Resolved, string? Error)> ShowAsync(
+    public static async Task<MergeEditorOutcome> ShowAsync(
         Window owner, string repoPath, ConflictEntry entry)
     {
         MergeToolService service = new();
@@ -365,21 +395,42 @@ public sealed class MergeToolWindow : ZoomWindow
             await Task.Run(() => service.PrepareAsync(repoPath, entry));
         if (document is null)
         {
-            return (false, error ?? "The merge could not be prepared.");
+            return new MergeEditorOutcome(false, false, 0, error ?? "The merge could not be prepared.");
         }
 
         MergeToolWindow window = new(repoPath, document);
         await window.ShowDialog(owner);
-        return (window.Resolved, null);
+        return new MergeEditorOutcome(window.Resolved, window.Saved, window.Left, null);
+    }
+
+    /// <inheritdoc/>
+    protected override void OnClosed(EventArgs e)
+    {
+        PersistResultShare();
+        base.OnClosed(e);
     }
 
     // ------------------------------------------------------------------ layout
 
     private Control BuildLayout(Button cancel)
     {
+        // Star heights, not a fixed pair: the remembered share decides how the two
+        // resizable rows divide the space between them (see MergeToolPrefs.ResultShare
+        // for why the old fixed 3:2 in favour of the sources was the wrong default).
+        double share = RestoredResultShare();
+        _sourcesRow = new RowDefinition(new GridLength(1 - share, GridUnitType.Star));
+        _resultRow = new RowDefinition(new GridLength(share, GridUnitType.Star));
+
         Grid root = new()
         {
-            RowDefinitions = new RowDefinitions("Auto,3*,Auto,2*,Auto"),
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Auto),
+                _sourcesRow,
+                new RowDefinition(GridLength.Auto),
+                _resultRow,
+                new RowDefinition(GridLength.Auto),
+            },
         };
 
         AddAt(root, BuildToolbar(), 0);
@@ -440,6 +491,8 @@ public sealed class MergeToolWindow : ZoomWindow
                     () => ApplyToUndecided(MergeChoice.Ours)),
                 ToolButton(T("All REMOTE"), T("Take their version in every conflict nobody has decided yet"),
                     () => ApplyToUndecided(MergeChoice.Theirs)),
+                Spacer(),
+                BuildFoldButton(),
             },
         };
 
@@ -1596,19 +1649,22 @@ public sealed class MergeToolWindow : ZoomWindow
             ? Brush("App.DiffAdded", Brushes.Green)
             : Brush("App.Text", Brushes.Gainsboro);
 
+        // The caption says which of the two things the button does, because they are
+        // different acts: one ends the conflict, the other parks the work.
         _save.Content = clean
             ? T("Save and mark resolved")
             : undecided > 0
-                ? string.Format(CultureInfo.CurrentCulture, T("Save anyway ({0} left)"), undecided)
-                : T("Save anyway");
+                ? string.Format(CultureInfo.CurrentCulture, T("Save, still unresolved ({0} left)"), undecided)
+                : T("Save, still unresolved");
 
         _status.Text = clean
             ? T("Nothing left to decide. Saving stages the file.")
             : undecided > 0
-                ? T("Markers still in the result: saving would commit them.")
+                ? T("Markers still in the result: the file stays unresolved, so this editor, "
+                    + "git mergetool and kdiff3 all keep working on it.")
                 : string.Format(
                     CultureInfo.CurrentCulture,
-                    T("{0} leftover marker line(s) belong to no conflict: saving would commit them."),
+                    T("{0} leftover marker line(s) belong to no conflict: the file stays unresolved."),
                     _strays);
         _status.Foreground = clean
             ? Brush("App.TextDim", Brushes.Gray)
@@ -1764,22 +1820,42 @@ public sealed class MergeToolWindow : ZoomWindow
     private void SaveAndClose()
     {
         _save.IsEnabled = false;
-        _ = SaveAsync(_result.Text, _doc.Path);
+        int undecided = _regions.Count(r => r.Choice == MergeChoice.Conflict);
+        bool clean = undecided == 0 && _strays == 0;
+        _ = SaveAsync(_result.Text, _doc.Path, clean, undecided);
     }
 
-    private async Task SaveAsync(string text, string path)
+    /// <summary>
+    ///  Writes the result and — <b>only when nothing is left marked</b> — stages it.
+    ///
+    ///  <para>A save with markers still in the text keeps the file unresolved on
+    ///  purpose. Staging is what ends a conflict for every tool at once: after
+    ///  <c>git add</c> the index stages are gone, so this editor, <c>git mergetool</c>
+    ///  and kdiff3 all lose the file (measured: <c>ls-files --unmerged</c> empty,
+    ///  "No files need merging"), and <c>git commit</c> then takes the markers without
+    ///  a word. Leaving it unresolved loses nothing — the text is on disk — and keeps
+    ///  every route open, including finishing the job in another tool, which is
+    ///  precisely what the old unconditional stage made impossible.</para>
+    /// </summary>
+    private async Task SaveAsync(string text, string path, bool markResolved, int undecided)
     {
-        ConflictActionResult result = await Task.Run(() => _service.Save(_repoPath, _doc, text));
+        ConflictActionResult result = await Task.Run(
+            () => _service.Save(_repoPath, _doc, text, markResolved));
         if (result.Success)
         {
-            Resolved = true;
+            Saved = true;
+            Resolved = markResolved;
+            Left = markResolved ? 0 : undecided;
             Close();
             return;
         }
 
         _save.IsEnabled = true;
         _status.Text = string.Format(
-            CultureInfo.CurrentCulture, T("Could not stage {0}: {1}"), path, result.Message.Trim());
+            CultureInfo.CurrentCulture,
+            markResolved ? T("Could not stage {0}: {1}") : T("Could not write {0}: {1}"),
+            path,
+            result.Message.Trim());
         _status.Foreground = Brush("App.DiffRemoved", Brushes.Red);
     }
 
@@ -2312,6 +2388,74 @@ public sealed class MergeToolWindow : ZoomWindow
         button.Click += (_, _) => Apply(choice);
         _choiceButtons[choice] = button;
         return button;
+    }
+
+    /// <summary>
+    ///  "Only result": folds the three read-only panes away and gives the whole window
+    ///  to the editable result.
+    ///
+    ///  <para>Not a substitute for the splitter but the end of its travel, as one
+    ///  press: a conflict whose answer is neither side — take one, keep part of the
+    ///  other, delete the rest — is finished by typing, and while typing the three
+    ///  reference panes are worth less than the lines they hide. Pressing again brings
+    ///  them back at the share they had, so the fold costs nothing to try.</para>
+    /// </summary>
+    private Control BuildFoldButton()
+    {
+        _foldSources = new ToggleButton
+        {
+            Content = T("Only result"),
+            Padding = Metrics.Density.ButtonPadding,
+            [ToolTip.TipProperty] = T("Hide LOCAL/BASE/REMOTE and give the whole window to the result. Press again to bring them back"),
+        };
+        _foldSources.IsCheckedChanged += (_, _) => ApplyFold(_foldSources.IsChecked == true);
+        return _foldSources;
+    }
+
+    private void ApplyFold(bool folded)
+    {
+        if (_sourcesRow is null || _resultRow is null)
+        {
+            return;
+        }
+
+        if (folded)
+        {
+            _shareBeforeFold = CurrentResultShare();
+            _sourcesRow.Height = new GridLength(0, GridUnitType.Pixel);
+            _resultRow.Height = new GridLength(1, GridUnitType.Star);
+            return;
+        }
+
+        double share = Math.Clamp(
+            _shareBeforeFold, MergeToolPrefs.MinResultShare, MergeToolPrefs.MaxResultShare);
+        _sourcesRow.Height = new GridLength(1 - share, GridUnitType.Star);
+        _resultRow.Height = new GridLength(share, GridUnitType.Star);
+    }
+
+    // The share the two rows currently show, measured from what was laid out rather
+    // than from the star values, which the splitter rewrites as the user drags.
+    private double CurrentResultShare()
+    {
+        double sources = _sourcesRow?.ActualHeight ?? 0;
+        double result = _resultRow?.ActualHeight ?? 0;
+        double total = sources + result;
+        return total > 0
+            ? Math.Clamp(result / total, MergeToolPrefs.MinResultShare, MergeToolPrefs.MaxResultShare)
+            : MergeToolPrefs.DefaultResultShare;
+    }
+
+    private static double RestoredResultShare() => Prefs.Load().Merge.ResultShare;
+
+    // Written on close, next to the inline-mode reading and for the same reason it is
+    // written through Update: this window is modal over a host that owns the file.
+    private void PersistResultShare()
+    {
+        // A folded window would persist "the sources get nothing", which is a view and
+        // not a preference: what goes to the file is the share the fold suspended.
+        double share = _foldSources?.IsChecked == true ? _shareBeforeFold : CurrentResultShare();
+        Prefs.Update(prefs => prefs.Merge.ResultShare =
+            Math.Clamp(share, MergeToolPrefs.MinResultShare, MergeToolPrefs.MaxResultShare));
     }
 
     private Button ToolButton(string caption, string tip, Action action)

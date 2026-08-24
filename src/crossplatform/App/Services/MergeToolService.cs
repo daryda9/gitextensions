@@ -1052,7 +1052,7 @@ public sealed class MergeToolService
     ///  the local version used, so a merge does not silently rewrite every line of
     ///  a CRLF file (or of an LF one on a CRLF checkout).
     /// </summary>
-    public ConflictActionResult Save(string repoPath, MergeDocument document, string text)
+    public ConflictActionResult Save(string repoPath, MergeDocument document, string text, bool markResolved)
     {
         try
         {
@@ -1080,7 +1080,18 @@ public sealed class MergeToolService
             return new ConflictActionResult(false, $"Could not write {document.Path}: {ex.Message}");
         }
 
-        return new ConflictService().MarkResolved(repoPath, document.Path);
+        // Staging is what ENDS a conflict, for every tool at once: after `git add`
+        // the index stages are gone, `ls-files --unmerged` is empty, `git mergetool`
+        // says "No files need merging" and neither kdiff3 nor this editor can be
+        // pointed at the file again. So a save that still leaves markers in the text
+        // deliberately does NOT stage: the text is written (no work is lost) and the
+        // file stays unresolved, which is both the truth and the state in which every
+        // other tool still works. Measured on git 2.43, this was the actual cost of
+        // the old unconditional stage: the resolution could only be finished in an
+        // editor by hand, and `git commit` took the markers without a word.
+        return markResolved
+            ? new ConflictService().MarkResolved(repoPath, document.Path)
+            : new ConflictActionResult(true, string.Empty);
     }
 
     /// <summary>

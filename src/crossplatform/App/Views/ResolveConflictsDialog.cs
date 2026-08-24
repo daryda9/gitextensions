@@ -112,6 +112,13 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     private readonly MenuItem _ctxOpen = new();
     private readonly MenuItem _ctxShowInFolder = new();
 
+    // The "staged but still marked" banner: files git thinks are resolved whose
+    // indexed content still carries conflict markers (ConflictService.ListStagedWithMarkers).
+    private readonly Border _markerBanner;
+    private readonly TextBlock _markerText;
+    private readonly Button _markerReopen;
+    private IReadOnlyList<string> _markerFiles = [];
+
     private readonly string? _mergeTool;
     private readonly bool _inRebase;
 
@@ -577,6 +584,43 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         main.Children.Add(listArea);
         main.Children.Add(buttonColumn);
 
+        // A file staged with its markers still in it disappears from the list above —
+        // the list is ls-files --unmerged — so the merge looks finished while the next
+        // commit would carry "<<<<<<< HEAD" into history (measured: git commits it
+        // without a word). Saying it here is the whole point; the button is the way
+        // back that git has and the UI did not offer.
+        _markerText = new TextBlock
+        {
+            Foreground = Brush("App.Text", Brushes.Gainsboro),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _markerReopen = new Button
+        {
+            Content = T("Reopen conflict"),
+            Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            [ToolTip.TipProperty] = T("Put the file back into conflict (git checkout --merge) so any merge tool can open it again"),
+        };
+        _markerReopen.Click += (_, _) => _ = ReopenMarkedAsync();
+
+        Grid markerRow = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(_markerText, 0);
+        Grid.SetColumn(_markerReopen, 1);
+        markerRow.Children.Add(_markerText);
+        markerRow.Children.Add(_markerReopen);
+
+        _markerBanner = new Border
+        {
+            Background = Brush("App.RepoStateDirty", Brushes.Orange),
+            Padding = new Thickness(10, 6),
+            Margin = new Thickness(0, 0, 0, 8),
+            IsVisible = false,
+            Child = markerRow,
+        };
+
+        StackPanel topBanners = new() { Children = { _markerBanner, _rerereBanner } };
+
         Grid root = new()
         {
             Margin = new Thickness(12),
@@ -595,7 +639,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _diffRow = root.RowDefinitions[7];
         _rerereDiff.Expanded += (_, _) => _diffRow.Height = new GridLength(1, GridUnitType.Star);
         _rerereDiff.Collapsed += (_, _) => _diffRow.Height = GridLength.Auto;
-        Grid.SetRow(_rerereBanner, 0);
+        Grid.SetRow(topBanners, 0);
         Grid.SetRow(rerereStrip, 1);
         Grid.SetRow(caption, 2);
         Grid.SetRow(main, 3);
@@ -610,7 +654,7 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         Grid.SetRow(_status, 9);
         Grid.SetRow(help, 10);
         help.Margin = new Thickness(0, 12, 0, 0);
-        root.Children.Add(_rerereBanner);
+        root.Children.Add(topBanners);
         root.Children.Add(rerereStrip);
         root.Children.Add(caption);
         root.Children.Add(main);
@@ -1218,11 +1262,20 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         HideGuided();
         try
         {
-            (bool resolved, string? error) = await MergeToolWindow.ShowAsync(this, _repoPath, entry);
-            _status.Text = error
-                ?? (resolved
+            MergeEditorOutcome outcome = await MergeToolWindow.ShowAsync(this, _repoPath, entry);
+            _status.Text = outcome.Error
+                ?? (outcome.Resolved
                     ? string.Format(T("{0} merged and staged."), entry.Path)
-                    : string.Format(T("{0} was left unresolved."), entry.Path));
+
+                    // Saved-but-unresolved is its own answer: the work is on disk and
+                    // the file is still in conflict on purpose, so the sentence has to
+                    // say both — otherwise it reads as "your edits went nowhere".
+                    : outcome.Saved
+                        ? string.Format(
+                            T("{0} saved, still unresolved ({1} conflict(s) left) — kdiff3 and the other tools can still open it."),
+                            entry.Path,
+                            outcome.Left)
+                        : string.Format(T("{0} was left unresolved."), entry.Path));
         }
         catch (Exception ex)
         {
@@ -1548,6 +1601,97 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
     ///  itself. When nothing is left the window closes and reports it, leaving the
     ///  "commit now?" decision to the caller.
     /// </summary>
+    /// <summary>
+    ///  Refreshes the "staged but still marked" banner from the index.
+    /// </summary>
+    private async Task RefreshMarkerBannerAsync()
+    {
+        IReadOnlyList<string> marked;
+        try
+        {
+            marked = await Task.Run(() => _service.ListStagedWithMarkers(_repoPath));
+        }
+        catch (Exception)
+        {
+            // A banner is not worth failing a reload over.
+            marked = [];
+        }
+
+        _markerFiles = marked;
+        _markerBanner.IsVisible = marked.Count > 0;
+        if (marked.Count == 0)
+        {
+            return;
+        }
+
+        // Names the files, up to a point: the banner has to fit, and the count carries
+        // the rest.
+        const int Shown = 3;
+        string names = string.Join(", ", marked.Take(Shown));
+        if (marked.Count > Shown)
+        {
+            names += string.Format(T(" and {0} more"), marked.Count - Shown);
+        }
+
+        _markerText.Text = string.Format(
+            T("Marked resolved, but still contains conflict markers: {0}. Committing would carry them into history."),
+            names);
+        _markerReopen.Content = marked.Count == 1
+            ? T("Reopen conflict")
+            : string.Format(T("Reopen {0} conflicts"), marked.Count);
+    }
+
+    /// <summary>
+    ///  Puts every file the banner names back into conflict, under a confirmation that
+    ///  states the cost: <c>git checkout --merge</c> rewrites the work-tree file with
+    ///  the markers, so a resolution saved there is lost (measured on git 2.43 — the
+    ///  stages come back, the resolved text does not).
+    /// </summary>
+    private async Task ReopenMarkedAsync()
+    {
+        if (_markerFiles.Count == 0)
+        {
+            return;
+        }
+
+        bool confirmed = await ConfirmAsync(
+            string.Format(
+                T("Put {0} back into conflict?\n\nThe file(s) will be rewritten with the conflict markers of the "
+                    + "original merge, so anything already resolved in them is lost. Every merge tool — this one, "
+                    + "git mergetool, kdiff3 — can open them again afterwards."),
+                _markerFiles.Count == 1 ? _markerFiles[0] : string.Format(T("{0} files"), _markerFiles.Count)),
+            T("Reopen conflict"));
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        SetBusy(true);
+        List<string> failed = [];
+        try
+        {
+            foreach (string path in _markerFiles)
+            {
+                ConflictActionResult result = await Task.Run(() => _service.ReopenConflict(_repoPath, path));
+                if (!result.Success)
+                {
+                    failed.Add($"{path}: {result.Message.Trim()}");
+                }
+            }
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        _status.Text = failed.Count == 0
+            ? string.Format(T("{0} file(s) put back into conflict."), _markerFiles.Count)
+            : string.Join(Environment.NewLine, failed);
+
+        await ReloadAsync();
+    }
+
     private async Task ReloadAsync()
     {
         string? keep = SingleSelection()?.Path;
@@ -1566,9 +1710,24 @@ public sealed class ResolveConflictsDialog : Theming.ZoomWindow
         _conflicts = fresh;
         BindRows();
 
+        // Asked on every reload, including the one that finds no conflicts left: that
+        // is exactly the case this catches — nothing unmerged, and a marker still in
+        // the index.
+        await RefreshMarkerBannerAsync();
+
         if (_conflicts.Count == 0)
         {
-            AllConflictsResolved = true;
+            AllConflictsResolved = _markerFiles.Count == 0;
+            if (_markerFiles.Count > 0)
+            {
+                // Not closing on a marker: closing here reports "you can commit", and
+                // the one thing that must not happen is committing these.
+                _status.Text = string.Format(
+                    T("No file is unmerged, but {0} staged file(s) still contain conflict markers."),
+                    _markerFiles.Count);
+                return;
+            }
+
             _status.Text = T("FormResolveConflicts/_allConflictsResolved.Text",
                 "All merge conflicts are resolved, you can commit.");
             Close();

@@ -169,6 +169,30 @@ public sealed class MergeToolPrefs
     ///  default in <see cref="ViewPrefsService.Sanitize"/>.</para>
     /// </summary>
     public string InlineMode { get; set; } = "Sides";
+
+    /// <summary>
+    ///  How much of the window's height the <b>MERGE RESULT</b> pane gets, as a
+    ///  fraction of the two resizable panes together (the rest goes to the three
+    ///  read-only source panes above it). Where the user last dragged the splitter.
+    ///
+    ///  <para>Persisted because the answer is per person and per screen, and because
+    ///  the default it replaced was measurably wrong for the case that matters most:
+    ///  a conflict big enough to need editing by hand. At the old 3:2 split in favour
+    ///  of the SOURCES, an eighteen-line conflict showed about four lines of the one
+    ///  pane that can be typed in — measured on screen, and the reason a user reached
+    ///  for kdiff3 on exactly that conflict. A fraction and not a pixel height, so it
+    ///  survives a different window size or screen.</para>
+    /// </summary>
+    public double ResultShare { get; set; } = DefaultResultShare;
+
+    /// <summary>Half each: the result pane is where the work happens, the sources are reference.</summary>
+    public const double DefaultResultShare = 0.5;
+
+    /// <summary>Narrowest either pane may be squeezed to by a remembered value.</summary>
+    public const double MinResultShare = 0.15;
+
+    /// <summary>Widest the result pane may be by a remembered value; the sources keep the rest.</summary>
+    public const double MaxResultShare = 0.85;
 }
 
 /// <summary>
@@ -639,6 +663,12 @@ public sealed class ViewPrefsService
             "Off" => "Off",
             _ => "Sides",
         };
+
+        // A hand-edited (or NaN) share would collapse one pane to nothing, with no way
+        // to drag it back: clamped, and anything not a number goes to the default.
+        p.Merge.ResultShare = double.IsFinite(p.Merge.ResultShare)
+            ? Math.Clamp(p.Merge.ResultShare, MergeToolPrefs.MinResultShare, MergeToolPrefs.MaxResultShare)
+            : MergeToolPrefs.DefaultResultShare;
 
         // A hand-edited file could carry nulls inside the list, or more entries than
         // the cap; both would reach the flyout that lists them.
