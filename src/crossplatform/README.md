@@ -296,8 +296,6 @@ Stated plainly, because a README that only lists wins is a sales page:
 - **Translations.** Upstream's catalogues are the port's catalogues, and every new
   string is keyed into them — but the strings this port added have no translations
   yet, so they read in English even in a translated build.
-- The commit picker upstream offers on four fields (rebase, cherry-pick, archive,
-  compare) is wired to one of them here.
 - Assorted measured-and-recorded gaps: right-to-left tab labels eliding awkwardly,
   rerere untested with a multi-variant cache or non-ASCII paths, submodule conflicts
   with objects missing on one side.

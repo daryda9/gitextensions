@@ -3418,6 +3418,66 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M218–M220 (2026-08-24) — il selettore di commit arriva agli altri tre campi: archivio, confronto, cherry-pick
+
+Chiude il residuo lasciato scritto da M214: upstream serve `FormChooseCommit` da **quattro** form
+(`FormRebase`, `FormCherryPick`, `FormArchive` — su due campi — e `FormDiff`; misurato con la ricerca
+di `new FormChooseCommit` in `src/app`), il port lo dava solo al rebase. Tre unità, tre commit,
+verificate a schermo su un repo di prova con un merge commit (`A─B─C─M(D)` più `side` e un branch
+`target` fermo ad `A`) e poi **misurate su git**.
+
+### M218 (`82db00fcd`) — i due campi revisione dell'archivio
+
+`ArchiveDialog` aveva scritto nel proprio commento «il port non ha un selettore riusabile»: da M214
+non è più vero. I due campi (revisione da archiviare = `btnChooseRevision`, `FormArchive.cs:170-174`;
+filtro «changed since» = `btnDiffChooseRevision`, `:188-190`) ora portano un `…` accanto alla casella
+di testo, che resta libera. La scelta della revisione ricarica il pannello «This revision will be
+archived» come farebbe digitare + Load; il `…` del filtro segue la sua checkbox come upstream abilita
+il gemello (`:199-203`). Misurato: scelto B come revisione e A come filtro, lo zip scritto contiene
+esattamente i file di `git diff A..B` (`['f1.txt']`).
+
+### M219 (`71284d732`) — «Compare to commit…» nel sottomenu Compare
+
+**Upstream non ha questa voce di menu** (cercato: il commit arbitrario si sceglie da *dentro*
+`FormDiff`, `btnAnotherFirstCommit`/`btnAnotherSecondCommit` → `FormChooseCommit`,
+`FormDiff.cs:231-240`). La superficie di confronto del port è la `DiffView` condivisa, che non ha una
+chrome propria dove mettere quei pulsanti: il picker entra quindi dal sottomenu Compare della griglia,
+accanto alle voci che già ci sono. Orientamento come «Compare to branch…»: il commit scelto è il lato
+**vecchio**, la riga selezionata il nuovo; la BASE ricordata, se c'è, preseleziona il picker.
+Misurato: B contro D dà l'intestazione «(3) Diff with A b831ad81» con i tre file di
+`git diff B..D`, status bar «Comparing b831ad81 .. d15e4cc1».
+
+### M220 (`c18f2e369`) — il cherry-pick passa da un dialogo, e un merge commit si può finalmente prendere
+
+Il menu della griglia faceva `git cherry-pick <hash>` **diretto**, cosa che upstream non fa mai, e
+costava tre cose: un **merge commit non si poteva prendere** (git rifiuta senza `-m`, e niente poteva
+dire quale parent è la mainline), la riga di provenienza `-x` era irraggiungibile, e le parole di git
+finivano in una riga di status invece che in una console. Nuovo `Views/CherryPickDialog`, port di
+`FormCherryPick` pezzo per pezzo: pannello del commit, «Choose another revision» via
+`ChooseCommitDialog` (`FormCherryPick.cs:193-204`), lista dei parent visibile solo su un merge
+(`:102-137`; il parent N diventa `-m N`, e Cherry pick rifiuta col messaggio di upstream finché
+nessuno è scelto), le due checkbox nelle **stesse chiavi `AppSettings`** di upstream salvate solo al
+pick (`:74-81`), e l'esecuzione dentro il `GitProcessDialog` condiviso (`:179`) — non interattiva,
+perché su questo path cherry-pick non chiede niente. I conflitti restano al chiamante: l'host esegue
+`ConflictFlow` alla chiusura, il port della chiamata a `MergeConflictHandler` di `:181`. Nel servizio:
+`StashOpsService.CherryPickStreaming` sul modello di `MergeBranchStreaming` (stderr è dove git scrive
+`CONFLICT (content)`, e il core lo bufferizza — serve `GitStreamRunner`). La caption della griglia
+diventa quella di upstream, «Cherry pick this commit...» (`RevisionGridControl.Designer.cs:469`); la
+**chiave di routing resta `"Cherry-pick"`**, che è il contratto dell'host e ciò che `FileHistoryView`
+registra per prima nella propria griglia.
+
+Misurato: `-m 1 -x` del merge M su `target` (fermo ad A) porta esattamente il file del branch `side`
+con «(cherry picked from commit …)» nel messaggio; su un commit semplice la lista dei parent non
+c'è; le checkbox tornano spuntate alla riapertura.
+
+### Trappola incontrata (di nuovo M216)
+
+Il lancio headless prendeva il dll con `find bin -name … | head -1`, che ha pescato
+`bin/Probe.Harness/…` **di dieci giorni prima**: per un giro la caption nuova «non c'era». Il path del
+dll dell'app è uno solo e va scritto per esteso: `bin/GitExtensions.Avalonia/Debug/net10.0/…`.
+
+Prossima milestone libera: **M221**.
+
 ## M217 (2026-08-17) — le voci «diverso dall'originale» del README, verificate una per una contro il sorgente upstream
 
 Il README nuovo elencava diciotto cose come differenze dall'originale. Nove erano **sbagliate o mal
