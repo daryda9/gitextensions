@@ -100,12 +100,13 @@ Quello che è rimasto scoperto **dentro** queste voci, dichiarato e non nascosto
 | §1.5 | Non provati a schermo: file oltre 20 MB, e il pannello su un repo senza `merge.tool` configurato. |
 | §1.6 | Conflitti di rebase provati in M187; **worktree collegati provati in M201, e lì c'era il bug**: `MERGE_RR` è per-worktree ma `rr-cache` vive solo nella common directory, e il port chiedeva `--absolute-git-dir` per entrambe — git riapplicava una risoluzione con l'app che non mostrava niente. Provati e sani nello stesso giro: submodule a metà rebase (`modules/<nome>`) e un merge con conflitti binari, di soli permessi, delete/modify, rename/rename e symlink insieme. Restano non provati **cache multi-variante** e **path non ASCII o con spazi**; il ramo `am` del testo **non è più irraggiungibile** — M205 ha aggiunto l'ingresso, ma solo dove esiste davvero: misurato, un `git am` semplice non lascia niente di unmerged e non coinvolge rerere, solo `am --3way` lo fa, quindi banner e `ApplyPatchDialog` offrono la risoluzione **solo** con l'indice unmerged. `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
 
-**Stato onesto del collaudo automatico.** Il port ha oggi **cinque** banchi di prova di regressione:
+**Stato onesto del collaudo automatico.** Il port ha oggi **sei** banchi di prova di regressione:
 `Tests/InlineDiffRegression` (il primo, e il modello degli altri), `Tests/CommandPaletteRegression`
-(M197), `Tests/ViewPrefsRegression` (M204), `Tests/SettingsStoresRegression` (M210) e
-`Tests/ImageIntegrityRegression` (M212); accanto restano le sonde e gli snapshot preesistenti
+(M197), `Tests/ViewPrefsRegression` (M204), `Tests/SettingsStoresRegression` (M210),
+`Tests/ImageIntegrityRegression` (M212) e `Tests/SyntaxTokenizeRegression` (M221, col watchdog che
+nomina il caso appeso); accanto restano le sonde e gli snapshot preesistenti
 (`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). **Da M211 non si
-lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia i sette
+lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia gli otto
 deterministici ognuno in una sandbox propria, e `.github/workflows/crossplatform-build.yml` fa
 entrambe le cose con `-warnaserror` sui path che toccano il port. Esclusi dal runner, con la ragione
 scritta: `AnimProbe` e `ChromeProbe` (vogliono uno schermo), `Perf` (è una misura, non un verdetto).

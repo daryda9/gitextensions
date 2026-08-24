@@ -3418,6 +3418,40 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M221 (2026-08-24, `2897877bf`) — una `@` nuda congelava l'app intera dentro lo scanner della sintassi
+
+Trovato su un **processo vivo dell'utente**, non leggendo il codice: app bloccata senza nessun
+errore, e la misura diceva **thread UI al 99,9% di CPU da 91 minuti**, tutti gli altri thread a
+dormire, nessun git figlio. Lo stack managed (`dotnet-stack report`, il processo resta vivo) era
+dentro `DiffSyntaxHighlighter.Tokenize` ← `DiffLineColorizer.EnsureScanned` ← passo di **measure**
+di AvaloniaEdit: il colorizer gira sul thread UI, quindi uno scan che non termina non è uno scan
+lento — è la finestra congelata.
+
+La causa è un'asimmetria di una riga: `IsWordStart` accetta `@` (identificatori `@x` del C#,
+decoratori Python, variabili SQL), `IsWordChar` **no**. Sul carattere `@` il ramo identificatore
+faceva `j = i`, il `while` di estensione non partiva, `i = j` — e il `while (i < line.Length)`
+esterno non avanzava mai. Qualunque riga di codice con una `@` fuori da commenti e stringhe
+(verbatim string C#, `@property`, `@var`) congelava l'app appena la riga entrava nella scansione —
+anche solo **sopra** la riga visibile, perché `EnsureScanned` rigioca le righe dall'inizio del patch.
+
+**Riprodotto fuori dall'app** prima di toccare: `Tokenize` su `var s = @"hello";` ucciso da un
+timeout di 10 s, la stessa riga senza `@` chiude con 2 span. **Fix**: l'estensione della parola
+parte da `i + 1` — il primo carattere l'ha già accettato `IsWordStart`, e consumarlo rende `@class`
+una parola sola, che il lookup keyword giustamente **non** colora (il prefisso `@` del C# è
+esattamente il modo di *non* dire la keyword).
+
+**Ottavo banco deterministico: `Tests/SyntaxTokenizeRegression`** (in `GitExtensions.Avalonia.slnx`
+e `Tests/run-all.sh`, che ora dice `ALL GREEN: 8 harnesses`). 7507 casi su tutte e 12 le lingue di
+`Detect`: ogni simbolo ASCII stampabile (più tab, accentate, `€`, `中` e una coppia surrogata) in
+sei forme di riga, il ramo di ripresa del block comment, e le righe della regressione per nome. La
+terminazione non si asserisce dal thread che si appende: un **watchdog** su un contatore per-chiamata
+stampa **quale caso** è fermo ed esce 1 — contro lo scanner non corretto fallisce con
+`stuck case: .cs from=1 line=+@` (non-vacuità provata sul difetto vero), col fix tutto verde.
+
+Nota di igiene: il processo appeso dell'utente girava da 17 ore (`dotnet run` di ieri) e il loop era
+partito ~1,5 ore prima della diagnosi; ucciderlo non perde nulla (nessuna operazione git in corso),
+ma la scelta resta all'utente. Prossima milestone libera: **M222**.
+
 ## M218–M220 (2026-08-24) — il selettore di commit arriva agli altri tre campi: archivio, confronto, cherry-pick
 
 Chiude il residuo lasciato scritto da M214: upstream serve `FormChooseCommit` da **quattro** form
