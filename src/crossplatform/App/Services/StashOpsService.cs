@@ -1,3 +1,4 @@
+using System.Text;
 using GitCommands;
 using GitCommands.Git;
 using GitExtensions.Extensibility;
@@ -279,6 +280,34 @@ public sealed class StashOpsService
         ObjectId commitId = ObjectId.Parse(commitHash);
         ArgumentString args = Commands.CherryPick(commitId, commit: true, arguments: string.Empty);
         return Run(module, args);
+    }
+
+    /// <summary>
+    ///  Streaming counterpart of <see cref="CherryPick"/>, with the options the
+    ///  cherry-pick dialog collects — the same triple upstream's <c>FormCherryPick</c>
+    ///  hands to <see cref="Commands.CherryPick"/> (<c>FormCherryPick.cs:150-185</c>):
+    ///  whether to commit the result, and extra switches (<c>-m N</c> for a merge
+    ///  commit, <c>-x</c> for the provenance line). Lines go to
+    ///  <paramref name="onOutput"/> as git writes them, so the operation can run inside
+    ///  the shared <c>GitProcessDialog</c>; stderr is where git reports
+    ///  <c>CONFLICT (content): …</c>, and the core <c>IExecutable</c> buffers it, hence
+    ///  <see cref="GitStreamRunner"/>.
+    /// </summary>
+    public StashOpResult CherryPickStreaming(
+        string repoPath, string commitHash, bool autoCommit, string arguments, Action<string> onOutput)
+    {
+        GitModule module = GitContext.CreateModule(repoPath);
+        ObjectId commitId = ObjectId.Parse(commitHash);
+        ArgumentString args = Commands.CherryPick(commitId, commit: autoCommit, arguments: arguments);
+
+        StringBuilder sb = new();
+        int exit = GitStreamRunner.Run(repoPath: module.WorkingDir, arguments: args.ToString(), onLine: line =>
+        {
+            sb.AppendLine(line);
+            onOutput(line);
+        });
+
+        return new StashOpResult(exit == 0, sb.ToString());
     }
 
     /// <summary>

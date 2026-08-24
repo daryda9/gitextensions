@@ -1706,8 +1706,7 @@ public sealed class MainWindow : Theming.ZoomWindow
         UserScriptService.Changed += () => Dispatcher.UIThread.Post(RefreshScriptCommands);
 
         Register("Checkout this commit", hash => _ = CheckoutBranchAsync(hash));
-        Register("Cherry-pick",
-            hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success));
+        Register("Cherry-pick", hash => _ = CherryPickThisCommitAsync(hash));
         Register("Reset (soft) to here",
             hash => RunOp("Reset soft", () => _stashOps.Reset(_repoPath!, hash, StashResetMode.Soft).Success));
         Register("Reset (mixed) to here",
@@ -1924,6 +1923,38 @@ public sealed class MainWindow : Theming.ZoomWindow
             string archived = dlg.ArchivedRevision ?? hash;
             string shortHash = archived.Length > 8 ? archived[..8] : archived;
             _statusBar.SetText(TF("Archived {0} → {1}", shortHash, path));
+        }
+    }
+
+    // Opens the cherry-pick dialog (port of FormCherryPick) on the given commit. The
+    // dialog runs `git cherry-pick` itself inside the process dialog, so there is no
+    // RunOp wrapper here — what remains for the host is upstream's own epilogue
+    // (FormCherryPick.cs:179-183): refresh, and the conflict question when git
+    // stopped on an unmerged index.
+    private async Task CherryPickThisCommitAsync(string hash)
+    {
+        if (_repoPath is null)
+        {
+            return;
+        }
+
+        CherryPickDialogResult? result = await CherryPickDialog.ShowAsync(this, _repoPath, hash);
+        if (result is not { Executed: true })
+        {
+            return;
+        }
+
+        RefreshAll();
+        string shortHash = hash.Length > 8 ? hash[..8] : hash;
+        _statusBar.SetText(result.Success
+            ? TF("Cherry-picked {0}.", shortHash)
+            : TF("Cherry-pick of {0} did not complete.", shortHash));
+
+        // Cherry-pick merges, so it can stop on conflicts: ask, as upstream does.
+        // No-op when the index is clean.
+        if (await ConflictFlow.HandleAsync(this, _repoPath!) is { HadConflicts: true })
+        {
+            RefreshAll();
         }
     }
 
@@ -3225,8 +3256,7 @@ public sealed class MainWindow : Theming.ZoomWindow
 
         window.History.IsBisectInProgress = _revisions.IsBisectInProgress;
         window.History.RevertCommitRequested += RevertThisCommit;
-        window.History.CherryPickCommitRequested +=
-            hash => RunOp("Cherry-pick", () => _stashOps.CherryPick(_repoPath!, hash).Success);
+        window.History.CherryPickCommitRequested += hash => _ = CherryPickThisCommitAsync(hash);
 
         // Double click on a row selects that commit in the repository grid behind, which
         // is what the bottom tab used to do and the only link the two windows need.

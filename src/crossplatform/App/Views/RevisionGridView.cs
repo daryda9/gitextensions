@@ -6569,7 +6569,11 @@ public sealed class RevisionGridView : UserControl
         // --- Commit level ----------------------------------------------------
         Add(Routed("Checkout this commit", ctx => !ctx.Artificial, ctx => ctx.SingleCommit && !ctx.Row.IsHead));
         Add(Routed("Revert this commit…", ctx => !ctx.Artificial, ctx => ctx.SingleCommit));
-        Add(Routed("Cherry-pick", ctx => !ctx.Artificial, ctx => ctx.SingleCommit && !ctx.Row.IsHead));
+        // Caption from upstream's grid entry (RevisionGridControl.Designer.cs:469) now
+        // that a dialog opens behind it; the routing key stays "Cherry-pick", which is
+        // the host contract and what FileHistoryView registers first in its own grid.
+        Add(Routed("Cherry-pick", ctx => !ctx.Artificial, ctx => ctx.SingleCommit && !ctx.Row.IsHead,
+            caption: T("RevisionGridControl/cherryPickCommitToolStripMenuItem.Text", "Cherry pick this commit...")));
         Add(Routed("Archive this commit…", ctx => !ctx.Artificial, ctx => ctx.SingleCommit));
 
         MenuItem advanced = new()
