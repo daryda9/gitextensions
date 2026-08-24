@@ -98,15 +98,17 @@ Quello che è rimasto scoperto **dentro** queste voci, dichiarato e non nascosto
 | §1.3 | Non provati: submodule inizializzato ma con gli oggetti di un lato mancanti, add/add di gitlink senza BASE, liste oltre 200 commit, path con spazi. |
 | §1.4 | ~~Firme WEBP/GIF/BMP/ICO implementate ma provate solo su PNG e JPEG~~ — **chiuso in M199**: 26 campioni generati e aperti, `ImageFormats.Detect` li nomina tutti (troncati compresi) e non è stato toccato; BMP RLE4/RLE8, GIF interlacciata, JPEG progressiva e CMYK **decodificano correttamente**, misurate. Sono usciti invece tre difetti (blocco su PNG a 16 bit, contenitore spacciato per il tutto, 16 bit confrontati a 8) e **una nota da correggere**: Skia sceglie la voce ICO **più grande**, non la prima. ~~Restano: **immagine troncata senza avviso** (vedi §0)~~ — **chiuso in M212** (`SKCodec.IncompleteInput`, clausola «TRUNCATED FILE» in testa alla barra informativa, 124 casi in `Tests/ImageIntegrityRegression`). Restano: rifiuto oltre 16 megapixel non esercitato a schermo, niente pan col trascinamento né scorciatoie di zoom. |
 | §1.5 | Non provati a schermo: file oltre 20 MB, e il pannello su un repo senza `merge.tool` configurato. |
+| §1.2 bis (M222) | **Chiuso**: un salvataggio con marker non stagia più, i file «risolti con marker» hanno un banner e un `Reopen conflict` (`git checkout --merge`), e il pannello del risultato ha metà finestra con splitter ricordato più «Only result». Resta fuori, dichiarato: nessuna azione per chunk che dica «prendi un lato e cancella una parte dell'altro» — quella resta editing a mano, che è ciò che il pannello grande serve a rendere possibile. |
 | §1.6 | Conflitti di rebase provati in M187; **worktree collegati provati in M201, e lì c'era il bug**: `MERGE_RR` è per-worktree ma `rr-cache` vive solo nella common directory, e il port chiedeva `--absolute-git-dir` per entrambe — git riapplicava una risoluzione con l'app che non mostrava niente. Provati e sani nello stesso giro: submodule a metà rebase (`modules/<nome>`) e un merge con conflitti binari, di soli permessi, delete/modify, rename/rename e symlink insieme. Restano non provati **cache multi-variante** e **path non ASCII o con spazi**; il ramo `am` del testo **non è più irraggiungibile** — M205 ha aggiunto l'ingresso, ma solo dove esiste davvero: misurato, un `git am` semplice non lascia niente di unmerged e non coinvolge rerere, solo `am --3way` lo fa, quindi banner e `ApplyPatchDialog` offrono la risoluzione **solo** con l'indice unmerged. `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
 
-**Stato onesto del collaudo automatico.** Il port ha oggi **sei** banchi di prova di regressione:
+**Stato onesto del collaudo automatico.** Il port ha oggi **sette** banchi di prova di regressione:
 `Tests/InlineDiffRegression` (il primo, e il modello degli altri), `Tests/CommandPaletteRegression`
 (M197), `Tests/ViewPrefsRegression` (M204), `Tests/SettingsStoresRegression` (M210),
-`Tests/ImageIntegrityRegression` (M212) e `Tests/SyntaxTokenizeRegression` (M221, col watchdog che
-nomina il caso appeso); accanto restano le sonde e gli snapshot preesistenti
+`Tests/ImageIntegrityRegression` (M212), `Tests/SyntaxTokenizeRegression` (M221, col watchdog che
+nomina il caso appeso) e `Tests/MergeResolveRegression` (M222, che asserisce cosa fa git all'indice
+quando un conflitto viene salvato, marcato risolto o riaperto); accanto restano le sonde e gli snapshot preesistenti
 (`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). **Da M211 non si
-lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia gli otto
+lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia i nove
 deterministici ognuno in una sandbox propria, e `.github/workflows/crossplatform-build.yml` fa
 entrambe le cose con `-warnaserror` sui path che toccano il port. Esclusi dal runner, con la ragione
 scritta: `AnimProbe` e `ChromeProbe` (vogliono uno schermo), `Perf` (è una misura, non un verdetto).

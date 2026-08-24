@@ -3418,6 +3418,60 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M222 (2026-08-24, `82b0e901c`) — un merge lasciato a metà non chiude più la porta a tutti gli strumenti
+
+Nato da un conflitto **vero dell'utente** (merge `cab8939`, `origin/develop` → `revamping_UI_slice_0`,
+recuperato dal remoto perché il clone locale era stato rifatto): **un** file, `chatService.ts`, con
+**due regioni** — una riga di import e il corpo di `deleteChat`, cambiati da entrambi i lati.
+Rigiocato in `/tmp` per averlo sotto misura.
+
+**Perché l'utente ha usato due strumenti diversi**, e perché uno dei due giudizi era un difetto e non
+un gusto:
+- regione 1 (import): la risposta è l'unione, e nel builtin è **un tasto** (`Both: L → R`);
+- regione 2 (corpo): la risposta non è né LOCAL né REMOTE né la loro unione ingenua — è REMOTE
+  seguito da LOCAL **meno tre righe** (il `prisma.chat_list.delete` di REMOTE, che `deleteChatsWithCleanup`
+  fa già). Va **editata a mano**, e il pannello editabile aveva **quattro righe visibili** su una
+  regione di **diciotto** (fotografato): due quinti dell'altezza contro tre ai tre pannelli di sola
+  lettura. Da lì kdiff3.
+
+**Il difetto, misurato da un capo all'altro.** `MergeToolService.Save` chiudeva **sempre** con
+`ConflictService.MarkResolved`, cioè `git add`, anche premuto come «Save anyway (N left)» con i marker
+ancora dentro. E `git add` **distrugge gli stage 1/2/3**, che è ciò che chiude un conflitto per
+**tutti** gli strumenti insieme: `ls-files -u` vuoto, lista dei conflitti vuota, «Open in kdiff3» e
+«Start mergetool» spenti, `git mergetool` che risponde «No files need merging», e il banner che passa
+da `Resolve…` a `Continue` — con due `<<<<<<< HEAD` ancora nel file. Nemmeno git si oppone: misurato,
+`git commit` **committa i marker senza fiatare**. Upstream non ha né guardia né ritorno (cercato in
+`FormResolveConflicts`: nessun controllo sui marker, nessun `checkout -m`), quindi tutto quello che
+segue è **lavoro inedito**.
+
+**Le quattro modifiche.** (1) Un salvataggio che lascia marker **non stagia più**: il testo è scritto —
+niente lavoro perso — e il file resta non risolto, che è la verità e anche lo stato in cui ogni
+strumento continua a funzionare; il pulsante dice quale dei due atti compie («Save and mark resolved»
+contro «Save, still unresolved (N left)») e il chiamante riporta il terzo esito, prima impossibile:
+*salvato, ancora non risolto*. (2) **«Reopen conflict»** esegue `git checkout --merge -- <path>` dietro
+una conferma che ne dichiara il costo: gli stage tornano, il testo risolto **no** (misurato su git 2.43).
+(3) I file che git crede risolti ma il cui **contenuto nell'indice** porta ancora marker non
+scompaiono più: un banner li nomina, il dialogo non si chiude più dicendo «you can commit», e il
+pulsante di ripristino agisce su di loro; lo scan interroga l'**indice** (`git grep --cached`) e solo
+sui path che un commit toccherebbe, e pretende marker di **apertura e chiusura** insieme, così una
+riga `=======` di Markdown o un documento che *cita* un marker non passano per conflitti. (4) Il
+pannello del risultato ha spazio: metà per default, posizione dello splitter **ricordata**
+(`ViewPrefs.Merge.ResultShare`, con clamp) e **«Only result»** che ripiega i tre pannelli (misurato:
+**37 righe** contro 4).
+
+**Nono banco: `Tests/MergeResolveRegression`** — 24 casi su repository veri, che asseriscono il
+comportamento di **git** e non le convinzioni del port: un salvataggio con marker resta unmerged e
+mergetool lo offre ancora, un salvataggio pulito stagia, il reopen riporta stage e marker scartando il
+testo salvato, e lo scan trova il conflitto in stage senza segnalare una riga di Markdown. **Non
+vacuo**: rimettendo lo stage incondizionato fallisce esattamente sui tre sintomi dell'utente
+(«the file is still unmerged», «git mergetool still has work», «the conflict list still names it»).
+`ALL GREEN: 9 harnesses`, e l'intero flusso ripercorso a schermo sul conflitto vero.
+
+Trappola del fixture, da non riscoprire: due conflitti troppo vicini git li fonde in **un** blocco —
+il banco ha dovuto allontanare le due regioni con righe di contesto identiche perché ne restassero due.
+
+Prossima milestone libera: **M223**.
+
 ## M221 (2026-08-24, `2897877bf`) — una `@` nuda congelava l'app intera dentro lo scanner della sintassi
 
 Trovato su un **processo vivo dell'utente**, non leggendo il codice: app bloccata senza nessun
