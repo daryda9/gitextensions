@@ -44,17 +44,23 @@ internal static class AppIcon
     ///  Silent when the asset cannot be loaded: a missing icon is a blemish, not a reason
     ///  to fail the start-up.
     /// </summary>
-    internal static void Apply(Styles styles)
-    {
-        if (Load() is not { } icon)
-        {
-            return;
-        }
-
-        Style style = new(x => x.OfType<Window>());
-        style.Setters.Add(new Setter(Window.IconProperty, icon));
-        styles.Add(style);
-    }
+    /// <summary>
+    ///  The product mark, loaded once, or <c>null</c> when the asset cannot be read.
+    ///  Assigned by <see cref="ZoomWindow"/>'s constructor, which every window in this
+    ///  application goes through.
+    /// </summary>
+    /// <remarks>
+    ///  <para><b>Why not a style.</b> This used to be a <c>Style</c> on the application
+    ///  setting <see cref="Window.IconProperty"/>, so that "no window opened later can
+    ///  forget it". The selector was <c>x.OfType&lt;Window&gt;()</c>, and in Avalonia
+    ///  <c>OfType</c> matches the <b>exact</b> runtime type: this application never
+    ///  opens a plain <c>Window</c> — all 47 of them derive from <see cref="ZoomWindow"/>
+    ///  — so the style installed cleanly, matched nothing, and the icon reached no
+    ///  window at all. <c>Is&lt;Window&gt;()</c> would have matched, but a constructor
+    ///  assignment in the one base class every window already inherits needs no
+    ///  selector semantics to be right, and it is visible where windows are made.</para>
+    /// </remarks>
+    internal static WindowIcon? Shared => Load();
 
     private static WindowIcon? Load()
     {

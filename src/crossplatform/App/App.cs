@@ -63,7 +63,7 @@ public class App : Application
         // placeholder next to the correctly-iconed launcher entry (see Theming/AppIcon).
         // On the application's styles rather than on each window: one statement, and no
         // window opened later can forget it.
-        Theming.AppIcon.Apply(Styles);
+
     }
 
     public override void OnFrameworkInitializationCompleted()

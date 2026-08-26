@@ -40,6 +40,11 @@ public class ZoomWindow : Window
     /// </summary>
     public ZoomWindow()
     {
+        // The icon every window of this application carries, assigned here because
+        // here is the one place all of them pass through. See AppIcon for what a
+        // style did instead, and why it silently reached none of them.
+        Icon = AppIcon.Shared;
+
         UiScaling.Install(this);
 
         // The interface font (AppSettings.Font), applied per window: FontFamily and
