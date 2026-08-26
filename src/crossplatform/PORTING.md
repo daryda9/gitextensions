@@ -3418,6 +3418,38 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M223bis (2026-08-26, `69c8f8ae1`) — l'icona di finestra non arrivava a nessuna finestra: `OfType` è il tipo esatto
+
+Segnalazione dell'utente, dal desktop vero: avviato con `./run.sh`, **nessuna icona nella barra delle
+app** — né il marchio nuovo né il logo vecchio. L'asset non era in causa (si carica, e si vede
+nell'About e sulla dashboard, che leggono l'immagine da sé): non arrivava alla **finestra**.
+
+Una riga, un selettore. `AppIcon` installava uno `Style` sull'applicazione con
+`x => x.OfType<Window>()`, e in Avalonia **`OfType` combacia col tipo esatto**. Questa app non apre mai
+una `Window` semplice: tutte e **47** derivano da `Theming.ZoomWindow`. Quindi lo stile veniva
+installato, non combaciava con niente, `Window.Icon` non veniva assegnata mai. Il commento sopra
+diceva l'opposto — «uno stile sull'applicazione copre ogni finestra, nessuna aperta dopo può
+dimenticarla» — ed è così che è sopravvissuto dal **M133**, che quell'icona l'aveva introdotta.
+
+`Is<Window>()` combacia, ma la correzione non passa da lì: l'icona si assegna nel **costruttore di
+`ZoomWindow`**, l'unico posto da cui passano tutte, e `AppIcon` espone il marchio come proprietà invece
+di uno stile globale. Meno pezzi, e sta dove le finestre si fanno.
+
+**La prova, e chi l'ha fatta.** Non era misurabile in casa: su Xvfb senza window manager l'app non
+pubblica **nessun** `_NET_*` (il suo `WM_PROTOCOLS` porta un atomo sbagliato — è la tabella azzerata per
+cui esiste `X11AtomPrimer`), e nemmeno un'assegnazione **diretta** di `Window.Icon` in una build sonda
+produceva la proprietà. Quindi il banco non distingueva un'icona buona da una rotta, ed è stato detto.
+L'ha chiusa l'utente sul suo desktop: `xprop _NET_WM_ICON` → `Icon (128 x 128)`, dove prima non c'era
+nulla.
+
+**Lezione riusabile, oltre il caso**: in Avalonia `OfType<T>` è il tipo **esatto**, `Is<T>` include le
+derivate. Un `Style` che non combacia **non fallisce**: si installa e tace. Se una proprietà deve
+valere per tutte le finestre di questa app, il posto è il costruttore di `ZoomWindow` — non un
+selettore.
+
+**Nota**: la proprietà riporta 128×128 mentre l'asset è 256×256, quindi è Avalonia a normalizzare
+l'immagine che pubblica. Nessun intervento: l'asset resta la misura piena.
+
 ## M223 (2026-08-26, `24531a560`) — il port si chiama gitNext e porta un marchio suo
 
 Decisione dell'utente, non un'iniziativa: nome **gitNext**, e con esso il logo nuovo (due frecce che si
