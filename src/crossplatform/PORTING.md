@@ -3418,6 +3418,58 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M223 (2026-08-26, `24531a560`) — il port si chiama gitNext e porta un marchio suo
+
+Decisione dell'utente, non un'iniziativa: nome **gitNext**, e con esso il logo nuovo (due frecce che si
+incrociano, SVG). Sette forme, una per ogni posto che vuole un nome, e la ragione di ciascuna:
+
+| Forma | Dove | Perché |
+|---|---|---|
+| `gitNext` | About, dashboard, titolo delle finestre | è il nome per gli umani, e non si traduce mai |
+| `GitNext` | `AssemblyName` → dll e **`WM_CLASS`** | deve combaciare con `StartupWMClass` nel `.desktop`, altrimenti la shell mostra l'icona del lanciatore **accanto** al segnaposto della finestra invece di trattarli come una cosa sola |
+| `gitnext` | comando, pacchetto Debian, nome dell'icona, `/opt/gitnext` | una riga di comando e un nome di pacchetto sono minuscoli |
+
+Il **namespace resta** `GitExtensions.Avalonia`: rinominarlo vuol dire toccare 188 file per cambiare
+niente di visibile. `AssemblyName` e `RootNamespace` sono indipendenti, ed è l'unico che serve.
+
+**L'attribuzione è stata riscritta, non tradotta.** L'About diceva «Proudly presented by the Git
+Extensions team»: sotto un nome proprio quella frase attribuisce **questa** interfaccia al team di
+upstream e nasconde che il **core git è loro**. Adesso dice entrambe le metà. Misurato prima di
+toccarla: né «About Git Extensions» né un «About» nudo esistono come `<source>` in nessun catalogo,
+quindi il titolo era inglese in ogni lingua e la rinomina non butta via nessuna traduzione.
+
+**Il marchio.** SVG come sorgente, un PNG per ogni misura di hicolor, e il `.deb` le installa **tutte
+e otto** invece della sola 256×256. Il wordmark largo di upstream è **ritirato**, non riusato: quel
+bitmap *è* la scritta «Git Extensions». Cade con lui una toppa che serviva solo a lui — i suoi glifi
+sono bianchi su trasparente e sulla striscia `#ECECEC` del tema chiaro sparivano (1,18:1), quindi
+bitmap e testo di riserva erano costruiti insieme e scambiati su `ActualThemeVariantChanged`. Ora la
+striscia è marchio + nome come testo: leggibile su entrambi i temi, nessun gestore di evento.
+
+**Due cose che la rinomina ha scoperto**, e sono la parte utile di questa milestone:
+
+- `IconLoader` e `AppIcon` avevano scritto a mano `avares://GitExtensions.Avalonia/…`. Dopo la
+  rinomina **tutte** le icone continuavano a risolvere — Avalonia ricade sull'assembly d'ingresso
+  quando l'host dell'URI non nomina nessun assembly caricato — **tranne** l'unico asset aggiunto col
+  nome nuovo. Risultato: l'icona di finestra sparita in silenzio con le altre trecento a posto. Ora
+  entrambi chiedono il nome all'assembly che gira. Corollario da ricordare: un `<Link>` su un file
+  **interno** al progetto è ignorato, il percorso avares è quello relativo al progetto.
+- Il core riusato tiene le sue impostazioni in una cartella **col nome del prodotto**
+  (`Application.UserAppDataPath` → `ProductName`), quindi la cartella si è spostata con la rinomina.
+  Quella vecchia conteneva un `GitExtensions.settings` **committato per sbaglio** dentro un commit di
+  feature (`096466647`), che da allora sporcava il working tree a ogni avvio dal tree di build: ora è
+  fuori dall'indice e le due cartelle sono in `.gitignore`.
+
+**Prove.** Soluzione a zero avvisi con `-warnaserror`, nove banchi verdi, titolo «repo (main) -
+gitNext», `WM_CLASS` = `"dotnet","GitNext"`, marchio visibile nell'About e sulla striscia della
+dashboard. **Non** verificato: `_NET_WM_ICON` sulla finestra — è assente su questo Xvfb **anche per la
+build pre-rinomina** (provata in un worktree separato su `HEAD`) e qui non c'è nessun window manager
+che la pubblichi. Quindi: **pari al baseline, non dimostrato in assoluto**. Da rifare su un desktop
+vero, con `xprop`.
+
+**Residuo dichiarato**: due schermate del README (`main-window.png`, `repository-tabs.png`) mostrano
+ancora il nome vecchio nella barra del titolo. Le altre dieci non mostrano nessun nome. Il README lo
+dice invece di far finta.
+
 ## M222 (2026-08-24, `82b0e901c`) — un merge lasciato a metà non chiude più la porta a tutti gli strumenti
 
 Nato da un conflitto **vero dell'utente** (merge `cab8939`, `origin/develop` → `revamping_UI_slice_0`,
