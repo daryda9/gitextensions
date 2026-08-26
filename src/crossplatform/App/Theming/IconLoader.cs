@@ -12,13 +12,19 @@ namespace GitExtensions.Avalonia.Theming;
 
 /// <summary>
 ///  Loads the reused Git Extensions PNG icons (linked into this assembly under
-///  <c>avares://GitExtensions.Avalonia/Assets/Icons/</c>) by base file name,
+///  <c>avares://&lt;assembly&gt;/Assets/Icons/</c>) by base file name,
 ///  e.g. <c>IconLoader.Load("Push")</c>. Results are cached; a missing icon
 ///  returns <see langword="null"/> so callers degrade to text-only.
 /// </summary>
 public static class IconLoader
 {
-    private const string Root = "avares://GitExtensions.Avalonia/Assets/Icons/";
+    // The assembly name is asked at run time rather than written down. A literal
+    // survived the rename to GitNext only because Avalonia falls back to the entry
+    // assembly when the host of an avares: URI names no loaded assembly — and that
+    // fallback did NOT cover the one asset added under the new name, which is how
+    // the window icon went missing with every other icon still resolving.
+    private static readonly string Root =
+        $"avares://{typeof(IconLoader).Assembly.GetName().Name}/Assets/Icons/";
 
     // Ordinal, deliberately: the avares: lookup below is case-sensitive, so "star"
     // and "Star" have different outcomes and must not share a cache entry. With an

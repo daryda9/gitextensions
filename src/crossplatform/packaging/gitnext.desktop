@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Git Extensions
+Name=gitNext
 Comment=Graphical user interface for Git
-Exec=gitextensions %U
-Icon=gitextensions
+Exec=gitnext %U
+Icon=gitnext
 Terminal=false
 Type=Application
 Categories=Development;RevisionControl;
@@ -12,4 +12,4 @@ StartupNotify=true
 # with xprop). Without it a desktop shell cannot tell that the running window belongs
 # to this entry: the launcher shows the icon above, the open window shows the shell's
 # generic placeholder, and the two sit side by side in the dock instead of being one.
-StartupWMClass=GitExtensions.Avalonia
+StartupWMClass=GitNext

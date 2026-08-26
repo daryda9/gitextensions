@@ -3,7 +3,11 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <RootNamespace>GitExtensions.Avalonia</RootNamespace>
-    <AssemblyName>GitExtensions.Avalonia</AssemblyName>
+    <!-- The product is gitNext; the namespace stays GitExtensions.Avalonia because
+         renaming it would touch 188 files for no visible effect. This name is what
+         the dll is called, what Avalonia reports as WM_CLASS (so it must match
+         StartupWMClass in packaging/gitnext.desktop) and what avares: URIs carry. -->
+    <AssemblyName>GitNext</AssemblyName>
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
@@ -84,23 +88,14 @@
       <Link>Assets/Help/%(Filename)%(Extension)</Link>
     </AvaloniaResource>
 
-    <!-- The wide product wordmark drawn on the dashboard's branding strip
-         (upstream Dashboard.Designer.cs). It lives in setup/assets/Logo, outside
-         the icon glob above, so it needs its own item to become resolvable as
-         avares://…/Assets/Icons/GitExtensionsLogoWide.png — the name
-         DashboardView.Branding() asks IconLoader for. -->
-    <AvaloniaResource Include="..\..\..\setup\assets\Logo\GitExtensionsLogoWide.png">
-      <Link>Assets/Icons/%(Filename)%(Extension)</Link>
-    </AvaloniaResource>
-    <!-- The square product logo for the About dialog, upstream's
-         logoPictureBox / Properties.Images.GitExtensionsLogo256. The icon glob
-         above covers only src/app/GitUI/Resources/Icons, which has no square
-         product logo, so AboutDialog's IconLoader.Image("GitExtensions", 48) was
-         logging "did not resolve" on every start and silently rendering no icon.
-         Linked under the name the dialog asks for. -->
-    <AvaloniaResource Include="..\..\..\setup\assets\Logo\git-extensions-logo-128px.png">
-      <Link>Assets/Icons/GitExtensions.png</Link>
-    </AvaloniaResource>
+    <!-- The product mark: one file, three consumers — the icon every window
+         carries (Theming/AppIcon), the About dialog's logo and the dashboard's
+         branding strip. Its source of truth is the SVG beside it; the PNG is the
+         export, because Avalonia has no SVG decoder without an extra package.
+         NOT linked under another name: for a file inside the project the avares:
+         path IS its project-relative path and a <Link> is ignored, so the file is
+         named what the code asks for. -->
+    <AvaloniaResource Include="Assets\Icons\GitNext.png" />
   </ItemGroup>
 
   <ItemGroup>

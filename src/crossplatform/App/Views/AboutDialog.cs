@@ -65,7 +65,7 @@ public sealed class AboutDialog : Theming.ZoomWindow
         };
 
         // Optional app icon; degrade gracefully when it is not linked in.
-        Image? icon = IconLoader.Image("GitExtensions", 48);
+        Image? icon = IconLoader.Image("GitNext", 48);
         if (icon is not null)
         {
             icon.VerticalAlignment = VerticalAlignment.Center;
@@ -79,7 +79,7 @@ public sealed class AboutDialog : Theming.ZoomWindow
         // language stops identifying the program.
         titles.Children.Add(new TextBlock
         {
-            Text = "Git Extensions",
+            Text = "gitNext",
             Foreground = text,
             FontSize = 22,
             FontWeight = FontWeight.SemiBold,
@@ -132,10 +132,14 @@ public sealed class AboutDialog : Theming.ZoomWindow
         StackPanel credits = new() { Margin = new Thickness(0, 16, 0, 0), Spacing = 2 };
 
         // Upstream's labelCopyright is _NO_TRANSLATE_ (FormAbout.Designer.cs:136) —
-        // the sentence is the team's own signature, so it stays English here too.
+        // a signature is not translated. This one had to be REWRITTEN rather than
+        // kept: under a name of its own, "proudly presented by the Git Extensions
+        // team" credits somebody else's team for this UI, and hides that the git
+        // logic underneath is theirs. Both halves are now said out loud.
         credits.Children.Add(new TextBlock
         {
-            Text = "Proudly presented by the Git Extensions team.",
+            Text = "A Linux port of Git Extensions: the git core is that project's work, "
+                + "the Avalonia interface is this one's.",
             Foreground = text,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
@@ -246,7 +250,10 @@ public sealed class AboutDialog : Theming.ZoomWindow
 
     private void ApplyTranslations()
     {
-        Title = T("About Git Extensions");
+        // Measured before changing it: neither "About Git Extensions" nor a bare
+        // "About" appears as a <source> in any catalogue, so this title was English
+        // in every language already and the rename throws no translation away.
+        Title = T("About gitNext");
         _subtitle.Text = T("Avalonia / Linux port");
         _description.Text = T(
             "A cross-platform graphical user interface for Git, "

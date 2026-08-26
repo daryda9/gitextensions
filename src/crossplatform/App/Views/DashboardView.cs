@@ -1027,70 +1027,49 @@ public sealed class DashboardView : UserControl
 
     // ---- branding + start links ----------------------------------------------------
 
-    // Upstream draws the GitExtensionsLogoWide bitmap on a tinted strip
-    // (Dashboard.Designer.cs:94-113). That file lives in setup/assets/Logo, outside
-    // the csproj's icon glob, so it used to be unresolvable as an avares: resource
-    // and the wordmark was drawn as text. The csproj now links it explicitly to
-    // Assets/Icons/GitExtensionsLogoWide.png, so IconLoader finds it under its base
-    // name like any other icon — and, because IconLoader returns null for a missing
-    // asset, the text wordmark stays as the fallback for builds where the setup
-    // assets are not present (source packages that ship only src/).
+    // Upstream draws a wide GitExtensionsLogoWide bitmap here (Dashboard.Designer.cs:
+    // 94-113). It cannot be reused under a name of its own: the bitmap IS the words
+    // "Git Extensions". So the strip is now the product mark beside the product name
+    // as text, which also retires a workaround this method used to need — the wide
+    // wordmark's glyphs are pure white on transparent, unreadable on the light
+    // theme's #ECECEC strip (measured at 1.18:1), so the bitmap and a text fallback
+    // had to be built together and swapped on ActualThemeVariantChanged. The mark is
+    // legible on both themes (it is drawn, not stencilled in white), and the text is
+    // App.Text on App.PanelAlt: 14.11:1.
     private Control Branding()
     {
         StackPanel panel = new() { Spacing = 2 };
 
-        // The bitmap is 381x100; drawn at half height it matches the text wordmark's
-        // optical weight on the strip. Stretch.Uniform keeps its aspect ratio.
-        //
-        // It is only usable on a DARK strip, though. The wordmark's glyphs are pure
-        // white with a transparent ground (measured on screen: #FFFFFF), so on the
-        // light theme's App.PanelAlt strip (#ECECEC) it came out at 1.18:1 — the
-        // lettering was invisible and only the green/red logo arrows showed. Rather
-        // than invent a dark backing tint just for the strip, the light theme falls
-        // back to the text wordmark that already existed here for builds without the
-        // setup assets: App.Text on App.PanelAlt = 14.11:1.
-        //
-        // Both are built once and swapped by visibility, because the theme can be
-        // changed at runtime from the View menu and this strip is built in the
-        // constructor. ActualThemeVariantChanged fires on the control when
-        // ThemeManager flips Application.RequestedThemeVariant.
-        Control? bitmap = IconLoader.Load("GitExtensionsLogoWide") is { } logo
-            ? new Image
-            {
-                Source = logo,
-                Height = 50,
-                Stretch = Stretch.Uniform,
-                HorizontalAlignment = HorizontalAlignment.Left,
-            }
-            : null;
-
-        TextBlock wordmark = new()
+        StackPanel row = new()
         {
-            Text = "Git Extensions",
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        if (IconLoader.Load("GitNext") is { } mark)
+        {
+            row.Children.Add(new Image
+            {
+                Source = mark,
+                Height = 44,
+                Width = 44,
+                Stretch = Stretch.Uniform,
+            });
+        }
+
+        // The product name is never translated: a brand read in another language
+        // stops identifying the program (upstream marks its own copy _NO_TRANSLATE_).
+        row.Children.Add(new TextBlock
+        {
+            Text = "gitNext",
             Foreground = B("App.Text"),
             FontSize = 26,
             FontWeight = FontWeight.SemiBold,
-        };
+            VerticalAlignment = VerticalAlignment.Center,
+        });
 
-        if (bitmap is null)
-        {
-            panel.Children.Add(wordmark);
-        }
-        else
-        {
-            panel.Children.Add(bitmap);
-            panel.Children.Add(wordmark);
-
-            void ApplyVariant()
-            {
-                bool light = ActualThemeVariant == ThemeVariant.Light;
-                bitmap.IsVisible = !light;
-                wordmark.IsVisible = light;
-            }
-
-            ApplyVariant();
-            ActualThemeVariantChanged += (_, _) => ApplyVariant();
-        }
+        panel.Children.Add(row);
 
         panel.Children.Add(new TextBlock
         {

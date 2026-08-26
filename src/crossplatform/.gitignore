@@ -3,3 +3,11 @@ obj/
 
 # Default `dotnet publish` output (App/GitExtensions.Avalonia.csproj sets PublishDir).
 dist/
+
+# The settings file the reused core writes at run time. Its folder is named after
+# the product (Application.UserAppDataPath -> ProductName), so it appears beside the
+# sources whenever the app is started from the build tree — and it was committed by
+# accident once, then dirtied the working tree on every run. Both the old name and
+# the new one are ignored: a build from an older commit still writes the old folder.
+GitNext/
+GitExtensions.Avalonia/GitExtensions.settings*

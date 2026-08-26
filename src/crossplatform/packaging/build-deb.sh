@@ -2,14 +2,14 @@
 # Build a reproducible Debian .deb for the Linux/Avalonia port of Git Extensions.
 #
 # Produces a self-contained package (no .NET SDK/runtime required on the target
-# machine) that installs to /opt/gitextensions with a /usr/bin/gitextensions
+# machine) that installs to /opt/gitnext with a /usr/bin/gitnext
 # launcher, a .desktop entry and an application icon.
 #
 # Usage:
 #   ./build-deb.sh
 #
 # Output:
-#   packaging/out/gitextensions_<version>_amd64.deb
+#   packaging/out/gitnext_<version>_amd64.deb
 set -euo pipefail
 
 # --- Locations ---------------------------------------------------------------
@@ -22,9 +22,14 @@ OUT_DIR="$SCRIPT_DIR/out"
 PUBLISH_DIR="$OUT_DIR/publish"
 STAGE_DIR="$OUT_DIR/stage"
 
-APP_BINARY="GitExtensions.Avalonia"              # AssemblyName -> native launcher
+APP_BINARY="GitNext"                             # AssemblyName -> native launcher
 RID="linux-x64"
-ICON_SRC="$REPO_ROOT/setup/assets/Logo/git-extensions-logo-256px.png"
+# The product mark, exported from packaging/../App/Assets/Icons/gitNext.svg into
+# one PNG per hicolor size. Installing every size (not just 256) is what lets a
+# panel, a dock and an alt-tab switcher each pick the one they need instead of
+# downscaling the big one themselves.
+ICON_DIR="$SCRIPT_DIR/icons"
+ICON_SIZES="16 24 32 48 64 128 256 512"
 
 # --- Version -----------------------------------------------------------------
 if [[ -f "$SCRIPT_DIR/VERSION" ]]; then
@@ -32,7 +37,7 @@ if [[ -f "$SCRIPT_DIR/VERSION" ]]; then
 else
     VERSION="5.0.0-linux1"
 fi
-DEB_NAME="gitextensions_${VERSION}_amd64.deb"
+DEB_NAME="gitnext_${VERSION}_amd64.deb"
 
 # --- .NET on PATH ------------------------------------------------------------
 export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
@@ -46,12 +51,14 @@ if ! command -v dpkg-deb >/dev/null 2>&1; then
     echo "error: dpkg-deb not found. Install with: sudo apt install dpkg-dev" >&2
     exit 1
 fi
-if [[ ! -f "$ICON_SRC" ]]; then
-    echo "error: icon not found at $ICON_SRC" >&2
-    exit 1
-fi
+for size in $ICON_SIZES; do
+    if [[ ! -f "$ICON_DIR/gitnext-$size.png" ]]; then
+        echo "error: icon not found at $ICON_DIR/gitnext-$size.png" >&2
+        exit 1
+    fi
+done
 
-echo "==> Building gitextensions ${VERSION} (${RID})"
+echo "==> Building gitNext ${VERSION} (${RID})"
 
 # --- 1. Clean + self-contained publish --------------------------------------
 rm -rf "$STAGE_DIR" "$PUBLISH_DIR"
@@ -83,12 +90,14 @@ echo "==> Translations: $(find "$PUBLISH_DIR/Translation" -name '*.xlf' | wc -l)
 
 # --- 2. Stage the Debian tree ------------------------------------------------
 echo "==> Staging Debian tree"
-INSTALL_ROOT="/opt/gitextensions"
+INSTALL_ROOT="/opt/gitnext"
 mkdir -p "$STAGE_DIR/DEBIAN"
 mkdir -p "$STAGE_DIR$INSTALL_ROOT"
 mkdir -p "$STAGE_DIR/usr/bin"
 mkdir -p "$STAGE_DIR/usr/share/applications"
-mkdir -p "$STAGE_DIR/usr/share/icons/hicolor/256x256/apps"
+for size in $ICON_SIZES; do
+    mkdir -p "$STAGE_DIR/usr/share/icons/hicolor/${size}x${size}/apps"
+done
 
 # Payload
 cp -a "$PUBLISH_DIR/." "$STAGE_DIR$INSTALL_ROOT/"
@@ -98,27 +107,29 @@ chmod +x "$STAGE_DIR$INSTALL_ROOT/$APP_BINARY"
 INSTALLED_SIZE="$(du -sk "$STAGE_DIR$INSTALL_ROOT" | cut -f1)"
 
 # Launcher wrapper
-cat > "$STAGE_DIR/usr/bin/gitextensions" <<EOF
+cat > "$STAGE_DIR/usr/bin/gitnext" <<EOF
 #!/bin/sh
 exec $INSTALL_ROOT/$APP_BINARY "\$@"
 EOF
-chmod 0755 "$STAGE_DIR/usr/bin/gitextensions"
+chmod 0755 "$STAGE_DIR/usr/bin/gitnext"
 
 # Desktop entry + icon
-cp "$SCRIPT_DIR/gitextensions.desktop" "$STAGE_DIR/usr/share/applications/gitextensions.desktop"
-cp "$ICON_SRC" "$STAGE_DIR/usr/share/icons/hicolor/256x256/apps/gitextensions.png"
+cp "$SCRIPT_DIR/gitnext.desktop" "$STAGE_DIR/usr/share/applications/gitnext.desktop"
+for size in $ICON_SIZES; do
+    cp "$ICON_DIR/gitnext-$size.png" "$STAGE_DIR/usr/share/icons/hicolor/${size}x${size}/apps/gitnext.png"
+done
 
 # DEBIAN/control
 cat > "$STAGE_DIR/DEBIAN/control" <<EOF
-Package: gitextensions
+Package: gitnext
 Version: ${VERSION}
 Architecture: amd64
 Section: vcs
 Priority: optional
 Depends: git
 Installed-Size: ${INSTALLED_SIZE}
-Maintainer: Git Extensions Linux Port <noreply@gitextensions.github.io>
-Description: Graphical user interface for Git (Linux/Avalonia port)
+Maintainer: gitNext <noreply@example.invalid>
+Description: gitNext - graphical user interface for Git
  Git Extensions is a standalone UI tool for managing Git repositories.
  This is the cross-platform Linux port built on Avalonia and .NET,
  shipped self-contained so no separate .NET runtime is required.

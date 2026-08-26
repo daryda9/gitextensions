@@ -20,7 +20,7 @@ fi
 
 if [[ "${1:-}" == "--selftest" ]]; then
     dotnet build "$PROJ" -v q --nologo
-    DLL="$(find "$SCRIPT_DIR/bin" -name GitExtensions.Avalonia.dll | head -1)"
+    DLL="$(find "$SCRIPT_DIR/bin" -name GitNext.dll | head -1)"
     exec dotnet "$DLL" --selftest "${2:-$PWD}"
 fi
 

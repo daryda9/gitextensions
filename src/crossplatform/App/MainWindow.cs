@@ -170,7 +170,7 @@ public sealed class MainWindow : Theming.ZoomWindow
     // grid event's kind rather than re-derived from the hash.
     private ArtificialDiff _artificialWhich;
 
-    private const string DefaultTitle = "Git Extensions (Avalonia / Linux)";
+    private const string DefaultTitle = "gitNext";
 
     // Which commit each lazily-loaded bottom tab is currently showing; null = stale.
     private string? _detailLoadedFor;
