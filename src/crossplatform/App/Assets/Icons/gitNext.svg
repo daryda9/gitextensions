@@ -1,7 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
-  <path d="M 325 75 L 178.00 174.32 Q 159.00 187.16 159.00 200.00" stroke="#E5342B" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M 75 75 L 222.00 174.32 Q 260 200 222.00 225.68 L 75 325" stroke="#2EA043" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M 94.1 165.0 L 75.0 75.0 L 165.6 59.1" stroke="#2EA043" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M 159.00 200.00 Q 159.00 212.84 178.00 225.68 L 325 325" stroke="#E5342B" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M 305.9 235.0 L 325.0 325.0 L 234.4 340.9" stroke="#E5342B" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <rect x="6" y="6" width="388" height="388" rx="92" fill="#101820"/>
+  <g transform="translate(200,200) scale(0.7604) translate(-200,-200)">
+    <path d="M 354.2 38.1 L 180.3 168.5 Q 159.3 184.2 159.3 200.0" stroke="#1DA65A" stroke-width="42" stroke-linecap="round" fill="none"/>
+    <path d="M 45.8 38.1 L 219.7 168.5 Q 261.7 200 219.7 231.5 L 45.8 361.9" stroke="#FFFFFF" stroke-width="42" stroke-linecap="round" fill="none"/>
+    <path d="M 249.2 39.7 L 354.2 38.1 L 323.2 138.5" stroke="#1DA65A" stroke-width="42" stroke-linejoin="round" stroke-linecap="round" fill="none"/>
+    <path d="M 159.3 200.0 Q 159.3 215.8 180.3 231.5 L 354.2 361.9" stroke="#1DA65A" stroke-width="42" stroke-linecap="round" fill="none"/>
+    <circle cx="45.8" cy="38.1" r="32.8" fill="#FFFFFF"/>
+    <circle cx="45.8" cy="361.9" r="32.8" fill="#FFFFFF"/>
+    <circle cx="354.2" cy="361.9" r="32.8" fill="#1DA65A"/>
+  </g>
 </svg>
