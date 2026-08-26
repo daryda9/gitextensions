@@ -24,4 +24,16 @@ if [[ "${1:-}" == "--selftest" ]]; then
     exec dotnet "$DLL" --selftest "${2:-$PWD}"
 fi
 
-exec dotnet run --project "$PROJ" -v q --nologo -- "$@"
+# Build, then run the NATIVE launcher rather than `dotnet run`. Two reasons, both
+# visible on a desktop: `dotnet run` makes the process — and therefore the WM_CLASS
+# instance name a shell matches an icon against — "dotnet", and it keeps the SDK in
+# the process tree, so Ctrl+C and the exit code travel through a middleman. The
+# apphost is emitted by every build next to the assemblies.
+dotnet build "$PROJ" -v q --nologo
+APP="$(find "$SCRIPT_DIR/bin" -name GitNext -type f -perm -u+x | head -1)"
+if [[ -z "$APP" ]]; then
+    echo "error: native launcher GitNext not found under bin/ after the build" >&2
+    exit 1
+fi
+
+exec "$APP" "$@"
