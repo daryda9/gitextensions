@@ -23,8 +23,7 @@ public static class IconLoader
     // assembly when the host of an avares: URI names no loaded assembly — and that
     // fallback did NOT cover the one asset added under the new name, which is how
     // the window icon went missing with every other icon still resolving.
-    private static readonly string Root =
-        $"avares://{typeof(IconLoader).Assembly.GetName().Name}/Assets/Icons/";
+    private static readonly string Root = AssetUri.For("Assets/Icons/");
 
     // Ordinal, deliberately: the avares: lookup below is case-sensitive, so "star"
     // and "Star" have different outcomes and must not share a cache entry. With an

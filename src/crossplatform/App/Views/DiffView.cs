@@ -316,7 +316,7 @@ public sealed class DiffView : UserControl
         // The patch pane. AvaloniaEdit ships its own control theme inside the
         // package; it is pulled into THIS control's styles rather than the
         // application's, so the dependency stays where it is used.
-        Styles.Add(new StyleInclude(new Uri("avares://GitExtensions.Avalonia/"))
+        Styles.Add(new StyleInclude(new Uri(Theming.AssetUri.Base))
         {
             Source = new Uri("avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"),
         });

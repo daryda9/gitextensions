@@ -34,8 +34,7 @@ internal static class AppIcon
     // The 256px product mark, linked into the resources as Assets/Icons/GitNext.png
     // (see the csproj). The same bitmap the About dialog shows; the packaged .desktop
     // entry points at the 256px original instead, which is what a launcher wants.
-    private static readonly string Asset =
-        $"avares://{typeof(AppIcon).Assembly.GetName().Name}/Assets/Icons/GitNext.png";
+    private static readonly string Asset = AssetUri.For("Assets/Icons/GitNext.png");
 
     private static WindowIcon? _icon;
 

@@ -214,7 +214,7 @@ public sealed class MergeToolWindow : ZoomWindow
         // AvaloniaEdit's control theme lives in its own package and is pulled into
         // THIS window's styles, exactly as the diff pane does it, so the dependency
         // never leaks into the application-wide styles.
-        Styles.Add(new StyleInclude(new Uri("avares://GitExtensions.Avalonia/"))
+        Styles.Add(new StyleInclude(new Uri(Theming.AssetUri.Base))
         {
             Source = new Uri("avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"),
         });

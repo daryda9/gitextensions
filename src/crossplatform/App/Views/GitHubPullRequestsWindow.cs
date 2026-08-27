@@ -129,7 +129,7 @@ public sealed class GitHubPullRequestsWindow : Theming.ZoomWindow
         _files = new FileStatusListView { ShowToolbar = false };
         _files.SelectedFileChanged += ShowPatch;
 
-        Styles.Add(new StyleInclude(new Uri("avares://GitExtensions.Avalonia/"))
+        Styles.Add(new StyleInclude(new Uri(Theming.AssetUri.Base))
         {
             Source = new Uri("avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"),
         });

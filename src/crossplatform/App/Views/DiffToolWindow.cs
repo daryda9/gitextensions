@@ -60,7 +60,7 @@ public sealed class DiffToolWindow : ZoomWindow
         MinHeight = 400;
         Background = Brush("App.Window", Brushes.Black);
 
-        Styles.Add(new StyleInclude(new Uri("avares://GitExtensions.Avalonia/"))
+        Styles.Add(new StyleInclude(new Uri(Theming.AssetUri.Base))
         {
             Source = new Uri("avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"),
         });

@@ -22,7 +22,7 @@ namespace GitExtensions.Avalonia.Views;
 /// </param>
 /// <param name="Image1">
 ///  Base file name of the always-visible diagram under
-///  <c>avares://GitExtensions.Avalonia/Assets/Help/</c>, e.g. "HelpCommandMerge".
+///  <c>avares://&lt;assembly&gt;/Assets/Help/</c>, e.g. "HelpCommandMerge".
 ///  Case-sensitive.
 /// </param>
 /// <param name="Image2">
@@ -76,7 +76,7 @@ public sealed record HelpImageAssets(Bitmap? Image1, Bitmap? Image2, bool IsExpa
 /// </summary>
 public sealed class HelpImagePanel : UserControl
 {
-    private const string Root = "avares://GitExtensions.Avalonia/Assets/Help/";
+    private static readonly string Root = Theming.AssetUri.For("Assets/Help/");
 
     private readonly HelpImageSpec _spec;
     private readonly Bitmap? _image1;
