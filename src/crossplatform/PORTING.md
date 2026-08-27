@@ -3418,6 +3418,35 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M224 (2026-08-27, `ceb7619b0`) — la rinomina aveva spento l'illustrazione dei dialoghi di merge e rebase
+
+Segnalato dall'uso: facendo un merge, **la colonna sinistra del dialogo era vuota**. Riprodotto al
+primo tentativo — il pannello c'era, «Hide help» compreso, e dentro niente.
+
+Causa: la rinomina a `GitNext`. L'host di un URI `avares:` **è il nome dell'assembly**, e
+`HelpImagePanel` lo aveva scritto a mano: `avares://GitExtensions.Avalonia/Assets/Help/`. È peggio di
+un errore, perché quel pannello è scritto per trattare un asset mancante come «non disegnare niente»:
+`AssetLoader.Exists` diceva no per un assembly che non esiste, la colonna restava vuota, e **né la
+build né i nove banchi** avevano qualcosa da dire. L'ha trovato l'utente.
+
+Cinque letterali portavano il nome vecchio. **Quattro** sono l'URI di base di uno `StyleInclude` il cui
+`Source` è un `avares:` assoluto in AvaloniaEdit — lì una base sbagliata non risolve niente e non
+cambia niente: erano a posto **per fortuna**, non per costruzione. Il quinto era questo.
+
+Rimedio: il nome non è più scritto da nessuna parte. `Theming/AssetUri` tiene l'unica base, chiesta
+all'assembly che gira, e ci passano `IconLoader`, `AppIcon`, `HelpImagePanel` e i quattro
+`StyleInclude`. Una rinomina futura si sposta con l'assembly. Le note su quel file spiegano il perché,
+perché la parte da ricordare è il **modo** di rompersi: un asset che si risolve in silenzio in niente.
+
+**Prove a schermo**: il dialogo di merge mostra il diagramma del fast-forward con la sua didascalia, e
+quello di rebase il proprio. Zero avvisi, nove banchi verdi.
+
+**Terzo difetto della stessa famiglia in due giorni** — dopo l'icona di finestra (M223bis, uno `Style`
+che non combaciava) e l'icona nella barra delle app (`WM_CLASS` con istanza `dotnet`). Filo comune:
+**una risorsa mancante, qui, non fa rumore**. Vale un banco che chieda a `AssetLoader.Exists` ogni nome
+che l'app carica — le sette immagini di aiuto, il marchio, i glifi delle icone — e fallisca per nome.
+Non fatto: registrato in `HANDOFF.md` §4.
+
 ## M223bis (2026-08-26, `69c8f8ae1`) — l'icona di finestra non arrivava a nessuna finestra: `OfType` è il tipo esatto
 
 Segnalazione dell'utente, dal desktop vero: avviato con `./run.sh`, **nessuna icona nella barra delle
