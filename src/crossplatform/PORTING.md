@@ -3418,6 +3418,43 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M225 (2026-09-01, `9d23153c5`) — un banco che fallisce **col nome** quando un asset non si risolve
+
+Chiude la famiglia dei tre difetti di fine agosto: icona di finestra che nessuna finestra riceveva
+(M223bis), icona cercata nella barra sotto il nome `dotnet` (`da0a0fb95`), illustrazioni dei dialoghi
+spente dalla rinomina (M224). Il filo comune non è Avalonia: **qui una risorsa mancante non fa rumore**.
+`AssetLoader` risponde «non c'è» e i chiamanti disegnano niente — giusto a schermo, pessimo per
+accorgersene. Tutti e tre li ha trovati l'uso.
+
+`Tests/AssetNamesRegression`. **Senza finestra, senza display, senza avviare Avalonia**:
+`Avalonia.Platform.StandardAssetLoader` è **pubblica** in 11.3.14 e risolve gli URI `avares:` da sola,
+quindi il banco gira nel runner insieme agli altri nove.
+
+Sei gruppi di asserzioni, e **due leggono il codice** invece di una lista, così un dialogo nuovo o
+un'icona nuova entrano senza toccare il banco:
+
+| Gruppo | Cosa afferma |
+|---|---|
+| la base | `Theming.AssetUri.Base` è `avares://<assembly che gira>/` — l'ultimo difetto detto come asserzione |
+| la radice del pannello | `HelpImagePanel.Root` è quella base più `Assets/Help/`: **una base giusta altrove non salva un chiamante che ne tiene una sua**, ed è esattamente com'è andata |
+| i diagrammi | ogni `HelpImageSpec` dichiarata **ovunque** nell'app, trovata per reflection, e ogni immagine che nomina — cercata sotto la radice **del pannello** |
+| i nomi nel codice | ogni letterale passato a `IconLoader.Image/Load`, letto dai sorgenti di `App` (oggi 15) |
+| gli host scritti a mano | ogni `"avares://<host>` nei sorgenti deve nominare un assembly **esistente**: le risorse di un pacchetto sono legittime, un nome di prodotto vecchio no |
+| il resto | il marchio, i bitmap Classic di `Icons.ClassicNames`, e un **pavimento** sul set imbarcato (257 oggi, asserito > 200) |
+
+**Non vacuo per costruzione, non per rito**: tre casi negativi girano sempre — un host che non è
+nessun assembly caricato, un'icona inventata, un diagramma inventato. Se `Exists` cominciasse a dire sì
+a tutto, fallirebbero **quelli** per primi.
+
+**Provato contro il difetto vero, due volte, reintroducendolo**: con la radice di `HelpImagePanel`
+riportata al nome vecchio dell'assembly riporta **cinque** fallimenti — la base, i tre diagrammi e
+l'host morto; con un refuso plausibile (`Assets/Helps/`) ne riporta **quattro**, ognuno con l'URI che
+il pannello avrebbe chiesto. E se la cartella dei sorgenti non si trova, **fallisce** invece di
+saltare: il conteggio 39-contro-41 di `SettingsStoresRegression` ha già insegnato che un banco che
+lascia cadere metà di sé in silenzio si legge come un verde.
+
+Dieci banchi verdi. `Tests/run-all.sh` gli passa `$ROOT/App` come argomento.
+
 ## M224 (2026-08-27, `ceb7619b0`) — la rinomina aveva spento l'illustrazione dei dialoghi di merge e rebase
 
 Segnalato dall'uso: facendo un merge, **la colonna sinistra del dialogo era vuota**. Riprodotto al
