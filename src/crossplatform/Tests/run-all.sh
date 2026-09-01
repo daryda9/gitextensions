@@ -51,6 +51,7 @@ HARNESSES=(
     "command-palette|CommandPaletteRegression.Harness|300|"
     "syntax-tokenize|SyntaxTokenizeRegression.Harness|120|"
     "merge-resolve|MergeResolveRegression.Harness|180|"
+    "asset-names|AssetNamesRegression.Harness|60|$ROOT/App"
 )
 
 # Deliberately not run here, with the reason, so their absence reads as a
