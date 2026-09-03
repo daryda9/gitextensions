@@ -3418,6 +3418,103 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M227 (2026-09-03) — `./run.sh` poteva avviare una build di due giorni prima
+
+Il difetto che ha fatto sembrare M226 non corretto. `run.sh` scegliva il binario così:
+
+```sh
+APP="$(find "$SCRIPT_DIR/bin" -name GitNext -type f -perm -u+x | head -1)"
+```
+
+Ogni progetto di banco referenzia l'app, quindi **ogni banco riceve la sua copia dell'app** accanto a
+sé: sotto `bin/` ce ne sono **quattordici**. `find` le restituisce nell'ordine del filesystem — che non
+è ordinato e non è nemmeno stabile fra due invocazioni — e `run.sh` compila **solo** il progetto
+dell'app, quindi quelle copie sono vecchie quanto l'ultima build di quel banco. Misurato: le date dei
+`GitNext.dll` sotto `bin/` erano una di oggi e **quattordici del 1 settembre**, e in due `find`
+consecutivi il primo risultato è cambiato.
+
+Conseguenza: una correzione può essere scritta, compilata e verificata, e **non essere nella finestra
+che l'utente sta guardando**. È così che il difetto di M226, corretto e verde nei banchi, si è
+ripresentato identico all'utente. L'ho dimostrato invece di supporlo: guidato lo stesso gesto sul
+binario del **1 settembre** sotto Xvfb, la cartella riaperta scompare; sul binario di oggi, no.
+
+Rimedio: il percorso lo dice MSBuild, `dotnet build "$PROJ" -getProperty:TargetPath`, e l'apphost sta
+accanto all'assembly riportato. **Attenzione al tranello**, misurato prima di usarlo: `-getProperty`
+*valuta*, non compila, e restituisce **0 anche quando il codice non compila** — quindi non sostituisce
+la build, si aggiunge dopo. Un `-getProperty` da solo avrebbe avviato un binario stantio nascondendo
+gli errori di compilazione: esattamente il difetto di partenza, peggiorato.
+
+## M226 (2026-09-03) — la cartella piegata non veniva nascosta, veniva **buttata**
+
+Segnalato dall'uso: nel dialogo di commit, raggruppando per cartelle e cliccando la freccia per
+piegarne una, «la voce scompare e non si vedono più i file». Riprodotto al primo tentativo.
+
+Il raggruppamento non c'entrava, era giusto. **Il pane non aveva altra memoria delle sue righe che gli
+`Items` del `ListBox`**, e ogni domanda su di esse passava da lì:
+
+```csharp
+List<WorkingDirFileRow> rows = [.. pane.List.Items.OfType<WorkingDirFileRow>()];
+```
+
+Un gruppo piegato tiene il suo sottoalbero fuori dagli `Items` **per costruzione**. Quindi al primo
+click le righe uscivano dalla vista *e dal pane*, e la ricostruzione dopo partiva da ciò che era
+rimasto a schermo: la cartella riaperta era vuota, e con una sola cartella di primo livello il pane si
+svuotava del tutto. Niente eccezione, niente log.
+
+La stessa lettura decideva altre quattro cose, tutte sbagliate a gruppo chiuso: il contatore del pane,
+**su cosa agiscono `Stage all` / `Unstage all`** (silenziosamente solo i file visibili — il peggiore
+dei cinque), il conteggio «Staged 3/5» in barra, e l'abilitazione dei due pulsanti di reset. Undici
+punti in tutto leggevano `Items`; con un raggruppamento attivo gli `Items` **contengono anche le
+intestazioni**, quindi quei conteggi erano gonfi già prima di piegare qualcosa.
+
+Il controllo gemello non ha mai avuto il difetto: `FileStatusListView` tiene `_files` in un campo. Il
+bug è nato con la **seconda** implementazione, non con la funzione.
+
+Rimedio: `FileListPane.Rows` è la lista autoritativa, `SetPaneRows` l'unico modo di darle al pane, e
+gli `Items` restano quello che sono — ciò che è **a schermo**. Le tre letture legittime rimaste
+chiedono al `ListBox` quale riga è visibile, per selezionarla: una riga nascosta non si può
+selezionare.
+
+Nello stesso giro, due difetti vicini trovati leggendo:
+
+* `SetAsTree` assegnava il campo e **basta** — né aggiornamento dei pulsanti né ricostruzione: il
+  pulsante ☰ (piatto/albero) non faceva niente di visibile finché qualcos'altro non ricostruiva la
+  lista. Ora i quattro punti d'ingresso passano da un solo imbuto, `SetGrouping`.
+* `SelectStagedForMessage` selezionava `Items[0]`, che con un raggruppamento attivo è
+  un'**intestazione**, e un'intestazione non ha diff da mostrare.
+
+**Il raggruppamento adesso si ricorda** (era la seconda metà della segnalazione). `ViewPrefs.FileList`
+tiene tre scelte: quella condivisa dai `FileStatusListView` di sessione, e una per ciascuna delle due
+liste del dialogo di commit. **L'upstream ne tiene una sola** — `AppSettings.DiffListSorting`
+(`GitCommands/Settings/AppSettings.cs:1902`, chiave `DiffListSortType`, default `FilePath`), diffusa a
+ogni `FileStatusList` aperta dal singleton `DiffListSortService`: lì scegliere un raggruppamento
+riraggruppa **tutte** le liste dell'applicazione. Qui le liste sono già indipendenti — il dialogo di
+commit ha una barra per lista e può stare a cartelle da un lato e piatto dall'altro, stato che
+sull'upstream non esiste — quindi ricordare per lista conserva ciò che l'interfaccia già permette,
+invece di togliercelo di soppiatto. La tab File-tree resta fuori di proposito: ha un oggetto opzioni
+suo, perché un albero di file che non è un albero non è un albero di file.
+
+Verificato **nell'app**, non solo nei banchi: Xvfb, dialogo aperto con Ctrl+Space, click sul pulsante
+delle cartelle, poi piegato e riaperto — piega, riapre, annidamento conservato, e la cartella piegata
+sopravvive con il suo conteggio intero anche a uno `Stage` (che ricarica). Riaperto il dialogo, si
+apre già raggruppato.
+
+`Tests/FileListRegression`, **undicesimo banco**, senza display: `DiffFileListBuilder` — finora
+scoperto da qualunque banco — più il lint sui sorgenti del dialogo, più la preferenza.
+
+| Gruppo | Cosa afferma |
+|---|---|
+| il raggruppamento | albero e piatto, cartelle annidate col conteggio dei discendenti, estensione, stato. Soprattutto: **piegare non è togliere** — una chiave piegata non cambia il numero di file riportato né la lista che il chiamante ha passato |
+| i sorgenti del dialogo | nessuna riga chiede al `ListBox` cosa il pane **contiene**; l'unico uso ammesso è `.OfType<WorkingDirFileRow>().FirstOrDefault(` — «quale riga è a schermo». E l'altra metà: che una lista propria **esista** e che la ricostruzione la legga |
+| la preferenza | default, giro completo su disco, un file scritto a mano (raggruppamento fuori range → piatto, gruppo assente → default), e il ponte fra l'enum del dialogo e quello condiviso: **ogni** valore deve tornare indietro uguale, così un modo aggiunto al condiviso e dimenticato nel dialogo fallisce qui |
+
+Il lint è un lint perché il codice che protegge **non si può costruire**: `CommitDialog` è una finestra
+e vuole display e repository. Tre casi negativi girano sempre.
+
+**Provato reintroducendo il difetto, tre volte**: il dialogo che torna a leggere dallo schermo → un
+fallimento che nomina riga e ricevente; `EmitPathTree` che conta solo i file visibili → due
+fallimenti, il conteggio e la radice sola; il clamp dell'enum spento → il file scritto a mano.
+
 ## M225 (2026-09-01, `9d23153c5`) — un banco che fallisce **col nome** quando un asset non si risolve
 
 Chiude la famiglia dei tre difetti di fine agosto: icona di finestra che nessuna finestra riceveva

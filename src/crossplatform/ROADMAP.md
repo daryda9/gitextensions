@@ -101,16 +101,19 @@ Quello che è rimasto scoperto **dentro** queste voci, dichiarato e non nascosto
 | §1.2 bis (M222) | **Chiuso**: un salvataggio con marker non stagia più, i file «risolti con marker» hanno un banner e un `Reopen conflict` (`git checkout --merge`), e il pannello del risultato ha metà finestra con splitter ricordato più «Only result». Resta fuori, dichiarato: nessuna azione per chunk che dica «prendi un lato e cancella una parte dell'altro» — quella resta editing a mano, che è ciò che il pannello grande serve a rendere possibile. |
 | §1.6 | Conflitti di rebase provati in M187; **worktree collegati provati in M201, e lì c'era il bug**: `MERGE_RR` è per-worktree ma `rr-cache` vive solo nella common directory, e il port chiedeva `--absolute-git-dir` per entrambe — git riapplicava una risoluzione con l'app che non mostrava niente. Provati e sani nello stesso giro: submodule a metà rebase (`modules/<nome>`) e un merge con conflitti binari, di soli permessi, delete/modify, rename/rename e symlink insieme. Restano non provati **cache multi-variante** e **path non ASCII o con spazi**; il ramo `am` del testo **non è più irraggiungibile** — M205 ha aggiunto l'ingresso, ma solo dove esiste davvero: misurato, un `git am` semplice non lascia niente di unmerged e non coinvolge rerere, solo `am --3way` lo fa, quindi banner e `ApplyPatchDialog` offrono la risoluzione **solo** con l'indice unmerged. `git rerere clear` deliberatamente non esposto: sembra «svuota la cache» e non lo è, e non ha un annulla sicuro. |
 
-**Stato onesto del collaudo automatico.** Il port ha oggi **otto** banchi di prova di regressione:
+**Stato onesto del collaudo automatico.** Il port ha oggi **nove** banchi di prova di regressione:
 `Tests/InlineDiffRegression` (il primo, e il modello degli altri), `Tests/CommandPaletteRegression`
 (M197), `Tests/ViewPrefsRegression` (M204), `Tests/SettingsStoresRegression` (M210),
 `Tests/ImageIntegrityRegression` (M212), `Tests/SyntaxTokenizeRegression` (M221, col watchdog che
 nomina il caso appeso) e `Tests/MergeResolveRegression` (M222, che asserisce cosa fa git all'indice
 quando un conflitto viene salvato, marcato risolto o riaperto), e `Tests/AssetNamesRegression` (M225,
 l'unico che legge anche i **sorgenti**: i nomi di icone passati per letterale e gli host `avares:`
-scritti a mano, perché qui una risorsa mancante non fa rumore); accanto restano le sonde e gli snapshot preesistenti
+scritti a mano, perché qui una risorsa mancante non fa rumore) e `Tests/FileListRegression` (M226:
+il raggruppamento delle liste di file — dove **piegare non è togliere** — più un lint sui sorgenti del
+dialogo di commit, che non deve chiedere al `ListBox` cosa il pane contiene, più la scelta ricordata);
+accanto restano le sonde e gli snapshot preesistenti
 (`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). **Da M211 non si
-lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia i dieci
+lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia gli undici
 deterministici ognuno in una sandbox propria, e `.github/workflows/crossplatform-build.yml` fa
 entrambe le cose con `-warnaserror` sui path che toccano il port. Esclusi dal runner, con la ragione
 scritta: `AnimProbe` e `ChromeProbe` (vogliono uno schermo), `Perf` (è una misura, non un verdetto).
