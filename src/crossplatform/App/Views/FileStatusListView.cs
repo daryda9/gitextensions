@@ -23,14 +23,51 @@ namespace GitExtensions.Avalonia.Views;
 /// </summary>
 public sealed class FileStatusListOptions
 {
-    /// <summary>The one instance shared by every <see cref="FileStatusListView"/>.</summary>
-    public static FileStatusListOptions Session { get; } = new();
+    /// <summary>
+    ///  The one instance shared by every <see cref="FileStatusListView"/> — and the
+    ///  only one that is file-backed: it opens with the grouping the user last chose
+    ///  (<see cref="FileListPrefs.Diff"/>) and writes it back on every change. An
+    ///  instance a host builds for itself (the File-tree tab) is deliberately NOT
+    ///  persisted: its grouping is part of what that surface IS, not a user choice.
+    /// </summary>
+    public static FileStatusListOptions Session { get; } = Restore();
 
     /// <summary>Which grouping the lists apply.</summary>
     public DiffFileGroupMode GroupMode { get; set; } = DiffFileGroupMode.None;
 
     /// <summary>Whether the path grouping nests its directories.</summary>
     public bool AsTree { get; set; } = true;
+
+    // False on a host's own options object, so only the session choice reaches the file.
+    private bool _persisted;
+
+    /// <summary>
+    ///  Saves the current grouping, when this is the session instance. Called by the
+    ///  two places that change it (<c>SetGroupMode</c> and <c>ToggleTree</c>), through
+    ///  <see cref="ViewPrefsService.Update"/> so it cannot revert a group another
+    ///  surface wrote meanwhile.
+    /// </summary>
+    public void Remember()
+    {
+        if (!_persisted)
+        {
+            return;
+        }
+
+        FileListGrouping grouping = new() { Group = GroupMode, AsTree = AsTree };
+        new ViewPrefsService().Update(p => p.FileList.Diff = grouping);
+    }
+
+    private static FileStatusListOptions Restore()
+    {
+        FileListGrouping stored = new ViewPrefsService().Load().FileList.Diff;
+        return new FileStatusListOptions
+        {
+            GroupMode = stored.Group,
+            AsTree = stored.AsTree,
+            _persisted = true,
+        };
+    }
 }
 
 /// <summary>
@@ -1534,6 +1571,7 @@ public sealed class FileStatusListView : UserControl
     private void ToggleTree()
     {
         _options.AsTree = !_options.AsTree;
+        _options.Remember();
         SyncGroupButtons();
         Rebuild();
     }
@@ -1541,6 +1579,7 @@ public sealed class FileStatusListView : UserControl
     private void SetGroupMode(DiffFileGroupMode mode)
     {
         _options.GroupMode = mode;
+        _options.Remember();
         _collapsed.Clear();
         SyncGroupButtons();
         Rebuild();

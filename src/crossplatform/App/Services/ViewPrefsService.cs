@@ -33,6 +33,9 @@ public sealed class ViewPrefs
     /// <summary>Revision-grid column widths (see <see cref="GridColumnPrefs"/>).</summary>
     public GridColumnPrefs GridColumns { get; set; } = new();
 
+    /// <summary>How the changed-file lists group their rows (see <see cref="FileListPrefs"/>).</summary>
+    public FileListPrefs FileList { get; set; } = new();
+
     /// <summary>
     ///  Recently used advanced revision filters, most recent first, without
     ///  duplicates and capped at <see cref="ViewPrefsService.MaxRevisionFilterMru"/>.
@@ -292,6 +295,52 @@ public sealed class GridColumnPrefs
 
     /// <summary>Commit-id column, 0 = never dragged.</summary>
     public double Hash { get; set; }
+}
+
+/// <summary>
+///  One file list's grouping: which key it groups by, and — for the path grouping
+///  only — whether the directories nest.
+/// </summary>
+public sealed class FileListGrouping
+{
+    /// <summary>The grouping key; <see cref="DiffFileGroupMode.None"/> is a flat list.</summary>
+    public DiffFileGroupMode Group { get; set; } = DiffFileGroupMode.None;
+
+    /// <summary>Whether the path grouping nests its directories instead of listing them.</summary>
+    public bool AsTree { get; set; } = true;
+}
+
+/// <summary>
+///  The grouping each changed-file list opens with — the toolbar's <c>Group by file
+///  path / extension / status</c> and its flat/tree split, which the port used to
+///  forget the moment the window closed.
+///
+///  <para><b>Upstream keeps ONE.</b> There it is the single
+///  <c>AppSettings.DiffListSorting</c> (<c>GitCommands/Settings/AppSettings.cs:1902</c>,
+///  key <c>DiffListSortType</c>, default <c>FilePath</c>), broadcast to every open
+///  <c>FileStatusList</c> through the <c>DiffListSortService</c> singleton: choosing a
+///  grouping anywhere re-groups every list in the application at once. The port stores
+///  three, because its lists are already independent of one another — the diff pane
+///  shares one session-wide choice, and the commit dialog's two lists have always had
+///  a toolbar each, so staging by folder while reviewing the index flat is a state a
+///  user can reach here and cannot reach upstream. Persisting per list keeps what the
+///  interface already allows instead of quietly taking it away.</para>
+///
+///  <para>The File-tree tab is deliberately absent: it holds its own options object
+///  (<c>Views.FileTreeView</c>) because a file tree that is not a tree is not a file
+///  tree, and nothing the user does to another list may flatten it.</para>
+/// </summary>
+public sealed class FileListPrefs
+{
+    /// <summary>The choice shared by every <c>Views.FileStatusListView</c> that uses
+    /// <c>FileStatusListOptions.Session</c> — the diff pane and its kin.</summary>
+    public FileListGrouping Diff { get; set; } = new();
+
+    /// <summary>The commit dialog's work-tree list.</summary>
+    public FileListGrouping CommitUnstaged { get; set; } = new();
+
+    /// <summary>The commit dialog's index list.</summary>
+    public FileListGrouping CommitStaged { get; set; } = new();
 }
 
 public sealed class LeftPanelPrefs
@@ -632,6 +681,25 @@ public sealed class ViewPrefsService
         p.RevisionFilterMru ??= [];
         p.CommandPaletteMru ??= [];
         p.HelpPanels ??= [];
+        p.GridColumns ??= new GridColumnPrefs();
+        p.FileList ??= new FileListPrefs();
+        p.FileList.Diff ??= new FileListGrouping();
+        p.FileList.CommitUnstaged ??= new FileListGrouping();
+        p.FileList.CommitStaged ??= new FileListGrouping();
+
+        // The groupings are enums, and an enum is serialised as a NUMBER here (no
+        // JsonStringEnumConverter is configured), so a hand-edited or later-build file
+        // can carry a value no switch in the app has a case for — which would draw a
+        // list with no groups and no way to tell that from a bug. Unknown collapses to
+        // the flat list, the same default a first run writes.
+        foreach (FileListGrouping grouping in
+            (FileListGrouping[])[p.FileList.Diff, p.FileList.CommitUnstaged, p.FileList.CommitStaged])
+        {
+            if (!Enum.IsDefined(grouping.Group))
+            {
+                grouping.Group = DiffFileGroupMode.None;
+            }
+        }
 
         // An unknown encoding name would leave the toolbar combo with no selection
         // and decode the patch as UTF-8 anyway, so it collapses to the default.

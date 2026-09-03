@@ -200,6 +200,22 @@ public sealed class CommitDialog : Theming.ZoomWindow
         public Border CountBox = new();
         public readonly DispatcherTimer Timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
 
+        /// <summary>
+        ///  Every row this pane holds — which is NOT the same as the rows its
+        ///  <see cref="List"/> is showing, because a collapsed group keeps its subtree
+        ///  out of the items (see <c>BuildItems</c>).
+        ///
+        ///  <para><b>Why it exists.</b> The items used to be the only record of the rows,
+        ///  and everything that needed them read <c>List.Items.OfType&lt;WorkingDirFileRow&gt;()</c>.
+        ///  Collapsing a folder therefore did not hide its files, it DISCARDED them: the
+        ///  next rebuild started from what was left on screen, so re-expanding showed an
+        ///  empty folder, and with the only top-level folder collapsed the pane emptied
+        ///  itself. The same read also decided the pane's counter and what
+        ///  <c>Stage all</c> / <c>Unstage all</c> acted on, so a collapsed group silently
+        ///  narrowed both (M226).</para>
+        /// </summary>
+        public IReadOnlyList<WorkingDirFileRow> Rows = [];
+
         // The last applied pattern, empty when the filter is off. Non-empty ONLY while
         // it compiles, so "filter active" and "pattern usable" are the same condition.
         public string Pattern = string.Empty;
@@ -993,12 +1009,17 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // from a selection-driven handler is what crashed this dialog twice before.
     private void SelectStagedForMessage()
     {
-        if (_stagedList.SelectedItems?.Count > 0 || _stagedList.Items.Count == 0)
+        if (_stagedList.SelectedItems?.Count > 0 || _stagedPane.Rows.Count == 0)
         {
             return;
         }
 
-        _stagedList.SelectedItem = _stagedList.Items[0];
+        // The first FILE, not the first item: with a grouping on, the first item is a
+        // group header, and a header has no diff to put in the panel.
+        if (_stagedList.Items.OfType<WorkingDirFileRow>().FirstOrDefault() is { } first)
+        {
+            _stagedList.SelectedItem = first;
+        }
     }
 
     private void OnLanguageChanged() => Dispatcher.UIThread.Post(ApplyTranslations);
@@ -2551,7 +2572,9 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
     private IEnumerable<WorkingDirFileRow> Filtered(FileListPane pane)
     {
-        IEnumerable<WorkingDirFileRow> rows = pane.List.Items.OfType<WorkingDirFileRow>();
+        // pane.Rows and not the list's items: a file inside a collapsed folder is
+        // hidden, not gone, and "Stage all" must still reach it (M226).
+        IEnumerable<WorkingDirFileRow> rows = pane.Rows;
         return pane.FilterActive
             ? rows.Where(r => Regex.IsMatch(r.Path, pane.Pattern, RegexOptions.IgnoreCase))
             : rows;
@@ -2640,7 +2663,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         pane.CountText.Text = string.Format(
             "{0}/{1}",
             Filtered(pane).Count(),
-            pane.List.Items.OfType<WorkingDirFileRow>().Count());
+            pane.Rows.Count);
     }
 
     private static string SelectionFilterTip => T(
@@ -2930,7 +2953,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // sites), and every await inside is a modal the user drives.
     private async Task DoCommitAsync(bool push)
     {
-        int staged = _stagedList.Items.Count;
+        int staged = _stagedPane.Rows.Count;
         string message = _messageBox.Text ?? string.Empty;
         CommitOptions options = CurrentOptions();
 
@@ -3212,7 +3235,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // Upstream sizes the question from the WORK-TREE list only (it is the one
         // passed to StartResetChangesDialog), because that is where untracked files
         // can appear at all: an index entry is by definition tracked.
-        List<WorkingDirFileRow> unstagedRows = [.. _unstagedList.Items.OfType<WorkingDirFileRow>()];
+        List<WorkingDirFileRow> unstagedRows = [.. _unstagedPane.Rows];
         List<string> untracked = [.. unstagedRows.Where(IsUntrackedRow).Select(r => r.Path)];
 
         // Unmerged paths are left out of the checkout list on purpose: `git checkout --
@@ -3233,7 +3256,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         if (includeStaged)
         {
             HashSet<string> seen = [.. tracked];
-            foreach (WorkingDirFileRow row in _stagedList.Items.OfType<WorkingDirFileRow>())
+            foreach (WorkingDirFileRow row in _stagedPane.Rows)
             {
                 if (seen.Add(row.Path))
                 {
@@ -3279,7 +3302,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // edits stay in the working tree, so both lists are refreshed afterwards.
     private void DoStashStaged()
     {
-        if (_stagedList.Items.Count == 0)
+        if (_stagedPane.Rows.Count == 0)
         {
             SetStatus(T("There are no staged changes to stash."));
             return;
@@ -3311,7 +3334,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
     private async Task GenerateSubmoduleMessageAsync()
     {
         string repo = _repoPath;
-        List<string> staged = [.. _stagedList.Items.OfType<WorkingDirFileRow>().Select(r => r.Path)];
+        List<string> staged = [.. _stagedPane.Rows.Select(r => r.Path)];
         string message = await Task.Run(() =>
         {
             try
@@ -3946,8 +3969,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
         string counts = string.Format(
             "{0} {1}/{2}",
             T("FormCommit/commitStagedCountLabel.Text", "Staged"),
-            _stagedList.Items.Count,
-            _stagedList.Items.Count + _unstagedList.Items.Count);
+            _stagedPane.Rows.Count,
+            _stagedPane.Rows.Count + _unstagedPane.Rows.Count);
         _stagedCountText.Text = counts;
         _lnColText.Text = string.Format(
             "{0} {1} {2} {3}",
@@ -4516,11 +4539,11 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
             // Each list is ordered by its own sort key, and a NEW list instance is
             // handed to ItemsSource (M50).
-            _unstagedList.ItemsSource = BuildItems(_unstagedPane, unstaged);
+            SetPaneRows(_unstagedPane, unstaged);
 
             // An unmerged path is reported by the index listing too; showing it in
             // both lists would be misleading, so it stays only in the unstaged one.
-            _stagedList.ItemsSource = BuildItems(
+            SetPaneRows(
                 _stagedPane,
                 _conflictPaths.Count == 0
                     ? status.Staged
@@ -4528,8 +4551,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
             _conflictBanner.IsVisible = _conflictPaths.Count > 0;
             // An empty pane is the "no changes" line alone: upstream hides the filter
             // row with the list (FileStatusList.SetFileStatusListVisibility).
-            _unstagedEmpty.IsVisible = _unstagedList.Items.Count == 0;
-            _stagedEmpty.IsVisible = _stagedList.Items.Count == 0;
+            _unstagedEmpty.IsVisible = _unstagedPane.Rows.Count == 0;
+            _stagedEmpty.IsVisible = _stagedPane.Rows.Count == 0;
             _unstagedPane.FilterRow.IsVisible = !_unstagedEmpty.IsVisible || _unstagedPane.FilterActive;
             _stagedPane.FilterRow.IsVisible = !_stagedEmpty.IsVisible || _stagedPane.FilterActive;
             RestoreDiffSelection();
@@ -4546,7 +4569,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
             if (_closeIfNothingLeft)
             {
                 _closeIfNothingLeft = false;
-                if (unstaged.Count == 0 && _stagedList.Items.Count == 0)
+                if (unstaged.Count == 0 && _stagedPane.Rows.Count == 0)
                 {
                     Close();
                 }
@@ -4599,7 +4622,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
             return;
         }
 
-        ListBox list = _unstagedList.Items.OfType<WorkingDirFileRow>().Any() ? _unstagedList : _stagedList;
+        ListBox list = _unstagedPane.Rows.Count > 0 ? _unstagedList : _stagedList;
         if (list.Items.OfType<WorkingDirFileRow>().FirstOrDefault() is { } first)
         {
             list.SelectedItem = first;
@@ -4664,8 +4687,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // reset: "Reset unstaged changes" on a non-empty work-tree list
         // (FormCommit.cs:831), "Reset all changes" on either list (:2806). A live
         // button that can only ever say "nothing to do" is worse than a dead one.
-        int unstagedCount = _unstagedList.Items.Count;
-        int stagedCount = _stagedList.Items.Count;
+        int unstagedCount = _unstagedPane.Rows.Count;
+        int stagedCount = _stagedPane.Rows.Count;
         _resetUnstagedBtn.IsEnabled = unstagedCount > 0;
         _resetAllBtn.IsEnabled = unstagedCount > 0 || stagedCount > 0;
     }
@@ -4935,7 +4958,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // flat/tree split button, the three grouping toggles, then the settings menu.
         pane.CollapseButton = IconButton("CollapseAll", "⊟", () => ToggleAllGroups(pane));
         pane.RefreshButton = IconButton("ReloadRevisions", "⟳", Reload);
-        pane.AsTreeButton = IconButton("FileTree", "☰", () => SetAsTree(pane, !pane.AsTree));
+        pane.AsTreeButton = IconButton("FileTree", "☰", () => SetGrouping(pane, pane.Group, !pane.AsTree));
         pane.GroupMenuButton = IconButton(null, "▾", () => ShowGroupMenu(pane));
         pane.ByPathButton = GroupToggle(pane, FileSortMode.Path, "FolderClosed", "/");
         pane.ByExtensionButton = GroupToggle(pane, FileSortMode.Extension, "File", ".*");
@@ -4986,6 +5009,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
             buttons.Children.Add(pane.SettingsButton);
         }
 
+        RestoreGrouping(pane);
         UpdateGroupButtons(pane);
 
         DockPanel toolbarRow = new() { Margin = new Thickness(0, 0, 0, 2) };
@@ -5119,18 +5143,25 @@ public sealed class CommitDialog : Theming.ZoomWindow
                 ?? new TextBlock { Text = glyph, Foreground = Brush("App.Foreground", Brushes.Gainsboro) },
         };
         button.Classes.Add(Theming.BarButtonStyles.Class);
-        button.Click += (_, _) =>
-        {
-            pane.Group = pane.Group == mode ? null : mode;
-            UpdateGroupButtons(pane);
-            RegroupPane(pane);
-        };
+        button.Click += (_, _) => SetGrouping(pane, pane.Group == mode ? null : mode, pane.AsTree);
         return button;
     }
 
-    private static void SetAsTree(FileListPane pane, bool asTree)
+    /// <summary>
+    ///  The ONE way this dialog's grouping changes: the pane's choice, the toolbar's
+    ///  look, the rebuilt items and the remembered preference, in that order.
+    ///
+    ///  <para>The flat/tree entry point used to only assign the field — no button
+    ///  update and no rebuild — so the ☰ button visibly did nothing until something
+    ///  else happened to re-group the list (M226).</para>
+    /// </summary>
+    private void SetGrouping(FileListPane pane, FileSortMode? group, bool asTree)
     {
+        pane.Group = group;
         pane.AsTree = asTree;
+        RememberGrouping(pane);
+        UpdateGroupButtons(pane);
+        RegroupPane(pane);
     }
 
     // Upstream's btnAsTree drop-down: the three groupings, each as tree or flat.
@@ -5144,12 +5175,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
         flyout.Items.Add(new Separator());
         MenuItem none = new() { Header = (pane.Group is null ? "●  " : "○  ") + T("No grouping") };
-        none.Click += (_, _) =>
-        {
-            pane.Group = null;
-            UpdateGroupButtons(pane);
-            RegroupPane(pane);
-        };
+        none.Click += (_, _) => SetGrouping(pane, null, pane.AsTree);
         flyout.Items.Add(none);
         flyout.ShowAt(pane.GroupMenuButton);
 
@@ -5157,16 +5183,70 @@ public sealed class CommitDialog : Theming.ZoomWindow
         {
             bool active = pane.Group == mode && (mode != FileSortMode.Path || pane.AsTree == asTree);
             MenuItem item = new() { Header = (active ? "●  " : "○  ") + caption };
-            item.Click += (_, _) =>
-            {
-                pane.Group = mode;
-                pane.AsTree = asTree;
-                UpdateGroupButtons(pane);
-                RegroupPane(pane);
-            };
+            item.Click += (_, _) => SetGrouping(pane, mode, asTree);
             flyout.Items.Add(item);
         }
     }
+
+    // ---------- the remembered grouping (view-prefs.json, FileListPrefs) ----------
+    //
+    // Upstream keeps ONE grouping for every file list in the application
+    // (AppSettings.DiffListSorting, broadcast by DiffListSortService); this dialog's
+    // two lists have a toolbar each and have always been able to disagree, so each
+    // remembers its own. The reasoning is written out on Services.FileListPrefs.
+
+    private static readonly Services.ViewPrefsService GroupingPrefs = new();
+
+    private static void RestoreGrouping(FileListPane pane)
+    {
+        Services.FileListPrefs prefs = GroupingPrefs.Load().FileList;
+        Services.FileListGrouping stored = pane.Staged ? prefs.CommitStaged : prefs.CommitUnstaged;
+        pane.Group = ToSortMode(stored.Group);
+        pane.AsTree = stored.AsTree;
+    }
+
+    private static void RememberGrouping(FileListPane pane)
+    {
+        // Built BEFORE the call, out of the pane's state as it is now: Update's
+        // delegate may run later, on another thread, and more than once.
+        Services.FileListGrouping grouping = new()
+        {
+            Group = ToGroupMode(pane.Group),
+            AsTree = pane.AsTree,
+        };
+
+        bool staged = pane.Staged;
+        GroupingPrefs.Update(p =>
+        {
+            if (staged)
+            {
+                p.FileList.CommitStaged = grouping;
+            }
+            else
+            {
+                p.FileList.CommitUnstaged = grouping;
+            }
+        });
+    }
+
+    // This dialog predates DiffFileGroupMode and carries its own enum, whose "no
+    // grouping" is a null rather than a member. The stored shape is the shared one,
+    // so the two meet here and nowhere else.
+    private static FileSortMode? ToSortMode(DiffFileGroupMode mode) => mode switch
+    {
+        DiffFileGroupMode.Path => FileSortMode.Path,
+        DiffFileGroupMode.Extension => FileSortMode.Extension,
+        DiffFileGroupMode.Status => FileSortMode.Status,
+        _ => null,
+    };
+
+    private static DiffFileGroupMode ToGroupMode(FileSortMode? mode) => mode switch
+    {
+        FileSortMode.Path => DiffFileGroupMode.Path,
+        FileSortMode.Extension => DiffFileGroupMode.Extension,
+        FileSortMode.Status => DiffFileGroupMode.Status,
+        _ => DiffFileGroupMode.None,
+    };
 
     private static void UpdateGroupButtons(FileListPane pane)
     {
@@ -5184,11 +5264,13 @@ public sealed class CommitDialog : Theming.ZoomWindow
     // btnCollapseGroups, whose tooltip says exactly that.
     private void ToggleAllGroups(FileListPane pane)
     {
-        List<GroupHeader> headers = [.. pane.List.Items.OfType<GroupHeader>()];
+        // Every header the grouping WOULD produce, not the ones on screen: a header
+        // nested inside a folded folder is still one this button has to fold.
+        List<GroupHeader> headers = [.. AllHeaders(pane)];
         if (headers.Count == 0)
         {
-            // Everything is collapsed: only the top-level headers are in the list, so
-            // clearing the set is the only way back.
+            // Nothing is grouped (or the pane is empty), so there is nothing to fold;
+            // clearing the set is the only useful thing left to do.
             pane.Collapsed.Clear();
             RegroupPane(pane);
             return;
@@ -5197,7 +5279,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
         bool anyOpen = headers.Any(h => !pane.Collapsed.Contains(h.Key));
         if (anyOpen)
         {
-            foreach (GroupHeader header in AllHeaders(pane))
+            foreach (GroupHeader header in headers)
             {
                 pane.Collapsed.Add(header.Key);
             }
@@ -5212,8 +5294,7 @@ public sealed class CommitDialog : Theming.ZoomWindow
 
     // Every header the pane WOULD show if nothing were collapsed.
     private static IEnumerable<GroupHeader> AllHeaders(FileListPane pane)
-        => BuildItems(pane, [.. pane.List.Items.OfType<WorkingDirFileRow>()], ignoreCollapsed: true)
-            .OfType<GroupHeader>();
+        => BuildItems(pane, pane.Rows, ignoreCollapsed: true).OfType<GroupHeader>();
 
     // Upstream's per-list settings dropdown, reduced to the one toggle the port can
     // honour on the work-tree list.
@@ -5239,12 +5320,23 @@ public sealed class CommitDialog : Theming.ZoomWindow
     ///  the same instance back to <c>ItemsSource</c> leaves the realised containers
     ///  untouched and the visible rows keep their old visuals (HANDOFF §3 / M50).
     /// </summary>
+    /// <summary>
+    ///  The one way a pane is given rows: the pane RECORDS them
+    ///  (<see cref="FileListPane.Rows"/>) and the list shows whatever the current
+    ///  grouping makes of them. Assigning <c>ItemsSource</c> without recording the rows
+    ///  is what M226 was.
+    /// </summary>
+    private static void SetPaneRows(FileListPane pane, IEnumerable<WorkingDirFileRow> rows)
+    {
+        pane.Rows = [.. rows];
+        pane.List.ItemsSource = BuildItems(pane, pane.Rows);
+    }
+
     // Rebuilds one pane's items from the rows it already holds, keeping the selection.
     private void RegroupPane(FileListPane pane)
     {
-        List<WorkingDirFileRow> rows = [.. pane.List.Items.OfType<WorkingDirFileRow>()];
         List<WorkingDirFileRow> selected = SelectedRows(pane.List);
-        pane.List.ItemsSource = BuildItems(pane, rows);
+        pane.List.ItemsSource = BuildItems(pane, pane.Rows);
         foreach (WorkingDirFileRow row in selected)
         {
             if (pane.List.Items.OfType<WorkingDirFileRow>()
