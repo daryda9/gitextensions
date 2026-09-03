@@ -18,10 +18,28 @@ if ! command -v dotnet >/dev/null 2>&1; then
     exit 1
 fi
 
+# The path of what the build just produced, asked of MSBuild itself.
+#
+# It used to be `find "$SCRIPT_DIR/bin" -name GitNext -type f -perm -u+x | head -1`, and
+# that was a real defect, not a cosmetic one: every harness project that references the
+# app gets its OWN copy of the app next to it, so bin/ holds fourteen of them, and `find`
+# returns them in filesystem order — which is neither sorted nor stable. This script
+# builds only the app project, so those copies are as old as the last time each harness
+# was built (measured: two days and ten days old), and whichever one `head -1` happened to
+# pick was the one that ran. A fix could therefore be built, tested, and still not be in
+# the window the developer was looking at. Asking the project where its own output went
+# cannot pick the wrong one.
+#
+# -getProperty EVALUATES, it does not build (and it exits 0 even when the code does not
+# compile), so the real build above it stays exactly where it is.
+target_path()
+{
+    dotnet build "$PROJ" -v q --nologo -getProperty:TargetPath
+}
+
 if [[ "${1:-}" == "--selftest" ]]; then
     dotnet build "$PROJ" -v q --nologo
-    DLL="$(find "$SCRIPT_DIR/bin" -name GitNext.dll | head -1)"
-    exec dotnet "$DLL" --selftest "${2:-$PWD}"
+    exec dotnet "$(target_path)" --selftest "${2:-$PWD}"
 fi
 
 # Build, then run the NATIVE launcher rather than `dotnet run`. Two reasons, both
@@ -30,9 +48,12 @@ fi
 # the process tree, so Ctrl+C and the exit code travel through a middleman. The
 # apphost is emitted by every build next to the assemblies.
 dotnet build "$PROJ" -v q --nologo
-APP="$(find "$SCRIPT_DIR/bin" -name GitNext -type f -perm -u+x | head -1)"
-if [[ -z "$APP" ]]; then
-    echo "error: native launcher GitNext not found under bin/ after the build" >&2
+
+# The apphost sits next to the assembly the build reported, under the same name.
+APP="$(target_path)"
+APP="${APP%.dll}"
+if [[ ! -x "$APP" ]]; then
+    echo "error: native launcher not found at '$APP' after the build" >&2
     exit 1
 fi
 
