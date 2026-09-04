@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using GitExtensions.Avalonia.Services;
@@ -25,7 +26,7 @@ using GitExtensions.Avalonia.Services;
 // function in a service, the invariant the dialog broke is checked against its SOURCE,
 // and the remembered preference is a JSON document.
 //
-// The three groups of cases:
+// The five groups of cases:
 //
 //  A  DiffFileListBuilder — the grouping itself, which no harness covered until now.
 //     Above all: FOLDING IS NOT REMOVING. A collapsed key hides rows from the items and
@@ -34,6 +35,17 @@ using GitExtensions.Avalonia.Services;
 //     A lint, because the code it guards cannot be constructed without a window.
 //  C  The grouping each list opens with: defaults, round-trip, a hand-edited file, and
 //     the enum bridge between the dialog's own FileSortMode and the stored shape.
+//  D  The folder menu's reach: which rows "this folder" means, worked out BACKWARDS from
+//     a header because a folded folder shows none of its files. Two independent
+//     computations of one set — the list builder's and the menu's — cross-checked
+//     against each other through the count the header prints.
+//  E  What a folder-wide stash does, driven through the real service against real
+//     repositories: three facts about git, each measured before the menu relied on it.
+
+// The reused git core runs its commands through a JoinableTaskFactory, which the app
+// initialises at start-up: group E drives real git through the real service, so it has to
+// do the same or the first call throws instead of failing an assertion.
+GitUI.CrossPlatformBootstrap.InitializeThreading();
 
 List<string> failures = [];
 int cases = 0;
@@ -326,6 +338,181 @@ ViewPrefsService prefs = new();
         toGroupMode.Invoke(null, [null]) is DiffFileGroupMode.None);
 }
 
+// ---------------------------------------------------------------- D: the folder's reach
+
+// The folder menu (right-click on a group header) acts on "this folder", and it has to
+// work out which rows those are BACKWARDS from the header — the list cannot tell it,
+// because a folded folder shows none of its files and a folded folder is exactly where
+// this menu earns its place. So there are two independent computations of one set: the
+// one that built the list, and the one the menu reads. If they drift, a gesture aimed at
+// a folder acts on a set the user never saw.
+//
+// The cross-check: every header carries the number of files under it (it is printed on
+// screen, "src (3)"), and that number comes from the list builder. The menu's own answer
+// must have exactly that many rows, under every grouping, including the tree's nested
+// folders whose count is the whole subtree.
+{
+    Type dialog = typeof(GitExtensions.Avalonia.Views.CommitDialog);
+    Type paneType = Nested(dialog, "FileListPane");
+    Type headerType = Nested(dialog, "GroupHeader");
+    Type sortMode = Nested(dialog, "FileSortMode");
+    MethodInfo buildItems = Method(dialog, "BuildItems");
+    MethodInfo rowsInGroup = Method(dialog, "RowsInGroup");
+
+    WorkingDirFileRow[] paneRows =
+    [
+        new("src/views/one.txt", "modified", false),
+        new("src/views/two.cs", "new", false),
+        new("src/services/three.cs", "modified", false),
+        new("docs/readme.txt", "modified", false),
+        new("top.txt", "deleted", false),
+    ];
+
+    (string Name, object? Group, bool AsTree)[] groupings =
+    [
+        ("path tree", Enum.Parse(sortMode, "Path"), true),
+        ("path flat", Enum.Parse(sortMode, "Path"), false),
+        ("extension", Enum.Parse(sortMode, "Extension"), false),
+        ("status", Enum.Parse(sortMode, "Status"), false),
+    ];
+
+    foreach ((string name, object? group, bool asTree) in groupings)
+    {
+        object pane = Activator.CreateInstance(paneType, new Avalonia.Controls.ListBox(), false)!;
+        paneType.GetField("Group")!.SetValue(pane, group);
+        paneType.GetField("AsTree")!.SetValue(pane, asTree);
+        paneType.GetField("Rows")!.SetValue(pane, paneRows);
+
+        List<object> items = (List<object>)buildItems.Invoke(null, [pane, paneRows, false])!;
+        List<object> headers = [.. items.Where(i => headerType.IsInstanceOfType(i))];
+        Expect($"{name}: the list produced headers to test", headers.Count > 0);
+
+        List<string> wrong = [];
+        HashSet<string> covered = [];
+        foreach (object header in headers)
+        {
+            string key = (string)headerType.GetProperty("Key")!.GetValue(header)!;
+            int said = (int)headerType.GetProperty("Count")!.GetValue(header)!;
+            List<WorkingDirFileRow> reached =
+                (List<WorkingDirFileRow>)rowsInGroup.Invoke(null, [pane, header])!;
+
+            if (reached.Count != said)
+            {
+                wrong.Add($"{key}: the header says {said}, the menu reaches {reached.Count}");
+            }
+
+            foreach (WorkingDirFileRow row in reached)
+            {
+                covered.Add(row.Path);
+            }
+        }
+
+        Expect(
+            $"{name}: the menu reaches exactly what each header counts"
+                + (wrong.Count == 0 ? string.Empty : " — " + string.Join(" | ", wrong)),
+            wrong.Count == 0);
+        // In a path TREE a file at the repository root sits under no folder at all, which
+        // is not a gap: the other groupings have a bucket for everything, and there the
+        // headers must between them reach every row.
+        int expected = asTree && group!.ToString() == "Path"
+            ? paneRows.Count(r => r.Path.Contains('/', StringComparison.Ordinal))
+            : paneRows.Length;
+        Expect($"{name}: the headers between them reach every row that has a group",
+            covered.Count == expected);
+    }
+
+    // And the negative: a header key the grouping never produced reaches nothing, so a
+    // stale header (one built before a reload) cannot act on a set by accident.
+    {
+        object pane = Activator.CreateInstance(paneType, new Avalonia.Controls.ListBox(), false)!;
+        paneType.GetField("Group")!.SetValue(pane, Enum.Parse(sortMode, "Path"));
+        paneType.GetField("AsTree")!.SetValue(pane, true);
+        paneType.GetField("Rows")!.SetValue(pane, paneRows);
+
+        object stale = Activator.CreateInstance(headerType, "nowhere/", "nowhere", 0, 3, false)!;
+        List<WorkingDirFileRow> reached =
+            (List<WorkingDirFileRow>)rowsInGroup.Invoke(null, [pane, stale])!;
+        Expect("a header the grouping never made reaches nothing", reached.Count == 0);
+    }
+}
+
+// ---------------------------------------------------------------- E: stashing a folder
+
+// Facts about GIT, each measured on a live repository before the folder menu was allowed
+// to rely on it (git 2.43). They are not obvious, and two of them decide whether the
+// command runs at all rather than how well it runs.
+{
+    string repos = Path.Combine(sandbox, "stash");
+    Directory.CreateDirectory(repos);
+    CommitActionsService actions = new();
+
+    // 1. An untracked path without -u fails the WHOLE command and stashes nothing.
+    {
+        string repo = MakeRepo(Path.Combine(repos, "untracked"));
+        File.AppendAllText(Path.Combine(repo, "f", "tracked.txt"), "change\n");
+        File.WriteAllText(Path.Combine(repo, "f", "fresh.txt"), "new\n");
+
+        CommitActionResult refused = actions.StashPaths(
+            repo, "no -u", ["f/tracked.txt", "f/fresh.txt"], includeUntracked: false);
+        Expect("naming an untracked path without -u fails", !refused.Success);
+        Expect("and it stashes nothing at all",
+            Git(repo, "stash list").Length == 0 && File.Exists(Path.Combine(repo, "f", "fresh.txt")));
+
+        CommitActionResult done = actions.StashPaths(
+            repo, "folder", ["f/tracked.txt", "f/fresh.txt"], includeUntracked: true);
+        Expect("with -u both the tracked and the untracked path go", done.Success);
+        Expect("the untracked file left the working tree",
+            !File.Exists(Path.Combine(repo, "f", "fresh.txt")));
+        Expect("the tracked change is in the stash",
+            Git(repo, "stash show --name-only stash@{0}").Contains("f/tracked.txt", StringComparison.Ordinal));
+
+        // The untracked file rides in the stash's third parent, which is what makes it
+        // recoverable rather than deleted.
+        Expect("and so is the untracked one, in the third parent",
+            Git(repo, "ls-tree -r --name-only stash@{0}^3")
+                .Contains("f/fresh.txt", StringComparison.Ordinal));
+    }
+
+    // 2. Only the named paths move — the point of the whole gesture.
+    {
+        string repo = MakeRepo(Path.Combine(repos, "scoped"));
+        File.AppendAllText(Path.Combine(repo, "f", "tracked.txt"), "change\n");
+        File.AppendAllText(Path.Combine(repo, "outside.txt"), "change\n");
+
+        Expect("a scoped stash succeeds",
+            actions.StashPaths(repo, "just f", ["f/tracked.txt"], includeUntracked: false).Success);
+        Expect("the folder's file is clean again",
+            !Git(repo, "status --porcelain").Contains("f/tracked.txt", StringComparison.Ordinal));
+        Expect("and the file outside it was left alone",
+            Git(repo, "status --porcelain").Contains("outside.txt", StringComparison.Ordinal));
+    }
+
+    // 3. An unresolved merge refuses everything, even for an unrelated pathspec — which
+    //    is why the menu keeps the entry out of reach instead of letting it fail on use.
+    {
+        string repo = MakeRepo(Path.Combine(repos, "conflict"));
+        Git(repo, "checkout -q -b other");
+        File.WriteAllText(Path.Combine(repo, "f", "tracked.txt"), "theirs\n");
+        Git(repo, "commit -qam theirs");
+        Git(repo, "checkout -q master");
+        File.WriteAllText(Path.Combine(repo, "f", "tracked.txt"), "ours\n");
+        Git(repo, "commit -qam ours");
+        Git(repo, "merge other");
+        File.AppendAllText(Path.Combine(repo, "outside.txt"), "change\n");
+
+        Expect("the merge really is unresolved",
+            Git(repo, "ls-files --unmerged").Length > 0);
+        CommitActionResult refused =
+            actions.StashPaths(repo, "elsewhere", ["outside.txt"], includeUntracked: false);
+        Expect("a stash of an UNRELATED path is refused while a merge is unresolved", !refused.Success);
+        Expect("and git says why", refused.Output.Contains("merge", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // 4. Nothing to stash is not a crash.
+    Expect("an empty path list is reported, not thrown",
+        !actions.StashPaths(Path.Combine(repos, "untracked"), "none", [], includeUntracked: false).Success);
+}
+
 // ---------------------------------------------------------------- negative cases
 
 // Always on, so a run that has stopped asserting anything cannot pass quietly.
@@ -341,6 +528,7 @@ ViewPrefsService prefs = new();
     Expect("a grouping the enum does not define is not defined",
         !Enum.IsDefined((DiffFileGroupMode)99));
 }
+
 
 // ---------------------------------------------------------------- verdict
 
@@ -367,8 +555,8 @@ if (failures.Count > 0)
 }
 
 Console.WriteLine(
-    $"PASS: {cases} file-list cases — grouping, folding, the dialog's source, "
-    + "and the remembered choice");
+    $"PASS: {cases} file-list cases — grouping, folding, the dialog's source, the remembered "
+    + "choice, the folder menu's reach and what a folder-wide stash does");
 return 0;
 
 // ---------------------------------------------------------------- harness
@@ -421,4 +609,39 @@ static string FindAppDirectory()
     }
 
     return Path.Combine(AppContext.BaseDirectory, "App");
+}
+
+static Type Nested(Type type, string name)
+    => type.GetNestedType(name, BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException(
+            $"{type.Name}.{name} is gone: this suite reaches into the dialog's own types on "
+            + "purpose, and a rename must fail loudly instead of skipping the cases.");
+
+// A repository with one folder, one file in it and one outside, all committed.
+static string MakeRepo(string path)
+{
+    Directory.CreateDirectory(Path.Combine(path, "f"));
+    Git(path, "init -q -b master .");
+    Git(path, "config user.name Harness");
+    Git(path, "config user.email harness@example.invalid");
+    File.WriteAllText(Path.Combine(path, "f", "tracked.txt"), "base\n");
+    File.WriteAllText(Path.Combine(path, "outside.txt"), "base\n");
+    Git(path, "add -A");
+    Git(path, "commit -qm base");
+    return path;
+}
+
+static string Git(string repo, string arguments)
+{
+    ProcessStartInfo info = new("git", arguments)
+    {
+        WorkingDirectory = repo,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+    };
+
+    using Process process = Process.Start(info)!;
+    string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    return output;
 }
