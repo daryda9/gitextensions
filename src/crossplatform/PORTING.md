@@ -3418,6 +3418,72 @@ visibile di suo, non serve altro.
 L'ordine è quello della lista salvata, quindi la persistenza era già scritta: verificato chiudendo e
 riaprendo (`wt-alpha`, `git_ext_mod` nell'ordine trascinato).
 
+## M228 (2026-09-04) — il click destro su una cartella ha un menu suo
+
+Chiesto dall'uso: «cliccando col destro su una cartella, dammi la possibilità di fare per esempio uno
+stash di tutta la cartella».
+
+**Cosa faceva prima.** Peggio di niente. Il click destro su un'intestazione la **piegava** (il gestore
+del pointer sta in fase di *tunnelling* e trattava ogni bottone allo stesso modo) e poi apriva il menu
+dei file — che agisce sulla **selezione**, e un click destro su un'intestazione non seleziona nulla.
+Quindi si mirava a una cartella e si otteneva un menu le cui voci valevano per il file selezionato
+altrove nella lista, «Reset file changes» compreso. Non un menu con niente da offrire: **un menu che
+mente**.
+
+**Cosa ha l'upstream, misurato.** `FileStatusList.TreeContextMenu.cs` offre sull'intestazione solo
+`Select all`, `Collapse all`, `Expand all` e `Collapse root folders` — **nessuna azione git**: lì
+agire su una cartella significa «seleziona tutto» e poi il menu dei file. Le quattro voci sono portate;
+mettere in stage, scartare e stashare una cartella in un gesto sono di questo port.
+
+Il menu, per pannello: `Stage` / `Unstage` della cartella, `Discard changes` (solo lato non in stage,
+esclusi i non tracciati e i conflitti, come fa la voce per file), **`Stash <cartella> (n)`**, poi le tre
+voci dell'upstream e `Copy path`.
+
+**Tre fatti su git, misurati prima di appoggiarci il menu** (git 2.43), e sono contro-intuitivi:
+
+| Comando | Cosa fa davvero |
+|---|---|
+| `git stash push -- <cartella>` | prende i tracciati e **lascia indietro i non tracciati**, in silenzio |
+| `git stash push -- <file non tracciato>` | **fallisce tutto** («pathspec … did not match any file(s) known to git») e non stasha niente |
+| `git stash push -u -- <file...>` | tracciati e non tracciati insieme; i non tracciati finiscono nel **terzo genitore** dello stash, quindi si recuperano |
+| `git stash push -- <qualunque cosa>` con un merge aperto | rifiuta **tutto**, exit 1 «needs merge», **anche per un pathspec che col conflitto non ha nulla a che fare** |
+
+Da qui due scelte non ovvie nel codice. Primo: il servizio riceve i **file**, non la cartella — un
+pathspec di directory raccoglierebbe anche i file che il pannello non sta mostrando (nascosti dal
+toggle dei non tracciati, o esclusi dal filtro), e l'utente stasherebbe più di quello che ha davanti.
+Secondo: `-u` non è una gentilezza ma la condizione perché il comando parta, quindi lo decide la
+presenza di una riga non tracciata nell'insieme; e la voce **Stash è spenta** finché il repository ha
+un merge irrisolto, perché lì non esiste un successo parziale da riportare.
+
+**Il punto fragile, e come è fissato.** «Questa cartella» il menu lo deve ricavare **all'indietro**
+dall'intestazione: la lista non glielo può dire, perché una cartella piegata non mostra i suoi file — ed
+è proprio sulla cartella piegata che il menu serve. Sono due calcoli indipendenti dello stesso insieme,
+quello che ha costruito la lista e quello che legge il menu, e se divergono il gesto agisce su un
+insieme che l'utente non ha mai visto. Perciò `GroupKey` non è più una funzione locale di `BuildItems`
+ma un metodo della classe, usato da entrambi; e il banco li **incrocia**: ogni intestazione porta il
+numero di file che ha sotto (è stampato a schermo, «src (3)»), e la risposta del menu deve avere
+esattamente quel numero, in tutti e quattro i raggruppamenti, comprese le cartelle annidate dell'albero
+il cui conteggio è tutto il sottoalbero.
+
+`Tests/FileListRegression` sale a **67 casi** con due gruppi nuovi: la portata del menu (per reflection
+sui tipi annidati del dialogo — un `ListBox` e il pane si costruiscono senza display, verificato) e lo
+stash di cartella guidato **attraverso il servizio vero su repository veri**, che fissa i tre fatti
+della tabella. Provato reintroducendo il difetto due volte: la regola del prefisso dell'albero tolta →
+quattro conteggi discordanti nominati uno per uno; `-u` ignorato → quattro fallimenti sul file non
+tracciato.
+
+**Due difetti trovati dal banco stesso, nel codice appena scritto**: il mio `SelectFolder` leggeva le
+righe dal `ListBox` e il lint del M226 l'ha bocciato — giustamente, e riscriverlo sulle righe del pane
+è anche più semplice; e una mia asserzione era falsa (in un albero un file nella radice del repository
+non sta sotto nessuna cartella, e non è una lacuna).
+
+Verificato a schermo sotto Xvfb, gesto per gesto: il menu della cartella esce **da solo** (il menu dei
+file non si apre più sopra un'intestazione), lo stash di `src` porta via tre tracciati e un non
+tracciato e **lascia intatto** ciò che è fuori, la riga di stato dice «Stashed src: Changes in src», il
+pannello si ricarica, il menu del pannello in stage offre `Unstage` e non `Discard`, `Select all`
+seleziona e carica il diff, e con un merge aperto `Stage`, `Discard` e `Stash` sono **spenti** mentre
+`Select all` e `Copy path` restano vivi.
+
 ## M227 (2026-09-03) — `./run.sh` poteva avviare una build di due giorni prima
 
 Il difetto che ha fatto sembrare M226 non corretto. `run.sh` scegliva il binario così:

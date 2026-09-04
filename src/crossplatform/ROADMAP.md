@@ -110,7 +110,9 @@ quando un conflitto viene salvato, marcato risolto o riaperto), e `Tests/AssetNa
 l'unico che legge anche i **sorgenti**: i nomi di icone passati per letterale e gli host `avares:`
 scritti a mano, perché qui una risorsa mancante non fa rumore) e `Tests/FileListRegression` (M226:
 il raggruppamento delle liste di file — dove **piegare non è togliere** — più un lint sui sorgenti del
-dialogo di commit, che non deve chiedere al `ListBox` cosa il pane contiene, più la scelta ricordata);
+dialogo di commit, che non deve chiedere al `ListBox` cosa il pane contiene, più la scelta ricordata; da
+M228 anche la portata del menu di cartella, incrociata col conteggio che l'intestazione stampa, e i tre
+fatti su `git stash` con un pathspec, guidati sul servizio vero);
 accanto restano le sonde e gli snapshot preesistenti
 (`NavigationSnapshot`, `SubmoduleHierarchy`, `Perf`, `AnimProbe`, `ChromeProbe`). **Da M211 non si
 lanciano più a mano**: `GitExtensions.Avalonia.slnx` li compila tutti, `Tests/run-all.sh` lancia gli undici
