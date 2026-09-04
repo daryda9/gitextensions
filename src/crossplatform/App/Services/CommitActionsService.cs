@@ -154,6 +154,64 @@ public sealed class CommitActionsService
         return string.Join(' ', parts);
     }
 
+    // ---------------- stash a set of paths ----------------
+
+    /// <summary>
+    ///  Stashes the changes of <paramref name="paths"/> and nothing else —
+    ///  <c>git stash push [-u] -m &lt;msg&gt; -- &lt;paths&gt;</c>. Both sides go: what is
+    ///  staged for those paths and what is only in the working tree, which is what
+    ///  <c>stash push</c> with a pathspec means.
+    ///
+    ///  <para>Callers pass the FILE paths, not the directory that holds them, even when
+    ///  the gesture was "stash this folder": a directory pathspec would also sweep up
+    ///  files the caller is not showing — the ones the untracked toggle hides, or a
+    ///  regular-expression filter has narrowed away — and the user would be stashing
+    ///  more than the list in front of them.</para>
+    ///
+    ///  <para><b><paramref name="includeUntracked"/> is not a nicety, it decides whether
+    ///  the command runs at all.</b> Measured on git 2.43: naming an untracked path
+    ///  without <c>-u</c> fails the WHOLE command with "pathspec … did not match any
+    ///  file(s) known to git" and stashes nothing; with <c>-u</c> the tracked and
+    ///  untracked paths go together. (A directory pathspec behaves differently again —
+    ///  it silently leaves untracked files behind — which is the other reason callers
+    ///  name files.) So a caller that has an untracked row in its set MUST pass
+    ///  <see langword="true"/>.</para>
+    ///
+    ///  <para><b>Unmerged paths refuse everything.</b> Also measured: while any path in
+    ///  the repository needs merging, <c>git stash push</c> exits 1 with
+    ///  "&lt;path&gt;: needs merge" — even for a pathspec that has nothing to do with the
+    ///  conflict. There is no partial success to report, so callers keep the entry out
+    ///  of reach while a merge is unresolved rather than letting it fail on use.</para>
+    /// </summary>
+    public CommitActionResult StashPaths(
+        string repoPath, string message, IReadOnlyList<string> paths, bool includeUntracked)
+    {
+        if (paths.Count == 0)
+        {
+            return new CommitActionResult(false, "There is nothing to stash.");
+        }
+
+        GitModule module = GitContext.CreateModule(repoPath);
+        string text = message ?? string.Empty;
+
+        GitArgumentBuilder args = new("stash")
+        {
+            "push",
+            { includeUntracked, "--include-untracked" },
+            { !string.IsNullOrWhiteSpace(text), "-m" },
+            { !string.IsNullOrWhiteSpace(text), text.Quote() },
+            "--",
+        };
+
+        foreach (string path in paths)
+        {
+            args.Add(path.Quote());
+        }
+
+        ExecutionResult result = module.GitExecutable.Execute(args, throwOnErrorExit: false);
+        return new CommitActionResult(result.ExitedSuccessfully, result.AllOutput ?? string.Empty);
+    }
+
     // ---------------- stash staged ----------------
 
     /// <summary>

@@ -490,6 +490,8 @@ public sealed class CommitDialog : Theming.ZoomWindow
         // never joins the selection the stage / unstage / diff code works from.
         _unstagedList.AddHandler(PointerPressedEvent, OnListPointerPressed, RoutingStrategies.Tunnel);
         _stagedList.AddHandler(PointerPressedEvent, OnListPointerPressed, RoutingStrategies.Tunnel);
+        _unstagedList.ContextRequested += OnListContextRequested;
+        _stagedList.ContextRequested += OnListContextRequested;
         _unstagedList.DoubleTapped += (_, _) => OnUnstagedDoubleTapped();
         _stagedList.DoubleTapped += (_, _) => UnstageSelected();
 
@@ -1831,27 +1833,62 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         FileListPane pane = ReferenceEquals(list, _stagedList) ? _stagedPane : _unstagedPane;
-        for (Visual? visual = e.Source as Visual; visual is not null; visual = visual.GetVisualParent())
+        if (HeaderAt(e.Source) is not { } header)
         {
-            if (visual is not ListBoxItem container)
-            {
-                continue;
-            }
-
-            if (container.DataContext is not GroupHeader header)
-            {
-                return;
-            }
-
-            if (!pane.Collapsed.Remove(header.Key))
-            {
-                pane.Collapsed.Add(header.Key);
-            }
-
-            e.Handled = true;
-            RegroupPane(pane);
             return;
         }
+
+        // The right button belongs to the folder's own menu (OnListContextRequested), so
+        // it must not fold the folder on the way there: this handler runs in the
+        // TUNNELLING phase and used to treat every button alike, which meant a
+        // right-click closed the folder under the menu that was about to open over it.
+        if (e.GetCurrentPoint(list).Properties.IsRightButtonPressed)
+        {
+            return;
+        }
+
+        if (!pane.Collapsed.Remove(header.Key))
+        {
+            pane.Collapsed.Add(header.Key);
+        }
+
+        e.Handled = true;
+        RegroupPane(pane);
+    }
+
+    // The group header the pointer is over, or null for a file row / empty space.
+    private static GroupHeader? HeaderAt(object? source)
+    {
+        for (Visual? visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+        {
+            if (visual is ListBoxItem container)
+            {
+                return container.DataContext as GroupHeader;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///  Right-clicking a GROUP shows the folder's own menu instead of the list's file
+    ///  menu, and stops the latter from opening.
+    ///
+    ///  <para><b>Why stopping it matters.</b> The two file menus act on the SELECTION,
+    ///  and a right-click on a header changes no selection: right-clicking a folder used
+    ///  to open a menu whose entries applied to whatever file was selected somewhere
+    ///  else in the list — "Reset file changes" included. Aiming at a folder and hitting
+    ///  another file is not a menu with nothing to offer, it is a menu that lies.</para>
+    /// </summary>
+    private void OnListContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        if (sender is not ListBox list || HeaderAt(e.Source) is not { } header)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        ShowFolderMenu(ReferenceEquals(list, _stagedList) ? _stagedPane : _unstagedPane, header, list);
     }
 
     // The rows currently selected in <paramref name="list"/>, in selection order.
@@ -2680,15 +2717,28 @@ public sealed class CommitDialog : Theming.ZoomWindow
         List<string> paths = [.. SelectedRows(_unstagedList)
             .Where(r => r.Status != "new" && !_conflictPaths.Contains(r.Path))
             .Select(r => r.Path)];
+        DiscardPaths(paths, describe: null);
+    }
+
+    /// <summary>
+    ///  Restores <paramref name="paths"/> from the index, after asking. Shared by the
+    ///  file menu and the folder menu; <paramref name="describe"/> is what the question
+    ///  and the outcome call the target — the folder's name when the gesture was a
+    ///  folder, otherwise the file itself or a count.
+    /// </summary>
+    private void DiscardPaths(List<string> paths, string? describe)
+    {
         if (paths.Count == 0)
         {
             return;
         }
 
         string repo = _repoPath;
-        string what = paths.Count == 1
-            ? $"'{paths[0]}'"
-            : string.Format(T("{0} files"), paths.Count);
+        string what = describe is { Length: > 0 }
+            ? string.Format(T("'{0}' ({1} files)"), describe, paths.Count)
+            : paths.Count == 1
+                ? $"'{paths[0]}'"
+                : string.Format(T("{0} files"), paths.Count);
         ConfirmThen(
             string.Format(
                 T("Discard changes to {0}? The files are restored from the index and this cannot be undone."),
@@ -5248,6 +5298,171 @@ public sealed class CommitDialog : Theming.ZoomWindow
         _ => DiffFileGroupMode.None,
     };
 
+    // ---------------- the folder menu (right-click on a group header) ----------------
+
+    /// <summary>
+    ///  Every row under <paramref name="header"/>, read from the pane's own rows and not
+    ///  from the list: a folded folder shows none of its files, and it is precisely a
+    ///  folded folder that this menu is most useful on.
+    ///
+    ///  <para>For the path TREE the header's key is the directory with its separator, so
+    ///  a prefix test takes the whole subtree — which is what "this folder" means to
+    ///  someone looking at it. The other groupings have one flat bucket per key, and
+    ///  that key comes from <see cref="GroupKey"/>, the same function the list was built
+    ///  with.</para>
+    /// </summary>
+    private static List<WorkingDirFileRow> RowsInGroup(FileListPane pane, GroupHeader header)
+    {
+        if (pane.Group is not { } group)
+        {
+            return [];
+        }
+
+        return group == FileSortMode.Path && pane.AsTree
+            ? [.. pane.Rows.Where(r => r.Path.StartsWith(header.Key, StringComparison.OrdinalIgnoreCase))]
+            : [.. pane.Rows.Where(r => string.Equals(
+                GroupKey(group, r), header.Key, StringComparison.OrdinalIgnoreCase))];
+    }
+
+    /// <summary>
+    ///  The menu of a whole group: the folder-wide versions of what the file menu offers
+    ///  one file at a time, plus the three tree entries.
+    ///
+    ///  <para><b>What upstream has here.</b> Its own folder menu
+    ///  (<c>FileStatusList.TreeContextMenu.cs</c>) offers <c>Select all</c>,
+    ///  <c>Collapse all</c>, <c>Expand all</c> and <c>Collapse root folders</c> — and no
+    ///  git action at all: there, acting on a folder means "select all" first and then
+    ///  the file menu. Those four entries are ported; staging, discarding and stashing a
+    ///  folder in one gesture are this port's, asked for by use.</para>
+    /// </summary>
+    private void ShowFolderMenu(FileListPane pane, GroupHeader header, Control anchor)
+    {
+        List<WorkingDirFileRow> rows = RowsInGroup(pane, header);
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        string what = header.Text;
+        MenuFlyout flyout = new() { Placement = PlacementMode.Pointer };
+
+        if (pane.Staged)
+        {
+            Add(WithCount(UnstageCaption, rows.Count), true, () => RunGit(() => _service.Unstage(_repoPath, rows)));
+        }
+        else
+        {
+            // Conflicted paths are left out the way StageSelected leaves them out: a
+            // resolution is a decision per file, never something a folder-wide gesture
+            // should make.
+            List<WorkingDirFileRow> stageable = [.. rows.Where(r => !_conflictPaths.Contains(r.Path))];
+            Add(
+                WithCount(StageCaption, stageable.Count),
+                stageable.Count > 0,
+                () => RunGit(() => _service.Stage(_repoPath, stageable)));
+
+            List<string> discardable = [.. rows
+                .Where(r => r.Status != "new" && !_conflictPaths.Contains(r.Path))
+                .Select(r => r.Path)];
+            Add(WithCount(DiscardCaption, discardable.Count), discardable.Count > 0,
+                () => DiscardPaths(discardable, describe: what));
+        }
+
+        // Stash: the entry this menu was asked for. Disabled while the repository has an
+        // unresolved merge, because git refuses the whole command then — measured, and
+        // for ANY pathspec, not only one that touches the conflict (see
+        // CommitActionsService.StashPaths). An entry that can only fail is worse than one
+        // that says why it is out of reach.
+        Add(
+            TFormat(null, "Stash {0} ({1})", what, rows.Count),
+            _conflictPaths.Count == 0,
+            () => StashFolder(rows, what));
+
+        flyout.Items.Add(new Separator());
+
+        // Upstream's three, in its order. "Select all" hands the folder to the file menu,
+        // which is upstream's whole answer to acting on a folder — so it also has to
+        // unfold it: a hidden row cannot be selected.
+        Add(T("FileStatusList/_selectAll.Text", "Select all"), true, () => SelectFolder(pane, header));
+        Add(T("FileStatusList/_collapseAll.Text", "Collapse all"), true, () =>
+        {
+            foreach (GroupHeader all in AllHeaders(pane))
+            {
+                pane.Collapsed.Add(all.Key);
+            }
+
+            RegroupPane(pane);
+        });
+        Add(T("FileStatusList/_expandAll.Text", "Expand all"), pane.Collapsed.Count > 0, () =>
+        {
+            pane.Collapsed.Clear();
+            RegroupPane(pane);
+        });
+
+        flyout.Items.Add(new Separator());
+        Add(WithCount(CopyPathCaption, rows.Count), true, () => CopyFolderPaths(rows));
+
+        flyout.ShowAt(anchor, showAtPointer: true);
+
+        void Add(string caption, bool enabled, Action run)
+        {
+            MenuItem item = new() { Header = Escape(caption), IsEnabled = enabled };
+            item.Click += (_, _) => run();
+            flyout.Items.Add(item);
+        }
+    }
+
+    // `git stash push -- <the folder's files>`. The message follows what the staged-stash
+    // entry does: the commit message's first line when there is one, so the entry is
+    // recognisable in the stash list, otherwise the folder's name.
+    private void StashFolder(List<WorkingDirFileRow> rows, string what)
+    {
+        string typed = (_messageBox.Text ?? string.Empty).Trim();
+        string message = typed.Length > 0 ? FirstLine(typed) : string.Format(T("Changes in {0}"), what);
+
+        // -u is mandatory once an untracked file is in the set: without it git fails the
+        // whole command over the untracked path and stashes nothing (see StashPaths).
+        bool untracked = rows.Any(IsUntrackedRow);
+        List<string> paths = [.. rows.Select(r => r.Path)];
+        string repo = _repoPath;
+
+        SetStatus(string.Format(T("Running {0} …"), "git stash push"));
+        RunActionResult(
+            () => _actions.StashPaths(repo, message, paths, untracked),
+            result =>
+            {
+                SetStatus(result.Success
+                    ? string.Format(T("Stashed {0}: {1}"), what, message)
+                    : string.Format(T("Stash failed: {0}"), FirstLine(result.Output)));
+                Reload();
+            });
+    }
+
+    // Unfolds the group and selects its files, so the file menu can act on them — the
+    // gesture upstream offers instead of folder-wide actions.
+    private void SelectFolder(FileListPane pane, GroupHeader header)
+    {
+        pane.Collapsed.RemoveWhere(key => key.StartsWith(header.Key, StringComparison.OrdinalIgnoreCase));
+        pane.Collapsed.Remove(header.Key);
+        RegroupPane(pane);
+
+        // The pane's rows, not the list's items — and they can all be selected because
+        // the subtree was just unfolded, so every one of them is on screen. The item
+        // instances ARE these rows (BuildItems puts the same references in), which is
+        // what makes selecting them by object work.
+        pane.List.SelectedItems?.Clear();
+        foreach (WorkingDirFileRow row in RowsInGroup(pane, header))
+        {
+            pane.List.SelectedItems?.Add(row);
+        }
+    }
+
+    private void CopyFolderPaths(List<WorkingDirFileRow> rows)
+    {
+        string text = string.Join(Environment.NewLine, rows.Select(r => r.Path));
+        PutOnClipboard(text, rows.Count);
+    }
+
     private static void UpdateGroupButtons(FileListPane pane)
     {
         pane.ByPathButton.IsChecked = pane.Group == FileSortMode.Path;
@@ -5349,6 +5564,20 @@ public sealed class CommitDialog : Theming.ZoomWindow
         RefreshPaneCount(pane);
     }
 
+    // Which group a row falls in, for every grouping but the path TREE (whose keys are
+    // built one directory level at a time in AddFolder below). A method of the class and
+    // not a local of BuildItems, because the folder menu has to answer the same question
+    // in reverse — which rows are under this header — and two spellings of one grouping
+    // rule is how a menu ends up acting on a set the list never showed.
+    private static string GroupKey(FileSortMode group, WorkingDirFileRow row) => group switch
+    {
+        FileSortMode.Extension => System.IO.Path.GetExtension(row.Path) is { Length: > 0 } ext
+            ? ext
+            : "(none)",
+        FileSortMode.Status => row.Status,
+        _ => row.Path.LastIndexOf('/') > 0 ? row.Path[..row.Path.LastIndexOf('/')] : "(root)",
+    };
+
     // The items of one list: the rows alone when nothing is grouped, otherwise group
     // headers with their rows under them — a real folder tree for the path grouping,
     // one header per key for the other two. A collapsed header keeps its subtree out.
@@ -5393,15 +5622,6 @@ public sealed class CommitDialog : Theming.ZoomWindow
         }
 
         return flat;
-
-        static string GroupKey(FileSortMode group, WorkingDirFileRow row) => group switch
-        {
-            FileSortMode.Extension => System.IO.Path.GetExtension(row.Path) is { Length: > 0 } ext
-                ? ext
-                : "(none)",
-            FileSortMode.Status => row.Status,
-            _ => row.Path.LastIndexOf('/') > 0 ? row.Path[..row.Path.LastIndexOf('/')] : "(root)",
-        };
 
         void AddFolder(List<object> into, IReadOnlyList<WorkingDirFileRow> scope, string prefix, int level)
         {
